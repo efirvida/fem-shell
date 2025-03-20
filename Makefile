@@ -102,7 +102,7 @@ export LD_LIBRARY_PATH := $(VENV_DIR)/lib:$(VENV_DIR)/lib64:$(LD_LIBRARY_PATH)
 .PHONY: all clean pip
 .NOTPARALLEL: $(VENV_DIR)/.python.done $(VENV_DIR)/.petsc.done
 
-all: python petsc slepc precice openfoam python_env
+all: download_sources python petsc slepc precice openfoam python_env
 	pip freeze > requirements.lock
 	@echo "====================================="
 	@echo "# All components built successfully #"
@@ -114,6 +114,7 @@ clean:
 #-------------------------------------------------------------------------------
 # Minimal Targets
 #-------------------------------------------------------------------------------
+download_sources: $(SOURCES_DIR)/download.done
 
 openfoam: $(VENV_DIR)/.openfoam.done
 
@@ -132,6 +133,7 @@ slepc: $(VENV_DIR)/.slepc.done
 #-------------------------------------------------------------------------------
 $(SOURCES_DIR)/download.done:
 	@mkdir -p $(SOURCES_DIR)
+	@chmod -R u+w $(SOURCES_DIR)
 	@echo "Downloading source packages..."
 	@cd $(SOURCES_DIR) && $(DOWNLOAD) \
 		https://archives.boost.io/release/$(BOOST_VERSION)/source/$(BOOST_TAR) \

@@ -1,0 +1,37 @@
+name: Makefile CI
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+
+jobs:
+  build:
+
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Download sources
+      run: make download_sources > /dev/null
+
+    - name: Build python
+      run: make python 
+
+    - name: Build petsc slepc
+      run: make petsc slepc
+
+    - name: Build precice library
+      run: make  precice 
+
+    - name: Build OpenFOAM
+      run: make  openfoam 
+
+    - name: Build env
+      run: make  python_env 
+
+    - name: Run check
+      run: source .env && python -c "import precice"
+
