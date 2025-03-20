@@ -28,9 +28,6 @@ PRECICE_VERSION    := 3.1.2
 PYTHON_VERSION     := 3.12.9
 READLINE_VERSION   := 8.2
 SQLITE_VERSION     := 3490000
-TCL_VERSION        := 8.6.13
-TK_VERSION         := $(TCL_VERSION)
-TCL_SHORT_VERSION := $(word 1,$(subst ., ,$(TCL_VERSION))).$(word 2,$(subst ., ,$(TCL_VERSION)))
 KHIP_VERSION      := 3.18
 
 
@@ -53,8 +50,6 @@ PYTHON_TAR         := Python-$(PYTHON_VERSION).tgz
 READLINE_TAR       := readline-$(READLINE_VERSION).tar.gz
 SLEPC_TAR          := slepc-$(PETSC_VERSION).tar.gz
 SQLITE_TAR         := sqlite-autoconf-$(SQLITE_VERSION).tar.gz
-TCL_TAR            := tcl$(TCL_VERSION)-src.tar.gz
-TK_TAR             := tk$(TK_VERSION)-src.tar.gz
 
 # Directory configurations
 include .env
@@ -149,8 +144,6 @@ $(SOURCES_DIR)/download.done:
 		https://github.com/precice/precice/archive/$(PRECICE_TAR) \
 		https://gitlab.com/libeigen/eigen/-/archive/$(EIGEN_VERSION)/$(EIGEN_TAR) \
 		https://gitlab.gnome.org/GNOME/libxml2/-/archive/v$(LIBXML2_VERSION)/$(LIBXML2_TAR) \
-		https://prdownloads.sourceforge.net/tcl/$(TCL_TAR) \
-		https://prdownloads.sourceforge.net/tcl/$(TK_TAR) \
 		https://slepc.upv.es/download/distrib/$(SLEPC_TAR) \
 		https://sourceforge.net/projects/libuuid/files/$(LIBUUID_TAR) \
 		https://web.cels.anl.gov/projects/petsc/download/release-snapshots/$(PETSC_TAR) \
@@ -203,24 +196,6 @@ $(VENV_DIR)/.bz2.done:
 		$(MAKE_CMD)
 	@touch $@		
 
-$(VENV_DIR)/.tcl.done:
-	@echo "Building Tcl..."
-	@mkdir -p $(BUILD_DIR)/tcl
-	@tar -xzf $(SOURCES_DIR)/$(TCL_TAR) -C $(BUILD_DIR)/tcl --strip-components=1
-	@cd $(BUILD_DIR)/tcl/unix && \
-		$(CONFIGURE_CMD) && \
-		$(MAKE_CMD)
-	@touch $@
-
-$(VENV_DIR)/.tk.done: $(VENV_DIR)/.tcl.done
-	@echo "Building Tk..."
-	@mkdir -p $(BUILD_DIR)/tk
-	@tar -xzf $(SOURCES_DIR)/$(TK_TAR) -C $(BUILD_DIR)/tk --strip-components=1
-	@cd $(BUILD_DIR)/tk/unix && \
-		$(CONFIGURE_CMD) && \
-		$(MAKE_CMD)
-	@touch $@
-
 $(VENV_DIR)/.readline.done: $(SOURCES_DIR)/download.done $(VENV_DIR)/.ncurses.done
 	@echo "Building Readline..."
 	@mkdir -p $(BUILD_DIR)/readline
@@ -236,8 +211,6 @@ $(VENV_DIR)/.python.done: $(SOURCES_DIR)/download.done \
 	$(VENV_DIR)/.openssl.done \
 	$(VENV_DIR)/.ncurses.done \
 	$(VENV_DIR)/.gdbm.done \
-	$(VENV_DIR)/.tcl.done \
-	$(VENV_DIR)/.tk.done \
 	$(VENV_DIR)/.readline.done
 	@echo "Building Python $(PYTHON_VERSION)..."
 	@mkdir -p $(BUILD_DIR)/python
@@ -245,8 +218,6 @@ $(VENV_DIR)/.python.done: $(SOURCES_DIR)/download.done \
 	@cd $(BUILD_DIR)/python && \
 		$(CONFIGURE_CMD) \
 			--enable-optimizations \
-			--with-tcltk-includes="-I$(VENV_DIR)/include" \
-			--with-tcltk-libs="-L$(VENV_DIR)/lib -ltcl$(TCL_SHORT_VERSION) -ltk$(TCL_SHORT_VERSION)" \
 			--enable-shared && \
 		$(MAKE_CMD)
 	@ln -sf $(VENV_DIR)/bin/python3 $(VENV_DIR)/bin/python
