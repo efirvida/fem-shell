@@ -1,9 +1,9 @@
 # Makefile for compiling Python with full module support
 # Includes dependencies for common optional modules and development tools
 
-CHECK_DEPS := $(shell command -v git unzip wget)
+CHECK_DEPS := $(shell command -v make cmake git unzip wget)
 ifndef CHECK_DEPS
-  $(error "Missing required tools: git, unzip, wget")
+  $(error "Missing required tools: make, cmake, git, unzip, wget")
 endif
 
 #-------------------------------------------------------------------------------
@@ -20,7 +20,8 @@ LIBUUID_VERSION    := 1.0.3
 LIBXML2_VERSION    := 2.13.6
 NCURSES_VERSION    := 6.3
 OMPI_VERSION       := 4.1.8
-OMPI_SHORT_VERSION := $(word 1,$(OMPI_VERSION))$(word 2,.$(OMPI_VERSION))
+OMPI_SHORT_VERSION := $OMPI_VERSION := 4.1.8
+OMPI_SHORT_VERSION := $(word 1,$(subst ., ,$(OMPI_VERSION))).$(word 2,$(subst ., ,$(OMPI_VERSION)))
 OPENSSL_VERSION    := 3.4.1
 PETSC_VERSION      := 3.22.2
 PRECICE_VERSION    := 3.1.2
@@ -29,7 +30,7 @@ READLINE_VERSION   := 8.2
 SQLITE_VERSION     := 3490000
 TCL_VERSION        := 8.6.13
 TK_VERSION         := $(TCL_VERSION)
-TCL_SHORT_VERSION := $(word 1,$(TCL_VERSION))$(word 2,.$(TCL_VERSION))
+TCL_SHORT_VERSION := $(word 1,$(subst ., ,$(TCL_VERSION))).$(word 2,$(subst ., ,$(TCL_VERSION)))
 KHIP_VERSION      := 3.18
 
 
@@ -64,14 +65,20 @@ BUILD_DIR   := $(SOURCES_DIR)/build
 # Build Commands
 NPROC         := $(shell nproc)
 DOWNLOAD      := wget -nc
-MAKE_CMD      := LD_LIBRARY_PATH=$(VENV_DIR)/lib:$(VENV_DIR)/lib64 make -j$(NPROC) && LD_LIBRARY_PATH=$(VENV_DIR)/lib:$(VENV_DIR)/lib64 make install
-CONFIGURE_CMD := LD_LIBRARY_PATH=$(VENV_DIR)/lib:$(VENV_DIR)/lib64 ./configure
-PIP_INSTALL   := LD_LIBRARY_PATH=$(VENV_DIR)/lib:$(VENV_DIR)/lib64 $(VENV_DIR)/bin/pip3 install --no-cache-dir --force-reinstall
-CMAKE_CMD     :=  LD_LIBRARY_PATH=$(VENV_DIR)/lib:$(VENV_DIR)/lib64  cmake \
-    -DCMAKE_BUILD_TYPE=Release \
-    -DCMAKE_INSTALL_PREFIX=$(VENV_DIR) \
-    -DCMAKE_EXE_LINKER_FLAGS="-L$(VENV_DIR)/lib -L$(VENV_DIR)/lib64 -Wl,-rpath,$(VENV_DIR)/lib:$(VENV_DIR)/lib64" \
-    -DCMAKE_LIBRARY_PATH="$(VENV_DIR)/lib:$(VENV_DIR)/lib64"
+MAKE_CMD      := LD_LIBRARY_PATH=$(VENV_DIR)/lib:$(VENV_DIR)/lib64 \
+				 make -j$(NPROC) && \
+				 LD_LIBRARY_PATH=$(VENV_DIR)/lib:$(VENV_DIR)/lib64 \
+				 make install
+CONFIGURE_CMD := LD_LIBRARY_PATH=$(VENV_DIR)/lib:$(VENV_DIR)/lib64 \
+				 ./configure --prefix=$(VENV_DIR)
+PIP_INSTALL   := LD_LIBRARY_PATH=$(VENV_DIR)/lib:$(VENV_DIR)/lib64 \
+				 $(VENV_DIR)/bin/pip3 install --no-cache-dir --force-reinstall
+CMAKE_CMD     := LD_LIBRARY_PATH=$(VENV_DIR)/lib:$(VENV_DIR)/lib64 \
+				cmake \
+				 -DCMAKE_BUILD_TYPE=Release \
+				 -DCMAKE_INSTALL_PREFIX=$(VENV_DIR) \
+				 -DCMAKE_EXE_LINKER_FLAGS="-L$(VENV_DIR)/lib -L$(VENV_DIR)/lib64 -Wl,-rpath,$(VENV_DIR)/lib:$(VENV_DIR)/lib64" \
+				 -DCMAKE_LIBRARY_PATH="$(VENV_DIR)/lib:$(VENV_DIR)/lib64"
 
 # Compiler flags
 export PATH            := ${VENV_DIR}/bin:${VENV_DIR}/sbin:/bin:/usr/bin
@@ -158,7 +165,7 @@ $(VENV_DIR)/.$(1).done: $(SOURCES_DIR)/download.done
 	@mkdir -p $(BUILD_DIR)/$(1)
 	@tar -xzf $(SOURCES_DIR)/$(2) -C $(BUILD_DIR)/$(1) --strip-components=1
 	@cd $(BUILD_DIR)/$(1) && \
-		$(CONFIGURE_CMD) --prefix=$(VENV_DIR) $(3) && \
+		$(CONFIGURE_CMD) $(3) && \
 		$(MAKE_CMD)
 	@touch $$@
 endef
@@ -187,7 +194,7 @@ $(VENV_DIR)/.tcl.done: $(SOURCES_DIR)/download.done
 	@mkdir -p $(BUILD_DIR)/tcl
 	@tar -xzf $(SOURCES_DIR)/$(TCL_TAR) -C $(BUILD_DIR)/tcl --strip-components=1
 	@cd $(BUILD_DIR)/tcl/unix && \
-		$(CONFIGURE_CMD) --prefix=$(VENV_DIR) && \
+		$(CONFIGURE_CMD) && \
 		$(MAKE_CMD)
 	@touch $@
 
@@ -196,7 +203,7 @@ $(VENV_DIR)/.tk.done: $(VENV_DIR)/.tcl.done
 	@mkdir -p $(BUILD_DIR)/tk
 	@tar -xzf $(SOURCES_DIR)/$(TK_TAR) -C $(BUILD_DIR)/tk --strip-components=1
 	@cd $(BUILD_DIR)/tk/unix && \
-		$(CONFIGURE_CMD) --prefix=$(VENV_DIR) && \
+		$(CONFIGURE_CMD) && \
 		$(MAKE_CMD)
 	@touch $@
 
@@ -205,7 +212,7 @@ $(VENV_DIR)/.readline.done: $(SOURCES_DIR)/download.done $(VENV_DIR)/.ncurses.do
 	@mkdir -p $(BUILD_DIR)/readline
 	@tar -xzf $(SOURCES_DIR)/$(READLINE_TAR) -C $(BUILD_DIR)/readline --strip-components=1
 	@cd $(BUILD_DIR)/readline && \
-		$(CONFIGURE_CMD) LDFLAGS="-L$(VENV_DIR)/lib -lncurses" --prefix=$(VENV_DIR) --with-curses --with-shared-termcap-library --with-shared --with-termlib && \
+		$(CONFIGURE_CMD) LDFLAGS="-L$(VENV_DIR)/lib -lncurses" --with-curses --with-shared-termcap-library --with-shared --with-termlib && \
 		$(MAKE_CMD)
 	@touch $@
 
@@ -222,7 +229,6 @@ $(VENV_DIR)/.python.done: $(SOURCES_DIR)/download.done \
 	@tar -xzf $(SOURCES_DIR)/$(PYTHON_TAR) -C $(BUILD_DIR)/python --strip-components=1
 	@cd $(BUILD_DIR)/python && \
 		$(CONFIGURE_CMD) \
-			--prefix=$(VENV_DIR) \
 			--enable-optimizations \
 			--with-tcltk-includes="-I$(VENV_DIR)/include" \
 			--with-tcltk-libs="-L$(VENV_DIR)/lib -ltcl$(TCL_SHORT_VERSION) -ltk$(TCL_SHORT_VERSION)" \
@@ -255,7 +261,6 @@ $(VENV_DIR)/.petsc.done: $(VENV_DIR)/.openmpi.done
 	@cd $(BUILD_DIR)/petsc && \
 		$(CONFIGURE_CMD) \
 			LDFLAGS=$$LDFLAGS \
-			--prefix=$(VENV_DIR) \
 			--with-shared-libraries=1 \
 			--with-mpi-dir=$(VENV_DIR) \
 			--with-debugging=0 \
@@ -277,7 +282,7 @@ $(VENV_DIR)/.slepc.done: $(VENV_DIR)/.petsc.done
 	@mkdir -p $(BUILD_DIR)/slepc
 	@tar -xzf $(SOURCES_DIR)/$(SLEPC_TAR) -C $(BUILD_DIR)/slepc --strip-components=1
 	@cd $(BUILD_DIR)/slepc && \
-		PETSC_DIR=$(VENV_DIR) SLEPC_DIR=$(BUILD_DIR)/slepc $(CONFIGURE_CMD) --prefix=$(VENV_DIR) --with-scalapack && \
+		PETSC_DIR=$(VENV_DIR) SLEPC_DIR=$(BUILD_DIR)/slepc $(CONFIGURE_CMD) --with-scalapack && \
 		make  LD_LIBRARY_PATH=$(VENV_DIR)/lib:$(VENV_DIR)/lib64 -j$(NPROC) PETSC_DIR=$(VENV_DIR) SLEPC_DIR=$(BUILD_DIR)/slepc all && \
 		make  LD_LIBRARY_PATH=$(VENV_DIR)/lib:$(VENV_DIR)/lib64 -j$(NPROC) PETSC_DIR=$(VENV_DIR) SLEPC_DIR=$(BUILD_DIR)/slepc install
 	@touch $@
@@ -307,7 +312,7 @@ $(VENV_DIR)/.libxml2.done:
 	@tar -xf $(SOURCES_DIR)/$(LIBXML2_TAR) -C $(BUILD_DIR)/libxml2 --strip-components=1
 	@cd $(BUILD_DIR)/libxml2 && \
 		LD_LIBRARY_PATH=$(VENV_DIR)/lib:$(VENV_DIR)/lib64 ./autogen.sh && \
-		$(CONFIGURE_CMD) --prefix=$(VENV_DIR) --without-python && \
+		$(CONFIGURE_CMD) --without-python && \
 		$(MAKE_CMD)
 	@touch $@
 
