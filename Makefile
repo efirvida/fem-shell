@@ -206,12 +206,12 @@ $(VENV_DIR)/.readline.done: $(SOURCES_DIR)/download.done $(VENV_DIR)/.ncurses.do
 	@touch $@
 
 $(VENV_DIR)/.python.done: $(SOURCES_DIR)/download.done \
+	$(VENV_DIR)/.ncurses.done \
+	$(VENV_DIR)/.readline.done \
 	$(VENV_DIR)/.bz2.done \
 	$(VENV_DIR)/.libffi.done \
 	$(VENV_DIR)/.openssl.done \
-	$(VENV_DIR)/.ncurses.done \
-	$(VENV_DIR)/.gdbm.done \
-	$(VENV_DIR)/.readline.done
+	$(VENV_DIR)/.gdbm.done
 	@echo "Building Python $(PYTHON_VERSION)..."
 	@mkdir -p $(BUILD_DIR)/python
 	@tar -xzf $(SOURCES_DIR)/$(PYTHON_TAR) -C $(BUILD_DIR)/python --strip-components=1
