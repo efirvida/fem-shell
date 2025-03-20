@@ -36,9 +36,11 @@ KHIP_VERSION      := 3.18
 
 # Dependency file names
 BOOST_TAR          := boost_$(subst .,_,$(BOOST_VERSION)).tar.bz2
-EIGEN_TAR          := eigen-$(EIGEN_VERSION).tar.gz
-GDBM_TAR           := gdbm-$(GDBM_VERSION).tar.gz
 BZ2_TAR            := bzip2-master.tar.gz
+EIGEN_TAR          := eigen-$(EIGEN_VERSION).tar.gz
+FOAM_TAR           := openfoam-OpenFOAM-v$(FOAM_VERSION).tar.gz
+GDBM_TAR           := gdbm-$(GDBM_VERSION).tar.gz
+KHIP_ZIP           := v$(KHIP_VERSION).zip
 LIBFFI_TAR         := libffi-$(LIBFFI_VERSION).tar.gz
 LIBUUID_TAR        := libuuid-$(LIBUUID_VERSION).tar.gz
 LIBXML2_TAR        := libxml2_v$(LIBXML2_VERSION).tar.gz
@@ -53,7 +55,6 @@ SLEPC_TAR          := slepc-$(PETSC_VERSION).tar.gz
 SQLITE_TAR         := sqlite-autoconf-$(SQLITE_VERSION).tar.gz
 TCL_TAR            := tcl$(TCL_VERSION)-src.tar.gz
 TK_TAR             := tk$(TK_VERSION)-src.tar.gz
-KHIP_ZIP           := v$(KHIP_VERSION).zip
 
 # Directory configurations
 include .env
@@ -138,7 +139,7 @@ $(SOURCES_DIR)/download.done:
 	@echo "Downloading source packages..."
 	@cd $(SOURCES_DIR) && $(DOWNLOAD) \
 		https://archives.boost.io/release/$(BOOST_VERSION)/source/$(BOOST_TAR) \
-		https://dl.openfoam.com/source/v$(FOAM_VERSION)/OpenFOAM-v$(FOAM_VERSION).tgz \
+		https://develop.openfoam.com/Development/openfoam/-/archive/OpenFOAM-v$(FOAM_VERSION)/$(FOAM_TAR) \
 		https://download.open-mpi.org/release/open-mpi/v$(OMPI_SHORT_VERSION)/$(OMPI_TAR) \
 		https://ftp.gnu.org/gnu/gdbm/$(GDBM_TAR) \
 		https://ftp.gnu.org/gnu/ncurses/$(NCURSES_TAR) \
@@ -360,10 +361,11 @@ $(VENV_DIR)/.khip.done: $(VENV_DIR)/.openmpi.done
 		$(MAKE_CMD)
 	@touch $@
 
-$(VENV_DIR)/.openfoam.done: $(VENV_DIR)/.precice.done $(VENV_DIR)/.khip.done
+$(VENV_DIR)/.openfoam.done:
 	@echo "Installing OpenFOAM..."
 	@mkdir -p $(FOAM_INST_DIR)
-	@tar -xf $(SOURCES_DIR)/OpenFOAM-v$(FOAM_VERSION).tgz -C $(FOAM_INST_DIR)
+	@tar -xf $(SOURCES_DIR)/$(FOAM_TAR) -C $(FOAM_INST_DIR)
+	mv $(FOAM_INST_DIR)/openfoam-OpenFOAM-v$(FOAM_VERSION) $(WM_PROJECT_DIR)
 
 	rm -rf $(WM_PROJECT_DIR)/plugins/cfmesh $(WM_PROJECT_DIR)/plugins/precice-adapter $(WM_PROJECT_DIR)/plugins/libAcoustics
 	git clone --depth=1 https://develop.openfoam.com/Community/integration-cfmesh.git $(WM_PROJECT_DIR)/plugins/cfmesh
