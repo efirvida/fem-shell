@@ -27,7 +27,6 @@ PETSC_VERSION      := 3.22.2
 PRECICE_VERSION    := 3.1.2
 PYTHON_VERSION     := 3.12.9
 READLINE_VERSION   := 8.2
-SQLITE_VERSION     := 3490000
 KHIP_VERSION      := 3.18
 
 
@@ -49,7 +48,6 @@ PRECICE_TAR        := v$(PRECICE_VERSION).tar.gz
 PYTHON_TAR         := Python-$(PYTHON_VERSION).tgz
 READLINE_TAR       := readline-$(READLINE_VERSION).tar.gz
 SLEPC_TAR          := slepc-$(PETSC_VERSION).tar.gz
-SQLITE_TAR         := sqlite-autoconf-$(SQLITE_VERSION).tar.gz
 
 # Directory configurations
 include .env
@@ -149,8 +147,7 @@ $(SOURCES_DIR)/download.done:
 		https://web.cels.anl.gov/projects/petsc/download/release-snapshots/$(PETSC_TAR) \
 		https://www.openssl.org/source/$(OPENSSL_TAR) \
 		https://www.python.org/ftp/python/$(PYTHON_VERSION)/$(PYTHON_TAR) \
-		https://gitlab.com/bzip2/bzip2/-/archive/master/$(BZ2_TAR) \
-		https://www.sqlite.org/2025/$(SQLITE_TAR)
+		https://gitlab.com/bzip2/bzip2/-/archive/master/$(BZ2_TAR)
 	@touch $@
 
 #-------------------------------------------------------------------------------
@@ -172,10 +169,9 @@ endef
 # Python Build
 #-------------------------------------------------------------------------------
 $(eval $(call build-library,libffi,$(LIBFFI_TAR),--disable-static))
-$(eval $(call build-library,sqlite,$(SQLITE_TAR),))
 $(eval $(call build-library,ncurses,$(NCURSES_TAR),--with-shared --with-termlib --without-debug))
-$(eval $(call build-library,gdbm,$(GDBM_TAR),))
-$(eval $(call build-library,libuuid,$(LIBUUID_TAR),))
+$(eval $(call build-library,gdbm,$(GDBM_TAR),--with-shared))
+$(eval $(call build-library,libuuid,$(LIBUUID_TAR),--with-shared))
 
 $(VENV_DIR)/.openssl.done: $(SOURCES_DIR)/download.done
 	@echo "Building OpenSSL..."
