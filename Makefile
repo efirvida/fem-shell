@@ -70,7 +70,7 @@ DOWNLOAD      := wget -nc
 MAKE_CMD      := LD_LIBRARY_PATH=$(VENV_DIR)/lib:$(VENV_DIR)/lib64 \
 				 make -j$(NPROC) && \
 				 LD_LIBRARY_PATH=$(VENV_DIR)/lib:$(VENV_DIR)/lib64 \
-				 make install
+				 make install PREFIX=$(VENV_DIR)
 CONFIGURE_CMD := LD_LIBRARY_PATH=$(VENV_DIR)/lib:$(VENV_DIR)/lib64 \
 				 ./configure --prefix=$(VENV_DIR)
 PIP_INSTALL   := LD_LIBRARY_PATH=$(VENV_DIR)/lib:$(VENV_DIR)/lib64 \
