@@ -38,6 +38,7 @@ KHIP_VERSION      := 3.18
 BOOST_TAR          := boost_$(subst .,_,$(BOOST_VERSION)).tar.bz2
 EIGEN_TAR          := eigen-$(EIGEN_VERSION).tar.gz
 GDBM_TAR           := gdbm-$(GDBM_VERSION).tar.gz
+BZ2_TAR            := bzip2-master.tar.gz
 LIBFFI_TAR         := libffi-$(LIBFFI_VERSION).tar.gz
 LIBUUID_TAR        := libuuid-$(LIBUUID_VERSION).tar.gz
 LIBXML2_TAR        := libxml2_v$(LIBXML2_VERSION).tar.gz
@@ -154,6 +155,7 @@ $(SOURCES_DIR)/download.done:
 		https://web.cels.anl.gov/projects/petsc/download/release-snapshots/$(PETSC_TAR) \
 		https://www.openssl.org/source/$(OPENSSL_TAR) \
 		https://www.python.org/ftp/python/$(PYTHON_VERSION)/$(PYTHON_TAR) \
+		https://gitlab.com/bzip2/bzip2/-/archive/master/$(BZ2_TAR) \
 		https://www.sqlite.org/2025/$(SQLITE_TAR)
 	@touch $@
 
@@ -191,7 +193,16 @@ $(VENV_DIR)/.openssl.done: $(SOURCES_DIR)/download.done
 		make install_sw
 	@touch $@
 
-$(VENV_DIR)/.tcl.done: $(SOURCES_DIR)/download.done
+$(VENV_DIR)/.bz2.done:
+	@echo "Building Bzip2..."
+	@mkdir -p $(BUILD_DIR)/bz2/build
+	@tar -xzf $(SOURCES_DIR)/$(BZ2_TAR) -C $(BUILD_DIR)/bz2 --strip-components=1
+	@cd $(BUILD_DIR)/bz2/build && \
+		$(CMAKE_CMD) -DENABLE_SHARED_LIB=ON -DENABLE_STATIC_LIB=OFF .. && \
+		$(MAKE_CMD)
+	@touch $@		
+
+$(VENV_DIR)/.tcl.done:
 	@echo "Building Tcl..."
 	@mkdir -p $(BUILD_DIR)/tcl
 	@tar -xzf $(SOURCES_DIR)/$(TCL_TAR) -C $(BUILD_DIR)/tcl --strip-components=1
@@ -219,6 +230,7 @@ $(VENV_DIR)/.readline.done: $(SOURCES_DIR)/download.done $(VENV_DIR)/.ncurses.do
 	@touch $@
 
 $(VENV_DIR)/.python.done: $(SOURCES_DIR)/download.done \
+	$(VENV_DIR)/.bz2.done \
 	$(VENV_DIR)/.libffi.done \
 	$(VENV_DIR)/.openssl.done \
 	$(VENV_DIR)/.ncurses.done \
