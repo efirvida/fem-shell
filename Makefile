@@ -328,7 +328,7 @@ $(VENV_DIR)/.khip.done: $(VENV_DIR)/.openmpi.done
 		$(MAKE_CMD)
 	@touch $@
 
-$(VENV_DIR)/.openfoam.done:
+$(VENV_DIR)/.openfoam.done: $(VENV_DIR)/.khip.done
 	@echo "Installing OpenFOAM..."
 	@mkdir -p $(FOAM_INST_DIR)
 	@tar -xf $(SOURCES_DIR)/$(FOAM_TAR) -C $(FOAM_INST_DIR)
@@ -337,7 +337,6 @@ $(VENV_DIR)/.openfoam.done:
 	rm -rf $(WM_PROJECT_DIR)/plugins/cfmesh $(WM_PROJECT_DIR)/plugins/precice-adapter $(WM_PROJECT_DIR)/plugins/libAcoustics
 	git clone --depth=1 https://develop.openfoam.com/Community/integration-cfmesh.git $(WM_PROJECT_DIR)/plugins/cfmesh
 	git clone --depth=1 https://github.com/precice/openfoam-adapter.git $(WM_PROJECT_DIR)/plugins/precice-adapter
-	git clone --depth=1 https://github.com/unicfdlab/libAcoustics.git $(WM_PROJECT_DIR)/plugins/libAcoustics
 
 	@cd $(WM_PROJECT_DIR)/applications && \
 		rm -rf \
@@ -361,10 +360,7 @@ $(VENV_DIR)/.openfoam.done:
 			solvers/lagrangian \
 			solvers/multiphase \
 			solvers/stressAnalysis \
-			test \
-			tools \
-			utilities/surface \
-			utilities/thermophysical
+			test
 
 	@cd $(WM_PROJECT_DIR) && \
 		bin/tools/foamConfigurePaths \
@@ -393,21 +389,21 @@ $(VENV_DIR)/.openfoam.done:
 		MPI_ROOT=$(VENV_DIR) MPI_ARCH_PATH=$(VENV_DIR) \
 		FOAM_EXT_LIBBIN=$(VENV_DIR)/lib \
 		FOAM_EXT_INCLUDE=$(VENV_DIR)/include \
-		LD_LIBRARY_PATH=$(VENV_DIR)/lib:$(VENV_DIR)/lib64 \
-		CPPFLAGS="-I$(VENV_DIR)/include" CXXFLAGS="-I$(VENV_DIR)/include" \
+		LD_LIBRARY_PATH=$(VENV_DIR)/lib:$(VENV_DIR)/lib64:$(WM_PROJECT_DIR)/platforms/linux64GccDPInt64Opt/lib:$(WM_PROJECT_DIR)/platforms/linux64GccDPInt64Opt/lib/openmpi-4.1.2 \
+		FOAM_EXTRA_CFLAGS="-I$(VENV_DIR)/include" FOAM_EXTRA_CXXFLAGS="-I$(VENV_DIR)/include" \
+		FOAM_EXTRA_LDFLAGS="-L$(VENV_DIR)/lib -L$(VENV_DIR)/lib64 -Wl,-rpath,$(VENV_DIR)/lib:$(VENV_DIR)/lib64" \
 		FOAM_MODULE_PREFIX=false \
-		./Allwmake -j$(NPROC)
+		./Allwmake -j$(NPROC) && \
+		LD_LIBRARY_PATH=$(VENV_DIR)/lib:$(VENV_DIR)/lib64:$(WM_PROJECT_DIR)/platforms/linux64GccDPInt64Opt/lib:$(WM_PROJECT_DIR)/platforms/linux64GccDPInt64Opt/lib/openmpi-4.1.2 \
+		FOAM_EXTRA_CFLAGS="-I$(VENV_DIR)/include" FOAM_EXTRA_CXXFLAGS="-I$(VENV_DIR)/include" \
+		FOAM_EXTRA_LDFLAGS="-L$(VENV_DIR)/lib -L$(VENV_DIR)/lib64 -Wl,-rpath,$(VENV_DIR)/lib:$(VENV_DIR)/lib64" \
+		FOAM_USER_LIBBIN=$(WM_PROJECT_DIR)/platforms/linux64GccDPInt64Opt/lib \
+		./Allwmake-plugins -j$(NPROC) 
 
+	mkdir -p $(FOAM_INST_DIR)/openfoam
 	@cd $(WM_PROJECT_DIR) && \
-		LD_LIBRARY_PATH=$(VENV_DIR)/lib:$(VENV_DIR)/lib64 \
-		FOAM_USER_LIBBIN=$(VENV_DIR)/lib:$(VENV_DIR)/lib64 \
-		./Allwmake-plugins -j$(NPROC)
-		cd plugins/libAcoustics && \
-			LD_LIBRARY_PATH=$(VENV_DIR)/lib:$(VENV_DIR)/lib64 ./makeLibrary.sh
-
-	@cd $(WM_PROJECT_DIR) && \
-		cp -rf platforms/linux64GccDPInt64Opt/* $(VENV_DIR) && \
-		cp -rf etc $(VENV_DIR) && \
-		cp -rf bin $(VENV_DIR)
+		cp -rf platforms/linux64GccDPInt64Opt/* $(FOAM_INST_DIR)/openfoam && \
+		cp -rf etc $(FOAM_INST_DIR)/openfoam && \
+		cp -rf bin $(FOAM_INST_DIR)/openfoam
 
 	@touch $@
