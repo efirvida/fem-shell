@@ -58,7 +58,7 @@ SOURCES_DIR := $(PWD)/.sources
 BUILD_DIR   := $(SOURCES_DIR)/build
 
 # Build Commands
-NPROC         := $(shell nproc)
+NPROC         := 3
 DOWNLOAD      := wget -nc
 MAKE_CMD      := LD_LIBRARY_PATH=$(VENV_DIR)/lib:$(VENV_DIR)/lib64 \
 				 make -j$(NPROC) && \
@@ -104,7 +104,7 @@ all: download_sources python petsc slepc precice openfoam python_env
 	@echo "====================================="
 
 clean:
-	rm -rf $(VENV_DIR) $(SOURCES_DIR)/build
+	rm -rf $(VENV_DIR) $(SOURCES_DIR)/build $(SOURCES_DIR)/download.done
 
 #-------------------------------------------------------------------------------
 # Minimal Targets
@@ -212,15 +212,14 @@ $(VENV_DIR)/.python.done: $(SOURCES_DIR)/download.done \
 	@mkdir -p $(BUILD_DIR)/python
 	@tar -xzf $(SOURCES_DIR)/$(PYTHON_TAR) -C $(BUILD_DIR)/python --strip-components=1
 	@cd $(BUILD_DIR)/python && \
-		$(CONFIGURE_CMD) \
-			--enable-optimizations \
-			--enable-shared && \
+		$(CONFIGURE_CMD) --enable-optimizations --enable-shared && \
 		$(MAKE_CMD)
 	@ln -sf $(VENV_DIR)/bin/python3 $(VENV_DIR)/bin/python
 	@touch $@
 
+#-------------------------------------------------------------------------------
 # Virtual Environment Setup
-
+#-------------------------------------------------------------------------------
 $(VENV_DIR)/.python_env.done: $(VENV_DIR)/.python.done
 
 	@ln -sf $(VENV_DIR)/bin/pip3 $(VENV_DIR)/bin/pip
@@ -254,6 +253,7 @@ $(VENV_DIR)/.petsc.done: $(VENV_DIR)/.openmpi.done
 			--download-mumps \
 			--download-ptscotch \
 			--download-superlu_dist \
+			--download-fftw \
 			--download-zlib && \
 		make LD_LIBRARY_PATH=$(VENV_DIR)/lib:$(VENV_DIR)/lib64 -j$(NPROC) PETSC_DIR=$(BUILD_DIR)/petsc all && \
 		make LD_LIBRARY_PATH=$(VENV_DIR)/lib:$(VENV_DIR)/lib64 PETSC_DIR=$(BUILD_DIR)/petsc install
@@ -272,7 +272,6 @@ $(VENV_DIR)/.slepc.done: $(VENV_DIR)/.petsc.done
 #-------------------------------------------------------------------------------
 # preCICE Dependencies and Installation
 #-------------------------------------------------------------------------------
-
 $(VENV_DIR)/.eigen.done:
 	@echo "Installing Eigen..."
 	@tar -xzf $(SOURCES_DIR)/$(EIGEN_TAR) -C $(VENV_DIR)/include/
@@ -306,12 +305,11 @@ $(VENV_DIR)/.precice.done: $(VENV_DIR)/.python.done $(VENV_DIR)/.petsc.done $(VE
 	@cd $(BUILD_DIR)/precice && \
 		$(CMAKE_CMD) --preset=production \
 			-DEIGEN3_INCLUDE_DIR=$(VENV_DIR)/include/eigen \
-			-DPython_EXECUTABLE=$(VENV_DIR)/bin/python \
 			-DPython3_EXECUTABLE=$(VENV_DIR)/bin/python3 \
 			-DMPI_C_COMPILER=$(VENV_DIR)/bin/mpicc \
 			-DMPI_CXX_COMPILER=$(VENV_DIR)/bin/mpicxx && \
 			cd build && \
-				$(MAKE_CMD)
+		$(MAKE_CMD)
 	@touch $@
 
 
@@ -330,13 +328,15 @@ $(VENV_DIR)/.khip.done: $(VENV_DIR)/.openmpi.done
 
 $(VENV_DIR)/.openfoam.done: $(VENV_DIR)/.khip.done
 	@echo "Installing OpenFOAM..."
-	@mkdir -p $(FOAM_INST_DIR)
+	@mkdir -p $(WM_PROJECT_DIR)
 	@tar -xf $(SOURCES_DIR)/$(FOAM_TAR) -C $(FOAM_INST_DIR)
-	mv $(FOAM_INST_DIR)/openfoam-OpenFOAM-v$(FOAM_VERSION) $(WM_PROJECT_DIR)
+	cp -rf $(FOAM_INST_DIR)/openfoam-OpenFOAM-v$(FOAM_VERSION)/* $(WM_PROJECT_DIR)/
+	cp -f scripts/sysFunctions $(WM_PROJECT_DIR)/wmake/scripts/sysFunctions
 
-	rm -rf $(WM_PROJECT_DIR)/plugins/cfmesh $(WM_PROJECT_DIR)/plugins/precice-adapter $(WM_PROJECT_DIR)/plugins/libAcoustics
-	git clone --depth=1 https://develop.openfoam.com/Community/integration-cfmesh.git $(WM_PROJECT_DIR)/plugins/cfmesh
-	git clone --depth=1 https://github.com/precice/openfoam-adapter.git $(WM_PROJECT_DIR)/plugins/precice-adapter
+	rm -rf $(FOAM_INST_DIR)/openfoam-OpenFOAM-v$(FOAM_VERSION) 
+	git clone --depth=1 https://develop.openfoam.com/Community/integration-cfmesh.git $(WM_PROJECT_DIR)/plugins/cfmesh || true
+	git clone --depth=1 https://github.com/precice/openfoam-adapter.git $(WM_PROJECT_DIR)/plugins/precice-adapter || true
+	git clone --depth=1 https://github.com/unicfdlab/libAcoustics.git $(WM_PROJECT_DIR)/plugins/libAcoustics || true
 
 	@cd $(WM_PROJECT_DIR)/applications && \
 		rm -rf \
@@ -365,14 +365,11 @@ $(VENV_DIR)/.openfoam.done: $(VENV_DIR)/.khip.done
 	@cd $(WM_PROJECT_DIR) && \
 		bin/tools/foamConfigurePaths \
 			-project-path "$(WM_PROJECT_DIR)" \
-			-boost boost-system \
-			-kahip kahip-system \
-			-scotch scotch-system \
 			-boost-path $(VENV_DIR)/lib \
 			-kahip-path $(VENV_DIR)/lib \
 			-scotch-path $(VENV_DIR)/lib \
-			-cgal  cgal-none \
-			-fftw  fftw-none \
+			-metis-path $(VENV_DIR)/lib \
+			-fftw-path $(VENV_DIR)/lib \
 			;
 
 	@cd $(WM_PROJECT_DIR) && \
@@ -404,6 +401,7 @@ $(VENV_DIR)/.openfoam.done: $(VENV_DIR)/.khip.done
 	@cd $(WM_PROJECT_DIR) && \
 		cp -rf platforms/linux64GccDPInt64Opt/* $(FOAM_INST_DIR)/openfoam && \
 		cp -rf etc $(FOAM_INST_DIR)/openfoam && \
-		cp -rf bin $(FOAM_INST_DIR)/openfoam
+		cp -rf bin $(FOAM_INST_DIR)/openfoam && \
+		cp -rf wmake $(FOAM_INST_DIR)/openfoam
 
 	@touch $@
