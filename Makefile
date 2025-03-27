@@ -27,8 +27,6 @@ PETSC_VERSION      := 3.22.2
 PRECICE_VERSION    := 3.1.2
 PYTHON_VERSION     := 3.12.9
 READLINE_VERSION   := 8.2
-KHIP_VERSION      := 3.18
-
 
 # Dependency file names
 BOOST_TAR          := boost_$(subst .,_,$(BOOST_VERSION)).tar.bz2
@@ -36,7 +34,6 @@ BZ2_TAR            := bzip2-master.tar.gz
 EIGEN_TAR          := eigen-$(EIGEN_VERSION).tar.gz
 FOAM_TAR           := openfoam-OpenFOAM-v$(FOAM_VERSION).tar.gz
 GDBM_TAR           := gdbm-$(GDBM_VERSION).tar.gz
-KHIP_ZIP           := v$(KHIP_VERSION).zip
 LIBFFI_TAR         := libffi-$(LIBFFI_VERSION).tar.gz
 LIBUUID_TAR        := libuuid-$(LIBUUID_VERSION).tar.gz
 LIBXML2_TAR        := libxml2_v$(LIBXML2_VERSION).tar.gz
@@ -50,8 +47,9 @@ READLINE_TAR       := readline-$(READLINE_VERSION).tar.gz
 SLEPC_TAR          := slepc-$(PETSC_VERSION).tar.gz
 
 # Directory configurations
+export PATH            := ${VENV_DIR}/bin:${VENV_DIR}/sbin:/bin:/usr/bin
 include .env
-export $(shell sed -n 's/^export //p' .env)
+export $(bash sed -n 's/^export //p' .env)
 
 VENV_DIR    := $(PWD)/.venv
 SOURCES_DIR := $(PWD)/.sources
@@ -133,11 +131,11 @@ $(SOURCES_DIR)/download.done:
 	@cd $(SOURCES_DIR) && $(DOWNLOAD) \
 		https://archives.boost.io/release/$(BOOST_VERSION)/source/$(BOOST_TAR) \
 		https://develop.openfoam.com/Development/openfoam/-/archive/OpenFOAM-v$(FOAM_VERSION)/$(FOAM_TAR) \
+		https://dl.openfoam.com/source/v2412/ThirdParty-v$(FOAM_VERSION).tgz \
 		https://download.open-mpi.org/release/open-mpi/v$(OMPI_SHORT_VERSION)/$(OMPI_TAR) \
 		https://ftp.gnu.org/gnu/gdbm/$(GDBM_TAR) \
 		https://ftp.gnu.org/gnu/ncurses/$(NCURSES_TAR) \
 		https://ftp.gnu.org/gnu/readline/$(READLINE_TAR) \
-		https://github.com/KaHIP/KaHIP/archive/refs/tags/$(KHIP_ZIP) \
 		https://github.com/libffi/libffi/releases/download/v$(LIBFFI_VERSION)/$(LIBFFI_TAR) \
 		https://github.com/precice/precice/archive/$(PRECICE_TAR) \
 		https://gitlab.com/libeigen/eigen/-/archive/$(EIGEN_VERSION)/$(EIGEN_TAR) \
@@ -244,16 +242,18 @@ $(VENV_DIR)/.petsc.done: $(VENV_DIR)/.openmpi.done
 			LDFLAGS=$$LDFLAGS \
 			--with-shared-libraries=1 \
 			--with-mpi-dir=$(VENV_DIR) \
+			--with-boost-dir=$(VENV_DIR) \
 			--with-debugging=0 \
+			--with-metis-dir=$(FOAM_INST_DIR)/openfoam \
+			--with-scotch-dir=$(FOAM_INST_DIR)/openfoam \
 			--download-fblaslapack \
 			--download-hdf5 \
 			--download-hypre \
-			--download-metis \
 			--download-scalapack \
 			--download-mumps \
-			--download-ptscotch \
 			--download-superlu_dist \
 			--download-fftw \
+			--download-parmetis \
 			--download-zlib && \
 		make LD_LIBRARY_PATH=$(VENV_DIR)/lib:$(VENV_DIR)/lib64 -j$(NPROC) PETSC_DIR=$(BUILD_DIR)/petsc all && \
 		make LD_LIBRARY_PATH=$(VENV_DIR)/lib:$(VENV_DIR)/lib64 PETSC_DIR=$(BUILD_DIR)/petsc install
@@ -317,26 +317,31 @@ $(VENV_DIR)/.precice.done: $(VENV_DIR)/.python.done $(VENV_DIR)/.petsc.done $(VE
 # OpenFOAM Installation
 #-------------------------------------------------------------------------------
 
-$(VENV_DIR)/.khip.done: $(VENV_DIR)/.openmpi.done
-	@echo "Installing KHIP..."
-	@unzip $(SOURCES_DIR)/$(KHIP_ZIP) -d $(BUILD_DIR)
-	@mkdir -p $(BUILD_DIR)/KaHIP-$(KHIP_VERSION)/build
-	@cd $(BUILD_DIR)/KaHIP-$(KHIP_VERSION)/build && \
-		$(CMAKE_CMD) .. && \
-		$(MAKE_CMD)
-	@touch $@
 
-$(VENV_DIR)/.openfoam.done: $(VENV_DIR)/.khip.done
+$(VENV_DIR)/.openfoam.done:
 	@echo "Installing OpenFOAM..."
 	@mkdir -p $(WM_PROJECT_DIR)
 	@tar -xf $(SOURCES_DIR)/$(FOAM_TAR) -C $(FOAM_INST_DIR)
+	@tar -xf $(SOURCES_DIR)/ThirdParty-v$(FOAM_VERSION).tgz -C $(FOAM_INST_DIR)
+
 	cp -rf $(FOAM_INST_DIR)/openfoam-OpenFOAM-v$(FOAM_VERSION)/* $(WM_PROJECT_DIR)/
-	cp -f scripts/sysFunctions $(WM_PROJECT_DIR)/wmake/scripts/sysFunctions
 
 	rm -rf $(FOAM_INST_DIR)/openfoam-OpenFOAM-v$(FOAM_VERSION) 
 	git clone --depth=1 https://develop.openfoam.com/Community/integration-cfmesh.git $(WM_PROJECT_DIR)/plugins/cfmesh || true
 	git clone --depth=1 https://github.com/precice/openfoam-adapter.git $(WM_PROJECT_DIR)/plugins/precice-adapter || true
 	git clone --depth=1 https://github.com/unicfdlab/libAcoustics.git $(WM_PROJECT_DIR)/plugins/libAcoustics || true
+
+	source $(WM_PROJECT_DIR)/etc/bashrc && \
+		cd $(FOAM_INST_DIR)/ThirdParty-v$(FOAM_VERSION) && \
+			wget -c https://bitbucket.org/petsc/pkg-metis/get/v5.1.0-p12.tar.gz && \
+			mkdir -p sources/metis/metis-5.1.0 && \
+			tar -xzf v5.1.0-p12.tar.gz -C sources/metis/metis-5.1.0 --strip-components=1 || true
+
+	cd $(FOAM_INST_DIR)/ThirdParty-v$(FOAM_VERSION) && \
+		rm -rf sources/paraview \
+				sources/openmpi \
+				sources/cgal \
+				sources/boost 
 
 	@cd $(WM_PROJECT_DIR)/applications && \
 		rm -rf \
@@ -364,34 +369,15 @@ $(VENV_DIR)/.openfoam.done: $(VENV_DIR)/.khip.done
 
 	@cd $(WM_PROJECT_DIR) && \
 		bin/tools/foamConfigurePaths \
-			-project-path "$(WM_PROJECT_DIR)" \
-			-boost-path $(VENV_DIR)/lib \
-			-kahip-path $(VENV_DIR)/lib \
-			-scotch-path $(VENV_DIR)/lib \
-			-metis-path $(VENV_DIR)/lib \
-			-fftw-path $(VENV_DIR)/lib \
+			gmp-system \
+			mpfr-system \
+			-metis metis-5.1.0 \
+			-int64 -dp \
 			;
 
 	@cd $(WM_PROJECT_DIR) && \
-		WM_ARCH_OPTION=64 \
-		WM_COMPILE_OPTION=Opt \
-		WM_COMPILER_TYPE=system \
-		WM_COMPILER=Gcc \
-		WM_LABEL_SIZE=64 \
-		WM_MPLIB=OPENMPI \
-		WM_PRECISION_OPTION=DP \
-		WM_PROJECT_VERSION=v$(FOAM_VERSION) \
-		WM_PROJECT=OpenFOAM \
-		source $(WM_PROJECT_DIR)/etc/config.sh/setup && \
-		MPI_ROOT=$(VENV_DIR) MPI_ARCH_PATH=$(VENV_DIR) \
-		FOAM_EXT_LIBBIN=$(VENV_DIR)/lib \
-		FOAM_EXT_INCLUDE=$(VENV_DIR)/include \
-		LD_LIBRARY_PATH=$(VENV_DIR)/lib:$(VENV_DIR)/lib64:$(WM_PROJECT_DIR)/platforms/linux64GccDPInt64Opt/lib:$(WM_PROJECT_DIR)/platforms/linux64GccDPInt64Opt/lib/openmpi-4.1.2 \
-		FOAM_EXTRA_CFLAGS="-I$(VENV_DIR)/include" FOAM_EXTRA_CXXFLAGS="-I$(VENV_DIR)/include" \
-		FOAM_EXTRA_LDFLAGS="-L$(VENV_DIR)/lib -L$(VENV_DIR)/lib64 -Wl,-rpath,$(VENV_DIR)/lib:$(VENV_DIR)/lib64" \
-		FOAM_MODULE_PREFIX=false \
-		./Allwmake -j$(NPROC) && \
-		LD_LIBRARY_PATH=$(VENV_DIR)/lib:$(VENV_DIR)/lib64:$(WM_PROJECT_DIR)/platforms/linux64GccDPInt64Opt/lib:$(WM_PROJECT_DIR)/platforms/linux64GccDPInt64Opt/lib/openmpi-4.1.2 \
+		source ./etc/bashrc && \
+		./Allwmake -s -q -l -j && \
 		FOAM_EXTRA_CFLAGS="-I$(VENV_DIR)/include" FOAM_EXTRA_CXXFLAGS="-I$(VENV_DIR)/include" \
 		FOAM_EXTRA_LDFLAGS="-L$(VENV_DIR)/lib -L$(VENV_DIR)/lib64 -Wl,-rpath,$(VENV_DIR)/lib:$(VENV_DIR)/lib64" \
 		FOAM_USER_LIBBIN=$(WM_PROJECT_DIR)/platforms/linux64GccDPInt64Opt/lib \
@@ -404,4 +390,11 @@ $(VENV_DIR)/.openfoam.done: $(VENV_DIR)/.khip.done
 		cp -rf bin $(FOAM_INST_DIR)/openfoam && \
 		cp -rf wmake $(FOAM_INST_DIR)/openfoam
 
+	@cd $(FOAM_INST_DIR)/ThirdParty-v$(FOAM_VERSION) && \
+		cp -rf platforms/linux64Gcc/*/* $(FOAM_INST_DIR)/openfoam && \
+		cp -rf platforms/linux64GccDPInt64/lib/* $(FOAM_INST_DIR)/openfoam/lib/ && \
+		cp -rf platforms/linux64GccDPInt64/metis*/* $(FOAM_INST_DIR)/openfoam && \
+		cp -rf platforms/linux64GccDPInt64/scotch*/* $(FOAM_INST_DIR)/openfoam
+
+	rm -rf $(WM_PROJECT_DIR) ThirdParty-v$(FOAM_VERSION)
 	@touch $@
