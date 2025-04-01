@@ -1,5 +1,5 @@
 from enum import IntEnum
-from typing import Dict, Iterable, List, Tuple, Union
+from typing import Dict, Iterable, List, Literal, Sequence, Tuple, Union
 
 import numpy as np
 
@@ -8,8 +8,8 @@ from fem_shell.core.mesh import MeshElement
 
 
 class ElementFamily(IntEnum):
-    SHELL = 1
-    PLANE = 2
+    SHELL = 2
+    PLANE = 3
 
 
 class FemElement:
@@ -31,10 +31,18 @@ class FemElement:
         self.dofs_per_node = dofs_per_node
         self.node_count = len(self.node_coords)
         self.dofs_count = self.node_count * self.dofs_per_node
-        self.element_family = None
+        self.element_family: ElementFamily = None
         self.id = FemElement._id_counter
         self.integration_order = 1
         FemElement._id_counter += 1
+
+    @property
+    def spatial_dimmension(self) -> Literal[2] | Literal[3]:
+        if self.element_family == ElementFamily.PLANE:
+            return 2
+        elif self.element_family == ElementFamily.SHELL:
+            return 3
+        return 2
 
     @property
     def global_dof_indices(self) -> Dict[int, Tuple[int]]:
@@ -94,24 +102,26 @@ class ElementFactory:
     @staticmethod
     def get_element(
         element_family: ElementFamily, mesh_element: MeshElement, **kwargs
-    ) -> FemElement:
+    ) -> FemElement | bool:
         from .MITC4 import MITC4, MITC4Layered
-        from .QUAD import QUAD
+        from .QUAD import QUAD4, QUAD8, QUAD9
 
         SHELL_ELEMENT_MAP = {4: MITC4}
         LAYERED_SHELL_ELEMENT_MAP = {4: MITC4Layered}
-        PLANE_ELEMENT_MAP = {4: QUAD}
+        PLANE_ELEMENT_MAP = {4: QUAD4, 8: QUAD8, 9: QUAD9}
 
         node_ids = mesh_element.node_ids
         node_coords = mesh_element.node_coords
-        if element_family == ElementFamily.SHELL:
-            if "layers" in kwargs:
-                element = LAYERED_SHELL_ELEMENT_MAP[mesh_element.node_count]
+        try:
+            if element_family == ElementFamily.SHELL:
+                if "layers" in kwargs:
+                    element = LAYERED_SHELL_ELEMENT_MAP[mesh_element.node_count]
+                else:
+                    element = SHELL_ELEMENT_MAP[mesh_element.node_count]
+            elif element_family == ElementFamily.PLANE:
+                element = PLANE_ELEMENT_MAP[mesh_element.node_count]
             else:
-                element = SHELL_ELEMENT_MAP[mesh_element.node_count]
-        elif element_family == ElementFamily.PLANE:
-            element = PLANE_ELEMENT_MAP[mesh_element.node_count]
-        else:
-            raise NotImplementedError
-
-        return element(node_coords=node_coords, node_ids=node_ids, **kwargs)
+                raise NotImplementedError
+            return element(node_coords=node_coords, node_ids=node_ids, **kwargs)
+        except KeyError:
+            return False

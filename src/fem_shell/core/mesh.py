@@ -1,5 +1,5 @@
 from enum import IntEnum
-from typing import Dict, Iterable, List, Optional, Set, Tuple, Union
+from typing import Dict, Iterable, List, Optional, Sequence, Set, Tuple, Union
 
 import gmsh
 import matplotlib.pyplot as plt
@@ -16,6 +16,15 @@ class ElementType(IntEnum):
     quad = CellType.QUAD
     quad8 = CellType.QUADRATIC_QUAD
     quad9 = CellType.LAGRANGE_QUADRILATERAL
+
+
+ELEMENT_NODES_MAP = {
+    3: ElementType.triangle,
+    6: ElementType.triangle6,
+    4: ElementType.quad,
+    8: ElementType.quad8,
+    9: ElementType.quad9,
+}
 
 
 class Node:
@@ -41,7 +50,7 @@ class Node:
 
     _id_counter = 0
 
-    def __init__(self, coords: Union[Iterable[float], np.ndarray]):
+    def __init__(self, coords: Union[Iterable[float], np.ndarray], geometric_node: bool = True):
         """
         Initialize a Node instance.
 
@@ -59,6 +68,7 @@ class Node:
         self.y = coords_arr[1]
         self.z = coords_arr[2]
         self.id = Node._id_counter
+        self.geometric_node = geometric_node
         Node._id_counter += 1
 
     def __repr__(self):
@@ -83,7 +93,7 @@ class MeshElement:
 
     _id_counter = 0
 
-    def __init__(self, nodes: Iterable[Node], element_type: ElementType):
+    def __init__(self, nodes: Sequence[Node], element_type: ElementType):
         """
         Initialize a MeshElement instance.
 
@@ -109,36 +119,110 @@ class MeshElement:
     def node_coords(self):
         return np.array([node.coords for node in self.nodes])
 
-    def visualize(self):
+    def visualize(self, show_node_ids=True, show_mid_nodes=True):
         """
-        Visualize the mesh element using matplotlib.
+        Visualize the mesh element using matplotlib with improved quadrilateral support.
         """
+
+        plt.figure()
+        plt.title(f"Element {self.id} (Type: {self.element_type.name.upper()})")
+        plt.gca().set_aspect("equal", adjustable="box")
+
+        # Configuración común
+        node_size = 50 if self.element_type == ElementType.quad else 30
+        edge_color = "navy"
+        mid_node_color = "darkorange"
+        center_node_color = "green"
+
+        # Coordenadas de los nodos
+        coords = self.node_coords
+        x = coords[:, 0]
+        y = coords[:, 1]
+
+        # Dibujar bordes del elemento
+        if self.element_type in (ElementType.quad, ElementType.quad8, ElementType.quad9):
+            # Conexiones para QUAD4/QUAD9
+            corners = [0, 1, 2, 3, 0]
+            plt.plot(
+                x[corners],
+                y[corners],
+                color=edge_color,
+                linestyle="-",
+                linewidth=1.5,
+                label="Element edges",
+            )
+
+            # Si es QUAD9, dibujar líneas internas
+        if self.element_type == ElementType.quad9:
+            # Líneas horizontales/verticales centrales
+            plt.plot(
+                [x[4], x[5], x[6], x[7], x[4]],
+                [y[4], y[5], y[6], y[7], y[4]],
+                color=edge_color,
+                linestyle="--",
+                linewidth=1,
+            )
+
         if self.element_type == ElementType.triangle:
-            coords = self.node_coords
-            plt.figure()
-            plt.title(f"Mesh Element {self.id} (Type: {self.element_type.name.upper()})")
-            plt.gca().set_aspect("equal", adjustable="box")
+            # Conexiones originales para triángulos
+            corners = [0, 1, 2, 0]
+            plt.plot(x[corners], y[corners], color=edge_color, linewidth=1.5)
 
-            plt.scatter(coords[:, 0], coords[:, 1], color="red")
-            for node in self.nodes:
-                plt.text(node.x, node.y, f"{node.id}", fontsize=12, ha="right", va="bottom")
+        # Dibujar nodos con diferentes estilos
+        # Nodos esquina
+        plt.scatter(
+            x[:4], y[:4], color=edge_color, s=node_size + 20, zorder=3, label="Corner nodes"
+        )
 
-            edges = [(self.nodes[i], self.nodes[i + 1]) for i in range(len(self.nodes) - 1)] + [
-                [
-                    self.nodes[-1],
-                    self.nodes[0],
-                ]
-            ]
+        # Nodos medios (para QUAD9)
+        if self.element_type == ElementType.quad9 and show_mid_nodes:
+            plt.scatter(
+                x[4:8],
+                y[4:8],
+                color=mid_node_color,
+                s=node_size,
+                marker="s",
+                zorder=3,
+                label="Mid nodes",
+            )
+            plt.scatter(
+                x[8],
+                y[8],
+                color=center_node_color,
+                s=node_size,
+                marker="*",
+                zorder=3,
+                label="Center node",
+            )
 
-            for edge in edges:
-                start = edge[0]
-                end = edge[1]
-                plt.plot([start.x, end.x], [start.y, end.y], color="blue")
+        # Etiquetas de nodos
+        if show_node_ids:
+            for i, (xi, yi) in enumerate(zip(x, y)):
+                va = "bottom" if i in [0, 4, 7] else "top" if i in [2, 3, 6] else "center"
+                ha = "right" if i in [0, 3, 7] else "left" if i in [1, 2, 5] else "center"
+                plt.text(
+                    xi,
+                    yi,
+                    f"({i}) - {self.nodes[i].id}",
+                    color="white",
+                    fontsize=16,
+                    ha=ha,
+                    va=va,
+                    bbox={
+                        "facecolor": edge_color if i < 4 else mid_node_color,
+                        "alpha": 0.7,
+                        "boxstyle": "round,pad=0.3",
+                    },
+                )
 
-            plt.legend()
-            plt.xlabel("X")
-            plt.ylabel("Y")
-            plt.show()
+        # Configuración del gráfico
+        plt.xlabel("X")
+        plt.ylabel("Y")
+        plt.grid(linestyle="--", alpha=0.5)
+        if len(self.nodes) >= 9 or show_mid_nodes:
+            plt.legend(loc="upper right", bbox_to_anchor=(1.3, 1))
+        plt.tight_layout()
+        plt.show()
 
     def __repr__(self):
         return f"<MeshElement id={self.id}  type={self.element_type.name} node_ids={self.nodes}>"
@@ -660,7 +744,7 @@ class MeshModel:
 
     def __repr__(self):
         return (
-            f"<MeshModel: {len(self.node_count)} nodes, {len(self.elements_count)} elements, "
+            f"<MeshModel: {self.node_count} nodes, {len(self.elements_count)} elements, "
             f"{len(self.node_sets_names)} node sets, {len(self.element_sets_names)} element sets>"
         )
 
@@ -790,15 +874,45 @@ class SquareShapeMesh:
         """Converts Gmsh mesh to MeshModel instance with proper index handling"""
         mesh_model = MeshModel()
 
-        # Add nodes with correct 0-based IDs
-        node_tags, coords, _ = gmsh.model.mesh.getNodes()
-        for _, coord in zip(node_tags, np.array(coords).reshape(-1, 3)):
-            mesh_model.add_node(Node(coord))
+        # Obtener elementos 2D de la malla
+        elementTypes, elementTags, nodeTags = gmsh.model.mesh.getElements(2)
 
-        # Add elements with corrected connectivity
+        # Construir un conjunto con las etiquetas de los nodos geométricos (esquinas)
+        # Asumimos que para elementos quad o quad9 las 4 primeras entradas de la conectividad son las esquinas.
+        geometric_node_tags = set()
+        for et, conn in zip(elementTypes, nodeTags):
+            # Obtener las propiedades del elemento: (elementType, elementName, numNodes, numNodesBoundary, minTag, maxTag)
+            props = gmsh.model.mesh.getElementProperties(et)
+            total_nodes = props[3]  # cantidad total de nodos en el elemento
+            # Para un elemento cuadrilateral (4 o 9 nodos), los 4 primeros nodos corresponden a las esquinas
+            e_type = ELEMENT_NODES_MAP[total_nodes]
+            if e_type in (ElementType.quad, ElementType.quad8, ElementType.quad9):
+                num_corners = 4
+            elif e_type in (ElementType.triangle6, ElementType.triangle6):
+                num_corners = 3
+            else:
+                raise ValueError
+            # Recorrer la conectividad (que es un arreglo plano) dividiéndola en grupos de 'total_nodes'
+            geometric_node_tags.update(
+                nodeTags[0].reshape(-1, total_nodes)[:, :num_corners].flatten()
+            )
+
+        # Obtener todos los nodos de la malla.
+        # gmsh.model.mesh.getNodes() devuelve (nodeTags, coords, parametricCoords)
+        node_tags, coords, _ = gmsh.model.mesh.getNodes()
+        coords = np.array(coords).reshape(-1, 3)
+
+        # Agregar nodos al modelo: se marca como "geometric_node" solo si su tag está en el conjunto anterior
+        for tag, coord in zip(node_tags, coords):
+            if tag in geometric_node_tags:
+                mesh_model.add_node(Node(coord, geometric_node=True))
+            else:
+                mesh_model.add_node(Node(coord, geometric_node=False))
+
+        # Agregar elementos con la conectividad corregida
         self._add_elements(mesh_model)
 
-        # Create node sets with proper boundary nodes
+        # Crear conjuntos de nodos (node sets) basados en los nodos de contorno u otras condiciones
         self._create_node_sets(mesh_model)
 
         return mesh_model
@@ -813,17 +927,10 @@ class SquareShapeMesh:
                 num_nodes = elem_props[3]
                 connectivity = elem_node_tags.reshape(-1, num_nodes)
 
-                for elem_id, nodes in enumerate(connectivity):
+                for nodes in connectivity:
                     # Convert to 0-based indices and get node objects
                     node_objs = [mesh_model.get_node_by_id(int(nt - 1)) for nt in nodes]
-                    e_type = ElementType.quad
-                    if self.triangular and not self.quadratic:
-                        e_type = ElementType.triangle
-                    elif self.triangular and self.quadratic:
-                        e_type = ElementType.triangle6
-                    elif not self.triangular and self.quadratic:
-                        e_type = ElementType.quad9
-
+                    e_type = ELEMENT_NODES_MAP.get(len(nodes), ElementType.quad)
                     mesh_model.add_element(MeshElement(nodes=node_objs, element_type=e_type))
 
     def _create_node_sets(self, mesh_model: "MeshModel"):
@@ -890,7 +997,7 @@ class SquareShapeMesh:
         triangular: bool = False,
     ) -> "MeshModel":
         """Helper method to create rectangular mesh"""
-        return cls(width, height, nx, ny, quadratic, triangular).generate()
+        return cls(width, height, int(nx), int(ny), quadratic, triangular).generate()
 
     @classmethod
     def create_unit_square(
@@ -904,15 +1011,308 @@ class SquareShapeMesh:
         return cls(1.0, 1.0, nx, ny, quadratic, triangular).generate()
 
 
-if __name__ == "__main__":
-    mesh = SquareShapeMesh.create_rectangle(
-        width=1.0, height=1.0, nx=10, ny=10, triangular=False, quadratic=False
-    )
-    mesh.view()
-    mesh.write_mesh("mesh_file.vtk")
+class BoxSurfaceMesh:
+    """
+    Generates structured 3D box surface meshes using Gmsh's classic geo API.
 
-    print(f"Malla contiene {len(mesh.nodes)} nodos y {len(mesh.elements)} elementos")
-    print("Primer nodo:", mesh.nodes[0])
-    print("Primer elemento:", mesh.elements[0].node_ids)
-    print("Node Sets:", mesh.node_sets_names)
-    print("Element Sets:", mesh.element_sets_names)
+    Parameters
+    ----------
+    center : Tuple[float, float, float]
+        Center coordinates of the box (x, y, z)
+    dims : Tuple[float, float, float]
+        Total box dimensions (dx, dy, dz)
+    nx : int
+        Number of divisions in x-direction
+    ny : int
+        Number of divisions in y-direction
+    nz : int
+        Number of divisions in z-direction
+    quadratic : bool, optional
+        Use quadratic elements (default: False)
+    triangular : bool, optional
+        Generate triangular mesh (default: False)
+    """
+
+    def __init__(
+        self,
+        center: Tuple[float, float, float],
+        dims: Tuple[float, float, float],
+        nx: int,
+        ny: int,
+        nz: int,
+        quadratic: bool = False,
+        triangular: bool = False,
+    ):
+        self.center = center
+        self.dims = dims
+        self.nx = nx
+        self.ny = ny
+        self.nz = nz
+        self.quadratic = quadratic
+        self.triangular = triangular
+
+    def generate(self) -> "MeshModel":
+        """Generates and returns the MeshModel instance"""
+        gmsh.initialize()
+        try:
+            gmsh.option.setNumber("General.Terminal", 0)
+            gmsh.model.add("box_surface")
+
+            self._create_geometry()
+            gmsh.model.geo.synchronize()
+
+            self._configure_mesh()
+            gmsh.model.mesh.generate(2)
+            gmsh.model.mesh.optimize()
+
+            return self._create_mesh_model()
+        finally:
+            gmsh.finalize()
+
+    def _create_geometry(self):
+        cx, cy, cz = self.center
+        dx, dy, dz = self.dims
+
+        # Ajuste de coordenadas: Y es ahora el eje vertical
+        x = (cx - dx / 2, cx + dx / 2)
+        y = (cy - dy / 2, cy + dy / 2)  # y ahora es el eje vertical
+        z = (cz - dz / 2, cz + dz / 2)
+
+        # Puntos redefinidos con Y como eje vertical
+        self.points = {
+            "p1": gmsh.model.geo.addPoint(x[0], y[0], z[0]),
+            "p2": gmsh.model.geo.addPoint(x[1], y[0], z[0]),
+            "p3": gmsh.model.geo.addPoint(x[1], y[0], z[1]),
+            "p4": gmsh.model.geo.addPoint(x[0], y[0], z[1]),
+            "p5": gmsh.model.geo.addPoint(x[0], y[1], z[0]),
+            "p6": gmsh.model.geo.addPoint(x[1], y[1], z[0]),
+            "p7": gmsh.model.geo.addPoint(x[1], y[1], z[1]),
+            "p8": gmsh.model.geo.addPoint(x[0], y[1], z[1]),
+        }
+
+        # Create edges
+        self._create_edges()
+        # Create faces
+        self._create_faces()
+
+        gmsh.model.geo.synchronize()
+
+    def _create_edges(self):
+        p = self.points
+        self.edges = {
+            # Cara inferior (y=y0)
+            "l1": gmsh.model.geo.addLine(p["p1"], p["p2"]),  # X-direction
+            "l2": gmsh.model.geo.addLine(p["p2"], p["p3"]),  # Z-direction
+            "l3": gmsh.model.geo.addLine(p["p3"], p["p4"]),  # X-direction
+            "l4": gmsh.model.geo.addLine(p["p4"], p["p1"]),  # Z-direction
+            # Cara superior (y=y1)
+            "l5": gmsh.model.geo.addLine(p["p5"], p["p6"]),  # X-direction
+            "l6": gmsh.model.geo.addLine(p["p6"], p["p7"]),  # Z-direction
+            "l7": gmsh.model.geo.addLine(p["p7"], p["p8"]),  # X-direction
+            "l8": gmsh.model.geo.addLine(p["p8"], p["p5"]),  # Z-direction
+            # Aristas verticales (Y-direction)
+            "l9": gmsh.model.geo.addLine(p["p1"], p["p5"]),
+            "l10": gmsh.model.geo.addLine(p["p2"], p["p6"]),
+            "l11": gmsh.model.geo.addLine(p["p3"], p["p7"]),
+            "l12": gmsh.model.geo.addLine(p["p4"], p["p8"]),
+        }
+
+    def _create_faces(self):
+        """Creates box faces with proper orientation and physical groups"""
+        edges = self.edges
+        self.faces = {
+            "bottom": self._create_face_loop([edges["l1"], edges["l2"], edges["l3"], edges["l4"]]),
+            "top": self._create_face_loop([edges["l5"], edges["l6"], edges["l7"], edges["l8"]]),
+            "front": self._create_face_loop([
+                edges["l3"],
+                edges["l12"],
+                -edges["l7"],
+                -edges["l11"],
+            ]),
+            "back": self._create_face_loop([edges["l1"], edges["l10"], -edges["l5"], -edges["l9"]]),
+            "left": self._create_face_loop([-edges["l4"], edges["l12"], edges["l8"], -edges["l9"]]),
+            "right": self._create_face_loop([
+                edges["l2"],
+                edges["l11"],
+                -edges["l6"],
+                -edges["l10"],
+            ]),
+        }
+
+        # Add physical groups
+        for name, face_tag in self.faces.items():
+            gmsh.model.addPhysicalGroup(2, [face_tag], name=name)
+
+    def _create_face_loop(self, curves):
+        """Helper to create face from oriented curves"""
+        loop = gmsh.model.geo.addCurveLoop(curves)
+        return gmsh.model.geo.addPlaneSurface([loop])
+
+    def _configure_mesh(self):
+        """Configures mesh parameters and transfinite settings"""
+        # Transfinite settings
+        self._set_transfinite_curves()
+        self._set_transfinite_surfaces()
+
+        # Mesh algorithm
+        if self.triangular:
+            gmsh.option.setNumber("Mesh.Algorithm", 6)
+        else:
+            gmsh.option.setNumber("Mesh.Algorithm", 8)
+            gmsh.option.setNumber("Mesh.RecombineAll", 1)
+
+        # Element order
+        if self.quadratic:
+            gmsh.option.setNumber("Mesh.ElementOrder", 2)
+
+    def _set_transfinite_curves(self):
+        """Configuración corregida de curvas transfinas"""
+        # X-direction: l1, l3, l5, l7
+        for e in ["l1", "l3", "l5", "l7"]:
+            gmsh.model.mesh.setTransfiniteCurve(self.edges[e], self.nx + 1)
+
+        # Z-direction: l2, l4, l6, l8
+        for e in ["l2", "l4", "l6", "l8"]:
+            gmsh.model.mesh.setTransfiniteCurve(self.edges[e], self.nz + 1)
+
+        # Y-direction (vertical): l9, l10, l11, l12
+        for e in ["l9", "l10", "l11", "l12"]:
+            gmsh.model.mesh.setTransfiniteCurve(self.edges[e], self.ny + 1)
+
+    def _set_transfinite_surfaces(self):
+        """Configures transfinite surfaces"""
+        for face in self.faces.values():
+            gmsh.model.mesh.setTransfiniteSurface(face)
+            gmsh.model.mesh.setRecombine(2, face)
+
+    def _create_mesh_model(self) -> "MeshModel":
+        """Converts Gmsh mesh to MeshModel instance with proper index handling"""
+        mesh_model = MeshModel()
+
+        # Obtener elementos 2D de la malla
+        elementTypes, elementTags, nodeTags = gmsh.model.mesh.getElements(2)
+
+        # Construir un conjunto con las etiquetas de los nodos geométricos (esquinas)
+        # Asumimos que para elementos quad o quad9 las 4 primeras entradas de la conectividad son las esquinas.
+        geometric_node_tags = set()
+        for et, conn in zip(elementTypes, nodeTags):
+            # Obtener las propiedades del elemento: (elementType, elementName, numNodes, numNodesBoundary, minTag, maxTag)
+            props = gmsh.model.mesh.getElementProperties(et)
+            total_nodes = props[3]  # cantidad total de nodos en el elemento
+            # Para un elemento cuadrilateral (4 o 9 nodos), los 4 primeros nodos corresponden a las esquinas
+            e_type = ELEMENT_NODES_MAP[total_nodes]
+            if e_type in (ElementType.quad, ElementType.quad8, ElementType.quad9):
+                num_corners = 4
+            elif e_type in (ElementType.triangle6, ElementType.triangle6):
+                num_corners = 3
+            else:
+                raise ValueError
+            # Recorrer la conectividad (que es un arreglo plano) dividiéndola en grupos de 'total_nodes'
+            geometric_node_tags.update(
+                nodeTags[0].reshape(-1, total_nodes)[:, :num_corners].flatten()
+            )
+
+        # Obtener todos los nodos de la malla.
+        # gmsh.model.mesh.getNodes() devuelve (nodeTags, coords, parametricCoords)
+        node_tags, coords, _ = gmsh.model.mesh.getNodes()
+        coords = np.array(coords).reshape(-1, 3)
+
+        # Agregar nodos al modelo: se marca como "geometric_node" solo si su tag está en el conjunto anterior
+        for tag, coord in zip(node_tags, coords):
+            if tag in geometric_node_tags:
+                mesh_model.add_node(Node(coord, geometric_node=True))
+            else:
+                mesh_model.add_node(Node(coord, geometric_node=False))
+
+        # Agregar elementos con la conectividad corregida
+        self._add_elements(mesh_model)
+        self._create_node_sets(mesh_model)
+        # Crear conjuntos de nodos (node sets) basados en los nodos de contorno u otras condiciones
+        # self._create_node_sets(mesh_model)
+
+        return mesh_model
+
+    def _add_elements(self, mesh_model: "MeshModel"):
+        """Add elements with corrected node indices"""
+        elem_types = gmsh.model.mesh.getElementTypes()
+        for elem_type in elem_types:
+            elem_props = gmsh.model.mesh.getElementProperties(elem_type)
+            if elem_props[1] == 2:  # 2D elements
+                _, elem_node_tags = gmsh.model.mesh.getElementsByType(elem_type)
+                num_nodes = elem_props[3]
+                connectivity = elem_node_tags.reshape(-1, num_nodes)
+
+                for nodes in connectivity:
+                    # Convert to 0-based indices and get node objects
+                    node_objs = [mesh_model.get_node_by_id(int(nt - 1)) for nt in nodes]
+                    e_type = ELEMENT_NODES_MAP.get(len(nodes), ElementType.quad)
+                    mesh_model.add_element(MeshElement(nodes=node_objs, element_type=e_type))
+
+    def _create_node_sets(self, mesh_model: "MeshModel"):
+        """Creates node sets for all boundary faces"""
+        physical_groups = gmsh.model.getPhysicalGroups()
+
+        face_sets = {
+            "top": set(),
+            "bottom": set(),
+            "front": set(),
+            "back": set(),
+            "left": set(),
+            "right": set(),
+        }
+
+        for dim, tag in physical_groups:
+            if dim != 2:  # Solo procesar superficies
+                continue
+
+            name = gmsh.model.getPhysicalName(dim, tag)
+            if name not in face_sets:
+                continue
+
+            # Obtener nodos en 1-based indexing
+            node_tags = gmsh.model.mesh.getNodesForPhysicalGroup(dim, tag)[0]
+
+            # Convertir a 0-based y agregar
+            face_sets[name].update((tag - 1 for tag in node_tags))
+
+        # Crear los NodeSets
+        for name, node_ids in face_sets.items():
+            if node_ids:
+                node_objs = {mesh_model.get_node_by_id(nid) for nid in node_ids}
+                mesh_model.add_node_set(NodeSet(name=name, nodes=node_objs))
+
+        # Añadir conjunto de todos los nodos
+        all_nodes = {node for node in mesh_model.nodes}
+        mesh_model.add_node_set(NodeSet(name="all", nodes=all_nodes))
+
+    @classmethod
+    def create_box(
+        cls,
+        center: Tuple[float, float, float],
+        dims: Tuple[float, float, float],
+        nx: int,
+        ny: int,
+        nz: int,
+        quadratic: bool = False,
+        triangular: bool = False,
+    ) -> "MeshModel":
+        """Creates a box with specified dimensions"""
+        return cls(center, dims, nx, ny, nz, quadratic, triangular).generate()
+
+    @classmethod
+    def create_unit_box(
+        cls,
+        divisions: int = 10,
+        quadratic: bool = False,
+        triangular: bool = False,
+    ) -> "MeshModel":
+        """Creates a unit cube (1x1x1) centered at origin"""
+        return cls(
+            (0, 0, 0), (1, 1, 1), divisions, divisions, divisions, quadratic, triangular
+        ).generate()
+
+
+if __name__ == "__main__":
+    # Example usage
+    unit_mesh = BoxSurfaceMesh.create_box((0, 0, 5), (1, 1, 10), 5, 5, 50)
+    unit_mesh.view()

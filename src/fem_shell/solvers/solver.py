@@ -80,7 +80,7 @@ class Solver(ABC):
         self.dirichlet_conditions: List[DirichletCondition] = []
         self.body_forces: List[BodyForce] = []
 
-    def get_dofs_by_nodeset_name(self, name: str) -> Set[int]:
+    def get_dofs_by_nodeset_name(self, name: str, only_geometric_dofs: bool = True) -> Set[int]:
         """
         Retrieve the degrees of freedom (DOFs) associated with a given node set.
 
@@ -94,7 +94,7 @@ class Solver(ABC):
         Set[int]
             Set of DOFs corresponding to the node set.
         """
-        return self.domain.get_dofs_by_nodeset(name)
+        return self.domain.get_dofs_by_nodeset(name, only_geometric_dofs)
 
     def get_nodeids_by_nodeset_name(self, name: str) -> Set[int]:
         """
@@ -156,7 +156,7 @@ class Solver(ABC):
         # 'vector_form' is assumed to be a dict mapping vector field names to lists of component names.
         vector_form = self.domain.vector_form
         vector_components = [comp for vector in vector_form.values() for comp in vector]
-        U = self.u.reshape(-1, len(vector_components))  # self.u must be defined after solving
+        U = self.u.reshape(-1, self.domain.dofs_per_node)
 
         points = self.mesh_obj.coords_array
         point_data: Dict[str, np.ndarray] = {}
@@ -175,19 +175,15 @@ class Solver(ABC):
                 vector_array = np.column_stack([vector_array, zeros])
 
             point_data[vector] = vector_array
-            # Calculate the magnitude of the vector field
-            point_data[vector + "_magnitude"] = np.linalg.norm(vector_array, axis=1)
 
         # Assemble cells from the mesh element map
         cells = []
         for element in self.mesh_obj.element_map.values():
             if element:
-                cells.append(
-                    (
-                        element.element_type.name,
-                        [element.node_ids],
-                    )
-                )
+                cells.append((
+                    element.element_type.name,
+                    [element.node_ids],
+                ))
 
         mesh_object = meshio.Mesh(points, cells=cells, point_data=point_data)
         mesh_object.write(output_file, file_format="vtk")

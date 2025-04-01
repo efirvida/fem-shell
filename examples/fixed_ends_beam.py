@@ -36,7 +36,7 @@ Parameters and Setup:
 """
 
 from fem_shell.core.bc import BodyForce, DirichletCondition
-from fem_shell.core.material import Material
+from fem_shell.core.material import IsotropicMaterial as Material
 from fem_shell.core.mesh import SquareShapeMesh
 from fem_shell.elements import ElementFamily
 from fem_shell.solvers.linear import LinearStaticSolver
@@ -78,7 +78,7 @@ model_configs = {
     },
 }
 # Initialize and solve
-mesh = SquareShapeMesh.create_rectangle(WIDTH, HEIGHT, NX, NY)
+mesh = SquareShapeMesh.create_rectangle(WIDTH, HEIGHT, NX, NY, quadratic=False)
 
 for model_type, model in model_configs.items():
     print(f"================\n {model_type} model...\n================")
@@ -90,9 +90,10 @@ for model_type, model in model_configs.items():
     # Apply boundary conditions
     left = problem.get_dofs_by_nodeset_name("left")
     right = problem.get_dofs_by_nodeset_name("right")
-    problem.add_dirichlet_conditions(
-        [DirichletCondition(left, 0.0), DirichletCondition(right, 0.0)]
-    )
+    problem.add_dirichlet_conditions([
+        DirichletCondition(left, 0.0),
+        DirichletCondition(right, 0.0),
+    ])
 
     problem.add_body_forces([BodyForce(load)])
 

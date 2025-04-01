@@ -31,16 +31,15 @@ model_configs = {
 }
 
 
-for model_type, model in model_configs.items():
-    print(f"================\n {model_type} model...\n================")
+print("================================")
+problem = ModalSolver(mesh=mesh, fem_model_properties=model_configs)
 
-    problem = ModalSolver(mesh=mesh, fem_model_properties=model)
+# Apply boundary conditions
+clamped = problem.get_dofs_by_nodeset_name("RootNodes")
+problem.add_dirichlet_conditions([DirichletCondition(clamped, 0.0)])
 
-    # Apply boundary conditions
-    clamped = problem.get_dofs_by_nodeset_name("bottom")
-    problem.add_dirichlet_conditions([DirichletCondition(clamped, 0.0)])
-
-    # Solve and output
-    frequencies, _ = problem.solve()
-    for mode, frec in enumerate(frequencies, start=1):
-        print(f"  Mode {mode}: freq {frec:2f} Hz")
+# Solve and output
+frequencies, _ = problem.solve()
+for mode, frec in enumerate(frequencies, start=1):
+    print(f"  Mode {mode}: freq {frec:2f} Hz")
+print("================================")

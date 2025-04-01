@@ -158,6 +158,9 @@ class BladeModel:
     def view(self):
         self.blade_mesh_obj.view()
 
+    def write_mesh(self, filename, **kwargs):
+        self.blade_mesh_obj.mesh.write_mesh(filename, **kwargs)
+
     @property
     def materials(self) -> Dict[str, Union[Material, OrthotropicMaterial]]:
         if self._materials_db:
