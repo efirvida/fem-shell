@@ -231,18 +231,16 @@ class MITC4(ShellElement):
         return (
             1
             / 4
-            * np.array(
+            * np.array([
                 [
-                    [
-                        x1 * (s + 1) - x2 * (s + 1) + x3 * (s - 1) - x4 * (s - 1),
-                        y1 * (s + 1) - y2 * (s + 1) + y3 * (s - 1) - y4 * (s - 1),
-                    ],
-                    [
-                        x1 * (r + 1) - x2 * (r - 1) + x3 * (r - 1) - x4 * (r + 1),
-                        y1 * (r + 1) - y2 * (r - 1) + y3 * (r - 1) - y4 * (r + 1),
-                    ],
-                ]
-            )
+                    x1 * (s + 1) - x2 * (s + 1) + x3 * (s - 1) - x4 * (s - 1),
+                    y1 * (s + 1) - y2 * (s + 1) + y3 * (s - 1) - y4 * (s - 1),
+                ],
+                [
+                    x1 * (r + 1) - x2 * (r - 1) + x3 * (r - 1) - x4 * (r + 1),
+                    y1 * (r + 1) - y2 * (r - 1) + y3 * (r - 1) - y4 * (r + 1),
+                ],
+            ])
         )
 
     def B_kappa(self, r, s):
@@ -266,26 +264,24 @@ class MITC4(ShellElement):
             J_val,
             1 / 4 * np.array([[1 + s, -1 - s, -1 + s, 1 - s], [1 + r, 1 - r, -1 + r, -1 - r]]),
         )
-        return np.array(
+        return np.array([
+            [0, 0, -dH[0, 0], 0, 0, -dH[0, 1], 0, 0, -dH[0, 2], 0, 0, -dH[0, 3]],
+            [0, dH[1, 0], 0, 0, dH[1, 1], 0, 0, dH[1, 2], 0, 0, dH[1, 3], 0],
             [
-                [0, 0, -dH[0, 0], 0, 0, -dH[0, 1], 0, 0, -dH[0, 2], 0, 0, -dH[0, 3]],
-                [0, dH[1, 0], 0, 0, dH[1, 1], 0, 0, dH[1, 2], 0, 0, dH[1, 3], 0],
-                [
-                    0,
-                    dH[0, 0],
-                    -dH[1, 0],
-                    0,
-                    dH[0, 1],
-                    -dH[1, 1],
-                    0,
-                    dH[0, 2],
-                    -dH[1, 2],
-                    0,
-                    dH[0, 3],
-                    -dH[1, 3],
-                ],
-            ]
-        )
+                0,
+                dH[0, 0],
+                -dH[1, 0],
+                0,
+                dH[0, 1],
+                -dH[1, 1],
+                0,
+                dH[0, 2],
+                -dH[1, 2],
+                0,
+                dH[0, 3],
+                -dH[1, 3],
+            ],
+        ])
 
     def B_gamma(self, r, s):
         """
@@ -321,55 +317,49 @@ class MITC4(ShellElement):
         gr = np.sqrt((Cx + r * Bx) ** 2 + (Cy + r * By) ** 2) / (8 * det_J)
         gs = np.sqrt((Ax + s * Bx) ** 2 + (Ay + s * By) ** 2) / (8 * det_J)
 
-        gamma_rz = gr * np.array(
+        gamma_rz = gr * np.array([
             [
-                [
-                    (1 + s) / 2,
-                    -(y1 - y2) * (1 + s) / 4,
-                    (x1 - x2) * (1 + s) / 4,
-                    -(1 + s) / 2,
-                    -(y1 - y2) * (1 + s) / 4,
-                    (x1 - x2) * (1 + s) / 4,
-                    -(1 - s) / 2,
-                    -(y4 - y3) * (1 - s) / 4,
-                    (x4 - x3) * (1 - s) / 4,
-                    (1 - s) / 2,
-                    -(y4 - y3) * (1 - s) / 4,
-                    (x4 - x3) * (1 - s) / 4,
-                ]
+                (1 + s) / 2,
+                -(y1 - y2) * (1 + s) / 4,
+                (x1 - x2) * (1 + s) / 4,
+                -(1 + s) / 2,
+                -(y1 - y2) * (1 + s) / 4,
+                (x1 - x2) * (1 + s) / 4,
+                -(1 - s) / 2,
+                -(y4 - y3) * (1 - s) / 4,
+                (x4 - x3) * (1 - s) / 4,
+                (1 - s) / 2,
+                -(y4 - y3) * (1 - s) / 4,
+                (x4 - x3) * (1 - s) / 4,
             ]
-        )
+        ])
 
-        gamma_sz = gs * np.array(
+        gamma_sz = gs * np.array([
             [
-                [
-                    (1 + r) / 2,
-                    -(y1 - y4) * (1 + r) / 4,
-                    (x1 - x4) * (1 + r) / 4,
-                    (1 - r) / 2,
-                    -(y2 - y3) * (1 - r) / 4,
-                    (x2 - x3) * (1 - r) / 4,
-                    -(1 - r) / 2,
-                    -(y2 - y3) * (1 - r) / 4,
-                    (x2 - x3) * (1 - r) / 4,
-                    -(1 + r) / 2,
-                    -(y1 - y4) * (1 + r) / 4,
-                    (x1 - x4) * (1 + r) / 4,
-                ]
+                (1 + r) / 2,
+                -(y1 - y4) * (1 + r) / 4,
+                (x1 - x4) * (1 + r) / 4,
+                (1 - r) / 2,
+                -(y2 - y3) * (1 - r) / 4,
+                (x2 - x3) * (1 - r) / 4,
+                -(1 - r) / 2,
+                -(y2 - y3) * (1 - r) / 4,
+                (x2 - x3) * (1 - r) / 4,
+                -(1 + r) / 2,
+                -(y1 - y4) * (1 + r) / 4,
+                (x1 - x4) * (1 + r) / 4,
             ]
-        )
+        ])
 
         cos_alpha = np.dot(r_axis, [1, 0, 0])
         cos_beta = np.dot(s_axis, [1, 0, 0])
         sin_alpha = -np.linalg.norm(np.cross(r_axis, [1, 0, 0]))
         sin_beta = np.linalg.norm(np.cross(s_axis, [1, 0, 0]))
 
-        return np.vstack(
-            (
-                gamma_rz * sin_beta - gamma_sz * sin_alpha,
-                -gamma_rz * cos_beta + gamma_sz * cos_alpha,
-            )
-        )
+        return np.vstack((
+            gamma_rz * sin_beta - gamma_sz * sin_alpha,
+            -gamma_rz * cos_beta + gamma_sz * cos_alpha,
+        ))
 
     def B_m(self, r, s):
         """
@@ -398,13 +388,11 @@ class MITC4(ShellElement):
             J_val,
             1 / 4 * np.array([[s + 1, -s - 1, s - 1, -s + 1], [r + 1, -r + 1, r - 1, -r - 1]]),
         )
-        return np.array(
-            [
-                [dH[0, 0], 0, dH[0, 1], 0, dH[0, 2], 0, dH[0, 3], 0],
-                [0, dH[1, 0], 0, dH[1, 1], 0, dH[1, 2], 0, dH[1, 3]],
-                [dH[1, 0], dH[0, 0], dH[1, 1], dH[0, 1], dH[1, 2], dH[0, 2], dH[1, 3], dH[0, 3]],
-            ]
-        )
+        return np.array([
+            [dH[0, 0], 0, dH[0, 1], 0, dH[0, 2], 0, dH[0, 3], 0],
+            [0, dH[1, 0], 0, dH[1, 1], 0, dH[1, 2], 0, dH[1, 3]],
+            [dH[1, 0], dH[0, 0], dH[1, 1], dH[0, 1], dH[1, 2], dH[0, 2], dH[1, 3], dH[0, 3]],
+        ])
 
     def Cb(self) -> np.ndarray:
         """
@@ -550,13 +538,11 @@ class MITC4(ShellElement):
             denominator = 1 - nu12 * nu21
             inv_denom = 1 / denominator
 
-            return np.array(
-                [
-                    [E1 * inv_denom, nu12 * E2 * inv_denom, 0],
-                    [nu21 * E1 * inv_denom, E2 * inv_denom, 0],
-                    [0, 0, G12],
-                ]
-            )
+            return np.array([
+                [E1 * inv_denom, nu12 * E2 * inv_denom, 0],
+                [nu21 * E1 * inv_denom, E2 * inv_denom, 0],
+                [0, 0, G12],
+            ])
 
         else:
             E = self.material.E
@@ -566,9 +552,11 @@ class MITC4(ShellElement):
             G = E / (2 * (1 + nu))
 
             inv_denom = 1 / (1 - nu**2)
-            return inv_denom * np.array(
-                [[Ex, nu * Ey, 0], [nu * Ex, Ey, 0], [0, 0, G * (1 - nu**2)]]
-            )
+            return inv_denom * np.array([
+                [Ex, nu * Ey, 0],
+                [nu * Ex, Ey, 0],
+                [0, 0, G * (1 - nu**2)],
+            ])
 
     @staticmethod
     def index_k_b():
@@ -876,16 +864,14 @@ class MITC4Layered(MITC4):
             z_top = current_z_bottom + thickness
             z_centroid = (current_z_bottom + z_top) / 2.0
 
-            layer_info.append(
-                {
-                    "material": material,
-                    "thickness": thickness,
-                    "angle": angle,
-                    "z_centroid": z_centroid,
-                    "z_bottom": current_z_bottom,
-                    "z_top": z_top,
-                }
-            )
+            layer_info.append({
+                "material": material,
+                "thickness": thickness,
+                "angle": angle,
+                "z_centroid": z_centroid,
+                "z_bottom": current_z_bottom,
+                "z_top": z_top,
+            })
 
             current_z_bottom = z_top  # Move to next layer
 

@@ -4,7 +4,7 @@ import numpy as np
 import scipy
 import scipy.linalg
 
-from fem_shell.core.bc import BoundaryConditionApplier
+from fem_shell.core.bc import BoundaryConditionManager
 from fem_shell.core.mesh import MeshModel
 from fem_shell.solvers.solver import Solver
 
@@ -46,9 +46,9 @@ class ModalSolver(Solver):
         M = self.domain.assemble_mass_matrix()
 
         F = np.zeros(self.domain.dofs_count)
-        self.bc_applier = BoundaryConditionApplier(K, F, M)
-
-        K_reduced, _, M_reduced = self.bc_applier.reduce_system(self.dirichlet_conditions)
+        self.bc_applier = BoundaryConditionManager(K, F, M)
+        self.bc_applier.apply_dirichlet(self.dirichlet_conditions)
+        K_reduced, _, M_reduced = self.bc_applier.get_reduced_system()
 
         eigvals, eigvecs = scipy.linalg.eigh(
             K_reduced, M_reduced, subset_by_index=(0, self.num_modes - 1)

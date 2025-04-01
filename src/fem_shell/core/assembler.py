@@ -1,6 +1,6 @@
 from __future__ import absolute_import
 
-from typing import Dict
+from typing import Dict, Literal, Sequence
 
 import numpy as np
 
@@ -45,9 +45,11 @@ class MeshAssembler:
 
         self._element_map = {}
         self._element_global_dofs_map = {}
-        self._nodes_global_dofs_map = {}
-        self.dofs_count = 0
-        self.vector_form = {}
+        self._nodes_global_dofs_map: Dict[int, Sequence[int]] = {}
+        self.dofs_count: int = 0
+        self._dofs_per_node: int = 0
+        self._spatial_dim: int = 0
+        self.vector_form: Dict = {}
 
         self._precompute_elements()
 
@@ -94,17 +96,31 @@ class MeshAssembler:
                     model = self.model[element.id]
 
                 fem_element = ElementFactory.get_element(mesh_element=element, **model)
-                self.vector_form = fem_element.vector_form
-                self._element_map[element.id] = fem_element
-                self._element_global_dofs_map[element.id] = [
-                    dof for node in fem_element.global_dof_indices.values() for dof in node
-                ]
-                self._nodes_global_dofs_map.update(fem_element.global_dof_indices)
+                if fem_element:
+                    if not self._dofs_per_node:
+                        self._dofs_per_node = fem_element.dofs_per_node
+                    if not self._spatial_dim:
+                        self._spatial_dim = fem_element.spatial_dimmension
+
+                    self.vector_form = fem_element.vector_form
+                    self._element_map[element.id] = fem_element
+                    self._element_global_dofs_map[element.id] = [
+                        dof for node in fem_element.global_dof_indices.values() for dof in node
+                    ]
+                    self._nodes_global_dofs_map.update(fem_element.global_dof_indices)
 
             # Count the total number of unique global DOFs
-            self.dofs_count = len(
-                {dof for dofs in self._element_global_dofs_map.values() for dof in dofs}
-            )
+            self.dofs_count = len({
+                dof for dofs in self._element_global_dofs_map.values() for dof in dofs
+            })
+
+    @property
+    def dofs_per_node(self) -> int:
+        return self._dofs_per_node
+
+    @property
+    def spatial_dim(self) -> Literal[2] | Literal[3]:
+        return self._spatial_dim
 
     def _assemble_matrix(self, attribute: str) -> np.ndarray:
         """
@@ -188,6 +204,18 @@ class MeshAssembler:
 
         return global_container
 
-    def get_dofs_by_nodeset(self, name: str):
-        nodes = self.mesh.get_node_set(name)
-        return {dof for node_id in nodes.node_ids for dof in self._nodes_global_dofs_map[node_id]}
+    def get_dofs_by_nodeset(self, name: str, only_geometric: bool = True):
+        nodes_set = self.mesh.get_node_set(name)
+        if only_geometric:
+            return {
+                dof
+                for node in nodes_set.nodes.values()
+                for dof in self._nodes_global_dofs_map[node.id]
+                if node.geometric_node
+            }
+        else:
+            return {
+                dof
+                for node in nodes_set.nodes.values()
+                for dof in self._nodes_global_dofs_map[node.id]
+            }

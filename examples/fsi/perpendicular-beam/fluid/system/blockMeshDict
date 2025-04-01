@@ -1,0 +1,274 @@
+/*--------------------------------*- C++ -*----------------------------------*\
+| =========                 |                                                 |
+| \\      /  F ield         |  Archivo blockMeshDict para 3D con viga        |
+|  \\    /   O peration     |  empotrada. Parámetros ajustables: beamX, beamY,  |
+|   \\  /    A nd           |  beamZ, cellsPerUnit.                           |
+|    \\/     M anipulation  |                                                 |
+\*---------------------------------------------------------------------------*/
+
+FoamFile
+{
+    version     2.0;
+    format      ascii;
+    class       dictionary;
+    object      blockMeshDict;
+}
+
+scale 1;
+
+// Parámetros ajustados del dominio y la viga
+domain_x0    -40;       // extremo izquierdo
+domain_x3     40;       // extremo derecho
+domain_y0      0;       // piso
+domain_y2     40;       // techo
+domain_z0    -10;       // parte trasera (ampliado para espacio alrededor de la viga)
+domain_z3     10;       // parte delantera
+
+// Dimensiones de la viga (en x, y, z)
+beamX     1;   // ancho de la viga
+beamY    10;   // alto de la viga
+beamZ     1;   // profundidad de la viga (ajustado para caber en el dominio)
+
+// Número de celdas por unidad de longitud
+cellsPerUnit  2;
+
+// Puntos de partición corregidos en z (evitar solapamiento)
+x0 #eval {$domain_x0};
+x1 #eval {-0.5 * $beamX};
+x2 #eval { 0.5 * $beamX};
+x3 #eval {$domain_x3};
+
+y0 #eval{$domain_y0};
+y1 #eval{$y0 + $beamY};
+y2 #eval{$domain_y2};
+
+z0 #eval{$domain_z0};
+z1 #eval{-0.5 * $beamZ};  // -5
+z2 #eval{ 0.5 * $beamZ};  // +5
+z3 #eval{$domain_z3};
+
+// Cálculo de celdas corregido (usando floor o ceil según necesidad)
+nX0 #eval{ceil(($x1 - $x0)*$cellsPerUnit)}; // Asegurar al menos 1 celda
+nX1 #eval{ceil(($x2 - $x1)*$cellsPerUnit)};
+nX2 #eval{ceil(($x3 - $x2)*$cellsPerUnit)};
+
+nY0 #eval{ceil(($y1 - $y0)*$cellsPerUnit)};
+nY1 #eval{ceil(($y2 - $y1)*$cellsPerUnit)};
+
+nZ0 #eval{ceil(($z1 - $z0)*$cellsPerUnit)};  // z0 a z1: 15 unidades (domain_z0=-20 a z1=-5)
+nZ1 #eval{ceil(($z2 - $z1)*$cellsPerUnit)};  // z1 a z2: 10 unidades (beamZ=10)
+nZ2 #eval{ceil(($z3 - $z2)*$cellsPerUnit)};  // z2 a z3: 15 unidades
+
+vertices
+(
+    // Capa z0 (z=-20)
+    ($x0 $y0 $z0)  // 0
+    ($x1 $y0 $z0)  // 1
+    ($x2 $y0 $z0)  // 2
+    ($x3 $y0 $z0)  // 3
+    ($x0 $y1 $z0)  // 4
+    ($x1 $y1 $z0)  // 5
+    ($x2 $y1 $z0)  // 6
+    ($x3 $y1 $z0)  // 7
+    ($x0 $y2 $z0)  // 8
+    ($x1 $y2 $z0)  // 9
+    ($x2 $y2 $z0)  // 10
+    ($x3 $y2 $z0)  // 11
+
+    // Capa z1 (z=-5)
+    ($x0 $y0 $z1)  // 12
+    ($x1 $y0 $z1)  // 13
+    ($x2 $y0 $z1)  // 14
+    ($x3 $y0 $z1)  // 15
+    ($x0 $y1 $z1)  // 16
+    ($x1 $y1 $z1)  // 17
+    ($x2 $y1 $z1)  // 18
+    ($x3 $y1 $z1)  // 19
+    ($x0 $y2 $z1)  // 20
+    ($x1 $y2 $z1)  // 21
+    ($x2 $y2 $z1)  // 22
+    ($x3 $y2 $z1)  // 23
+
+    // Capa z2 (z=5)
+    ($x0 $y0 $z2)  // 24
+    ($x1 $y0 $z2)  // 25
+    ($x2 $y0 $z2)  // 26
+    ($x3 $y0 $z2)  // 27
+    ($x0 $y1 $z2)  // 28
+    ($x1 $y1 $z2)  // 29
+    ($x2 $y1 $z2)  // 30
+    ($x3 $y1 $z2)  // 31
+    ($x0 $y2 $z2)  // 32
+    ($x1 $y2 $z2)  // 33
+    ($x2 $y2 $z2)  // 34
+    ($x3 $y2 $z2)  // 35
+
+    // Capa z3 (z=20)
+    ($x0 $y0 $z3)  // 36
+    ($x1 $y0 $z3)  // 37
+    ($x2 $y0 $z3)  // 38
+    ($x3 $y0 $z3)  // 39
+    ($x0 $y1 $z3)  // 40
+    ($x1 $y1 $z3)  // 41
+    ($x2 $y1 $z3)  // 42
+    ($x3 $y1 $z3)  // 43
+    ($x0 $y2 $z3)  // 44
+    ($x1 $y2 $z3)  // 45
+    ($x2 $y2 $z3)  // 46
+    ($x3 $y2 $z3)  // 47
+);
+
+blocks
+(
+    // Bloques en z0-z1 (k=0)
+    // j=0 (y0-y1)
+    hex (0 1 5 4 12 13 17 16) ($nX0 $nY0 $nZ0) simpleGrading (1 1 1)   // i=0
+    hex (1 2 6 5 13 14 18 17) ($nX1 $nY0 $nZ0) simpleGrading (1 1 1)   // i=1
+    hex (2 3 7 6 14 15 19 18) ($nX2 $nY0 $nZ0) simpleGrading (1 1 1)   // i=2
+
+    // Bloques en z1-z2 (k=1) - VIGA CENTRAL
+    hex (12 13 17 16 24 25 29 28) ($nX0 $nY0 $nZ1) simpleGrading (1 1 1) // i=0
+    hex (14 15 19 18 26 27 31 30) ($nX2 $nY0 $nZ1) simpleGrading (1 1 1) // i=2
+
+    // Bloques en z2-z3 (k=2)
+    hex (24 25 29 28 36 37 41 40) ($nX0 $nY0 $nZ2) simpleGrading (1 1 1) // i=0
+    hex (25 26 30 29 37 38 42 41) ($nX1 $nY0 $nZ2) simpleGrading (1 1 1) // i=1
+    hex (26 27 31 30 38 39 43 42) ($nX2 $nY0 $nZ2) simpleGrading (1 1 1) // i=2
+
+    // Bloques superiores (y1-y2)
+    // k=0 (z0-z1)
+    hex (4 5 9 8 16 17 21 20) ($nX0 $nY1 $nZ0) simpleGrading (1 1 1)
+    hex (5 6 10 9 17 18 22 21) ($nX1 $nY1 $nZ0) simpleGrading (1 1 1)
+    hex (6 7 11 10 18 19 23 22) ($nX2 $nY1 $nZ0) simpleGrading (1 1 1)
+
+    // k=1 (z1-z2)
+    hex (16 17 21 20 28 29 33 32) ($nX0 $nY1 $nZ1) simpleGrading (1 1 1)
+    hex (17 18 22 21 29 30 34 33) ($nX1 $nY1 $nZ1) simpleGrading (1 1 1)
+    hex (18 19 23 22 30 31 35 34) ($nX2 $nY1 $nZ1) simpleGrading (1 1 1)
+
+    // k=2 (z2-z3)
+    hex (28 29 33 32 40 41 45 44) ($nX0 $nY1 $nZ2) simpleGrading (1 1 1)
+    hex (29 30 34 33 41 42 46 45) ($nX1 $nY1 $nZ2) simpleGrading (1 1 1)
+    hex (30 31 35 34 42 43 47 46) ($nX2 $nY1 $nZ2) simpleGrading (1 1 1)
+);
+
+boundary
+(
+    inlet
+    {
+        type patch;
+        faces
+        (
+            // Bloques inferiores:
+            ( 0 4 16 12 )             // de bloque 0
+            ( 12 16 28 24 )           // de bloque 3 (fluido izquierdo, z1–z2)
+            ( 24 28 40 36 )           // de bloque 5 (fluido inferior, z2–z3)
+            // Bloques superiores:
+            ( 4 8 20 16 )             // de bloque 8
+            ( 16 20 32 28 )           // de bloque 11 (fluido izquierdo, z1–z2 en parte superior)
+            ( 28 32 44 40 )           // de bloque 14 (fluido superior, z2–z3)
+        );
+    }
+    outlet
+    {
+        type patch;
+        faces
+        (
+            // Bloques inferiores:
+            ( 3 7 19 15 )             // de bloque 2
+            ( 15 19 31 27 )           // de bloque 4 (fluido derecho, z1–z2)
+            ( 27 31 43 39 )           // de bloque 7 (fluido inferior, z2–z3)
+            // Bloques superiores:
+            ( 7 11 23 19 )            // de bloque 10
+            ( 19 23 35 31 )           // de bloque 13 (fluido derecho, z1–z2 en parte superior)
+            ( 31 35 47 43 )           // de bloque 16 (fluido superior, z2–z3)
+        );
+    }
+
+    top
+    {
+        type symmetryPlane;
+        faces
+        (
+            // Bloques superiores, capa z0–z1:
+            ( 8 9 21 20 )             // de bloque 8
+            ( 9 10 22 21 )            // de bloque 9
+            ( 10 11 23 22 )           // de bloque 10
+            // Bloques superiores, capa z1–z2:
+            ( 20 21 33 32 )           // de bloque 11
+            ( 21 22 34 33 )           // de bloque 12
+            ( 22 23 35 34 )           // de bloque 13
+            // Bloques superiores, capa z2–z3:
+            ( 32 33 45 44 )           // de bloque 14
+            ( 33 34 46 45 )           // de bloque 15
+            ( 34 35 47 46 )           // de bloque 16
+        );
+    }
+    back
+    {
+        type symmetryPlane;
+        faces
+        (
+            // Desde los bloques en la capa z0:
+            ( 0 1 5 4 )               // de bloque 0
+            ( 1 2 6 5 )               // de bloque 1
+            ( 2 3 7 6 )               // de bloque 2
+            // Desde los bloques superiores en z0:
+            ( 4 5 9 8 )               // de bloque 8
+            ( 5 6 10 9 )              // de bloque 9
+            ( 6 7 11 10 )             // de bloque 10
+        );
+    }
+    // Front: Frontera delantera (z = z3)
+    front
+    {
+        type symmetryPlane;
+        faces
+        (
+            // Desde los bloques inferiores en capa z2–z3:
+            ( 36 37 41 40 )           // de bloque 5
+            ( 37 38 42 41 )           // de bloque 6
+            ( 38 39 43 42 )           // de bloque 7
+            // Desde los bloques superiores en capa z2–z3:
+            ( 40 41 45 44 )           // de bloque 14
+            ( 41 42 46 45 )           // de bloque 15
+            ( 42 43 47 46 )           // de bloque 16
+        );
+    }
+    // Floor: Frontera inferior (y = y0)
+    floor
+    {
+        type wall;
+        faces
+        (
+            // Bloques inferiores, capa z0–z1:
+            ( 0 1 13 12 )             // de bloque 0
+            ( 1 2 14 13 )             // de bloque 1
+            ( 2 3 15 14 )             // de bloque 2
+            // Bloques inferiores, capa z1–z2:
+            ( 12 13 25 24 )           // de bloque 3
+            ( 14 15 27 26 )           // de bloque 4
+            // Bloques inferiores, capa z2–z3:
+            ( 24 25 37 36 )           // de bloque 5
+            ( 25 26 38 37 )           // de bloque 6
+            ( 26 27 39 38 )           // de bloque 7
+        );
+    }
+    beam
+    {
+        type wall;
+        faces
+        (
+            // Cara izquierda (x = -0.5):
+            ( 13 17 29 25 )
+            // Cara derecha (x = 0.5):
+            ( 14 18 30 26 )
+            // Cara trasera (z = -0.5):
+            ( 13 14 18 17 )
+            // Cara delantera (z = 0.5):
+            ( 25 26 30 29 )
+            // Cara superior (y = 10):
+            ( 17 18 30 29 )
+        );
+    }
+);

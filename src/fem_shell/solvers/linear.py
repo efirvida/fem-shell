@@ -7,7 +7,7 @@ import numpy as np
 import scipy.sparse.linalg as spla
 from scipy.sparse.linalg import spsolve
 
-from fem_shell.core.bc import BodyForce, BoundaryConditionApplier
+from fem_shell.core.bc import BodyForce, BoundaryConditionManager
 from fem_shell.core.mesh import MeshModel
 from fem_shell.solvers.solver import Solver
 
@@ -37,6 +37,12 @@ class LinearStaticSolver(Solver):
 
     def __init__(self, mesh: MeshModel, fem_model_properties: dict):
         super().__init__(mesh, fem_model_properties)
+        self.applyed_forces = False
+        self.F = np.zeros(self.domain.dofs_count)
+
+    def add_force_on_dofs(self, dofs, value):
+        self.F[np.array(list(dofs)).reshape(-1, len(value))] = np.array(value)
+        self.applyed_forces = True
 
     def solve(self) -> np.ndarray:
         """
@@ -48,22 +54,21 @@ class LinearStaticSolver(Solver):
             Displacement vector containing the solution for all DOFs.
         """
         # Assemble the global matrices and load vector.
-        K = self.domain.assemble_stiffness_matrix()
-        assert np.allclose(K, K.T, atol=1e-10), "Stiffness matrix not symmetric"
+        self.K = self.domain.assemble_stiffness_matrix()
 
-        F = np.zeros(self.domain.dofs_count)
-        for neumann in self.body_forces:
-            F += self.domain.assemble_load_vector(neumann)
+        if not self.applyed_forces:
+            self.F = np.zeros(self.domain.dofs_count)
+            for neumann in self.body_forces:
+                self.F += self.domain.assemble_load_vector(neumann)
 
-        bc_applier = BoundaryConditionApplier(K, F)
+        bc_manager = BoundaryConditionManager(
+            self.K, self.F, dof_per_node=self.domain.dofs_per_node
+        )
+        bc_manager.apply_dirichlet(self.dirichlet_conditions)
+        self.A, self.b, _ = bc_manager.reduced_system
 
-        K_modified, F_modified, _ = bc_applier.apply_dirichlet(self.dirichlet_conditions)
-
-        # Solve the full system.
-        self.A = K_modified
-        self.b = F_modified
-        self.u = np.linalg.solve(K_modified, F_modified)
-
+        u_red = np.linalg.solve(self.A, self.b)
+        self.u = bc_manager.expand_solution(u_red)
         return self.u
 
 
@@ -166,7 +171,7 @@ class LinearDynamicSolver(Solver):
         self.C = self.solver_params["eta_m"] * self.M + self.solver_params["eta_k"] * self.K
 
         # Aplicación de condiciones de frontera
-        bc_applier = BoundaryConditionApplier(self.K, self.F, self.M)
+        bc_applier = BoundaryConditionManager(self.K, self.F, self.M)
         bc_applier.apply_dirichlet(self.dirichlet_conditions)
         K_red, F_red, M_red = bc_applier.get_reduced_system()
         C_red = bc_applier.reduce_matrix(self.C)
@@ -237,7 +242,7 @@ class LinearDynamicSolver(Solver):
             F = np.zeros(len(self.free_dofs))
         return F
 
-    def _store_results(self, t: float, u_red: np.ndarray, bc_applier: BoundaryConditionApplier):
+    def _store_results(self, t: float, u_red: np.ndarray, bc_applier: BoundaryConditionManager):
         """Store results and optionally write to VTK.
 
         Parameters
@@ -246,20 +251,20 @@ class LinearDynamicSolver(Solver):
             Current time
         u_red : np.ndarray
             Reduced displacement vector
-        bc_applier : BoundaryConditionApplier
+        bc_applier : BoundaryConditionManager
             Boundary condition handler
         """
         full_u = self._full_solution(u_red, bc_applier)
         self.time_history[t] = full_u
 
-    def _full_solution(self, u_red: np.ndarray, bc_applier: BoundaryConditionApplier) -> np.ndarray:
+    def _full_solution(self, u_red: np.ndarray, bc_applier: BoundaryConditionManager) -> np.ndarray:
         """Reconstruct full DOF solution from reduced vector.
 
         Parameters
         ----------
         u_red : np.ndarray
             Reduced displacement vector
-        bc_applier : BoundaryConditionApplier
+        bc_applier : BoundaryConditionManager
             Boundary condition handler
 
         Returns

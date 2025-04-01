@@ -16,7 +16,12 @@
     },
     "python.envFile": "${workspaceFolder}/.env",
     "terminal.integrated.env.linux": {
-        "QT_QPA_PLATFORM": "xcb"
+        "LD_LIBRARY_PATH": "${workspaceFolder}/.venv/lib/:${workspaceFolder}/.venv/lib64/:${workspaceFolder}/.venv/opt/openfoam/lib:${workspaceFolder}/.venv/opt/openfoam/lib/sys-openmpi:$LD_LIBRARY_PATH",
+        "PATH": "${workspaceFolder}/.venv/bin/:${workspaceFolder}/.venv/bin/tools/:/bin:/usr/bin/:${workspaceFolder}/.venv/opt/openfoam/bin:${workspaceFolder}/.venv/opt/openfoam/bin/tools:${workspaceFolder}/.venv/opt/openfoam/wmake:$PATH",
+        "QT_QPA_PLATFORM": "xcb",
+        "VENV_DIR": "${workspaceFolder}/.venv",
+        "WM_OPTIONS": "linux64GccDPInt64Opt",
+        "WM_PROJECT_DIR": "${workspaceFolder}/.venv/opt/openfoam",
     },
     "python.experiments.optInto": [
         "pythonTestAdapter",
@@ -31,23 +36,6 @@
         "fvSolution": "OpenFOAM",
         "**/constant/g": "OpenFOAM",
         "**/0/*": "OpenFOAM",
-    },
-    "terminal.integrated.profiles.linux": {
-        "bash": {
-            "path": "bash",
-            "args": [
-                "--init-file",
-                ".env"
-            ]
-        },
-        "zsh": {
-            "path": "zsh",
-            "args": [
-                "--login",
-                "-c",
-                "source .env && zsh"
-            ]
-        }
     },
     "terminal.integrated.defaultProfile.linux": "zsh"
 }

@@ -1,58 +1,62 @@
+"""Quadrilateral Elements for Plane Elasticity Analysis (QUAD4, QUAD8, QUAD9)
+
+Implements isoparametric quadrilateral elements for linear elasticity problems
+using consistent formulation and numerical integration.
+
+Elements supported:
+- QUAD4: 4-node bilinear quadrilateral
+- QUAD8: 8-node serendipity quadrilateral
+- QUAD9: 9-node biquadratic quadrilateral
+
+Formulation:
+    Stiffness matrix: K = ∫BᵀCB dΩ
+    Mass matrix: M = ∫ρNᵀN dΩ
+    Body forces: f = ∫Nᵀb dΩ
+
+where:
+    B: Strain-displacement matrix
+    C: Constitutive matrix (plane stress)
+    N: Shape functions matrix
+    ρ: Material density
+    b: Body force vector
+"""
+
 from typing import Tuple
 
 import numpy as np
 
-from fem_shell.core.material import Material
+from fem_shell.core.material import IsotropicMaterial
 from fem_shell.elements.elements import PlaneElement
 
 
 class QUAD(PlaneElement):
-    """
-    Abstract base class for 2D finite element types.
+    """Base class for quadrilateral elements
 
-    This class provides formulations for the stiffness matrix, the consistent mass matrix,
-    and the load vector (body force) using an isoparametric finite element approach.
+    Node numbering convention:
 
-    The stiffness matrix is computed as:
-
-        .. math::
-            K_e = \\int_{\\Omega} B^T C B \\; d\\Omega,
-
-    the consistent mass matrix as:
-
-        .. math::
-            M_e = \\int_{\\Omega} \\rho N^T N \\; d\\Omega,
-
-    and the load vector as:
-
-        .. math::
-            f_e = \\int_{\\Omega} N^T \\mathbf{b} \\; d\\Omega,
-
-    where:
-        - \\(B\\) is the strain-displacement matrix,
-        - \\(C\\) is the constitutive (elasticity) matrix,
-        - \\(N\\) is the shape function matrix,
-        - \\(\\rho\\) is the material density,
-        - \\(\\mathbf{b}\\) is the body force vector,
-        - \\(\\Omega\\) is the element domain.
+    QUAD4          QUAD8          QUAD9
+    3---2         3---6---2       3---6---2
+    |   |         |       |       |   |   |
+    0---1         7       5       7   8   5
+                  |       |       |   |   |
+                  0---4---1       0---4---1
     """
 
     vector_form = {"U": ("Ux", "Uy")}
 
     def __init__(
-        self,
-        node_coords: np.ndarray,
-        node_ids: Tuple[int, int, int, int],
-        material: Material,
+        self, node_coords: np.ndarray, node_ids: Tuple[int, ...], material: IsotropicMaterial
     ):
-        """
-        Initialize the element with nodal coordinates and material properties.
+        """Initialize quadrilateral element
 
         Parameters
         ----------
-        coords : np.ndarray
-            Node coordinates array of shape (n_nodes, 2).
-        material : Material
+        node_coords : np.ndarray
+            Array of nodal coordinates (n_nodes x 2)
+        node_ids : Tuple[int, ...]
+            Global node IDs for connectivity
+        material : IsotropicMaterial
+            Material properties instance
         """
         super().__init__(
             "QUAD",
@@ -63,272 +67,379 @@ class QUAD(PlaneElement):
         )
 
     @property
-    def integration_points(self):
-        """
-        Get integration points and weights for numerical integration.
+    def integration_points(self) -> Tuple[np.ndarray, np.ndarray]:
+        """Gauss quadrature points and weights
 
-        Assumes that the function `gauss_legendre_quadrature` returns a tuple:
-            (points, weights)
+        Default: 2x2 integration for bilinear elements
 
         Returns
         -------
-        tuple
-            A tuple containing:
-                - points: an array of integration points,
-                - weights: an array of corresponding weights.
+        points : np.ndarray
+            Array of (xi, eta) coordinates (n_points x 2)
+        weights : np.ndarray
+            Integration weights (n_points,)
         """
         gp = 1 / np.sqrt(3)
-        points = [(gp, gp), (-gp, gp), (-gp, -gp), (gp, -gp)]
-        weigths = [1.0, 1.0, 1.0, 1.0]
+        points = np.array([(gp, gp), (-gp, gp), (-gp, -gp), (gp, -gp)])
+        weights = np.ones(4)
+        return points, weights
 
-        return points, weigths
+    def compute_B_matrix(self, xi: float, eta: float) -> np.ndarray:
+        """Compute strain-displacement matrix B
+
+        Strain components:
+        [ε_xx, ε_yy, γ_xy]ᵀ = B * u
+
+        Parameters
+        ----------
+        xi, eta : float
+            Natural coordinates in [-1, 1]
+
+        Returns
+        -------
+        np.ndarray
+            B matrix (3 x n_dofs)
+        """
+        dN_dxi, dN_deta = self.shape_function_derivatives(xi, eta)
+        J, det_J, inv_J = self._compute_jacobian(xi, eta)
+
+        if det_J <= 1e-12:
+            raise ValueError(f"Non-positive Jacobian at ({xi}, {eta})")
+
+        # Transform to global coordinates
+        dN_dx = inv_J[0, 0] * dN_dxi + inv_J[0, 1] * dN_deta
+        dN_dy = inv_J[1, 0] * dN_dxi + inv_J[1, 1] * dN_deta
+
+        # Construct B matrix
+        B = np.zeros((3, self.dofs_count))
+        for i in range(len(dN_dx)):
+            B[0, 2 * i] = dN_dx[i]  # ε_xx
+            B[1, 2 * i + 1] = dN_dy[i]  # ε_yy
+            B[2, 2 * i] = dN_dy[i]  # γ_xy
+            B[2, 2 * i + 1] = dN_dx[i]  # γ_yx
+
+        return B
 
     @property
     def C(self) -> np.ndarray:
-        """
-        Constitutive (elasticity) matrix in plane stress conditions.
+        """Constitutive matrix for plane strain
 
         Returns
         -------
         np.ndarray
-            Elasticity matrix of shape (3, 3).
-
-        Notes
-        -----
-        The constitutive matrix is given by:
-
-            .. math::
-                C = \\begin{bmatrix}
-                    \\lambda + 2\\mu & \\lambda & 0 \\\\
-                    \\lambda & \\lambda + 2\\mu & 0 \\\\
-                    0 & 0 & \\mu
-                \\end{bmatrix},
-
-        where:
-            - \\(\\lambda = \\frac{E \\nu}{(1+\\nu)(1-2\\nu)}\\),
-            - \\(\\mu = \\frac{E}{2(1+\\nu)}\\).
+            Material matrix (3x3)
         """
         E = self.material.E
         nu = self.material.nu
-
-        lambda_ = E * nu / ((1 + nu) * (1 - 2 * nu))
+        # Calcular los coeficientes de Lamé
+        lambd = E * nu / ((1 + nu) * (1 - 2 * nu))
         mu = E / (2 * (1 + nu))
 
-        return np.array(
-            [
-                [lambda_ + 2 * mu, lambda_, 0],
-                [lambda_, lambda_ + 2 * mu, 0],
-                [0, 0, mu],
-            ]
-        )
+        return np.array([
+            [lambd + 2 * mu, lambd, 0],
+            [lambd, lambd + 2 * mu, 0],
+            [0, 0, mu],
+        ])
 
     @property
     def K(self) -> np.ndarray:
-        """
-        Compute the element stiffness matrix.
+        """Stiffness matrix with numerical stabilization
 
-        The stiffness matrix is computed as:
+        Calculated using:
+            K = ∫BᵀCB dΩ
 
-            .. math::
-                K_e = \\int_{\\Omega} B^T C B \\; d\\Omega,
-
-        where:
-            - \\(B\\) is the strain-displacement matrix,
-            - \\(C\\) is the constitutive matrix.
+        Includes stabilization to handle rigid body modes
 
         Returns
         -------
         np.ndarray
-            Element stiffness matrix of shape (dofs x dofs).
+            Symmetric stiffness matrix (n_dofs x n_dofs)
         """
         points, weights = self.integration_points
         K = np.zeros((self.dofs_count, self.dofs_count))
 
+        # Numerical integration
         for (xi, eta), w in zip(points, weights):
-            dN_dxi, dN_deta = self.shape_function_derivatives(xi, eta)
-            _, det_J, inv_J = self._compute_jacobian(xi, eta)
-            dN_dx = inv_J[0, 0] * dN_dxi + inv_J[0, 1] * dN_deta
-            dN_dy = inv_J[1, 0] * dN_dxi + inv_J[1, 1] * dN_deta
-
-            B = np.zeros((3, self.dofs_count))
-            B[0, 0::2] = dN_dx  # ε_xx
-            B[1, 1::2] = dN_dy  # ε_yy
-            B[2, 0::2] = dN_dy  # γ_xy
-            B[2, 1::2] = dN_dx  # γ_xy
-
+            B = self.compute_B_matrix(xi, eta)
+            _, det_J, _ = self._compute_jacobian(xi, eta)
             K += (B.T @ self.C @ B) * det_J * w
+
+        # Ensure symmetry and handle rigid modes
+        K = 0.5 * (K + K.T)  # Symmetrization
+        K += 1e-10 * np.eye(self.dofs_count)  # Stabilization
 
         return K
 
     @property
     def M(self) -> np.ndarray:
-        """
-        Compute the consistent mass matrix.
+        """Consistent mass matrix
 
-        The mass matrix is computed as:
-
-            .. math::
-                M_e = \\int_{\\Omega} \\rho N^T N \\; d\\Omega,
-
-        where:
-            - \\(N\\) is the shape function matrix assembled for two degrees of freedom per node,
-            - \\(\\rho\\) is the material density,
-            - \\(\\Omega\\) is the element domain.
+        Calculated using:
+            M = ∫ρNᵀN dΩ
 
         Returns
         -------
         np.ndarray
-            Element mass matrix of shape (dofs x dofs).
+            Mass matrix (n_dofs x n_dofs)
         """
         points, weights = self.integration_points
         M = np.zeros((self.dofs_count, self.dofs_count))
+
         for (xi, eta), w in zip(points, weights):
+            N = self.shape_functions(xi, eta)
             _, det_J, _ = self._compute_jacobian(xi, eta)
-            N_values = self.shape_functions(xi, eta)
 
-            N_matrix = np.zeros((2, self.dofs_count))
-            N_matrix[0, 0::2] = N_values
-            N_matrix[1, 1::2] = N_values
+            N_mat = np.zeros((2, self.dofs_count))
+            N_mat[0, 0::2] = N  # u-components
+            N_mat[1, 1::2] = N  # v-components
 
-            M += self.material.rho * (N_matrix.T @ N_matrix) * det_J * w
+            M += self.material.rho * (N_mat.T @ N_mat) * det_J * w
 
-        return M
+        return 0.5 * (M + M.T)
 
     def body_load(self, body_force: np.ndarray) -> np.ndarray:
-        """
-        Assemble the load vector for the element due to a constant body force.
-
-        The load vector is computed as:
-
-            .. math::
-                f_e = \\int_{\\Omega} N^T \\mathbf{b} \\; d\\Omega,
-
-        where:
-            - \\(N\\) is the shape function matrix assembled for two degrees of freedom per node,
-            - \\(\\mathbf{b}\\) is the constant body force vector (shape (2,)).
+        """Body force vector
 
         Parameters
         ----------
         body_force : np.ndarray
-            A 2-element array representing the body force per unit volume (or area in 2D).
+            Body force components [bx, by]
 
         Returns
         -------
         np.ndarray
-            Element load vector of shape (dofs,).
+            Force vector (n_dofs,)
         """
         points, weights = self.integration_points
         f = np.zeros(self.dofs_count)
+
         for (xi, eta), w in zip(points, weights):
+            N = self.shape_functions(xi, eta)
             _, det_J, _ = self._compute_jacobian(xi, eta)
-            N_values = self.shape_functions(xi, eta)
-            N_matrix = np.zeros((2, self.dofs_count))
-            N_matrix[0, 0::2] = N_values
-            N_matrix[1, 1::2] = N_values
-            f += (N_matrix.T @ body_force[:2]) * det_J * w
+
+            N_mat = np.zeros((2, self.dofs_count))
+            N_mat[0, 0::2] = N  # u-components
+            N_mat[1, 1::2] = N  # v-components
+
+            f += (N_mat.T @ body_force[:2]) * det_J * w
+
         return f
 
     def _compute_jacobian(self, xi: float, eta: float) -> Tuple[np.ndarray, float, np.ndarray]:
-        """
-        Compute the Jacobian matrix, its determinant, and its inverse at given natural coordinates.
+        """Compute Jacobian matrix components
 
         Parameters
         ----------
-        xi : float
-            Natural coordinate xi.
-        eta : float
-            Natural coordinate eta.
+        xi, eta : float
+            Natural coordinates
 
         Returns
         -------
-        tuple
-            A tuple (J, det_J, inv_J) where:
-                - J is the Jacobian matrix,
-                - det_J is the determinant of J,
-                - inv_J is the inverse of J.
-
-        Raises
-        ------
-        ValueError
-            If the determinant of the Jacobian is non-positive.
+        J : np.ndarray
+            Jacobian matrix (2x2)
+        det_J : float
+            Jacobian determinant
+        inv_J : np.ndarray
+            Inverse of Jacobian matrix
         """
         dN_dxi, dN_deta = self.shape_function_derivatives(xi, eta)
-        J = np.array(
-            [
-                [dN_dxi @ self.node_coords[:, 0], dN_deta @ self.node_coords[:, 0]],
-                [dN_dxi @ self.node_coords[:, 1], dN_deta @ self.node_coords[:, 1]],
-            ]
-        )
+
+        J = np.array([
+            [dN_dxi @ self.node_coords[:, 0], dN_deta @ self.node_coords[:, 0]],
+            [dN_dxi @ self.node_coords[:, 1], dN_deta @ self.node_coords[:, 1]],
+        ])
+
         det_J = np.linalg.det(J)
-        if det_J <= 0:
-            raise ValueError("Jacobian determinant is non-positive. Check the node orientation.")
         inv_J = np.linalg.inv(J)
+
         return J, det_J, inv_J
 
+
+class QUAD4(QUAD):
+    """4-node Bilinear Quadrilateral Element
+
+    Node ordering:
+    3-------2
+    |       |
+    |       |
+    0-------1
+    """
+
+    def __init__(
+        self,
+        node_coords: np.ndarray,
+        node_ids: Tuple[int, int, int, int],
+        material: IsotropicMaterial,
+    ):
+        super().__init__(node_coords, node_ids, material)
+        self.name = "QUAD4"
+
     def shape_functions(self, xi: float, eta: float) -> np.ndarray:
-        """
-        Compute bilinear shape functions for quadrilateral element.
+        """Bilinear shape functions
 
-        Parameters
-        ----------
-        xi : float
-            Natural coordinate in [-1, 1]
-        eta : float
-            Natural coordinate in [-1, 1]
+        N0 = 0.25(1 - xi)(1 - eta)
+        N1 = 0.25(1 + xi)(1 - eta)
+        N2 = 0.25(1 + xi)(1 + eta)
+        N3 = 0.25(1 - xi)(1 + eta)
+        """
+        return 0.25 * np.array([
+            (1 - xi) * (1 - eta),
+            (1 + xi) * (1 - eta),
+            (1 + xi) * (1 + eta),
+            (1 - xi) * (1 + eta),
+        ])
+
+    def shape_function_derivatives(self, xi: float, eta: float) -> Tuple[np.ndarray, np.ndarray]:
+        """Shape function derivatives
 
         Returns
         -------
-        np.ndarray
-            Array of shape functions [N0, N1, N2, N3]
+        dN_dxi : np.ndarray
+            Derivatives with respect to xi
+        dN_deta : np.ndarray
+            Derivatives with respect to eta
         """
-        return 0.25 * np.array(
-            [
-                (1 - xi) * (1 - eta),  # N0
-                (1 + xi) * (1 - eta),  # N1
-                (1 + xi) * (1 + eta),  # N2
-                (1 - xi) * (1 + eta),  # N3
-            ]
-        )
+        dN_dxi = 0.25 * np.array([-(1 - eta), (1 - eta), (1 + eta), -(1 + eta)])
 
-    def shape_function_derivatives(self, xi: float, eta: float):
-        """
-        Compute derivatives of bilinear shape functions.
+        dN_deta = 0.25 * np.array([-(1 - xi), -(1 + xi), (1 + xi), (1 - xi)])
 
-        Returns
-        -------
-        Tuple[np.ndarray, np.ndarray]
-            Derivatives w.r.t. xi and eta as (dN_dxi, dN_deta)
-        """
-        dN_dxi = [-(1 - eta), (1 - eta), (1 + eta), -(1 + eta)]
-        dN_deta = [-(1 - xi), -(1 + xi), (1 + xi), (1 - xi)]
+        return dN_dxi, dN_deta
 
-        return 0.25 * np.array([dN_dxi, dN_deta])
+
+class QUAD8(QUAD):
+    """8-node Serendipity Element
+
+    Node ordering:
+    3---6---2
+    |       |
+    7       5
+    |       |
+    0---4---1
+    """
+
+    def __init__(
+        self, node_coords: np.ndarray, node_ids: Tuple[int, ...], material: IsotropicMaterial
+    ):
+        super().__init__(node_coords, node_ids, material)
+        self.name = "QUAD8"
 
     @property
-    def area(self) -> float:
-        """
-        Compute the area of a quadrilateral element.
+    def integration_points(self) -> Tuple[np.ndarray, np.ndarray]:
+        """3x3 Gauss quadrature for exact integration"""
+        sqrt3_5 = np.sqrt(3 / 5)
+        points = np.array([
+            (-sqrt3_5, -sqrt3_5),
+            (0, -sqrt3_5),
+            (sqrt3_5, -sqrt3_5),
+            (-sqrt3_5, 0),
+            (0, 0),
+            (sqrt3_5, 0),
+            (-sqrt3_5, sqrt3_5),
+            (0, sqrt3_5),
+            (sqrt3_5, sqrt3_5),
+        ])
+        weights = np.array([25, 40, 25, 40, 64, 40, 25, 40, 25]) / 81
+        return points, weights
 
-        Supports 4-node (bilinear), 8-node (serendipity), and 9-node (Lagrange) elements.
-        The 4-node element uses the shoelace formula, while the 8-node and 9-node elements
-        are approximated by dividing them into 4 triangles.
+    def shape_functions(self, xi: float, eta: float) -> np.ndarray:
+        """Serendipity shape functions"""
+        return np.array([
+            0.25 * (1 - xi) * (1 - eta) * (-1 - xi - eta),  # N0
+            0.25 * (1 + xi) * (1 - eta) * (-1 + xi - eta),  # N1
+            0.25 * (1 + xi) * (1 + eta) * (-1 + xi + eta),  # N2
+            0.25 * (1 - xi) * (1 + eta) * (-1 - xi + eta),  # N3
+            0.5 * (1 - xi**2) * (1 - eta),  # N4
+            0.5 * (1 + xi) * (1 - eta**2),  # N5
+            0.5 * (1 - xi**2) * (1 + eta),  # N6
+            0.5 * (1 - xi) * (1 - eta**2),  # N7
+        ])
 
-        Returns
-        -------
-        float
-            The approximate area of the quadrilateral element.
+    def shape_function_derivatives(self, xi: float, eta: float) -> Tuple[np.ndarray, np.ndarray]:
+        """Analytical derivatives of shape functions"""
+        dN_dxi = np.array([
+            0.25 * (eta * (2 * xi + eta) + (1 - eta) * (xi + eta)),  # N0
+            0.25 * (eta * (2 * xi - eta) + (1 - eta) * (xi - eta)),  # N1
+            0.25 * (eta * (2 * xi + eta) + (1 + eta) * (xi + eta)),  # N2
+            0.25 * (eta * (2 * xi - eta) + (1 + eta) * (xi - eta)),  # N3
+            -xi * (1 - eta),  # N4
+            0.5 * (1 - eta**2),  # N5
+            -xi * (1 + eta),  # N6
+            -0.5 * (1 - eta**2),  # N7
+        ])
 
-        Raises
-        ------
-        ValueError
-            If `coords` does not have a valid shape.
-        """
-        x, y = self.node_coords[:, 0], self.node_coords[:, 1]
+        dN_deta = np.array([
+            0.25 * (xi * (xi + 2 * eta) + (1 - xi) * (xi + eta)),  # N0
+            0.25 * (-xi * (xi - 2 * eta) + (1 + xi) * (-xi + eta)),  # N1
+            0.25 * (xi * (xi + 2 * eta) + (1 + xi) * (xi + eta)),  # N2
+            0.25 * (-xi * (xi - 2 * eta) + (1 - xi) * (-xi + eta)),  # N3
+            -0.5 * (1 - xi**2),  # N4
+            -(1 + xi) * eta,  # N5
+            0.5 * (1 - xi**2),  # N6
+            -(1 - xi) * eta,  # N7
+        ])
 
-        return 0.5 * abs(
-            x[0] * y[1]
-            + x[1] * y[2]
-            + x[2] * y[3]
-            + x[3] * y[0]
-            - (y[0] * x[1] + y[1] * x[2] + y[2] * x[3] + y[3] * x[0])
-        )
+        return dN_dxi, dN_deta
+
+
+class QUAD9(QUAD):
+    """9-node Lagrange Element
+
+    Node ordering:
+    3---6---2
+    |   |   |
+    7---8---5
+    |   |   |
+    0---4---1
+    """
+
+    def __init__(
+        self, node_coords: np.ndarray, node_ids: Tuple[int, ...], material: IsotropicMaterial
+    ):
+        super().__init__(node_coords, node_ids, material)
+        self.name = "QUAD9"
+
+    @property
+    def integration_points(self) -> Tuple[np.ndarray, np.ndarray]:
+        return QUAD8.integration_points.fget(self)
+
+    def shape_functions(self, xi: float, eta: float) -> np.ndarray:
+        """Biquadratic shape functions"""
+        return np.array([
+            0.25 * xi * eta * (xi - 1) * (eta - 1),  # N0
+            0.25 * xi * eta * (xi + 1) * (eta - 1),  # N1
+            0.25 * xi * eta * (xi + 1) * (eta + 1),  # N2
+            0.25 * xi * eta * (xi - 1) * (eta + 1),  # N3
+            0.5 * (1 - xi**2) * eta * (eta - 1),  # N4
+            0.5 * xi * (xi + 1) * (1 - eta**2),  # N5
+            0.5 * (1 - xi**2) * eta * (eta + 1),  # N6
+            0.5 * xi * (xi - 1) * (1 - eta**2),  # N7
+            (1 - xi**2) * (1 - eta**2),  # N8
+        ])
+
+    def shape_function_derivatives(self, xi: float, eta: float) -> Tuple[np.ndarray, np.ndarray]:
+        """Analytical derivatives of shape functions"""
+        dN_dxi = np.array([
+            0.25 * eta * (eta - 1) * (2 * xi - 1),  # N0
+            0.25 * eta * (eta - 1) * (2 * xi + 1),  # N1
+            0.25 * eta * (eta + 1) * (2 * xi + 1),  # N2
+            0.25 * eta * (eta + 1) * (2 * xi - 1),  # N3
+            -xi * eta * (eta - 1),  # N4
+            0.5 * (1 - eta**2) * (2 * xi + 1),  # N5
+            -xi * eta * (eta + 1),  # N6
+            0.5 * (1 - eta**2) * (2 * xi - 1),  # N7
+            -2 * xi * (1 - eta**2),  # N8
+        ])
+
+        dN_deta = np.array([
+            0.25 * xi * (xi - 1) * (2 * eta - 1),  # N0
+            0.25 * xi * (xi + 1) * (2 * eta - 1),  # N1
+            0.25 * xi * (xi + 1) * (2 * eta + 1),  # N2
+            0.25 * xi * (xi - 1) * (2 * eta + 1),  # N3
+            0.5 * (1 - xi**2) * (2 * eta - 1),  # N4
+            -xi * (xi + 1) * eta,  # N5
+            0.5 * (1 - xi**2) * (2 * eta + 1),  # N6
+            -xi * (xi - 1) * eta,  # N7
+            -2 * eta * (1 - xi**2),  # N8
+        ])
+
+        return dN_dxi, dN_deta

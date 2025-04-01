@@ -63,3 +63,37 @@ __pypackages__/
 
 # Ruff stuff:
 .ruff_cache/
+
+# OpenFOAM ignore
+### Resultados de OpenFOAM (incluyendo sub-subdirectorios) ###
+# Todos los directorios de tiempo en cualquier nivel
+!**/0.orig/          # Versiones modificadas del directorio 0
+**/[0-9]*/           # Ej: case/processor0/0.5/, results/iter1/100/
+**/0.*/              # Versiones modificadas del directorio 0
+
+# Mallas y datos regenerables (en cualquier nivel)
+**/constant/polyMesh/*
+
+# Procesamiento paralelo (anidado)
+**/processor*/
+**/*.host
+
+# Post-procesamiento y logs (en subdirectorios)
+**/postProcessing/**
+**/postProcess/**
+**/log.*
+**/*.log
+**/*.png
+**/core.*
+
+# Archivos de salida específicos en cualquier ubicación
+**/*.foam
+**/*.csv
+**/*.dat
+**/*.vtk
+**/*.ensight
+
+
+# Casos con múltiples niveles de nesting
+**/examples/**/[0-9]*
+!**/examples/**/0.orig
