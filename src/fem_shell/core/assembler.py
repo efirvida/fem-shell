@@ -1,157 +1,83 @@
-from typing import Dict, Sequence
+from typing import Dict
 
 import numpy as np
+from cython_assembler import assemble_global_matrix, assemble_global_vector
 
 from fem_shell.core.mesh import MeshModel
-from fem_shell.elements import ElementFactory
+from fem_shell.elements import ElementFactory, FemElement
 
 
 class MeshAssembler:
-    """Optimized assembler for global matrices and vectors."""
-
-    __slots__ = [
-        "_element_global_dofs_map",
-        "_element_ix_indices",
-        "_element_map",
-        "_nodes_global_dofs_map",
-        "dofs_count",
-        "dofs_per_node",
-        "element_family",
-        "mesh",
-        "model",
-        "simple_element_definition",
-        "spatial_dim",
-        "vector_form",
-    ]
-
     def __init__(self, mesh: MeshModel, model: Dict):
         self.mesh = mesh
-        self.element_family = model["elements"]["element_family"]
         self.model = model["elements"]
-        self.simple_element_definition = self._validate_model()
-
-        # Inicialización optimizada de atributos
+        self.element_family = self.model["element_family"]
         self._element_map: Dict[int, FemElement] = {}
-        self._element_global_dofs_map: Dict[int, np.ndarray] = {}
-        self._nodes_global_dofs_map: Dict[int, Sequence[int]] = {}
-        self.dofs_count: int = 0
+        self._dofs_array: np.ndarray = None
+        self._ke_array: np.ndarray = None  # Matrices de rigidez locales
+        self._me_array: np.ndarray = None  # Matrices de masa locales
         self.dofs_per_node: int = 0
         self.spatial_dim: int = 0
+        self.dofs_count: int = 0
         self.vector_form: Dict = {}
-        self._element_ix_indices: Dict[int, tuple] = {}
-
         self._precompute_elements()
 
-    def _validate_model(self):
-        """Validación optimizada del modelo."""
-        if not isinstance(self.model, dict):
-            raise ValueError("Model must be a dictionary.")
-
-        if "material" in self.model and "element_family" in self.model:
-            return True
-        elif all(isinstance(k, int) for k in self.model):
-            if len(self.model) != self.mesh.elements_count:
-                raise ValueError("Model/Element count mismatch.")
-            return False
-        raise ValueError("Invalid model structure.")
-
-    def _precompute_elements(self) -> None:
-        """Precomputación optimizada de elementos y DOFs."""
-        if not self.mesh.elements:
+    def _precompute_elements(self):
+        """Precomputa elementos y almacena datos en arrays."""
+        elements = self.mesh.elements
+        if not elements:
             return
 
-        # Variables locales para acceso rápido
-        simple_model = self.simple_element_definition
-        element_models = (
-            self.model if simple_model else {e.id: self.model[e.id] for e in self.mesh.elements}
-        )
+        # Inicialización de arrays
+        dofs_list = []
+        ke_list = []
+        me_list = []
 
-        dofs_per_node = spatial_dim = 0
-        element_map = {}
-        element_dofs_map = {}
-        nodes_dofs_map = {}
-
-        for element in self.mesh.elements:
-            # Creación optimizada de elementos
-            fem_element = ElementFactory.get_element(
-                mesh_element=element,
-                **element_models[element.id] if not simple_model else self.model,
-            )
-
+        # Llenar datos
+        for element in elements:
+            fem_element = ElementFactory.get_element(mesh_element=element, **self.model)
             if not fem_element:
                 continue
 
-            # Actualización de parámetros una sola vez
-            if not dofs_per_node:
-                dofs_per_node = fem_element.dofs_per_node
-                spatial_dim = fem_element.spatial_dimmension
-                self.vector_form = fem_element.vector_form
-
-            # Almacenamiento optimizado de DOFs
-            element_dofs = np.array(
+            dofs = np.array(
                 [dof for node in fem_element.global_dof_indices.values() for dof in node],
                 dtype=np.int64,
             )
 
-            element_map[element.id] = fem_element
-            element_dofs_map[element.id] = element_dofs
+            self._element_map[element.id] = fem_element
+            dofs_list.append(dofs)
+            ke_list.append(fem_element.K)
+            me_list.append(fem_element.M)
 
-            # Actualización no redundante de nodos
-            for nid, dofs in fem_element.global_dof_indices.items():
-                if nid not in nodes_dofs_map:
-                    nodes_dofs_map[nid] = dofs
+            # Actualizar parámetros una vez
+            if not self.dofs_per_node:
+                self.dofs_per_node = fem_element.dofs_per_node
+                self.spatial_dim = fem_element.spatial_dimmension
+                self.vector_form = fem_element.vector_form
 
-        # Asignación final de atributos
-        self._element_map = element_map
-        self._element_global_dofs_map = element_dofs_map
-        self._nodes_global_dofs_map = nodes_dofs_map
-        self.dofs_per_node = dofs_per_node
-        self.spatial_dim = spatial_dim
-        self.dofs_count = self.mesh.node_count * dofs_per_node
-
-        # Precomputación de índices para operaciones matriciales
-        self._precompute_ix_indices()
-
-    def _precompute_ix_indices(self):
-        """Precalcula índices para operaciones matriciales."""
-        for eid, dofs in self._element_global_dofs_map.items():
-            self._element_ix_indices[eid] = np.ix_(dofs, dofs)
+        # Convertir a arrays numpy
+        self._dofs_array = np.array(dofs_list, dtype=np.int64)
+        self._ke_array = np.array(ke_list, dtype=np.float64)
+        self._me_array = np.array(me_list, dtype=np.float64)
+        self.dofs_count = self.mesh.node_count * self.dofs_per_node
 
     def assemble_stiffness_matrix(self) -> np.ndarray:
-        """Ensamblaje optimizado de matriz de rigidez."""
+        """Ensambla matriz de rigidez usando Cython."""
         K = np.zeros((self.dofs_count, self.dofs_count))
-        for eid, element in self._element_map.items():
-            ix = self._element_ix_indices[eid]
-            K[ix] += element.K
+        assemble_global_matrix(K, self._dofs_array, self._ke_array)
         return K
 
     def assemble_mass_matrix(self) -> np.ndarray:
-        """Ensamblaje optimizado de matriz de masa."""
+        """Ensambla matriz de masa usando Cython."""
         M = np.zeros((self.dofs_count, self.dofs_count))
-        for eid, element in self._element_map.items():
-            ix = self._element_ix_indices[eid]
-            M[ix] += element.M
+        assemble_global_matrix(M, self._dofs_array, self._me_array)
         return M
 
     def assemble_load_vector(self, load_condition) -> np.ndarray:
-        """Ensamblaje optimizado de vector de cargas."""
+        """Ensambla vector de carga usando Cython."""
         f_global = np.zeros(self.dofs_count)
         load_vector = load_condition.value
-
-        for eid, element in self._element_map.items():
-            dofs = self._element_global_dofs_map[eid]
-            f_global[dofs] += element.body_load(load_vector)
-
+        fe_list = [self._element_map[eid].body_load(load_vector) for eid in self._element_map]
+        fe_array = np.array(fe_list, dtype=np.float64)
+        assemble_global_vector(f_global, self._dofs_array, fe_array)
         return f_global
-
-    def get_dofs_by_nodeset(self, name: str, only_geometric: bool = True):
-        nodes_set = self.mesh.get_node_set(name)
-        nodes = nodes_set.nodes.values()  # Acceso local a los nodos
-        global_dofs_map = self._nodes_global_dofs_map  # Acceso local al mapeo de DOFs
-
-        if only_geometric:
-            return {
-                dof for node in nodes if node.geometric_node for dof in global_dofs_map[node.id]
-            }
-        else:
-            return {dof for node in nodes for dof in global_dofs_map[node.id]}
