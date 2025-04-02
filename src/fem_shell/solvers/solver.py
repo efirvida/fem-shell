@@ -80,7 +80,7 @@ class Solver(ABC):
         self.dirichlet_conditions: List[DirichletCondition] = []
         self.body_forces: List[BodyForce] = []
 
-    def get_dofs_by_nodeset_name(self, name: str, only_geometric_dofs: bool = True) -> Set[int]:
+    def get_dofs_by_nodeset_name(self, name: str) -> Set[int]:
         """
         Retrieve the degrees of freedom (DOFs) associated with a given node set.
 
@@ -94,7 +94,15 @@ class Solver(ABC):
         Set[int]
             Set of DOFs corresponding to the node set.
         """
-        return self.domain.get_dofs_by_nodeset(name, only_geometric_dofs)
+        dofs_per_node = self.domain.dofs_per_node
+        node_ids = self.get_nodeids_by_nodeset_name(name)
+
+        # Versión optimizada con generador y range
+        return {
+            dof
+            for node_id in node_ids
+            for dof in range(node_id * dofs_per_node, (node_id + 1) * dofs_per_node)
+        }
 
     def get_nodeids_by_nodeset_name(self, name: str) -> Set[int]:
         """
