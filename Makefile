@@ -56,7 +56,7 @@ SOURCES_DIR := $(PWD)/.sources
 BUILD_DIR   := $(SOURCES_DIR)/build
 
 # Build Commands
-NPROC         := 3
+NPROC         := $(nproc)
 DOWNLOAD      := wget -nc
 MAKE_CMD      := LD_LIBRARY_PATH=$(VENV_DIR)/lib:$(VENV_DIR)/lib64 \
 				 make -j$(NPROC) && \
@@ -64,7 +64,7 @@ MAKE_CMD      := LD_LIBRARY_PATH=$(VENV_DIR)/lib:$(VENV_DIR)/lib64 \
 				 make install PREFIX=$(VENV_DIR)
 CONFIGURE_CMD := LD_LIBRARY_PATH=$(VENV_DIR)/lib:$(VENV_DIR)/lib64 \
 				 ./configure --prefix=$(VENV_DIR)
-PIP_INSTALL   := LD_LIBRARY_PATH=$(VENV_DIR)/lib:$(VENV_DIR)/lib64 \
+PIP_INSTALL   := PETSC_DIR=$(VENV_DIR) LD_LIBRARY_PATH=$(VENV_DIR)/lib:$(VENV_DIR)/lib64 \
 				 $(VENV_DIR)/bin/pip3 install --no-cache-dir --force-reinstall
 CMAKE_CMD     := LD_LIBRARY_PATH=$(VENV_DIR)/lib:$(VENV_DIR)/lib64 \
 				cmake \
@@ -131,7 +131,7 @@ $(SOURCES_DIR)/download.done:
 	@cd $(SOURCES_DIR) && $(DOWNLOAD) \
 		https://archives.boost.io/release/$(BOOST_VERSION)/source/$(BOOST_TAR) \
 		https://develop.openfoam.com/Development/openfoam/-/archive/OpenFOAM-v$(FOAM_VERSION)/$(FOAM_TAR) \
-		https://dl.openfoam.com/source/v2412/ThirdParty-v$(FOAM_VERSION).tgz \
+		https://dl.openfoam.com/source/v$(FOAM_VERSION)/ThirdParty-v$(FOAM_VERSION).tgz \
 		https://download.open-mpi.org/release/open-mpi/v$(OMPI_SHORT_VERSION)/$(OMPI_TAR) \
 		https://ftp.gnu.org/gnu/gdbm/$(GDBM_TAR) \
 		https://ftp.gnu.org/gnu/ncurses/$(NCURSES_TAR) \
@@ -221,7 +221,7 @@ $(VENV_DIR)/.python.done: $(SOURCES_DIR)/download.done \
 $(VENV_DIR)/.python_env.done: $(VENV_DIR)/.python.done
 
 	@ln -sf $(VENV_DIR)/bin/pip3 $(VENV_DIR)/bin/pip
-	$(PIP_INSTALL) --upgrade pip setuptools wheel Cython
+	$(PIP_INSTALL) --upgrade pip setuptools wheel Cython ipython
 	$(PIP_INSTALL) mpi4py petsc4py slepc4py
 	$(PIP_INSTALL) pyprecice==3.1.0
 	$(PIP_INSTALL) -e .
@@ -232,8 +232,19 @@ $(VENV_DIR)/.python_env.done: $(VENV_DIR)/.python.done
 # PETSc Installation
 #-------------------------------------------------------------------------------
 $(eval $(call build-library,openmpi,$(OMPI_TAR),))
+$(VENV_DIR)/.boost.done: $(SOURCES_DIR)/download.done
+	@echo "Installing BOOST..."
+	@mkdir -p $(BUILD_DIR)/boost
+	@tar -xjf $(SOURCES_DIR)/$(BOOST_TAR) -C $(BUILD_DIR)/boost --strip-components=1
+	@cd $(BUILD_DIR)/boost && \
+		./bootstrap.sh --with-libraries=all --prefix=$(VENV_DIR) && \
+		./b2 install --prefix=$(VENV_DIR)
+	@touch $@
 
-$(VENV_DIR)/.petsc.done: $(VENV_DIR)/.openmpi.done
+# --with-metis-dir=$(FOAM_INST_DIR)/openfoam \
+# --with-scotch-dir=$(FOAM_INST_DIR)/openfoam \
+
+$(VENV_DIR)/.petsc.done: $(VENV_DIR)/.openmpi.done $(VENV_DIR)/.boost.done
 	@echo "Installing PETSc..."
 	@mkdir -p $(BUILD_DIR)/petsc
 	@tar -xzf $(SOURCES_DIR)/$(PETSC_TAR) -C $(BUILD_DIR)/petsc --strip-components=1
@@ -242,12 +253,11 @@ $(VENV_DIR)/.petsc.done: $(VENV_DIR)/.openmpi.done
 			LDFLAGS=$$LDFLAGS \
 			--with-shared-libraries=1 \
 			--with-mpi-dir=$(VENV_DIR) \
-			--with-boost-dir=$(VENV_DIR) \
 			--with-debugging=0 \
-			--with-metis-dir=$(FOAM_INST_DIR)/openfoam \
-			--with-scotch-dir=$(FOAM_INST_DIR)/openfoam \
+			--with-boost-dir=$(VENV_DIR) \
 			--download-fblaslapack \
 			--download-hdf5 \
+			--download-metis \
 			--download-hypre \
 			--download-scalapack \
 			--download-mumps \
@@ -278,14 +288,6 @@ $(VENV_DIR)/.eigen.done:
 	@mv $(VENV_DIR)/include/eigen-$(EIGEN_VERSION) $(VENV_DIR)/include/eigen
 	@touch $@
 
-$(VENV_DIR)/.boost.done: $(SOURCES_DIR)/download.done
-	@echo "Installing BOOST..."
-	@mkdir -p $(BUILD_DIR)/boost
-	@tar -xjf $(SOURCES_DIR)/$(BOOST_TAR) -C $(BUILD_DIR)/boost --strip-components=1
-	@cd $(BUILD_DIR)/boost && \
-		./bootstrap.sh --with-libraries=all --prefix=$(VENV_DIR) && \
-		./b2 install --prefix=$(VENV_DIR)
-	@touch $@
 
 $(VENV_DIR)/.libxml2.done:
 	@echo "Installing libxml2..."
@@ -301,13 +303,16 @@ $(VENV_DIR)/.precice.done: $(VENV_DIR)/.python.done $(VENV_DIR)/.petsc.done $(VE
 	@echo "Installing preCICE..."
 	@mkdir -p $(BUILD_DIR)/precice
 	@tar -xf $(SOURCES_DIR)/$(PRECICE_TAR) -C $(BUILD_DIR)/precice --strip-components=1
-	$(PIP_INSTALL) "polars" "numpy>=2"
+	# $(PIP_INSTALL) "polars" "numpy>=2"
 	@cd $(BUILD_DIR)/precice && \
 		$(CMAKE_CMD) --preset=production \
 			-DEIGEN3_INCLUDE_DIR=$(VENV_DIR)/include/eigen \
 			-DPython3_EXECUTABLE=$(VENV_DIR)/bin/python3 \
 			-DMPI_C_COMPILER=$(VENV_DIR)/bin/mpicc \
-			-DMPI_CXX_COMPILER=$(VENV_DIR)/bin/mpicxx && \
+			-DMPI_CXX_COMPILER=$(VENV_DIR)/bin/mpicxx \
+			-DBUILD_TESTING=OFF \
+			-DPRECICE_CONFIGURE_PACKAGE_GENERATION=OFF \
+			-DCMAKE_INTERPROCEDURAL_OPTIMIZATION=ON && \
 			cd build && \
 		$(MAKE_CMD)
 	@touch $@
@@ -329,7 +334,7 @@ $(VENV_DIR)/.openfoam.done:
 	rm -rf $(FOAM_INST_DIR)/openfoam-OpenFOAM-v$(FOAM_VERSION) 
 	git clone --depth=1 https://develop.openfoam.com/Community/integration-cfmesh.git $(WM_PROJECT_DIR)/plugins/cfmesh || true
 	git clone --depth=1 https://github.com/precice/openfoam-adapter.git $(WM_PROJECT_DIR)/plugins/precice-adapter || true
-	git clone --depth=1 https://github.com/unicfdlab/libAcoustics.git $(WM_PROJECT_DIR)/plugins/libAcoustics || true
+	git clone --depth=1 -b v2412 https://github.com/unicfdlab/libAcoustics.git $(WM_PROJECT_DIR)/plugins/libAcoustics || true
 
 	source $(WM_PROJECT_DIR)/etc/bashrc && \
 		cd $(FOAM_INST_DIR)/ThirdParty-v$(FOAM_VERSION) && \
@@ -381,7 +386,7 @@ $(VENV_DIR)/.openfoam.done:
 		FOAM_EXTRA_CFLAGS="-I$(VENV_DIR)/include" FOAM_EXTRA_CXXFLAGS="-I$(VENV_DIR)/include" \
 		FOAM_EXTRA_LDFLAGS="-L$(VENV_DIR)/lib -L$(VENV_DIR)/lib64 -Wl,-rpath,$(VENV_DIR)/lib:$(VENV_DIR)/lib64" \
 		FOAM_USER_LIBBIN=$(WM_PROJECT_DIR)/platforms/linux64GccDPInt64Opt/lib \
-		./Allwmake-plugins -j$(NPROC) 
+		./Allwmake-plugins -s -q -l -j 
 
 	mkdir -p $(FOAM_INST_DIR)/openfoam
 	@cd $(WM_PROJECT_DIR) && \
