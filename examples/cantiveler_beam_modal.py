@@ -1,5 +1,5 @@
 from fem_shell.core.bc import DirichletCondition
-from fem_shell.core.material import Material
+from fem_shell.core.material import IsotropicMaterial as Material
 from fem_shell.core.mesh import SquareShapeMesh
 from fem_shell.elements import ElementFamily
 from fem_shell.solvers import ModalSolver
