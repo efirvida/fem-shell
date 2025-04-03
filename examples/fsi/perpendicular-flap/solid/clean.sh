@@ -2,4 +2,4 @@
 
 rm -rf rm -rf precice-*.log
 rm -rf precice-profiling*
-rm *.png
+rm *.png *.vtk *.csv

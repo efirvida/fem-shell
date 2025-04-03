@@ -299,6 +299,21 @@ class BoundaryConditionManager:
         """
         return vector.getSubVector(self._free_is)
 
+    def reduce_matrix(self, matrix: PETSc.Mat) -> PETSc.Mat:
+        """Reduce arbitrary vector using current free DOFs.
+
+        Parameters
+        ----------
+        vector : PETSc.Vec
+            Full system vector to reduce
+
+        Returns
+        -------
+        PETSc.Vec
+            Reduced vector
+        """
+        return matrix.createSubMatrix(self._free_is, self._free_is)
+
     @property
     def free_dofs(self) -> np.ndarray:
         """Indices of unconstrained degrees of freedom."""

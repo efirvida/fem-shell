@@ -1,4 +1,4 @@
-from typing import Dict, Optional
+from typing import Dict, Iterable, Optional
 
 import numpy as np
 from mpi4py import MPI
@@ -36,6 +36,7 @@ class MeshAssembler:
         self.comm = MPI.COMM_WORLD
         self._element_map: Dict[int, FemElement] = {}
         self._dofs_array: np.ndarray = None
+        self._node_dofs_map: Dict[int, Iterable] = {}
         self._ke_array: np.ndarray = None
         self._me_array: np.ndarray = None
         self.dofs_per_node: int = 0
@@ -59,6 +60,8 @@ class MeshAssembler:
             fem_element = ElementFactory.get_element(mesh_element=element, **self.model)
             if not fem_element:
                 continue
+
+            self._node_dofs_map.update(fem_element.global_dof_indices)
 
             dofs = np.array(
                 [dof for node in fem_element.global_dof_indices.values() for dof in node],

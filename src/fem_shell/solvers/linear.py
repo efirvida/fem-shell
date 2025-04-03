@@ -1,14 +1,13 @@
 import os
-import warnings
-from typing import Dict, Iterable, List
+from typing import Dict, Iterable, List, Tuple
 
 import matplotlib.pyplot as plt
 import meshio
 import numpy as np
-import scipy.sparse.linalg as spla
 from mpi4py import MPI
 from petsc4py import PETSc
-from scipy.sparse.linalg import spsolve
+from rich.progress import track
+from slepc4py import SLEPc
 
 from fem_shell.core.bc import BodyForce, BoundaryConditionManager
 from fem_shell.core.mesh import MeshModel
@@ -198,30 +197,17 @@ class LinearStaticSolver(Solver):
                     )
 
 
+# FIXME: This class is not well implemented
 class LinearDynamicSolver(Solver):
-    """Dynamic FEM solver using implicit Newmark-β integration.
+    """Dynamic FEM solver using PETSc/SLEPc para sistemas a gran escala"""
 
-    Parameters
-    ----------
-    mesh : MeshModel
-        Finite element mesh model
-    solver_params : Dict
-        Solver parameters dictionary
-
-    Attributes
-    ----------
-    time_history : Dict[float, np.ndarray]
-        Stores displacement solutions at each saved time step
-    critical_dt : float
-        Computed stable time step based on modal analysis
-    """
-
-    def __init__(self, mesh: "MeshModel", fem_model_properties: Dict):
+    def __init__(self, mesh: MeshModel, fem_model_properties: Dict):
         super().__init__(mesh, fem_model_properties)
         self._validate_params(self.solver_params)
         self.time_history: Dict[float, np.ndarray] = {}
         self.critical_dt: float = 0.0
         self.free_dofs = []
+        self.comm = MPI.COMM_WORLD
 
     def _validate_params(self, params: Dict) -> Dict:
         """Validate and set default solver parameters.
@@ -262,145 +248,236 @@ class LinearDynamicSolver(Solver):
 
         self.solver_params = validated
 
-    def _compute_critical_timestep(self, K_red: np.ndarray, M_red: np.ndarray) -> float:
-        """Compute stable time step using modal analysis.
+    def _compute_critical_timestep(self, K: PETSc.Mat, M: PETSc.Mat) -> float:
+        """Cálculo del paso crítico usando SLEPc"""
+        eps = SLEPc.EPS().create(self.comm)
+        eps.setOperators(K, M)
+        eps.setProblemType(SLEPc.EPS.ProblemType.GHEP)
+        eps.setWhichEigenpairs(SLEPc.EPS.Which.LARGEST_MAGNITUDE)
+        eps.setDimensions(nev=1)
+        eps.solve()
 
-        Parameters
-        ----------
-        K_red : np.ndarray
-            Reduced stiffness matrix
-        M_red : np.ndarray
-            Reduced mass matrix
+        nconv = eps.getConverged()
+        if nconv < 1:
+            raise RuntimeError("No se encontraron valores propios")
 
-        Returns
-        -------
-        float
-            Critical time step
-        """
-        # Compute first few eigenvalues
-        eigvals, _ = spla.eigsh(K_red, M=M_red)
-        valid_eigvals = eigvals[eigvals > 1e-8]
-
-        if len(valid_eigvals) == 0:
-            warnings.warn("No valid eigenvalues found. Using default dt=1e-5")
-            return 1e-5
-
-        omega_max = np.sqrt(valid_eigvals[-1])
+        eigval = eps.getEigenvalue(0)
+        omega_max = np.sqrt(eigval.real)
         return self.solver_params["safety_factor"] * 2.0 / omega_max
 
-    def solve(self):
-        """Perform dynamic analysis using improved Newmark-β method."""
-        # Ensamblaje inicial de matrices
-        self.K = self.domain.assemble_stiffness_matrix()
-        self.M = self.domain.assemble_mass_matrix()
-        self.F = self.domain.assemble_load_vector(BodyForce([1.0, 1.0, 1.0]))
-        self.C = self.solver_params["eta_m"] * self.M + self.solver_params["eta_k"] * self.K
+    def solve(self) -> Tuple[PETSc.Vec, PETSc.Vec, PETSc.Vec]:
+        # Ensamblar matrices
+        K = self.domain.assemble_stiffness_matrix()
+        M = self.domain.assemble_mass_matrix()
+        F = self.domain.assemble_load_vector(BodyForce([1.0, 1.0, 1.0]))
+        C = self._create_damping_matrix(K, M)
 
-        # Aplicación de condiciones de frontera
-        bc_applier = BoundaryConditionManager(self.K, self.F, self.M)
+        # Aplicar BCs
+        bc_applier = BoundaryConditionManager(K, F, M)
         bc_applier.apply_dirichlet(self.dirichlet_conditions)
-        K_red, F_red, M_red = bc_applier.get_reduced_system()
-        C_red = bc_applier.reduce_matrix(self.C)
+        K_red, F_red, M_red = bc_applier.reduced_system
+        C_red = bc_applier.reduce_matrix(C)
         self.free_dofs = bc_applier.free_dofs
 
-        # Cálculo del paso temporal
-        critical_dt = self._compute_critical_timestep(K_red, M_red)
-        dt = (
-            critical_dt
-            if self.solver_params["use_critical_dt"]
-            else self.solver_params["time_step"]
-        )
+        # Configurar solver lineal
+        ksp = PETSc.KSP().create(self.comm)
+        ksp.setType("cg")
+        ksp.getPC().setType("ilu")
+        ksp.setFromOptions()
 
-        # Coeficientes de Newmark-β
+        # Calcular paso temporal
+        if self.solver_params["use_critical_dt"]:
+            dt = self._compute_critical_timestep(K_red, M_red)
+        else:
+            dt = self.solver_params["time_step"]
+
+        # Coeficientes Newmark-β
         beta = self.solver_params["beta"]
         gamma = self.solver_params["gamma"]
         a0 = 1.0 / (beta * dt**2)
-        a1_v = 1.0 / (beta * dt)  # Coeficiente para velocidad
-        a1_c = gamma / (beta * dt)  # Coeficiente para amortiguación
+        a1_v = 1.0 / (beta * dt)
+        a1_c = gamma / (beta * dt)
         a3 = 1.0 / (2 * beta) - 1.0
 
-        # Matriz de rigidez efectiva
-        K_eff = K_red + a0 * M_red + a1_c * C_red
+        # Matriz efectiva
+        K_eff = self._assemble_effective_matrix(K_red, M_red, C_red, a0, a1_c)
+        ksp.setOperators(K_eff)
 
-        # Condiciones iniciales
-        u = np.zeros_like(F_red)
-        v = np.zeros_like(F_red)
-        a = np.linalg.solve(M_red, F_red - C_red @ v - K_red @ u)
+        # Inicializar vectores
+        u, v, a = self._initialize_vectors(K_red)
+        u_new, v_new, a_new = [K_red.createVecRight() for _ in range(3)]
 
         # Bucle temporal
         n_steps = int(self.solver_params["total_time"] / dt) + 1
-        for step in range(n_steps):
+        for step in track(range(n_steps), description="Processing..."):
             t = step * dt
 
-            # Fuerza efectiva
-            F_eff = (
-                self._time_dependent_load(t)
-                + M_red @ (a0 * u + a1_v * v + a3 * a)
-                + C_red @ (a1_c * u + (gamma / beta - 1) * v + dt * (gamma / (2 * beta) - 1) * a)
-            )
+            # 1. Calcular fuerza efectiva
+            F_eff = self._compute_effective_force(M_red, C_red, u, v, a, a0, a1_v, a3, t)
 
-            # Resolver para el desplazamiento
-            u_new = spsolve(K_eff, F_eff)  # Usar un solucionador robusto
+            # 2. Resolver para desplazamiento
+            ksp.solve(F_eff, u_new)
 
-            # Actualizar aceleración y velocidad
-            a_new = a0 * (u_new - u) - a1_v * v - a3 * a
-            v_new = v + dt * ((1 - gamma) * a + gamma * a_new)
+            # 3. Calcular nueva aceleración y velocidad
+            self._update_acceleration(u_new, u, v, a, a_new, a0, a1_v, a3)
+            self._update_velocity(v, a, a_new, v_new, dt, gamma)
 
-            # Almacenar resultados
-            if self.solver_params["save_history"]:
-                self._store_results(t, u_new, bc_applier)
+            # 4. Actualizar estados para siguiente paso
+            u.copy(u_new)
+            v.copy(v_new)
+            a.copy(a_new)
+            self.u = bc_applier.expand_solution(u_new)
+            # 5. Almacenar resultados
+            if self.solver_params["save_history"] and self.comm.rank == 0:
+                self._store_results(t, bc_applier.expand_solution(u_new))
 
-            # Avanzar al siguiente paso
-            u, v, a = u_new, v_new, a_new
+        return u, v, a
 
-        # Reconstrucción final
-        self.u = self._full_solution(u, bc_applier)
-        self.v = self._full_solution(v, bc_applier)
-        self.a = self._full_solution(a, bc_applier)
+    def _update_acceleration(
+        self,
+        u_new: PETSc.Vec,
+        u: PETSc.Vec,
+        v: PETSc.Vec,
+        a: PETSc.Vec,
+        a_new: PETSc.Vec,
+        a0: float,
+        a1_v: float,
+        a3: float,
+    ):
+        """Actualización correcta de la aceleración usando Newmark-β"""
+        # Calcular diferencia de desplazamientos
+        delta_u = u_new.duplicate()
+        delta_u.copy(u_new)
+        delta_u.axpy(-1.0, u)  # delta_u = u_new - u
 
-        return self.u, self.v, self.a
+        # Calcular nueva aceleración
+        a_new.set(0.0)
+        a_new.axpy(a0, delta_u)  # a0*(u_new - u)
+        a_new.axpy(-a1_v, v)  # - a1_v*v
+        a_new.axpy(-a3, a)  # - a3*a
+
+    def _update_velocity(
+        self,
+        v: PETSc.Vec,
+        a: PETSc.Vec,
+        a_new: PETSc.Vec,
+        v_new: PETSc.Vec,
+        dt: float,
+        gamma: float,
+    ):
+        """Actualización correcta de la velocidad"""
+        v_new.copy(v)
+        v_new.axpy(dt * (1 - gamma), a)  # dt*(1-γ)*a
+        v_new.axpy(dt * gamma, a_new)  # dt*γ*a_new
+
+    def _store_results(self, t: float, u: PETSc.Vec):
+        """Almacenamiento paralelo seguro"""
+        scatter, u_full = PETSc.Scatter.toZero(u)
+        scatter.scatter(u, u_full, False)
+
+        if self.comm.rank == 0:
+            self.time_history[t] = u_full.getArray().copy()
+
+    def _create_damping_matrix(self, K: PETSc.Mat, M: PETSc.Mat) -> PETSc.Mat:
+        """Crea matriz de amortiguación Rayleigh"""
+        C = K.duplicate()
+        C.aypx(self.solver_params["eta_k"], M)
+        C.scale(self.solver_params["eta_m"])
+        return C
+
+    def _assemble_effective_matrix(
+        self, K: PETSc.Mat, M: PETSc.Mat, C: PETSc.Mat, a0: float, a1_c: float
+    ) -> PETSc.Mat:
+        """Ensambla matriz K_eff = K + a0*M + a1_c*C"""
+        K_eff = K.duplicate()
+        K_eff.axpy(a0, M)
+        K_eff.axpy(a1_c, C)
+        return K_eff
+
+    def _initialize_vectors(self, K: PETSc.Mat) -> Tuple[PETSc.Vec, PETSc.Vec, PETSc.Vec]:
+        """Inicializa vectores de estado"""
+        u = K.createVecRight()
+        v = K.createVecRight()
+        a = K.createVecRight()
+        u.set(0.0)
+        v.set(0.0)
+        a.set(0.0)
+        return u, v, a
+
+    def _compute_effective_force(
+        self,
+        M: PETSc.Mat,
+        C: PETSc.Mat,
+        u: PETSc.Vec,
+        v: PETSc.Vec,
+        a: PETSc.Vec,
+        a0: float,
+        a1_v: float,
+        a3: float,
+        t: float,
+    ) -> PETSc.Vec:
+        """Calcula F_eff = F(t) + M*(a0*u + a1_v*v + a3*a) + C*(a1_c*u + ...)"""
+        F_eff = self._time_dependent_load(t)
+
+        temp = M.createVecRight()
+        M.mult(u, temp)
+        F_eff.axpy(a0, temp)
+
+        M.mult(v, temp)
+        F_eff.axpy(a1_v, temp)
+
+        M.mult(a, temp)
+        F_eff.axpy(a3, temp)
+
+        return F_eff
+
+    def _update_states(
+        self,
+        u_new: PETSc.Vec,
+        v: PETSc.Vec,
+        a: PETSc.Vec,
+        u: PETSc.Vec,
+        v_new: PETSc.Vec,
+        a_new: PETSc.Vec,
+        dt: float,
+        gamma: float,
+        beta: float,
+    ):
+        """Actualiza velocidades y aceleraciones"""
+        # a_new = a0*(u_new - u) - a1_v*v - a3*a
+        a_new.waxpy(1.0, u_new, u)
+        a_new.scale(a0)
+        a_new.axpy(-a1_v, v)
+        a_new.axpy(-a3, a)
+
+        # v_new = v + dt*((1-gamma)*a + gamma*a_new)
+        v_new.waxpy(dt * (1 - gamma), a, v)
+        v_new.axpy(dt * gamma, a_new)
+
+        # Actualizar para siguiente paso
+        u.copy(u_new)
+        v.copy(v_new)
+        a.copy(a_new)
+
+    def _store_results(self, t: float, u: PETSc.Vec):
+        """Almacena resultados en formato numpy (solo rank 0)"""
+        u_np = u.getArray().copy() if self.comm.rank == 0 else None
+        self.time_history[t] = u_np
+
+    def _full_solution(self, u_red: PETSc.Vec, bc_applier: BoundaryConditionManager) -> np.ndarray:
+        """Reconstruye solución completa (solo para post-proceso)"""
+        full_u = np.zeros(self.domain.dofs_count)
+        if self.comm.rank == 0:
+            full_u[bc_applier.free_dofs] = u_red.getArray()
+        return full_u
 
     def _time_dependent_load(self, t: float) -> np.ndarray:
         if t <= 0.2:
             F = self.domain.assemble_load_vector(BodyForce(np.array([0.0, 1.0, 1.5]) * t / 0.2))
-            F = F[self.free_dofs]
+            return PETSc.Vec().createWithArray(F.array[self.free_dofs])
         else:
-            F = np.zeros(len(self.free_dofs))
-        return F
-
-    def _store_results(self, t: float, u_red: np.ndarray, bc_applier: BoundaryConditionManager):
-        """Store results and optionally write to VTK.
-
-        Parameters
-        ----------
-        t : float
-            Current time
-        u_red : np.ndarray
-            Reduced displacement vector
-        bc_applier : BoundaryConditionManager
-            Boundary condition handler
-        """
-        full_u = self._full_solution(u_red, bc_applier)
-        self.time_history[t] = full_u
-
-    def _full_solution(self, u_red: np.ndarray, bc_applier: BoundaryConditionManager) -> np.ndarray:
-        """Reconstruct full DOF solution from reduced vector.
-
-        Parameters
-        ----------
-        u_red : np.ndarray
-            Reduced displacement vector
-        bc_applier : BoundaryConditionManager
-            Boundary condition handler
-
-        Returns
-        -------
-        np.ndarray
-            Full displacement vector
-        """
-        full_u = np.zeros(self.domain.dofs_count)
-        full_u[bc_applier.free_dofs] = u_red
-        return full_u
+            arr = np.zeros(len(self.free_dofs))
+            return PETSc.Vec().createWithArray(arr)
 
     def write_results(self, output_file: str | None = None) -> None:
         """
@@ -430,7 +507,7 @@ class LinearDynamicSolver(Solver):
             os.makedirs(output_dir)
 
         # Obtener componentes vectoriales
-        vector_form = self.domain.vector_form
+        vector_form = self.vector_form
         vector_components = [comp for vec in vector_form.values() for comp in vec]
 
         # Verificar existencia de self.u

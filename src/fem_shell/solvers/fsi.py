@@ -8,7 +8,7 @@ from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 import numpy as np
 import precice
 import yaml
-from scipy.linalg import solve
+from petsc4py import PETSc
 
 from fem_shell.core.assembler import MeshAssembler
 from fem_shell.core.bc import BoundaryConditionManager
@@ -288,7 +288,7 @@ class Adapter:
         read_data = self._interface.read_data(
             mesh_name, data_name, self._precice_vertex_ids, self.dt
         )
-        return copy.deepcopy(read_data)
+        return copy.deepcopy(read_data.astype(PETSc.ScalarType))
 
     def write_data(self, write_function) -> None:
         """Writes data to preCICE. Depending on the dimensions of the simulation.
@@ -343,7 +343,7 @@ class Adapter:
         nodes = {node.id: node.coords for _set in self._node_sets for node in _set.nodes.values()}
 
         self._interface_coords = np.array(list(nodes.values()))[:, : self._domain.spatial_dim]
-        self._interface_dofs = np.array([self._domain._nodes_global_dofs_map[n] for n in nodes])
+        self._interface_dofs = np.array([self._domain._node_dofs_map[n] for n in nodes])
 
         self._precice_vertex_ids = self._interface.set_mesh_vertices(
             self._config.mesh_name, self._interface_coords
@@ -474,8 +474,8 @@ class Adapter:
     def interface_dofs(self):
         """Returns the interface degrees of freedom."""
         if self._interface_dofs.shape[0] > 3:
-            return self._interface_dofs[:, :3]
-        return self._interface_dofs
+            return self._interface_dofs[:, :3].astype(PETSc.IntType)
+        return self._interface_dofs.astype(PETSc.IntType)
 
     @property
     def interface_coordinates(self):
@@ -503,14 +503,40 @@ class LinearDynamicFSISolver(LinearDynamicSolver):
     def __init__(self, mesh: MeshModel, fem_model_properties: Dict):
         super().__init__(mesh, fem_model_properties)
         self.precice_participant = Adapter(fem_model_properties["solver"]["adapter_cfg"])
+        self._prepared = False
+
+    def _setup_solver(self):
+        """Configure PETSc linear solver with residual monitoring support"""
+        self._solver = PETSc.KSP().create(self.comm)
+
+        # Clear previous residual history
+        self._residual_history = []
+        self._solver.setType("cg")
+
+        pc = self._solver.getPC()
+        pc.setType("hypre")
+
+        opts = PETSc.Options()
+        opts["pc_hypre_type"] = "boomeramg"
+        opts["pc_hypre_boomeramg_coarsen_type"] = "HMIS"  # Uppercase
+        opts["pc_hypre_boomeramg_interp_type"] = "classical"
+        opts["pc_hypre_boomeramg_relax_type_all"] = "symmetric-sor/jacobi"  # Correct value
+        opts["pc_hypre_boomeramg_strong_threshold"] = 0.5
+        opts["pc_hypre_boomeramg_max_levels"] = 5
+        opts["pc_hypre_boomeramg_print_statistics"] = 0
+
+        self._solver.setTolerances(rtol=1e-8, atol=1e-12, max_it=1000)
+        self._solver.setFromOptions()
 
     def solve(self):
         """Perform dynamic analysis using improved Newmark-β method."""
         # Ensamblaje inicial de matrices
         self.K = self.domain.assemble_stiffness_matrix()
-
         self.M = self.domain.assemble_mass_matrix()
-        self.F = np.zeros(self.domain.dofs_count)
+
+        force_temp = PETSc.Vec().createMPI(self.domain.dofs_count, comm=self.comm)
+        force_temp.set(0.0)
+        self.F = force_temp
 
         # Aplicación de condiciones de frontera
         bc_manager = BoundaryConditionManager(self.K, self.F, self.M, self.domain.dofs_per_node)
@@ -528,6 +554,12 @@ class LinearDynamicFSISolver(LinearDynamicSolver):
 
         self.free_dofs = bc_manager.free_dofs
 
+        # Configure solver
+        if not self._prepared:
+            self._setup_solver()
+            self._solver.setOperators(K_red)
+            self._prepared = True
+
         # Coeficientes de Newmark-β
         beta = self.solver_params["beta"]
         gamma = self.solver_params["gamma"]
@@ -540,13 +572,20 @@ class LinearDynamicFSISolver(LinearDynamicSolver):
         K_eff = K_red + a0 * M_red
 
         # Condiciones iniciales
-        u = np.zeros_like(F_red)
-        v = np.zeros_like(F_red)
-        try:
-            a = solve(M_red, F_red - K_red @ u, assume_a="pos")
-        except LinAlgError:
-            print("Singular M_red matrix. Review boundary conditions.")
-            raise
+        u = K_red.createVecRight()
+        v = K_red.createVecRight()
+
+        # 1. Crear vector residual (F_red - K_red*u)
+        residual = F_red.duplicate()  # Crea vector del mismo tamaño que F_red
+        residual.copy(F_red)  # Copia F_red al residual
+        K_red.mult(u, residual)  # residual = K_red*u (sobrescribe)
+        residual.scale(-1.0)  # residual = -K_red*u
+        residual.axpy(1.0, F_red)  # residual = F_red - K_red*u
+
+        # 2. Resolver el sistema M_red*a = residual
+        a = M_red.createVecRight()  # Crea vector para solución
+        self._solver.setOperators(M_red)  # Establece matriz del sistema
+        self._solver.solve(residual, a)  # Resuelve M_red*a = residual
 
         t = 0
         while self.precice_participant.is_coupling_ongoing:
@@ -558,15 +597,17 @@ class LinearDynamicFSISolver(LinearDynamicSolver):
             interface_dofs = self.precice_participant.interface_dofs
 
             F_new = self.F.copy()
-            F_new[interface_dofs] = data
-            F_new_red = F_new[bc_manager.free_dofs]
+            F_new.setValues(interface_dofs, data)
+            F_new_red = bc_manager.reduce_vector(F_new)
 
             F_eff = F_new_red + M_red @ (a0 * u + a2 * v + a3 * a)
 
             # Resolver para el desplazamiento
-            u_new = solve(K_eff, F_eff, assume_a="pos")
+            u_new = K_eff.createVecRight()
+            self._solver.setOperators(K_eff)
+            self._solver.solve(F_eff, u_new)
 
-            self.precice_participant.write_data(self._full_solution(u_new, bc_manager))
+            self.precice_participant.write_data(bc_manager.expand_solution(u_new).array)
             self.precice_participant.advance(self.dt)
 
             if self.precice_participant.requires_reading_checkpoint:
@@ -581,9 +622,8 @@ class LinearDynamicFSISolver(LinearDynamicSolver):
                 u, v, a = u_new, v_new, a_new
                 t += self.dt
 
-        # Reconstrucción final
-        self.u = self._full_solution(u, bc_manager)
-        self.v = self._full_solution(v, bc_manager)
-        self.a = self._full_solution(a, bc_manager)
+        self.u = bc_manager.expand_solution(u)
+        self.v = bc_manager.expand_solution(v)
+        self.a = bc_manager.expand_solution(a)
 
         return self.u, self.v, self.a
