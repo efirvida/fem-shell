@@ -12,7 +12,7 @@ endif
 
 # Version configurations
 BOOST_VERSION      := 1.81.0
-EIGEN_VERSION      := 3.3.7
+EIGEN_VERSION      := 3.4.0
 FOAM_VERSION       := 2406
 GDBM_VERSION       := 1.23
 LIBFFI_VERSION     := 3.4.2
@@ -24,7 +24,7 @@ OMPI_SHORT_VERSION := $OMPI_VERSION := 4.1.8
 OMPI_SHORT_VERSION := $(word 1,$(subst ., ,$(OMPI_VERSION))).$(word 2,$(subst ., ,$(OMPI_VERSION)))
 OPENSSL_VERSION    := 3.4.1
 PETSC_VERSION      := 3.22.2
-PRECICE_VERSION    := 3.1.2
+PRECICE_VERSION    := 3.2.0
 PYTHON_VERSION     := 3.12.9
 READLINE_VERSION   := 8.2
 
@@ -221,9 +221,8 @@ $(VENV_DIR)/.python.done: $(SOURCES_DIR)/download.done \
 $(VENV_DIR)/.python_env.done: $(VENV_DIR)/.python.done
 
 	@ln -sf $(VENV_DIR)/bin/pip3 $(VENV_DIR)/bin/pip
-	$(PIP_INSTALL) --upgrade pip setuptools wheel Cython ipython
-	$(PIP_INSTALL) mpi4py petsc4py slepc4py
-	$(PIP_INSTALL) pyprecice==3.1.0
+	$(PIP_INSTALL) --upgrade pip setuptools wheel ipython
+	$(PIP_INSTALL) mpi4py petsc4py slepc4py pyprecice==$(PRECICE_VERSION)
 	$(PIP_INSTALL) -e .
 
 	@touch $@
@@ -284,8 +283,12 @@ $(VENV_DIR)/.slepc.done: $(VENV_DIR)/.petsc.done
 #-------------------------------------------------------------------------------
 $(VENV_DIR)/.eigen.done:
 	@echo "Installing Eigen..."
-	@tar -xzf $(SOURCES_DIR)/$(EIGEN_TAR) -C $(VENV_DIR)/include/
-	@mv $(VENV_DIR)/include/eigen-$(EIGEN_VERSION) $(VENV_DIR)/include/eigen
+	@mkdir -p $(BUILD_DIR)/eigen
+	@tar -xzf $(SOURCES_DIR)/$(EIGEN_TAR) -C $(BUILD_DIR)/eigen --strip-components=1
+	@cd $(BUILD_DIR)/eigen && \
+		mkdir build && cd build &&  \
+		$(CMAKE_CMD) .. && \
+		$(MAKE_CMD)
 	@touch $@
 
 
@@ -303,10 +306,10 @@ $(VENV_DIR)/.precice.done: $(VENV_DIR)/.python.done $(VENV_DIR)/.petsc.done $(VE
 	@echo "Installing preCICE..."
 	@mkdir -p $(BUILD_DIR)/precice
 	@tar -xf $(SOURCES_DIR)/$(PRECICE_TAR) -C $(BUILD_DIR)/precice --strip-components=1
-	# $(PIP_INSTALL) "polars" "numpy>=2"
+	$(PIP_INSTALL) polars "numpy>=2"
 	@cd $(BUILD_DIR)/precice && \
 		$(CMAKE_CMD) --preset=production \
-			-DEIGEN3_INCLUDE_DIR=$(VENV_DIR)/include/eigen \
+			-DEIGEN3_INCLUDE_DIR=$(VENV_DIR)/include/eigen3 \
 			-DPython3_EXECUTABLE=$(VENV_DIR)/bin/python3 \
 			-DMPI_C_COMPILER=$(VENV_DIR)/bin/mpicc \
 			-DMPI_CXX_COMPILER=$(VENV_DIR)/bin/mpicxx \

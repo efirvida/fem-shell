@@ -6,8 +6,8 @@ cycler==0.12.1
 Cython==3.0.12
 decorator==5.2.1
 executing==2.2.0
--e git+https://github.com/efirvida/fem-shell.git@9c71d5a3ba3679f689c3c58f98a58b9dda60d39f#egg=fem_shell
-fonttools==4.56.0
+-e git+https://github.com/efirvida/fem-shell.git@71bafb1083bf9ab835937e6ed6536758351614f5#egg=fem_shell
+fonttools==4.57.0
 gmsh==4.13.1
 idna==3.10
 ipython==9.0.2
@@ -25,7 +25,7 @@ packaging==24.2
 parso==0.8.4
 petsc4py==3.22.4
 pexpect==4.9.0
-pillow==11.2.0
+pillow==11.1.0
 platformdirs==4.3.7
 polars==1.26.0
 pooch==1.8.2
@@ -34,10 +34,10 @@ ptyprocess==0.7.0
 pure_eval==0.2.3
 Pygments==2.19.1
 pyparsing==3.2.3
-pyprecice==3.1.0
-PySide6==6.8.3
-PySide6_Addons==6.8.3
-PySide6_Essentials==6.8.3
+pyprecice==3.2.0
+PySide6==6.9.0
+PySide6_Addons==6.9.0
+PySide6_Essentials==6.9.0
 python-dateutil==2.9.0.post0
 pyvista==0.44.2
 pyvistaqt==0.11.2
@@ -48,13 +48,13 @@ rich==14.0.0
 scipy==1.15.2
 scooby==0.10.0
 setuptools==78.1.0
-shiboken6==6.8.3
+shiboken6==6.9.0
 six==1.17.0
 slepc==3.22.2
 slepc4py==3.22.2
 stack-data==0.6.3
 traitlets==5.14.3
-typing_extensions==4.13.0
+typing_extensions==4.13.1
 urllib3==2.3.0
 vtk==9.3.1
 wcwidth==0.2.13
