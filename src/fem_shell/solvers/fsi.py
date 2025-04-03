@@ -508,31 +508,53 @@ class LinearDynamicFSISolver(LinearDynamicSolver):
     def _setup_solver(self):
         """Configure PETSc linear solver with residual monitoring support"""
         self._solver = PETSc.KSP().create(self.comm)
-
-        # Clear previous residual history
-        self._residual_history = []
         self._solver.setType("cg")
 
+        # Configurar precondicionador para el solucionador principal
         pc = self._solver.getPC()
-        pc.setType("hypre")
 
         opts = PETSc.Options()
-        opts["pc_hypre_type"] = "boomeramg"
-        opts["pc_hypre_boomeramg_coarsen_type"] = "HMIS"  # Uppercase
-        opts["pc_hypre_boomeramg_interp_type"] = "classical"
-        opts["pc_hypre_boomeramg_relax_type_all"] = "symmetric-sor/jacobi"  # Correct value
-        opts["pc_hypre_boomeramg_strong_threshold"] = 0.5
-        opts["pc_hypre_boomeramg_max_levels"] = 5
-        opts["pc_hypre_boomeramg_print_statistics"] = 0
+        if self.domain.dofs_count > 1e5:
+            pc.setType("hypre")
+            opts["pc_hypre_type"] = "boomeramg"
+            opts["pc_hypre_boomeramg_coarsen_type"] = "Falgout"
+            opts["pc_hypre_boomeramg_interp_type"] = "classical"
+            opts["pc_hypre_boomeramg_relax_type_all"] = "symmetric-sor/jacobi"
+            opts["pc_hypre_boomeramg_strong_threshold"] = 0.5
+            opts["pc_hypre_boomeramg_max_levels"] = 5
+            opts["pc_hypre_boomeramg_print_statistics"] = 0
+            self._solver.setTolerances(rtol=1e-6, atol=1e-8, max_it=500)
+        else:
+            pc.setType("ilu")
+            opts["pc_factor_mat_ordering_type"] = "natural"
+            opts["pc_factor_shift_type"] = "inblocks"
+            self._solver.setTolerances(rtol=1e-8, atol=1e-12, max_it=500)
 
-        self._solver.setTolerances(rtol=1e-8, atol=1e-12, max_it=1000)
         self._solver.setFromOptions()
+
+        # Configurar solucionador para M_red (precondicionador simple)
+        self._m_solver = PETSc.KSP().create(self.comm)
+        self._m_solver.setType("preonly")
+        m_pc = self._m_solver.getPC()
+        m_pc.setType("jacobi")  # Precondicionador rápido para matriz bien condicionada
+        self._m_solver.setTolerances(rtol=1e-12, max_it=1)
+        self._m_solver.setFromOptions()
+
+    def lump_mass_matrix(self, M: PETSc.Mat) -> PETSc.Mat:
+        """Convierte la matriz de masa M en una matriz lumped (diagonal)."""
+        diag = PETSc.Vec().createMPI(M.getSize()[0], comm=M.getComm())  # Vector para la diagonal
+        M.getRowSum(diag)  # La diagonal será la suma de las filas
+        M_lumped = PETSc.Mat().createAIJ(size=M.getSize(), comm=M.getComm())  # Usar AIJ
+        M_lumped.setDiagonal(diag)
+        M_lumped.assemble()
+        return M_lumped
 
     def solve(self):
         """Perform dynamic analysis using improved Newmark-β method."""
         # Ensamblaje inicial de matrices
         self.K = self.domain.assemble_stiffness_matrix()
         self.M = self.domain.assemble_mass_matrix()
+        self.M = self.lump_mass_matrix(self.M)
 
         force_temp = PETSc.Vec().createMPI(self.domain.dofs_count, comm=self.comm)
         force_temp.set(0.0)
@@ -570,6 +592,7 @@ class LinearDynamicFSISolver(LinearDynamicSolver):
 
         # Matriz de rigidez efectiva
         K_eff = K_red + a0 * M_red
+        self._solver.setOperators(K_eff)
 
         # Condiciones iniciales
         u = K_red.createVecRight()
@@ -584,8 +607,8 @@ class LinearDynamicFSISolver(LinearDynamicSolver):
 
         # 2. Resolver el sistema M_red*a = residual
         a = M_red.createVecRight()  # Crea vector para solución
-        self._solver.setOperators(M_red)  # Establece matriz del sistema
-        self._solver.solve(residual, a)  # Resuelve M_red*a = residual
+        self._m_solver.setOperators(M_red)  # Establece matriz del sistema
+        self._m_solver.solve(residual, a)  # Resuelve M_red*a = residual
 
         t = 0
         while self.precice_participant.is_coupling_ongoing:
@@ -600,11 +623,19 @@ class LinearDynamicFSISolver(LinearDynamicSolver):
             F_new.setValues(interface_dofs, data)
             F_new_red = bc_manager.reduce_vector(F_new)
 
-            F_eff = F_new_red + M_red @ (a0 * u + a2 * v + a3 * a)
+            # Optimización: evitar operaciones redundantes
+            temp_vec = a0 * u  # Precalculo de términos
+            temp_vec.axpy(a2, v)  # temp_vec += a2 * v
+            temp_vec.axpy(a3, a)  # temp_vec += a3 * a
+
+            # Crear un vector de salida para la multiplicación
+            temp_result = M_red.createVecRight()
+            M_red.mult(temp_vec, temp_result)  # temp_result = M_red @ temp_vec
+
+            F_eff = F_new_red + temp_result
 
             # Resolver para el desplazamiento
             u_new = K_eff.createVecRight()
-            self._solver.setOperators(K_eff)
             self._solver.solve(F_eff, u_new)
 
             self.precice_participant.write_data(bc_manager.expand_solution(u_new).array)
