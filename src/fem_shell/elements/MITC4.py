@@ -61,7 +61,7 @@ class MITC4(ShellElement):
       based on Mindlin/Reissner plate theory and a mixed interpolation."
     """
 
-    vector_form = {"U": ("Ux", "Uy", "Uz"), "W": ("Wx", "Wy", "Wz")}
+    vector_form = {"U": ("Ux", "Uy", "Uz"), "θ": ("θx", "θy", "θz")}
 
     def __init__(
         self,
@@ -87,6 +87,8 @@ class MITC4(ShellElement):
         gp = 1 / np.sqrt(3)
         self._gauss_points = [(gp, gp), (-gp, gp), (-gp, -gp), (gp, -gp)]
         self._local_coordinates = self._compute_local_coordinates()
+        self._J_cache = {}
+        self._B_gamma_cache = {}
 
     def area(self):
         """
@@ -227,11 +229,9 @@ class MITC4(ShellElement):
         np.ndarray
             2x2 Jacobian matrix
         """
-        x1, y1, x2, y2, x3, y3, x4, y4 = self._local_coordinates
-        return (
-            1
-            / 4
-            * np.array([
+        if (r, s) not in self._J_cache:
+            x1, y1, x2, y2, x3, y3, x4, y4 = self._local_coordinates
+            J = 0.25 * np.array([
                 [
                     x1 * (s + 1) - x2 * (s + 1) + x3 * (s - 1) - x4 * (s - 1),
                     y1 * (s + 1) - y2 * (s + 1) + y3 * (s - 1) - y4 * (s - 1),
@@ -241,7 +241,12 @@ class MITC4(ShellElement):
                     y1 * (r + 1) - y2 * (r - 1) + y3 * (r - 1) - y4 * (r + 1),
                 ],
             ])
-        )
+            detJ = np.linalg.det(J)
+            self._J_cache[(r, s)] = (J, detJ)
+        else:
+            J, detJ = self._J_cache[(r, s)]
+
+        return J, detJ
 
     def B_kappa(self, r, s):
         """
@@ -259,7 +264,7 @@ class MITC4(ShellElement):
         np.ndarray
             3x12 bending strain-displacement matrix
         """
-        J_val = self.J(r, s)
+        J_val, _ = self.J(r, s)
         dH = np.linalg.solve(
             J_val,
             1 / 4 * np.array([[1 + s, -1 - s, -1 + s, 1 - s], [1 + r, 1 - r, -1 + r, -1 - r]]),
@@ -299,7 +304,7 @@ class MITC4(ShellElement):
         np.ndarray
             2x12 shear strain-displacement matrix
         """
-        J_val = self.J(r, s)
+        J_val, _ = self.J(r, s)
         x1, y1, x2, y2, x3, y3, x4, y4 = self._local_coordinates
         Ax = x1 - x2 - x3 + x4
         Bx = x1 - x2 + x3 - x4
@@ -383,7 +388,7 @@ class MITC4(ShellElement):
         ε_membrane = B_m @ u_elem
         where u_elem contains membrane DOFs [u1, v1, u2, v2, u3, v3, u4, v4]
         """
-        J_val = self.J(r, s)
+        J_val, _ = self.J(r, s)
         dH = np.linalg.solve(
             J_val,
             1 / 4 * np.array([[s + 1, -s - 1, s - 1, -s + 1], [r + 1, -r + 1, r - 1, -r - 1]]),
@@ -617,7 +622,7 @@ class MITC4(ShellElement):
 
         # Loop over the Gauss points only once to compute both contributions.
         for r, s in self._gauss_points:
-            detJ = np.linalg.det(self.J(r, s))
+            _, detJ = self.J(r, s)
             B_kappa = self.B_kappa(r, s)
             B_gamma = self.B_gamma(r, s)
             k1 += B_kappa.T @ Cb_val @ B_kappa * detJ
@@ -694,7 +699,7 @@ class MITC4(ShellElement):
         contributions = []
         for r, s in self._gauss_points:
             B = self.B_m(r, s)
-            detJ = np.linalg.det(self.J(r, s))
+            _, detJ = self.J(r, s)
             contributions.append(B.T @ Cm_val @ B * detJ)
 
         # Sum the contributions and multiply by the thickness
@@ -725,7 +730,11 @@ class MITC4(ShellElement):
         """
         ele_K = self.k_m() + self.k_b()
         T = self.T()
-        return np.linalg.solve(T, ele_K) @ T
+        K = np.linalg.solve(T, ele_K) @ T
+
+        K = 0.5 * (K + K.T)  # Force Symmetrization
+        K += 1e-10 * np.eye(self.dofs_count)  # Stabilization
+        return K
 
     @property
     def M(self) -> np.ndarray:
@@ -739,7 +748,7 @@ class MITC4(ShellElement):
         M_local = np.zeros((24, 24))
 
         for r, s in self._gauss_points:
-            detJ = np.linalg.det(self.J(r, s))
+            _, detJ = self.J(r, s)
             N = self.shape_functions(r, s)
 
             # Componentes de traslación (u, v, w)
@@ -790,8 +799,7 @@ class MITC4(ShellElement):
         f = np.zeros(24)
 
         for r, s in self._gauss_points:
-            J = self.J(r, s)
-            det_J = np.linalg.det(J)
+            _, det_J = self.J(r, s)
             N = self.shape_functions(r, s)[:3]  # Solo componentes de desplazamiento
 
             f += (N.T @ body_force[:3]) * det_J * self.thickness

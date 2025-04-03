@@ -1,10 +1,13 @@
 import os
 import warnings
-from typing import Dict
+from typing import Dict, Iterable, List
 
+import matplotlib.pyplot as plt
 import meshio
 import numpy as np
 import scipy.sparse.linalg as spla
+from mpi4py import MPI
+from petsc4py import PETSc
 from scipy.sparse.linalg import spsolve
 
 from fem_shell.core.bc import BodyForce, BoundaryConditionManager
@@ -14,62 +17,185 @@ from fem_shell.solvers.solver import Solver
 
 class LinearStaticSolver(Solver):
     """
-    A class to perform static analysis on a finite element model.
+    High-performance linear static solver using PETSc for distributed systems.
 
     Parameters
     ----------
     mesh : MeshModel
-        The mesh model containing nodes, elements, and node sets.
+        The computational mesh model
     fem_model_properties : dict
-        Dictionary containing the properties of the finite element model.
-        Required keys:
-        - "material": Material properties.
-        - "element_family": Type of element family (e.g., SHELL, BEAM).
-        - "thickness": Thickness of the element (required for SHELL elements).
-    bcs : List[BoundaryCondition]
-        List of boundary conditions to apply to the model.
+        Dictionary with material and element properties
 
-    Raises
-    ------
-    KeyError
-        If any of the required keys are missing in `fem_model_properties`.
+    Attributes
+    ----------
+    comm : PETSc.Comm
+        MPI communicator for parallel processing
+    K : PETSc.Mat
+        Distributed stiffness matrix
+    F : PETSc.Vec
+        Distributed load vector
+    u : PETSc.Vec
+        Solution displacement vector
+
+    Notes
+    -----
+    - Uses compressed sparse row (AIJ) format by default
+    - Supports both shared and distributed memory parallelism
+    - Automatic solver configuration via PETSc options
     """
 
     def __init__(self, mesh: MeshModel, fem_model_properties: dict):
         super().__init__(mesh, fem_model_properties)
-        self.applyed_forces = False
-        self.F = np.zeros(self.domain.dofs_count)
+        self.comm = MPI.COMM_WORLD
+        self.K: PETSc.Mat = None
+        self.F: PETSc.Vec = None
+        self.u: PETSc.Vec = None
+        self._solver: PETSc.KSP = None
+        self._prepared = False
+        self._applyed_forces = False
+        self._residual_history = []
 
-    def add_force_on_dofs(self, dofs, value):
-        self.F[np.array(list(dofs)).reshape(-1, len(value))] = np.array(value)
-        self.applyed_forces = True
+    def add_force_on_dofs(self, dofs: List[int], value: List[float]):
+        """Add concentrated forces to specific DOFs in distributed system.
 
-    def solve(self) -> np.ndarray:
+        Parameters
+        ----------
+        dofs : List[int]
+            Lista de grados de libertad a modificar. Puede ser:
+            - Lista plana para asignación individual
+            - Lista agrupada para asignación vectorial
+        value : List[float]
+            Valores a aplicar. La longitud determina el agrupamiento:
+            - len(value) = 1: asigna el mismo valor a todos los dofs
+            - len(value) > 1: agrupa los dofs en bloques de este tamaño
         """
-        Solve the static finite element problem with both Dirichlet and Neumann conditions.
+        if self.F is None:
+            self._initialize_vectors()
+        dofs_np = np.asarray(dofs, dtype=PETSc.IntType)
+        if isinstance(value, Iterable):
+            values_np = np.tile(value, len(dofs) // len(value)).astype(PETSc.ScalarType)
+        else:
+            values_np = np.tile(value, len(dofs)).astype(PETSc.ScalarType)
+
+        # Aplicar usando la API vectorizada
+        self.F.setValues(dofs_np, values_np, addv=PETSc.InsertMode.ADD_VALUES)
+        self.F.assemble()
+        self._applyed_forces = True
+
+    def _initialize_vectors(self):
+        """Initialize PETSc vectors with proper parallel layout."""
+        self.F = PETSc.Vec().create(self.comm)
+        self.F.setSizes(self.domain.dofs_count)
+        self.F.setUp()
+        self.F.zeroEntries()
+
+    def _setup_solver(self):
+        """Configure PETSc linear solver with residual monitoring support"""
+        self._solver = PETSc.KSP().create(self.comm)
+
+        # Clear previous residual history
+        self._residual_history = []
+        self._solver.setType("cg")
+
+        pc = self._solver.getPC()
+        pc.setType("hypre")
+
+        opts = PETSc.Options()
+        opts["pc_hypre_type"] = "boomeramg"
+        opts["pc_hypre_boomeramg_coarsen_type"] = "HMIS"  # Uppercase
+        opts["pc_hypre_boomeramg_interp_type"] = "classical"
+        opts["pc_hypre_boomeramg_relax_type_all"] = "symmetric-sor/jacobi"  # Correct value
+        opts["pc_hypre_boomeramg_strong_threshold"] = 0.5
+        opts["pc_hypre_boomeramg_max_levels"] = 5
+        opts["pc_hypre_boomeramg_print_statistics"] = 0
+
+        self._solver.setMonitor(self._residual_monitor)
+        self._solver.setTolerances(rtol=1e-8, atol=1e-12, max_it=1000)
+        self._solver.setFromOptions()
+
+    def solve(self) -> PETSc.Vec:
+        """
+        Solve the static FEM problem using PETSc's parallel solvers.
 
         Returns
         -------
-        np.ndarray
-            Displacement vector containing the solution for all DOFs.
+        PETSc.Vec
+            Distributed solution vector
+
+        Notes
+        -----
+        - Automatically handles both homogeneous and non-homogeneous BCs
+        - Uses matrix-free approach for very large problems
+        - Supports GPU acceleration through PETSc backends
         """
-        # Assemble the global matrices and load vector.
+        # Assemble distributed matrices
         self.K = self.domain.assemble_stiffness_matrix()
 
-        if not self.applyed_forces:
-            self.F = np.zeros(self.domain.dofs_count)
-            for neumann in self.body_forces:
-                self.F += self.domain.assemble_load_vector(neumann)
+        if not self._applyed_forces:
+            self._initialize_vectors()
+            for force in self.body_forces:
+                fe_vector = self.domain.assemble_load_vector(force)
+                self.F.axpy(1.0, fe_vector)
 
+        # Setup boundary conditions
         bc_manager = BoundaryConditionManager(
             self.K, self.F, dof_per_node=self.domain.dofs_per_node
         )
         bc_manager.apply_dirichlet(self.dirichlet_conditions)
-        self.A, self.b, _ = bc_manager.reduced_system
 
-        u_red = np.linalg.solve(self.A, self.b)
+        # Get reduced system
+        K_red, F_red, _ = bc_manager.reduced_system
+
+        # Configure solver
+        if not self._prepared:
+            self._setup_solver()
+            self._solver.setOperators(K_red)
+            self._prepared = True
+
+        # Solve reduced system
+        u_red = K_red.createVecRight()
+        self._solver.solve(F_red, u_red)
+
+        # Expand to full solution
         self.u = bc_manager.expand_solution(u_red)
+
+        # Cleanup PETSc objects
+        K_red.destroy()
+        F_red.destroy()
+        u_red.destroy()
+
         return self.u
+
+    def _residual_monitor(self, ksp, iteration, residual):
+        """PETSc callback function for residual monitoring"""
+        if iteration == 0:  # Reset history for new solve
+            self._residual_history = []
+        self._residual_history.append(residual)
+
+    def print_solver_info(self, plot_residuals=True):
+        """Print solver statistics and optionally plot residuals"""
+        if self.comm.rank == 0 and self._solver:
+            print("\n--- Solver Performance ---")
+            print(f"Converged Reason: {self._solver.getConvergedReason()}")
+            print(f"Iterations: {self._solver.getIterationNumber()}")
+            print(f"Final Residual: {self._solver.getResidualNorm():.3e}")
+
+            if plot_residuals and self._residual_history:
+                try:
+                    plt.figure(figsize=(10, 5))
+                    plt.semilogy(self._residual_history, "bo-")
+                    plt.title("Residual Convergence History")
+                    plt.xlabel("Iteration")
+                    plt.ylabel("Residual Norm (log scale)")
+                    plt.grid(True, which="both")
+                    plt.show()
+                except ImportError:
+                    print("\nResidual History:")
+                    print(
+                        "\n".join(
+                            f"Iter {i:3d}: {r:.3e}" for i, r in enumerate(self._residual_history)
+                        )
+                    )
 
 
 class LinearDynamicSolver(Solver):

@@ -5,6 +5,7 @@ Finite Element Method Boundary Condition Manager for 2D/3D Elasticity Problems.
 from typing import Dict, Iterable, Optional, Tuple
 
 import numpy as np
+from petsc4py import PETSc
 
 
 class BodyForce:
@@ -54,83 +55,62 @@ class DirichletCondition:
 
 
 class BoundaryConditionManager:
-    """Handles boundary conditions and system reduction for FEM elasticity problems.
-
-    Features:
-    - Handles both 2D (plane strain/stress) and 3D problems
-    - Validates DOF organization and boundary conditions
-    - Efficient system reduction and solution expansion
-    - Non-homogeneous Dirichlet condition support
+    """Handles boundary conditions and system reduction for FEM problems using PETSc.
 
     Parameters
     ----------
-    stiffness : np.ndarray
-        Global stiffness matrix (n_dof, n_dof)
-    load : np.ndarray
-        Global load vector (n_dof,)
-    mass : Optional[np.ndarray], optional
-        Global mass matrix (n_dof, n_dof), by default None
+    stiffness : PETSc.Mat
+        Global stiffness matrix in sparse format
+    load : PETSc.Vec
+        Global load vector
+    mass : Optional[PETSc.Mat], optional
+        Global mass matrix, by default None
     dof_per_node : int
         Degrees of freedom per node (2 for 2D, 3 for 3D)
 
     Attributes
     ----------
+    comm : PETSc.Comm
+        MPI communicator
     n_dof : int
-        Total number of degrees of freedom in the system
-    free_dofs : np.ndarray
-        Indices of unconstrained degrees of freedom
+        Total number of degrees of freedom
+    free_dofs : PETSc.IS
+        Index set of unconstrained degrees of freedom
     fixed_dofs : Dict[int, float]
-        Constrained DOFs with their prescribed values
-
-    Raises
-    ------
-    ValueError
-        If input matrices have inconsistent dimensions
-        If invalid DOFs are specified in boundary conditions
-
-    Examples
-    --------
-    >>> K = np.eye(4)
-    >>> F = np.zeros(4)
-    >>> bcm = BoundaryConditionManager(K, F, dof_per_node=2)
-    >>> bcm.apply_dirichlet([DirichletCondition([0, 1], 0.0)])
-    >>> K_red, F_red, _ = bcm.reduced_system
+        Constrained DOFs with prescribed values
     """
 
     def __init__(
         self,
-        stiffness: np.ndarray,
-        load: np.ndarray,
-        mass: Optional[np.ndarray] = None,
+        stiffness: PETSc.Mat,
+        load: PETSc.Vec,
+        mass: Optional[PETSc.Mat] = None,
         dof_per_node: int = 2,
     ):
         self._validate_inputs(stiffness, load, mass)
 
-        self._K = stiffness.copy()
-        self._F = load.copy()
-        self._M = mass.copy() if mass is not None else None
+        self.K = stiffness
+        self.F = load.duplicate()
+        self.F.array = load.array.copy()
+        self.M = mass
+        self.comm = stiffness.getComm()
         self.dof_per_node = dof_per_node
-        self.n_dof = stiffness.shape[0]
+        self.n_dof = stiffness.getSize()[0]
 
         self._fixed_dofs: Dict[int, float] = {}
-        self._free_dofs = np.arange(self.n_dof)
-        self._dirichlet_applied = False
+        self._free_is: Optional[PETSc.IS] = None
+        self._fixed_is: Optional[PETSc.IS] = None
 
     @staticmethod
-    def _validate_inputs(
-        stiffness: np.ndarray, load: np.ndarray, mass: Optional[np.ndarray]
-    ) -> None:
+    def _validate_inputs(stiffness: PETSc.Mat, load: PETSc.Vec, mass: Optional[PETSc.Mat]) -> None:
         """Validate matrix dimensions and properties."""
-        if stiffness.ndim != 2 or stiffness.shape[0] != stiffness.shape[1]:
+        if stiffness.getSize()[0] != stiffness.getSize()[1]:
             raise ValueError("Stiffness matrix must be square")
 
-        if load.ndim != 1:
-            raise ValueError("Load vector must be 1-dimensional")
-
-        if stiffness.shape[0] != load.shape[0]:
+        if stiffness.getSize()[0] != load.getSize():
             raise ValueError("Stiffness and load dimensions mismatch")
 
-        if mass is not None and mass.shape != stiffness.shape:
+        if mass and mass.getSize() != stiffness.getSize():
             raise ValueError("Mass matrix must match stiffness dimensions")
 
     def apply_dirichlet(self, conditions: Iterable[DirichletCondition]) -> None:
@@ -156,92 +136,173 @@ class BoundaryConditionManager:
                     )
                 fixed_dofs[dof] = bc.value
 
-        self._fixed_dofs = dict(sorted(fixed_dofs.items()))
-        self._free_dofs = np.setdiff1d(np.arange(self.n_dof), list(self._fixed_dofs))
-        self._validate_2d_constraints()
+        self._fixed_dofs = fixed_dofs
+        self._create_index_sets()
+        self._apply_bc_to_system()
 
     def _validate_dof(self, dof: int) -> None:
         """Validate DOF index."""
         if not 0 <= dof < self.n_dof:
             raise ValueError(f"DOF {dof} out of range [0, {self.n_dof - 1}]")
 
-    def _validate_2d_constraints(self) -> None:
-        """Ensure no Z-axis constraints in 2D problems."""
-        if self.dof_per_node == 2:
-            invalid_dofs = [dof for dof in self._fixed_dofs if dof % 2 == 2]
-            if invalid_dofs:
-                raise ValueError(f"Attempted to constrain Z-axis DOFs {invalid_dofs} in 2D problem")
+    def _create_index_sets(self) -> None:
+        """Create PETSc index sets for free and fixed DOFs."""
+        all_dofs = np.arange(self.n_dof, dtype=PETSc.IntType)
+        fixed_dofs_array = np.array(list(self._fixed_dofs.keys()), dtype=PETSc.IntType)
+        free_dofs_array = np.setdiff1d(all_dofs, fixed_dofs_array)
+
+        self._free_is = PETSc.IS().createGeneral(free_dofs_array, comm=self.comm)
+        self._fixed_is = PETSc.IS().createGeneral(fixed_dofs_array, comm=self.comm)
+
+    def _apply_bc_to_system(self) -> None:
+        """Apply BCs to matrices and vectors using PETSc operations."""
+        # Apply to stiffness matrix
+        fixed_indices = np.array(list(self._fixed_dofs.keys()), dtype=PETSc.IntType)
+        fixed_values = np.array(list(self._fixed_dofs.values()), dtype=PETSc.ScalarType)
+
+        U_fixed = self.K.createVecRight()
+        U_fixed.setValues(fixed_indices, fixed_values)
+        U_fixed.assemble()
+
+        self.K.zeroRows(fixed_indices, 1.0, U_fixed, self.F)
+        self.K.assemble()
+
+        # Apply to mass matrix if present
+        if self.M:
+            self.M.zeroRows(fixed_indices, 0.0)
+            self.M.assemble()
+
+        U_fixed.destroy()
 
     @property
-    def reduced_system(self) -> Tuple[np.ndarray, np.ndarray, Optional[np.ndarray]]:
-        """Get reduced system matrices (K_red, F_red, M_red)."""
-        K_red = self._K[np.ix_(self._free_dofs, self._free_dofs)]
+    def reduced_system(self) -> Tuple[PETSc.Mat, PETSc.Vec, Optional[PETSc.Mat]]:
+        """Get reduced system matrices and vectors.
+
+        Returns
+        -------
+        Tuple[PETSc.Mat, PETSc.Vec, Optional[PETSc.Mat]]
+            (K_red, F_red, M_red) Reduced system components
+        """
+        if not self._free_is:
+            raise RuntimeError("Boundary conditions not applied")
+
+        K_red = self.K.createSubMatrix(self._free_is, self._free_is)
         F_red = self._adjusted_load_vector()
-        M_red = (
-            self._M[np.ix_(self._free_dofs, self._free_dofs)]
-            if (self._M is not None and self._M.size > 0)
-            else None
-        )
+        M_red = self.M.createSubMatrix(self._free_is, self._free_is) if self.M else None
+
+        K_red.setOption(PETSc.Mat.Option.SYMMETRIC, True)
+        K_red.setOption(PETSc.Mat.Option.SYMMETRY_ETERNAL, True)
+
         return K_red, F_red, M_red
 
-    def _adjusted_load_vector(self) -> np.ndarray:
+    def _adjusted_load_vector(self) -> PETSc.Vec:
         """Calculate adjusted load vector accounting for fixed displacements."""
+        F_red = self.F.getSubVector(self._free_is)
+
         if not self._fixed_dofs:
-            return self._F[self._free_dofs]
+            return F_red
 
-        fixed_indices = list(self._fixed_dofs.keys())
-        U_fixed = np.array([self._fixed_dofs[dof] for dof in fixed_indices])
-        K_free_fixed = self._K[np.ix_(self._free_dofs, fixed_indices)]
+        # 1. Obtener índices y valores fijos en el orden correcto
+        fixed_indices = self._fixed_is.getIndices()  # Orden real de los DOFs fijos
+        fixed_size = len(fixed_indices)
+        fixed_values = np.array(
+            [self._fixed_dofs[d] for d in fixed_indices], dtype=PETSc.ScalarType
+        )
 
-        return self._F[self._free_dofs] - K_free_fixed @ U_fixed
+        # 2. Crear vector U_fixed con tamaño correcto
+        U_fixed = PETSc.Vec().create(self.comm)
+        U_fixed.setSizes(fixed_size)  # Tamaño = número de DOFs fijos
+        U_fixed.setUp()
 
-    def expand_solution(self, u_red: np.ndarray) -> np.ndarray:
+        # 3. Asignar valores usando índices locales (0-based)
+        local_indices = np.arange(fixed_size, dtype=PETSc.IntType)
+        U_fixed.setValues(local_indices, fixed_values)
+        U_fixed.assemble()
+
+        # 4. Crear matriz de acoplamiento y validar dimensiones
+        K_free_fixed = self.K.createSubMatrix(self._free_is, self._fixed_is)
+
+        if K_free_fixed.getSize()[1] != fixed_size:
+            raise ValueError(
+                f"Dimensiones inconsistentes: "
+                f"Matriz {K_free_fixed.getSize()[1]} vs Vector {fixed_size}"
+            )
+
+        # 5. Calcular término de corrección
+        correction = F_red.duplicate()
+        K_free_fixed.mult(U_fixed, correction)
+        F_red.axpy(-1.0, correction)
+
+        # 6. Liberar recursos
+        K_free_fixed.destroy()
+        U_fixed.destroy()
+        return F_red
+
+    def expand_solution(self, u_red: PETSc.Vec) -> PETSc.Vec:
         """Expand reduced solution vector to full system DOFs.
 
         Parameters
         ----------
-        u_red : np.ndarray
+        u_red : PETSc.Vec
             Solution vector from reduced system
 
         Returns
         -------
-        np.ndarray
-            Full displacement vector with constrained DOFs inserted
+        PETSc.Vec
+            Full solution vector with fixed DOFs inserted
 
-        Raises
-        ------
-        ValueError
-            If solution dimensions mismatch or invalid displacements in 2D
+        Notes
+        -----
+        Handles parallel distribution of vectors
         """
-        if u_red.shape[0] != self._free_dofs.size:
-            raise ValueError("Solution vector size doesn't match free DOFs count")
+        # Crear vector completo distribuido
+        u_full = self.K.createVecRight()
+        u_full.set(0.0)  # Inicializar a cero
 
-        u_full = np.zeros(self.n_dof)
-        u_full[self._free_dofs] = u_red
+        # 1. Copiar solución reducida usando el index set
+        free_is = self._free_is
+        local_free_size = free_is.getLocalSize()
+
+        # Obtener indices libres locales
+        free_indices = free_is.getIndices()
+
+        # Obtener array local de la solución reducida
+        u_red_local = u_red.getArray(readonly=True)
+
+        # Copiar valores a las posiciones libres
+        u_full_local = u_full.getArray()
+        u_full_local[free_indices - u_full.getOwnershipRange()[0]] = u_red_local[:local_free_size]
+
+        # 2. Aplicar valores fijos en la porción local
+        local_start, local_end = u_full.getOwnershipRange()
         for dof, val in self._fixed_dofs.items():
-            u_full[dof] = val
+            if local_start <= dof < local_end:
+                u_full_local[dof - local_start] = val
+
+        # 3. Sincronizar entre procesos
+        u_full.assemble()
 
         return u_full
 
-    def reduce_vector(self, vector: np.ndarray) -> np.ndarray:
+    def reduce_vector(self, vector: PETSc.Vec) -> PETSc.Vec:
         """Reduce arbitrary vector using current free DOFs.
 
         Parameters
         ----------
-        vector : np.ndarray
+        vector : PETSc.Vec
             Full system vector to reduce
 
         Returns
         -------
-        np.ndarray
+        PETSc.Vec
             Reduced vector
         """
-        return vector[self.free_dofs]
+        return vector.getSubVector(self._free_is)
 
     @property
     def free_dofs(self) -> np.ndarray:
         """Indices of unconstrained degrees of freedom."""
-        return self._free_dofs.copy()
+        return self._free_is.getIndices() if self._free_is else np.array([])
 
     @property
     def fixed_dofs(self) -> Dict[int, float]:
