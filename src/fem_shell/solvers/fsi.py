@@ -3,7 +3,7 @@ import logging
 import os
 import sys
 import xml.etree.ElementTree as ET
-from typing import Dict, Iterable, List, Optional, Sequence, Tuple
+from typing import Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 import precice
@@ -14,8 +14,6 @@ from fem_shell.core.assembler import MeshAssembler
 from fem_shell.core.bc import BoundaryConditionManager
 from fem_shell.core.mesh import MeshModel
 from fem_shell.solvers.linear import LinearDynamicSolver
-
-logging.basicConfig(level=logging.INFO)
 
 
 class Config:
@@ -187,8 +185,6 @@ class Config:
 
         return None
 
-        return None
-
     def __repr__(self) -> str:
         """
         Official string representation of the object for debugging.
@@ -219,18 +215,25 @@ class Config:
 
 
 class SolverState:
-    def __init__(self, states: Iterable):
-        """Store a list of function as states for those
-        iteration that not converge
-        """
-        states_cp = []
+    def __init__(self, states: Tuple[PETSc.Vec, PETSc.Vec, PETSc.Vec, float]):
+        """Almacena estados (vectores PETSc) para checkpointing eficiente."""
+        self._state = []
         for state in states:
-            states_cp.append(copy.deepcopy(state))
-        self.__state = states_cp
+            if isinstance(state, PETSc.Vec):
+                self._state.append(state.copy())
+            else:
+                # Para escalares (como el tiempo 't') u otros tipos
+                self._state.append(copy.deepcopy(state))
 
     def get_state(self):
-        """Returns the state of the solver."""
-        return self.__state
+        """Devuelve los vectores clonados."""
+        return self._state
+
+    def __del__(self):
+        """Liberar memoria de vectores PETSc al destruir el objeto."""
+        for vec in self._state:
+            if isinstance(vec, PETSc.Vec):
+                vec.destroy()
 
 
 class Adapter:
