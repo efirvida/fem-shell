@@ -1,11 +1,3 @@
-# Makefile for compiling Python with full module support
-# Includes dependencies for common optional modules and development tools
-
-CHECK_DEPS := $(shell command -v make cmake git unzip wget)
-ifndef CHECK_DEPS
-  $(error "Missing required tools: make, cmake, git, unzip, wget")
-endif
-
 #-------------------------------------------------------------------------------
 # Configuration Section
 #-------------------------------------------------------------------------------
@@ -283,10 +275,9 @@ $(VENV_DIR)/.slepc.done: $(VENV_DIR)/.petsc.done
 #-------------------------------------------------------------------------------
 $(VENV_DIR)/.eigen.done:
 	@echo "Installing Eigen..."
-	@mkdir -p $(BUILD_DIR)/eigen
+	@mkdir -p $(BUILD_DIR)/eigen/build
 	@tar -xzf $(SOURCES_DIR)/$(EIGEN_TAR) -C $(BUILD_DIR)/eigen --strip-components=1
-	@cd $(BUILD_DIR)/eigen && \
-		mkdir build && cd build &&  \
+	@cd $(BUILD_DIR)/eigen/build && \
 		$(CMAKE_CMD) .. && \
 		$(MAKE_CMD)
 	@touch $@
@@ -404,5 +395,5 @@ $(VENV_DIR)/.openfoam.done:
 		cp -rf platforms/linux64GccDPInt64/metis*/* $(FOAM_INST_DIR)/openfoam && \
 		cp -rf platforms/linux64GccDPInt64/scotch*/* $(FOAM_INST_DIR)/openfoam
 
-	rm -rf $(WM_PROJECT_DIR) ThirdParty-v$(FOAM_VERSION)
+	rm -rf $(WM_PROJECT_DIR) $(FOAM_INST_DIR)/ThirdParty-v$(FOAM_VERSION)
 	@touch $@
