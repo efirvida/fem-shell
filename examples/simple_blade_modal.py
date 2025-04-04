@@ -13,9 +13,10 @@ RHO = 7850
 material = Material(name="Steel", E=E, nu=NU, rho=RHO)
 
 blade_yaml = join("examples", "blade.yaml")
-blade = BladeMesh(blade_yaml=blade_yaml, element_size=0.5)
+blade = BladeMesh(blade_yaml=blade_yaml, element_size=0.2)
 blade.generate()
 mesh = blade.mesh
+mesh.view()
 
 # Select model type
 THICKNESS = 0.1
