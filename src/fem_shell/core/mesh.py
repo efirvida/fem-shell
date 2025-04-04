@@ -719,6 +719,92 @@ class MeshModel:
             f.write("**        STEPS SECTION       **\n")
             f.write("********************************\n")
 
+    def translate_mesh(
+        self,
+        vector: Tuple[float, float, float],
+        distance: float,
+    ) -> None:
+        """Translates the mesh along a specified direction vector.
+
+        Parameters
+        ----------
+        vector : Tuple[float, float, float]
+            Direction vector for translation (does not need to be normalized)
+        distance : float
+            Translation distance along the vector direction
+
+        Raises
+        ------
+        ValueError
+            If input vector is a zero vector
+
+        Notes
+        -----
+        The actual translation is calculated as:
+        `unit_vector * distance` where `unit_vector` is the normalized input vector.
+        Modifies node coordinates in-place.
+        """
+        coords = self.coords_array
+        vector = np.array(vector)
+        norm = np.linalg.norm(vector)
+        if np.isclose(norm, 0):
+            raise ValueError("Translation vector cannot be zero.")
+        unit_vector = vector / norm
+        translation = unit_vector * distance
+        coords += translation
+
+    def rotate_mesh(
+        self,
+        axis: Tuple[float, float, float],
+        angle: float,
+    ) -> None:
+        """Rotates the mesh about a specified axis using Rodrigues' rotation formula.
+
+        Parameters
+        ----------
+        axis : Tuple[float, float, float]
+            Rotation axis vector (does not need to be normalized)
+        angle : float
+            Rotation angle in radians (follows right-hand rule)
+
+        Raises
+        ------
+        ValueError
+            If input axis is a zero vector
+
+        Notes
+        -----
+        Rotation matrix construction follows Rodrigues' formula:
+        R = I*cosθ + (1 - cosθ)*(a⊗a) + sinθ*K
+        Where:
+        - I is identity matrix
+        - a is unit axis vector
+        - K is cross-product matrix of a
+        - ⊗ denotes outer product
+        Modifies node coordinates in-place.
+        """
+        axis = np.array(axis)
+        norm = np.linalg.norm(axis)
+        if np.isclose(norm, 0):
+            raise ValueError("Rotation axis cannot be zero.")
+        axis = axis / norm
+        ux, uy, uz = axis
+        cosθ = np.cos(angle)
+        sinθ = np.sin(angle)
+
+        # Cross product matrix for unit axis
+        cross_prod_mat = np.array([[0, -uz, uy], [uz, 0, -ux], [-uy, ux, 0]])
+
+        # Rotation matrix components
+        outer_prod_mat = np.outer(axis, axis)
+        identity = np.eye(3)
+
+        # Construct rotation matrix (Rodrigues' formula)
+        R = cosθ * identity + (1 - cosθ) * outer_prod_mat + sinθ * cross_prod_mat
+
+        # Apply rotation to all coordinates
+        self.coords_array = self.coords_array @ R.T
+
     @property
     def node_sets_names(self) -> List[str]:
         return list(self.node_sets.keys())
@@ -736,15 +822,49 @@ class MeshModel:
         return len(self.elements)
 
     @property
-    def coords_array(self):
+    def coords_array(self) -> np.ndarray:
+        """Numpy array containing all nodal coordinates in the mesh.
+
+        Returns
+        -------
+        np.ndarray
+            Array of shape (N, 3) containing (x, y, z) coordinates for each node,
+            where N is the number of nodes in the mesh.
+
+        Notes
+        -----
+        This property is dynamically generated from the node coordinates each time
+        it's accessed. Any modifications to the returned array will NOT affect
+        the actual node coordinates unless using the corresponding setter.
+        """
         return np.array([node.coords for node in self.nodes])
+
+    @coords_array.setter
+    def coords_array(self, value: np.ndarray) -> None:
+        """Sets nodal coordinates from a numpy array.
+
+        Parameters
+        ----------
+        value : np.ndarray
+            Array of shape (N, 3) containing new (x, y, z) coordinates for each node,
+            must match the number of nodes in the mesh.
+
+        Raises
+        ------
+        ValueError
+            If input array has incorrect shape or dimensions
+        """
+        if value.shape != (len(self.nodes), 3):
+            raise ValueError("Array must have shape (N, 3)")
+        for i, node in enumerate(self.nodes):
+            node.coords = value[i]
 
     def view(self) -> None:
         plot_mesh(self)
 
-    def __repr__(self):
+    def __repr__(self) -> str:
         return (
-            f"<MeshModel: {self.node_count} nodes, {len(self.elements_count)} elements, "
+            f"<MeshModel: {self.node_count} nodes, {self.elements_count} elements, "
             f"{len(self.node_sets_names)} node sets, {len(self.element_sets_names)} element sets>"
         )
 
@@ -1315,4 +1435,5 @@ class BoxSurfaceMesh:
 if __name__ == "__main__":
     # Example usage
     unit_mesh = BoxSurfaceMesh.create_box((0, 0, 5), (1, 1, 10), 5, 5, 50)
+    unit_mesh.rotate_mesh((1, 0, 0), 20)
     unit_mesh.view()
