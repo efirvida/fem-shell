@@ -1,17 +1,17 @@
 import numpy as np
 import pynumad.shell.MeshTools as mt
-from pynumad.shell.ShellRegionClass import *
+from pynumad.shell.ShellRegionClass import ShellRegion
 
 
 class Surface:
     def __init__(self, regionList=[], regionNames=[], meshList=[], meshNames=[]):
-        self.shellRegions = list()
+        self.shellRegions = []
         self.shellRegions.extend(regionList)
-        self.regionNames = list()
+        self.regionNames = []
         self.regionNames.extend(regionNames)
-        self.meshes = list()
+        self.meshes = []
         self.meshes.extend(meshList)
-        self.meshNames = list()
+        self.meshNames = []
         self.meshNames.extend(meshNames)
 
     def addShellRegion(
@@ -20,7 +20,7 @@ class Surface:
         self.shellRegions.append(
             ShellRegion(regType, keyPts, numEls, natSpaceCrds, elType, meshMethod)
         )
-        if name == None:
+        if name is None:
             numReg = len(self.shellRegions)
             regName = "Sub-Region_" + str(numReg)
             self.regionNames.append(regName)
@@ -29,7 +29,7 @@ class Surface:
 
     def addMesh(self, meshData, name=None):
         self.meshes.append(meshData)
-        if name == None:
+        if name is None:
             numMsh = len(self.meshes)
             meshName = "Sub-Mesh_" + str(numMsh)
             self.meshNames.append(meshName)
@@ -43,7 +43,7 @@ class Surface:
         numNds = 0
         numEls = 0
         regi = 0
-        for reg in self.shellRegions:
+        for i, reg in enumerate(self.shellRegions):
             regMesh = reg.createShellMesh()
             allNds.extend(regMesh["nodes"])
             setList = list()
