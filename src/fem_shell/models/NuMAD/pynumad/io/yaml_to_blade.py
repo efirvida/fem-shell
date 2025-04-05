@@ -4,15 +4,14 @@
 #              See license.txt for disclaimer information              #
 ########################################################################
 
-import yaml
 import numpy as np
-from scipy.stats import mode
+import yaml
 
-from pynumad.utils.misc_utils import LARCetaT, LARCetaL, _parse_data
-from pynumad.utils.interpolation import interpolator_wrap
-from pynumad.objects.Component import Component
 from pynumad.objects.Airfoil import Airfoil
+from pynumad.objects.Component import Component
 from pynumad.objects.Material import Material
+from pynumad.utils.interpolation import interpolator_wrap
+from pynumad.utils.misc_utils import _parse_data
 
 
 def yaml_to_blade(blade, filename: str, write_airfoils: bool = False):
@@ -60,6 +59,11 @@ def yaml_to_blade(blade, filename: str, write_airfoils: bool = False):
 
     ### MATERIALS
     _add_materials(blade, mat_data)
+
+    # Update "grid" and "values" keys to cover the whole span of the blade
+    blade_internal_structure = update_internal_structure(
+        blade_internal_structure, blade_outer_shape_bem
+    )
 
     ## Blade Components
     N_layer_comp = len(blade_internal_structure["layers"])
@@ -122,19 +126,20 @@ def _add_stations(
     L = np.ceil(blade_outer_shape_bem["reference_axis"]["z"]["values"][-1])
     R = L + hub_outer_shape_bem["diameter"] / 2
     L = R - hub_outer_shape_bem["diameter"] / 2
-    blade.ispan = np.multiply(np.transpose(blade_outer_shape_bem["chord"]["grid"]), L)
+    blade.span = np.multiply(np.transpose(blade_outer_shape_bem["reference_axis"]["z"]["grid"]), L)
+    blade.ispan = blade.span
 
     # Aerodynamic properties
     # using interp because yaml can have different r/R for twist and chord
     temp_x = np.transpose(blade_outer_shape_bem["twist"]["grid"])
     temp_y = blade_outer_shape_bem["twist"]["values"]
     blade.degreestwist = (
-        interpolator_wrap(np.multiply(temp_x, L), np.transpose(temp_y), blade.ispan) * 180.0 / np.pi
+        interpolator_wrap(np.multiply(temp_x, L), np.transpose(temp_y), blade.span) * 180.0 / np.pi
     )
     blade.chord = interpolator_wrap(
         np.multiply(np.transpose(blade_outer_shape_bem["chord"]["grid"]), L),
         np.transpose(blade_outer_shape_bem["chord"]["values"]),
-        blade.ispan,
+        blade.span,
     )
     af_dir_names = []
     for i in range(len(af_data)):
@@ -190,7 +195,6 @@ def _add_stations(
         af.resample(spacing="half-cosine")
         blade.addStation(af, tc_xL * L)
     # Obtain some key blade attributes
-    blade.span = blade.ispan
     blade.percentthick = np.multiply(
         interpolator_wrap(
             np.multiply(blade_outer_shape_bem["airfoil_position"]["grid"], L), tc, blade.ispan
@@ -217,27 +221,9 @@ def _add_stations(
         blade.span,
     )
 
-    # for i in range(len(tc)):
-    #     afc = AirfoilDef(out_folder +
-    #     '/af_coords/' +
-    #     blade_outer_shape_bem['airfoil_position']['labels'][i] +
-    #     '.txt')
-    #     blade.addStation(afc,np.multiply(tc_xL[i],L))
-
-    # NOTE nothing happens to afc? Tentatively ignoring...
-    # If i return to this make sure to listify the afcs
-    ### AIRFOILS
-    # for i in range(len(tc)):
-    #     afc = AirfoilDef(out_folder + '/af_coords/' +
-    #         blade_outer_shape_bem['airfoil_position']['labels'][i] +
-    #         '.txt')
-    #     blade.addStation(afc,np.multiply(tc_xL[i],L))
-    # afc.resample #NOTE afc isn't used after this... why resample?
-    return
-
 
 def _add_materials(blade, material_data):
-    materials_dict = dict()
+    materials_dict = {}
     for i in range(len(material_data)):
         cur_mat = Material()
         cur_mat.name = material_data[i]["name"]
@@ -260,9 +246,9 @@ def _add_materials(blade, material_data):
             pass
 
         # first
-        cur_mat.uts = _parse_data(material_data[i]["Xt"])
-        cur_mat.ucs = -_parse_data(material_data[i]["Xc"])
-        cur_mat.uss = _parse_data(material_data[i]["S"])
+        cur_mat.uts = _parse_data(material_data[i].get("Xt", 0))
+        cur_mat.ucs = -_parse_data(material_data[i].get("Xc", 0))
+        cur_mat.uss = _parse_data(material_data[i].get("S", 0))
         cur_mat.xzit = 0.3
         cur_mat.xzic = 0.25
         cur_mat.yzit = 0.3
@@ -273,7 +259,6 @@ def _add_materials(blade, material_data):
             cur_mat.g1g2 = np.nan
         if "alp0" in material_data[i]:
             cur_mat.alp0 = _parse_data(material_data[i]["alp0"])
-            cur_mat.etat = LARCetaT(cur_mat.alp0)
         else:
             cur_mat.alp0 = None
             cur_mat.etat = None
@@ -290,7 +275,6 @@ def _add_materials(blade, material_data):
             cur_mat.prxy = _parse_data(material_data[i]["nu"])
             cur_mat.prxz = _parse_data(material_data[i]["nu"])
             cur_mat.pryz = _parse_data(material_data[i]["nu"])
-            cur_mat.etal = LARCetaL(cur_mat.uss, cur_mat.ucs, cur_mat.alp0)
         else:
             cur_mat.ex = _parse_data(material_data[i]["E"][0])
             cur_mat.ey = _parse_data(material_data[i]["E"][1])
@@ -301,7 +285,6 @@ def _add_materials(blade, material_data):
             cur_mat.prxy = _parse_data(material_data[i]["nu"][0])
             cur_mat.prxz = _parse_data(material_data[i]["nu"][1])
             cur_mat.pryz = _parse_data(material_data[i]["nu"][2])
-            cur_mat.etal = LARCetaL(cur_mat.uss[0], cur_mat.ucs[1], cur_mat.alp0)
         try:
             cur_mat.m = material_data[i]["m"]
         except KeyError:
@@ -410,10 +393,15 @@ def _add_components(blade, blade_internal_structure, spar_hp, spar_lp):
             component_list[comp].cp[:, 1] = component_list[comp].cp[:, 1]
 
         # Forward Shear
-        if "web" in blade_internal_structure["layers"][comp].keys():
-            if "fore" in blade_internal_structure["layers"][comp]["web"].lower():
+        if "web" in blade_internal_structure["layers"][comp]:
+            if (
+                "fore" in blade_internal_structure["layers"][comp]["web"].lower()
+                or "1" in blade_internal_structure["layers"][comp]["name"]
+            ):
                 # Web Skin1
-                if "skin_le" in blade_internal_structure["layers"][comp]["name"].lower():
+                if "skinle" in blade_internal_structure["layers"][comp]["name"].lower().replace(
+                    "_", ""
+                ):
                     # comp[comp].hpextents = {[num2str(xs,2) 'b-c']};
                     # comp[comp].lpextents = {[num2str(xs,2) 'b-c']};
                     # comp[comp].hpextents = {['z+' sw_offset]};
@@ -437,7 +425,9 @@ def _add_components(blade, blade_internal_structure, spar_hp, spar_lp):
                     component_list[comp].name = blade_internal_structure["layers"][comp]["name"]
 
                 # Web Skin2
-                if "skin_te" in blade_internal_structure["layers"][comp]["name"].lower():
+                if "skinte" in blade_internal_structure["layers"][comp]["name"].lower().replace(
+                    "_", ""
+                ):
                     # comp[comp].hpextents = {[num2str(xs,2) 'b-c']};
                     # comp[comp].lpextents = {[num2str(xs,2) 'b-c']};
                     # comp[comp].hpextents = {['z+' sw_offset]};
@@ -450,10 +440,15 @@ def _add_components(blade, blade_internal_structure, spar_hp, spar_lp):
                     component_list[comp].cp[:, 1] = component_list[comp].cp[:, 1]
 
         # Rear Shear
-        if "web" in blade_internal_structure["layers"][comp].keys():
-            if "rear" in blade_internal_structure["layers"][comp]["web"].lower():
+        if "web" in blade_internal_structure["layers"][comp]:
+            if (
+                "rear" in blade_internal_structure["layers"][comp]["web"].lower()
+                or "0" in blade_internal_structure["layers"][comp]["name"]
+            ):
                 # Web Skin1
-                if "skin_le" in blade_internal_structure["layers"][comp]["name"].lower():
+                if "skinle" in blade_internal_structure["layers"][comp]["name"].lower().replace(
+                    "_", ""
+                ):
                     # comp[comp].hpextents = {[num2str(xs,2) 'b-c']};
                     # comp[comp].lpextents = {[num2str(xs,2) 'b-c']};
                     # comp[comp].hpextents = {['z-' sw_offset]};
@@ -476,7 +471,9 @@ def _add_components(blade, blade_internal_structure, spar_hp, spar_lp):
                     component_list[comp].name = blade_internal_structure["layers"][comp]["name"]
 
                 # Web Skin2
-                if "skin_te" in blade_internal_structure["layers"][comp]["name"].lower():
+                if "skinte" in blade_internal_structure["layers"][comp]["name"].lower().replace(
+                    "_", ""
+                ):
                     # comp[comp].hpextents = {[num2str(xs,2) 'b-c']};
                     # comp[comp].lpextents = {[num2str(xs,2) 'b-c']};
                     # comp[comp].hpextents = {['z-' sw_offset]};
@@ -489,7 +486,7 @@ def _add_components(blade, blade_internal_structure, spar_hp, spar_lp):
                     component_list[comp].cp[:, 1] = component_list[comp].cp[:, 1]
 
     ### add components to blade
-    component_dict = dict()
+    component_dict = {}
     for comp in component_list:
         component_dict[comp.name] = comp
     blade.components = component_dict
@@ -520,3 +517,51 @@ def writeNuMADAirfoil(coords, reftext, fname):
             fid.write("%8.12f\t%8.12f\n" % tuple(coords[i, :]))
 
         fid.write("</coords>" % ())
+
+
+def update_internal_structure(blade_internal_structure, blade_outer_shape_bem):
+    bladeParts = ["layers", "webs"]
+    # Make sure each definition.ispan has layer thicknesses and widths
+    fullSpanGrid = np.array(blade_outer_shape_bem["reference_axis"]["z"]["grid"])
+    nStations = len(fullSpanGrid)
+    keysToModify = {
+        "offset_y_pa",
+        "thickness",
+        "fiber_orientation",
+        "width",
+        "start_nd_arc",
+        "end_nd_arc",
+    }
+    for part_name in bladeParts:
+        N_layer_comp = len(blade_internal_structure[part_name])
+        for currentLayer in range(N_layer_comp):
+            layerKeys = set(blade_internal_structure[part_name][currentLayer].keys())
+
+            for currentKey in keysToModify.intersection(layerKeys):
+                try:
+                    grid = blade_internal_structure[part_name][currentLayer][currentKey]["grid"]
+                    values = blade_internal_structure[part_name][currentLayer][currentKey]["values"]
+                except KeyError:
+                    continue
+
+                startStationLoc = grid[0]
+                endStationLoc = grid[-1]
+
+                subSpanGridIndex = np.where(
+                    (fullSpanGrid >= startStationLoc) & (fullSpanGrid <= endStationLoc)
+                )[0]
+
+                # iterpolate fullSpanGrid locations onto layer grid defined in the yamle file for the layer
+                subSpanValues = interpolator_wrap(
+                    grid, values, fullSpanGrid[subSpanGridIndex], "pchip"
+                )
+                fullSpanValues = np.zeros(nStations)
+
+                fullSpanValues[subSpanGridIndex] = subSpanValues
+
+                # Reset
+                blade_internal_structure[part_name][currentLayer][currentKey]["grid"] = fullSpanGrid
+                blade_internal_structure[part_name][currentLayer][currentKey]["values"] = (
+                    fullSpanValues
+                )
+    return blade_internal_structure

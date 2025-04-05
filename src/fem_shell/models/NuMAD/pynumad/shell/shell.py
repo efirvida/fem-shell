@@ -1,17 +1,17 @@
-import numpy as np
-import warnings
+import subprocess
 from os import getcwd
 from os.path import join
-import subprocess
 
+import numpy as np
 import pynumad
-from pynumad.utils.interpolation import interpolator_wrap
+from pynumad.analysis.ansys.write import writeAnsysShellModel
+from pynumad.shell.Mesh3DClass import Mesh3D
+from pynumad.shell.MeshTools import correctOrientation, getDirectionCosines
+from pynumad.shell.ShellRegionClass import ShellRegion
 
 ##from pynumad.shell.shellClasses import shellRegion, elementSet, NuMesh3D, spatialGridList2D, spatialGridList3D
 from pynumad.shell.SurfaceClass import Surface
-from pynumad.shell.Mesh3DClass import Mesh3D
-from pynumad.shell.ShellRegionClass import ShellRegion
-from pynumad.analysis.ansys.write import writeAnsysShellModel
+from pynumad.utils.interpolation import interpolator_wrap
 
 
 def shellMeshGeneral(blade, forSolid, includeAdhesive, elementSize):
@@ -73,7 +73,13 @@ def shellMeshGeneral(blade, forSolid, includeAdhesive, elementSize):
         name: 'adhesiveElements'
         labels: [0,1,2,3....(number of adhesive elements)]
     """
-    geomSz = blade.geometry.shape
+    coordinates = blade.geometry
+    profiles = blade.profiles
+    key_points = blade.keypoints
+    stacks = blade.stacks
+    swstacks = blade.swstacks
+
+    geomSz = coordinates.shape
     lenGeom = geomSz[0]
     numXsec = geomSz[2]
     XSCurvePts = np.array([], dtype=int)
@@ -84,40 +90,40 @@ def shellMeshGeneral(blade, forSolid, includeAdhesive, elementSize):
         minDist = 1
         lePt = 0
         for j in range(lenGeom):
-            prof = blade.profiles[j, :, i]
+            prof = profiles[j, :, i]
             mag = np.linalg.norm(prof)
             if mag < minDist:
                 minDist = mag
                 lePt = j
 
         for j in range(5):
-            kpCrd = blade.keypoints[j, :, i]
+            kpCrd = key_points[j, :, i]
             minDist = blade.ichord[i]
             pti = 1
             for k in range(lePt):
-                ptCrd = blade.geometry[k, :, i]
+                ptCrd = coordinates[k, :, i]
                 vec = ptCrd - kpCrd
                 mag = np.linalg.norm(vec)
                 if mag < minDist:
                     minDist = mag
                     pti = k
             keyPts = np.concatenate((keyPts, [pti]))
-            blade.geometry[pti, :, i] = np.array(kpCrd)
+            coordinates[pti, :, i] = np.array(kpCrd)
 
         keyPts = np.concatenate((keyPts, [lePt]))
         for j in range(5, 10):
-            kpCrd = blade.keypoints[j, :, i]
+            kpCrd = key_points[j, :, i]
             minDist = blade.ichord[i]
             pti = 1
             for k in range(lePt, lenGeom):
-                ptCrd = blade.geometry[k, :, i]
+                ptCrd = coordinates[k, :, i]
                 vec = ptCrd - kpCrd
                 mag = np.linalg.norm(vec)
                 if mag < minDist:
                     minDist = mag
                     pti = k
             keyPts = np.concatenate((keyPts, [pti]))
-            blade.geometry[pti, :, i] = np.array(kpCrd)
+            coordinates[pti, :, i] = np.array(kpCrd)
 
         keyPts = np.concatenate((keyPts, [lenGeom - 1]))
         allPts = np.array([keyPts[0]])
@@ -131,15 +137,15 @@ def shellMeshGeneral(blade, forSolid, includeAdhesive, elementSize):
 
     ## Create longitudinal splines down the blade through each of the key X-section points
 
-    splineX = blade.geometry[XSCurvePts[0, :], 0, 0]
-    splineY = blade.geometry[XSCurvePts[0, :], 1, 0]
-    splineZ = blade.geometry[XSCurvePts[0, :], 2, 0]
+    splineX = coordinates[XSCurvePts[0, :], 0, 0]
+    splineY = coordinates[XSCurvePts[0, :], 1, 0]
+    splineZ = coordinates[XSCurvePts[0, :], 2, 0]
     for i in range(1, rws):
-        Xrow = blade.geometry[XSCurvePts[i, :], 0, i]
+        Xrow = coordinates[XSCurvePts[i, :], 0, i]
         splineX = np.vstack((splineX, Xrow.T))
-        Yrow = blade.geometry[XSCurvePts[i, :], 1, i]
+        Yrow = coordinates[XSCurvePts[i, :], 1, i]
         splineY = np.vstack((splineY, Yrow.T))
-        Zrow = blade.geometry[XSCurvePts[i, :], 2, i]
+        Zrow = coordinates[XSCurvePts[i, :], 2, i]
         splineZ = np.vstack((splineZ, Zrow.T))
 
     spParam = np.transpose(np.linspace(0, 1, rws))
@@ -149,15 +155,18 @@ def shellMeshGeneral(blade, forSolid, includeAdhesive, elementSize):
     splineYi = interpolator_wrap(spParam, splineY[:, 0], spParami, "pchip")
     splineZi = interpolator_wrap(spParam, splineZ[:, 0], spParami, "pchip")
     for i in range(1, cls):
-        splineXi = np.vstack(
-            [splineXi, interpolator_wrap(spParam, splineX[:, i], spParami, "pchip")]
-        )
-        splineYi = np.vstack(
-            [splineYi, interpolator_wrap(spParam, splineY[:, i], spParami, "pchip")]
-        )
-        splineZi = np.vstack(
-            [splineZi, interpolator_wrap(spParam, splineZ[:, i], spParami, "pchip")]
-        )
+        splineXi = np.vstack([
+            splineXi,
+            interpolator_wrap(spParam, splineX[:, i], spParami, "pchip"),
+        ])
+        splineYi = np.vstack([
+            splineYi,
+            interpolator_wrap(spParam, splineY[:, i], spParami, "pchip"),
+        ])
+        splineZi = np.vstack([
+            splineZi,
+            interpolator_wrap(spParam, splineZ[:, i], spParami, "pchip"),
+        ])
     splineXi = splineXi.T
     splineYi = splineYi.T
     splineZi = splineZi.T
@@ -185,164 +194,210 @@ def shellMeshGeneral(blade, forSolid, includeAdhesive, elementSize):
         frstXS = splineXi.shape[0]
 
     ## Generate the mesh using the splines as surface guides
+
+    ## --------------------------TEMP
+    ## secNel = [1,3,15,5,8,1,1,13,5,12,3,1]
+    ## secNel = [1,4,10,10,8,2,2,8,10,10,4,1]
+    ## --------------------------END TEMP
+
     bladeSurf = Surface()
     ## Outer shell sections
-    secList = list()
+    outShES = set()
+    secList = []
     stPt = 0
     for i in range(rws - 1):
-        if stPt < frstXS:
-            stSec = 0
-            endSec = 11
-            stSp = 0
-        else:
-            stSec = 1
-            endSec = 10
-            stSp = 3
+        # if stPt < frstXS:
+        #     stSec = 0
+        #     endSec = 11
+        #     stSp = 0
+        # else:
+        #     stSec = 1
+        #     endSec = 10
+        #     stSp = 3
+        stSec = 0
+        endSec = 11
+        stSp = 0
         for j in range(stSec, endSec + 1):
-            shellKp = np.array(
+            shellKp = np.array([
+                [splineXi[stPt, stSp], splineYi[stPt, stSp], splineZi[stPt, stSp]],
                 [
-                    [splineXi[stPt, stSp], splineYi[stPt, stSp], splineZi[stPt, stSp]],
-                    [splineXi[stPt, stSp + 3], splineYi[stPt, stSp + 3], splineZi[stPt, stSp + 3]],
-                    [
-                        splineXi[stPt + 3, stSp + 3],
-                        splineYi[stPt + 3, stSp + 3],
-                        splineZi[stPt + 3, stSp + 3],
-                    ],
-                    [splineXi[stPt + 3, stSp], splineYi[stPt + 3, stSp], splineZi[stPt + 3, stSp]],
-                    [splineXi[stPt, stSp + 1], splineYi[stPt, stSp + 1], splineZi[stPt, stSp + 1]],
-                    [splineXi[stPt, stSp + 2], splineYi[stPt, stSp + 2], splineZi[stPt, stSp + 2]],
-                    [
-                        splineXi[stPt + 1, stSp + 3],
-                        splineYi[stPt + 1, stSp + 3],
-                        splineZi[stPt + 1, stSp + 3],
-                    ],
-                    [
-                        splineXi[stPt + 2, stSp + 3],
-                        splineYi[stPt + 2, stSp + 3],
-                        splineZi[stPt + 2, stSp + 3],
-                    ],
-                    [
-                        splineXi[stPt + 3, stSp + 2],
-                        splineYi[stPt + 3, stSp + 2],
-                        splineZi[stPt + 3, stSp + 2],
-                    ],
-                    [
-                        splineXi[stPt + 3, stSp + 1],
-                        splineYi[stPt + 3, stSp + 1],
-                        splineZi[stPt + 3, stSp + 1],
-                    ],
-                    [splineXi[stPt + 2, stSp], splineYi[stPt + 2, stSp], splineZi[stPt + 2, stSp]],
-                    [splineXi[stPt + 1, stSp], splineYi[stPt + 1, stSp], splineZi[stPt + 1, stSp]],
-                    [
-                        splineXi[stPt + 1, stSp + 1],
-                        splineYi[stPt + 1, stSp + 1],
-                        splineZi[stPt + 1, stSp + 1],
-                    ],
-                    [
-                        splineXi[stPt + 1, stSp + 2],
-                        splineYi[stPt + 1, stSp + 2],
-                        splineZi[stPt + 1, stSp + 2],
-                    ],
-                    [
-                        splineXi[stPt + 2, stSp + 2],
-                        splineYi[stPt + 2, stSp + 2],
-                        splineZi[stPt + 2, stSp + 2],
-                    ],
-                    [
-                        splineXi[stPt + 2, stSp + 1],
-                        splineYi[stPt + 2, stSp + 1],
-                        splineZi[stPt + 2, stSp + 1],
-                    ],
-                ]
-            )
+                    splineXi[stPt, stSp + 3],
+                    splineYi[stPt, stSp + 3],
+                    splineZi[stPt, stSp + 3],
+                ],
+                [
+                    splineXi[stPt + 3, stSp + 3],
+                    splineYi[stPt + 3, stSp + 3],
+                    splineZi[stPt + 3, stSp + 3],
+                ],
+                [
+                    splineXi[stPt + 3, stSp],
+                    splineYi[stPt + 3, stSp],
+                    splineZi[stPt + 3, stSp],
+                ],
+                [
+                    splineXi[stPt, stSp + 1],
+                    splineYi[stPt, stSp + 1],
+                    splineZi[stPt, stSp + 1],
+                ],
+                [
+                    splineXi[stPt, stSp + 2],
+                    splineYi[stPt, stSp + 2],
+                    splineZi[stPt, stSp + 2],
+                ],
+                [
+                    splineXi[stPt + 1, stSp + 3],
+                    splineYi[stPt + 1, stSp + 3],
+                    splineZi[stPt + 1, stSp + 3],
+                ],
+                [
+                    splineXi[stPt + 2, stSp + 3],
+                    splineYi[stPt + 2, stSp + 3],
+                    splineZi[stPt + 2, stSp + 3],
+                ],
+                [
+                    splineXi[stPt + 3, stSp + 2],
+                    splineYi[stPt + 3, stSp + 2],
+                    splineZi[stPt + 3, stSp + 2],
+                ],
+                [
+                    splineXi[stPt + 3, stSp + 1],
+                    splineYi[stPt + 3, stSp + 1],
+                    splineZi[stPt + 3, stSp + 1],
+                ],
+                [
+                    splineXi[stPt + 2, stSp],
+                    splineYi[stPt + 2, stSp],
+                    splineZi[stPt + 2, stSp],
+                ],
+                [
+                    splineXi[stPt + 1, stSp],
+                    splineYi[stPt + 1, stSp],
+                    splineZi[stPt + 1, stSp],
+                ],
+                [
+                    splineXi[stPt + 1, stSp + 1],
+                    splineYi[stPt + 1, stSp + 1],
+                    splineZi[stPt + 1, stSp + 1],
+                ],
+                [
+                    splineXi[stPt + 1, stSp + 2],
+                    splineYi[stPt + 1, stSp + 2],
+                    splineZi[stPt + 1, stSp + 2],
+                ],
+                [
+                    splineXi[stPt + 2, stSp + 2],
+                    splineYi[stPt + 2, stSp + 2],
+                    splineZi[stPt + 2, stSp + 2],
+                ],
+                [
+                    splineXi[stPt + 2, stSp + 1],
+                    splineYi[stPt + 2, stSp + 1],
+                    splineZi[stPt + 2, stSp + 1],
+                ],
+            ])
+            # vec = shellKp[1, :] - shellKp[0, :]
+            # mag = np.linalg.norm(vec)
+            # nEl = np.array([], dtype=int)
+            # nEl = np.concatenate([nEl, [np.ceil(mag / elementSize).astype(int)]])
+            # vec = shellKp[2, :] - shellKp[1, :]
+            # mag = np.linalg.norm(vec)
+            # nEl = np.concatenate([nEl, [np.ceil(mag / elementSize).astype(int)]])
+            # vec = shellKp[3, :] - shellKp[2, :]
+            # mag = np.linalg.norm(vec)
+            # nEl = np.concatenate([nEl, [np.ceil(mag / elementSize).astype(int)]])
+            # vec = shellKp[0, :] - shellKp[3, :]
+            # mag = np.linalg.norm(vec)
+            # nEl = np.concatenate([nEl, [np.ceil(mag / elementSize).astype(int)]])
+
             vec = shellKp[1, :] - shellKp[0, :]
             mag = np.linalg.norm(vec)
-            nEl = np.array([], dtype=int)
-            nEl = np.concatenate([nEl, [np.ceil(mag / elementSize).astype(int)]])
+
+            nEl1 = int(np.ceil(mag / elementSize))
+            ##
+            ## nEl1 = secNel[j]
+            ##
+
             vec = shellKp[2, :] - shellKp[1, :]
             mag = np.linalg.norm(vec)
-            nEl = np.concatenate([nEl, [np.ceil(mag / elementSize).astype(int)]])
+            nEl2 = int(np.ceil(mag / elementSize))
             vec = shellKp[3, :] - shellKp[2, :]
             mag = np.linalg.norm(vec)
-            nEl = np.concatenate([nEl, [np.ceil(mag / elementSize).astype(int)]])
+
+            nEl3 = int(np.ceil(mag / elementSize))
+            ##
+            ## nEl3 = secNel[j]
+            ##
+
             vec = shellKp[0, :] - shellKp[3, :]
             mag = np.linalg.norm(vec)
-            nEl = np.concatenate([nEl, [np.ceil(mag / elementSize).astype(int)]])
+            nEl4 = int(np.ceil(mag / elementSize))
+            nEl = np.array([nEl1, nEl2, nEl3, nEl4])
+
             bladeSurf.addShellRegion(
                 "quad3",
                 shellKp,
                 nEl,
-                name=blade.stacks[j, i].name,
+                name=stacks[j, i].name,
                 elType="quad",
                 meshMethod="structured",
             )
-            newSec = dict()
+            outShES.add(stacks[j, i].name)
+            newSec = {}
             newSec["type"] = "shell"
-            layup = list()
-            for pg in blade.stacks[j, i].plygroups:
-                totThick = pg.thickness * pg.nPlies
+            layup = []
+            for pg in stacks[j, i].plygroups:
+                totThick = 0.001 * pg.thickness * pg.nPlies
                 ply = [pg.materialid, totThick, pg.angle]
                 layup.append(ply)
             newSec["layup"] = layup
-            newSec["elementSet"] = blade.stacks[j, i].name
+            newSec["elementSet"] = stacks[j, i].name
+            newSec["xDir"] = (shellKp[3, :] - shellKp[0, :]) + (shellKp[2, :] - shellKp[1, :])
+            newSec["xyDir"] = (shellKp[1, :] - shellKp[0, :]) + (shellKp[2, :] - shellKp[3, :])
             secList.append(newSec)
             stSp = stSp + 3
         stPt = stPt + 3
 
-    ## Shift the appropriate splines if the mesh is for a solid model seed
-    if forSolid == 1:
-        caseIndex = np.array([[9, 27, 3], [12, 24, 3], [24, 12, 8], [27, 9, 8]])
-        for i in range(caseIndex.shape[0]):
-            spl = caseIndex[i, 0]
-            tgtSp = caseIndex[i, 1]
-            sec = caseIndex[i, 2]
-            stPt = 0
-            for j in range(rws - 1):
-                totalThick = 0
-                for k in range(3):
-                    tpp = 0.001 * blade.stacks[sec, j].plygroups[k].thickness
-                    npls = blade.stacks[sec, j].plygroups[k].nPlies
-                    totalThick = totalThick + tpp * npls
-                for k in range(3):
-                    vx = splineXi[stPt, tgtSp] - splineXi[stPt, spl]
-                    vy = splineYi[stPt, tgtSp] - splineYi[stPt, spl]
-                    vz = splineZi[stPt, tgtSp] - splineZi[stPt, spl]
-                    magInv = 1 / np.sqrt(vx * vx + vy * vy + vz * vz)
-                    ux = magInv * vx
-                    uy = magInv * vy
-                    uz = magInv * vz
-                    splineXi[stPt, spl] = splineXi[stPt, spl] + totalThick * ux
-                    splineYi[stPt, spl] = splineYi[stPt, spl] + totalThick * uy
-                    splineZi[stPt, spl] = splineZi[stPt, spl] + totalThick * uz
-                    stPt = stPt + 1
-
     ## Shear web sections
+    swES = set()
     stPt = 0
     web1Sets = np.array([])
     web2Sets = np.array([])
     for i in range(rws - 1):
-        if blade.swstacks[0][i].plygroups:
+        if swstacks[0][i].plygroups:
             shellKp = np.zeros((16, 3))
             shellKp[0, :] = np.array([splineXi[stPt, 12], splineYi[stPt, 12], splineZi[stPt, 12]])
             shellKp[1, :] = np.array([splineXi[stPt, 24], splineYi[stPt, 24], splineZi[stPt, 24]])
-            shellKp[2, :] = np.array(
-                [splineXi[stPt + 3, 24], splineYi[stPt + 3, 24], splineZi[stPt + 3, 24]]
-            )
-            shellKp[3, :] = np.array(
-                [splineXi[stPt + 3, 12], splineYi[stPt + 3, 12], splineZi[stPt + 3, 12]]
-            )
-            shellKp[6, :] = np.array(
-                [splineXi[stPt + 1, 24], splineYi[stPt + 1, 24], splineZi[stPt + 1, 24]]
-            )
-            shellKp[7, :] = np.array(
-                [splineXi[stPt + 2, 24], splineYi[stPt + 2, 24], splineZi[stPt + 2, 24]]
-            )
-            shellKp[10, :] = np.array(
-                [splineXi[stPt + 2, 12], splineYi[stPt + 2, 12], splineZi[stPt + 2, 12]]
-            )
-            shellKp[11, :] = np.array(
-                [splineXi[stPt + 1, 12], splineYi[stPt + 1, 12], splineZi[stPt + 1, 12]]
-            )
+            shellKp[2, :] = np.array([
+                splineXi[stPt + 3, 24],
+                splineYi[stPt + 3, 24],
+                splineZi[stPt + 3, 24],
+            ])
+            shellKp[3, :] = np.array([
+                splineXi[stPt + 3, 12],
+                splineYi[stPt + 3, 12],
+                splineZi[stPt + 3, 12],
+            ])
+            shellKp[6, :] = np.array([
+                splineXi[stPt + 1, 24],
+                splineYi[stPt + 1, 24],
+                splineZi[stPt + 1, 24],
+            ])
+            shellKp[7, :] = np.array([
+                splineXi[stPt + 2, 24],
+                splineYi[stPt + 2, 24],
+                splineZi[stPt + 2, 24],
+            ])
+            shellKp[10, :] = np.array([
+                splineXi[stPt + 2, 12],
+                splineYi[stPt + 2, 12],
+                splineZi[stPt + 2, 12],
+            ])
+            shellKp[11, :] = np.array([
+                splineXi[stPt + 1, 12],
+                splineYi[stPt + 1, 12],
+                splineZi[stPt + 1, 12],
+            ])
             shellKp[4, :] = 0.6666 * shellKp[0, :] + 0.3333 * shellKp[1, :]
             shellKp[5, :] = 0.3333 * shellKp[0, :] + 0.6666 * shellKp[1, :]
             shellKp[8, :] = 0.6666 * shellKp[2, :] + 0.3333 * shellKp[3, :]
@@ -352,61 +407,100 @@ def shellMeshGeneral(blade, forSolid, includeAdhesive, elementSize):
             shellKp[14, :] = 0.6666 * shellKp[7, :] + 0.3333 * shellKp[10, :]
             shellKp[15, :] = 0.3333 * shellKp[7, :] + 0.6666 * shellKp[10, :]
 
+            # vec = shellKp[1, :] - shellKp[0, :]
+            # mag = np.linalg.norm(vec)
+
+            # nEl = np.array([], dtype=int)
+            # nEl = np.concatenate([nEl, [np.ceil(mag / elementSize).astype(int)]])
+            # vec = shellKp[2, :] - shellKp[1, :]
+            # mag = np.linalg.norm(vec)
+            # nEl = np.concatenate([nEl, [np.ceil(mag / elementSize).astype(int)]])
+            # vec = shellKp[3, :] - shellKp[2, :]
+            # mag = np.linalg.norm(vec)
+            # nEl = np.concatenate([nEl, [np.ceil(mag / elementSize).astype(int)]])
+            # vec = shellKp[0, :] - shellKp[3, :]
+            # mag = np.linalg.norm(vec)
+            # nEl = np.concatenate([nEl, [np.ceil(mag / elementSize).astype(int)]])
+
             vec = shellKp[1, :] - shellKp[0, :]
             mag = np.linalg.norm(vec)
 
-            nEl = np.array([], dtype=int)
-            nEl = np.concatenate([nEl, [np.ceil(mag / elementSize).astype(int)]])
+            nEl1 = int(np.ceil(mag / elementSize))
+            ##
+            ## nEl1 = 8
+            ##
+
             vec = shellKp[2, :] - shellKp[1, :]
             mag = np.linalg.norm(vec)
-            nEl = np.concatenate([nEl, [np.ceil(mag / elementSize).astype(int)]])
+            nEl2 = int(np.ceil(mag / elementSize))
             vec = shellKp[3, :] - shellKp[2, :]
             mag = np.linalg.norm(vec)
-            nEl = np.concatenate([nEl, [np.ceil(mag / elementSize).astype(int)]])
+
+            nEl3 = int(np.ceil(mag / elementSize))
+            ##
+            ## nEl3 = 8
+            ##
+
             vec = shellKp[0, :] - shellKp[3, :]
             mag = np.linalg.norm(vec)
-            nEl = np.concatenate([nEl, [np.ceil(mag / elementSize).astype(int)]])
+            nEl4 = int(np.ceil(mag / elementSize))
+            nEl = np.array([nEl1, nEl2, nEl3, nEl4])
 
             bladeSurf.addShellRegion(
                 "quad3",
                 shellKp,
                 nEl,
-                name=blade.swstacks[0][i].name,
+                name=swstacks[0][i].name,
                 elType="quad",
                 meshMethod="structured",
             )
-            newSec = dict()
+            swES.add(swstacks[0][i].name)
+            newSec = {}
             newSec["type"] = "shell"
-            layup = list()
-            for pg in blade.swstacks[0][i].plygroups:
-                totThick = pg.thickness * pg.nPlies
+            layup = []
+            for pg in swstacks[0][i].plygroups:
+                totThick = 0.001 * pg.thickness * pg.nPlies
                 ply = [pg.materialid, totThick, pg.angle]
                 layup.append(ply)
             newSec["layup"] = layup
-            newSec["elementSet"] = blade.swstacks[0][i].name
+            newSec["elementSet"] = swstacks[0][i].name
+            newSec["xDir"] = np.array([0.0, 0.0, 1.0])
+            newSec["xyDir"] = (shellKp[1, :] - shellKp[0, :]) + (shellKp[2, :] - shellKp[3, :])
             secList.append(newSec)
-        if blade.swstacks[1][i].plygroups:
+        if swstacks[1][i].plygroups:
             shellKp = np.zeros((16, 3))
             shellKp[0, :] = np.array([splineXi[stPt, 27], splineYi[stPt, 27], splineZi[stPt, 27]])
             shellKp[1, :] = np.array([splineXi[stPt, 9], splineYi[stPt, 9], splineZi[stPt, 9]])
-            shellKp[2, :] = np.array(
-                [splineXi[stPt + 3, 9], splineYi[stPt + 3, 9], splineZi[stPt + 3, 9]]
-            )
-            shellKp[3, :] = np.array(
-                [splineXi[stPt + 3, 27], splineYi[stPt + 3, 27], splineZi[stPt + 3, 27]]
-            )
-            shellKp[6, :] = np.array(
-                [splineXi[stPt + 1, 9], splineYi[stPt + 1, 9], splineZi[stPt + 1, 9]]
-            )
-            shellKp[7, :] = np.array(
-                [splineXi[stPt + 2, 9], splineYi[stPt + 2, 9], splineZi[stPt + 2, 9]]
-            )
-            shellKp[10, :] = np.array(
-                [splineXi[stPt + 2, 27], splineYi[stPt + 2, 27], splineZi[stPt + 2, 27]]
-            )
-            shellKp[11, :] = np.array(
-                [splineXi[stPt + 1, 27], splineYi[stPt + 1, 27], splineZi[stPt + 1, 27]]
-            )
+            shellKp[2, :] = np.array([
+                splineXi[stPt + 3, 9],
+                splineYi[stPt + 3, 9],
+                splineZi[stPt + 3, 9],
+            ])
+            shellKp[3, :] = np.array([
+                splineXi[stPt + 3, 27],
+                splineYi[stPt + 3, 27],
+                splineZi[stPt + 3, 27],
+            ])
+            shellKp[6, :] = np.array([
+                splineXi[stPt + 1, 9],
+                splineYi[stPt + 1, 9],
+                splineZi[stPt + 1, 9],
+            ])
+            shellKp[7, :] = np.array([
+                splineXi[stPt + 2, 9],
+                splineYi[stPt + 2, 9],
+                splineZi[stPt + 2, 9],
+            ])
+            shellKp[10, :] = np.array([
+                splineXi[stPt + 2, 27],
+                splineYi[stPt + 2, 27],
+                splineZi[stPt + 2, 27],
+            ])
+            shellKp[11, :] = np.array([
+                splineXi[stPt + 1, 27],
+                splineYi[stPt + 1, 27],
+                splineZi[stPt + 1, 27],
+            ])
             shellKp[4, :] = 0.6666 * shellKp[0, :] + 0.3333 * shellKp[1, :]
             shellKp[5, :] = 0.3333 * shellKp[0, :] + 0.6666 * shellKp[1, :]
             shellKp[8, :] = 0.6666 * shellKp[2, :] + 0.3333 * shellKp[3, :]
@@ -416,47 +510,146 @@ def shellMeshGeneral(blade, forSolid, includeAdhesive, elementSize):
             shellKp[14, :] = 0.6666 * shellKp[7, :] + 0.3333 * shellKp[10, :]
             shellKp[15, :] = 0.3333 * shellKp[7, :] + 0.6666 * shellKp[10, :]
 
+            # vec = shellKp[1, :] - shellKp[0, :]
+            # mag = np.linalg.norm(vec)
+
+            # nEl = np.array([], dtype=int)
+            # nEl = np.concatenate([nEl, [np.ceil(mag / elementSize).astype(int)]])
+            # vec = shellKp[2, :] - shellKp[1, :]
+            # mag = np.linalg.norm(vec)
+            # nEl = np.concatenate([nEl, [np.ceil(mag / elementSize).astype(int)]])
+            # vec = shellKp[3, :] - shellKp[2, :]
+            # mag = np.linalg.norm(vec)
+            # nEl = np.concatenate([nEl, [np.ceil(mag / elementSize).astype(int)]])
+            # vec = shellKp[0, :] - shellKp[3, :]
+            # mag = np.linalg.norm(vec)
+            # nEl = np.concatenate([nEl, [np.ceil(mag / elementSize).astype(int)]])
+
             vec = shellKp[1, :] - shellKp[0, :]
             mag = np.linalg.norm(vec)
 
-            nEl = np.array([], dtype=int)
-            nEl = np.concatenate([nEl, [np.ceil(mag / elementSize).astype(int)]])
+            nEl1 = int(np.ceil(mag / elementSize))
+            ##
+            ## nEl1 = 8
+            ##
+
             vec = shellKp[2, :] - shellKp[1, :]
             mag = np.linalg.norm(vec)
-            nEl = np.concatenate([nEl, [np.ceil(mag / elementSize).astype(int)]])
+            nEl2 = int(np.ceil(mag / elementSize))
             vec = shellKp[3, :] - shellKp[2, :]
             mag = np.linalg.norm(vec)
-            nEl = np.concatenate([nEl, [np.ceil(mag / elementSize).astype(int)]])
+
+            nEl3 = int(np.ceil(mag / elementSize))
+            ##
+            ## nEl3 = 8
+            ##
+
             vec = shellKp[0, :] - shellKp[3, :]
             mag = np.linalg.norm(vec)
-            nEl = np.concatenate([nEl, [np.ceil(mag / elementSize).astype(int)]])
+            nEl4 = int(np.ceil(mag / elementSize))
+            nEl = np.array([nEl1, nEl2, nEl3, nEl4])
 
             bladeSurf.addShellRegion(
                 "quad3",
                 shellKp,
                 nEl,
-                name=blade.swstacks[1][i].name,
+                name=swstacks[1][i].name,
                 elType="quad",
                 meshMethod="structured",
             )
-            newSec = dict()
+            swES.add(swstacks[1][i].name)
+            newSec = {}
             newSec["type"] = "shell"
-            layup = list()
-            for pg in blade.swstacks[1][i].plygroups:
-                totThick = pg.thickness * pg.nPlies
+            layup = []
+            for pg in swstacks[1][i].plygroups:
+                totThick = 0.001 * pg.thickness * pg.nPlies
                 ply = [pg.materialid, totThick, pg.angle]
                 layup.append(ply)
             newSec["layup"] = layup
-            newSec["elementSet"] = blade.swstacks[1][i].name
+            newSec["elementSet"] = swstacks[1][i].name
+            newSec["xDir"] = np.array([0.0, 0.0, 1.0])
+            newSec["xyDir"] = (shellKp[1, :] - shellKp[0, :]) + (shellKp[2, :] - shellKp[3, :])
             secList.append(newSec)
         stPt = stPt + 3
 
     ## Generate Shell mesh
 
+    # print("getting blade mesh")
     shellData = bladeSurf.getSurfaceMesh()
     shellData["sections"] = secList
 
+    ## Get local direction cosine orientations for individual elements
+    # print("getting element orientations")
+    nodes = shellData["nodes"]
+    elements = shellData["elements"]
+    numEls = len(shellData["elements"])
+    elOri = np.zeros((numEls, 9), dtype=float)
+
+    esi = 0
+    for sec in secList:
+        dirCos = getDirectionCosines(sec["xDir"], sec["xyDir"])
+        es = shellData["sets"]["element"][esi]
+        for ei in es["labels"]:
+            eX = []
+            eY = []
+            eZ = []
+            for ndi in elements[ei]:
+                if ndi > -1:
+                    eX.append(nodes[ndi, 0])
+                    eY.append(nodes[ndi, 1])
+                    eZ.append(nodes[ndi, 2])
+            if len(eX) == 3:
+                elType = "shell3"
+            else:
+                elType = "shell4"
+            elCrd = np.array([eX, eY, eZ])
+            elDirCos = correctOrientation(dirCos, elCrd, elType)
+            elOri[ei, 0:3] = elDirCos[0]
+            elOri[ei, 3:6] = elDirCos[1]
+            elOri[ei, 6:9] = elDirCos[2]
+        esi = esi + 1
+
+    shellData["elementOrientations"] = elOri
+
+    ## Get all outer shell and all shear web element sets
+
+    outerLab = []
+    swLab = []
+    for es in shellData["sets"]["element"]:
+        nm = es["name"]
+        if nm in outShES:
+            outerLab.extend(es["labels"])
+        elif nm in swES:
+            swLab.extend(es["labels"])
+    outerSet = {}
+    outerSet["name"] = "allOuterShellEls"
+    outerSet["labels"] = outerLab
+    shellData["sets"]["element"].append(outerSet)
+    swSet = {}
+    swSet["name"] = "allShearWebEls"
+    swSet["labels"] = swLab
+    shellData["sets"]["element"].append(swSet)
+
+    ## Get root (Zmin) node set
+    minZ = np.min(splineZi)
+    rootLabs = []
+    lab = 0
+    for nd in nodes:
+        if np.abs(nd[2] - minZ) < 0.25 * elementSize:
+            rootLabs.append(lab)
+        lab = lab + 1
+    newSet = {}
+    newSet["name"] = "RootNodes"
+    newSet["labels"] = rootLabs
+    try:
+        shellData["sets"]["node"].append(newSet)
+    except:
+        nodeSets = []
+        nodeSets.append(newSet)
+        shellData["sets"]["node"] = nodeSets
+
     ## Generate mesh for trailing edge adhesive if requested
+    # print("getting adhesive mesh")
     if includeAdhesive == 1:
         stPt = frstXS
         v1x = splineXi[stPt, 6] - splineXi[stPt, 4]
@@ -513,11 +706,59 @@ def shellMeshGeneral(blade, forSolid, includeAdhesive, elementSize):
         shellData["adhesiveEls"] = adMeshData["elements"]
         shellData["adhesiveNds"] = adMeshData["nodes"]
         adEls = len(adMeshData["elements"])
-        adhesSet = dict()
-        adhesSet["name"] = "ahesiveElements"
+        adhesSet = {}
+        adhesSet["name"] = "adhesiveElements"
         labList = list(range(0, adEls))
         adhesSet["labels"] = labList
+        adMeshData["sets"] = {"element": [adhesSet], "node": []}
         shellData["adhesiveElSet"] = adhesSet
+
+        print("getting constraints")
+        nDir = np.array([0.0, 1.0, 0.0])
+        adMeshData = get_surface_nodes(
+            adMeshData, "adhesiveElements", "LP_AdNodes", nDir, normTol=45.0
+        )
+        nDir = np.array([0.0, -1.0, 0.0])
+        adMeshData = get_surface_nodes(
+            adMeshData, "adhesiveElements", "HP_AdNodes", nDir, normTol=45.0
+        )
+        lpEls = []
+        hpEls = []
+        for es in shellData["sets"]["element"]:
+            if "LP_TE_REINF" in es["name"]:
+                lpEls.extend(es["labels"])
+            elif "HP_TE_REINF" in es["name"]:
+                hpEls.extend(es["labels"])
+        lpSet = {"name": "LP_TE_REINF", "labels": lpEls}
+        shellData = add_element_set(shellData, lpSet)
+        hpSet = {"name": "HP_TE_REINF", "labels": hpEls}
+        shellData = add_element_set(shellData, hpSet)
+        constraints = tie_2_meshes_constraints(
+            adMeshData, "LP_AdNodes", shellData, "LP_TE_REINF", 0.5 * elementSize
+        )
+        hpConst = tie_2_meshes_constraints(
+            adMeshData, "HP_AdNodes", shellData, "HP_TE_REINF", 0.5 * elementSize
+        )
+        constraints.extend(hpConst)
+        shellData["constraints"] = constraints
+
+    matList = []
+    for mn in blade.materials:
+        newMat = {}
+        mat = blade.materials[mn]
+        newMat["name"] = mat.name
+        newMat["density"] = mat.density
+        newMat["elastic"] = {}
+        newMat["elastic"]["E"] = [mat.ex, mat.ey, mat.ez]
+        if mat.type == "isotropic":
+            nu = mat.prxy
+            newMat["elastic"]["nu"] = [nu, nu, nu]
+        else:
+            newMat["elastic"]["nu"] = [mat.prxy, mat.prxz, mat.pryz]
+        newMat["elastic"]["G"] = [mat.gxy, mat.gxz, mat.gyz]
+        matList.append(newMat)
+
+    shellData["materials"] = matList
 
     return shellData
 
