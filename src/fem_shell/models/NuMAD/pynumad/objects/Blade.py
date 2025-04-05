@@ -4,21 +4,22 @@
 #              See license.txt for disclaimer information              #
 ########################################################################
 
-import re, warnings
-import numpy as np
+import re
 from copy import copy
 
-from pynumad.io.yaml_to_blade import yaml_to_blade
-from pynumad.io.excel_to_blade import excel_to_blade
-from pynumad.utils.interpolation import interpolator_wrap
-from pynumad.utils.affinetrans import rotation, translation
-from pynumad.objects.Station import Station
-from pynumad.objects.Airfoil import getAirfoilNormals, getAirfoilNormalsAngleChange
-from pynumad.objects.Stack import Stack
-from pynumad.objects.Subobjects import MatDBentry, Layer, Shearweb, BOM, Ply
+import numpy as np
 
 # for type hints
 from numpy import ndarray
+
+from pynumad.io.excel_to_blade import excel_to_blade
+from pynumad.io.yaml_to_blade import yaml_to_blade
+from pynumad.objects.Airfoil import getAirfoilNormals, getAirfoilNormalsAngleChange
+from pynumad.objects.Stack import Stack
+from pynumad.objects.Station import Station
+from pynumad.objects.Subobjects import BOM, Layer, MatDBentry, Ply, Shearweb
+from pynumad.utils.affinetrans import rotation, translation
+from pynumad.utils.interpolation import interpolator_wrap
 
 
 class Blade:
@@ -668,12 +669,12 @@ class Blade:
                 for comp in self.components
                 if self.components[comp].group == ksw + 1
             ]  # find the components that are part of the shear web
-            hpextents = np.unique(
-                [comp.hpextents for comp in ksw_cmpts]
-            ).tolist()  # get the hp extents
-            lpextents = np.unique(
-                [comp.lpextents for comp in ksw_cmpts]
-            ).tolist()  # get the lp extents
+            hpextents = np.unique([
+                comp.hpextents for comp in ksw_cmpts
+            ]).tolist()  # get the hp extents
+            lpextents = np.unique([
+                comp.lpextents for comp in ksw_cmpts
+            ]).tolist()  # get the lp extents
             assert len(hpextents) == 1, (
                 f"HP Extents for components in group {ksw} must be identical and contain no spaces or commas"
             )
@@ -683,7 +684,7 @@ class Blade:
             # match extents that have form of either '0.5b-c' or
             # 'b+/-100' or 'b' or 'z+/-100'
             # pat = '(?<fraction>\d*[\.]?\d*)(?<pt1>[a-zA-Z]+)-(?<pt2>[a-zA-Z]+)|(?<pt3>[a-zA-Z]+)(?<mm_offset>[+-]\d+)|(?<pt>[a-zA-Z])'
-            pat = "(?P<fraction>\d*[\.]?\d*)(?P<pt1>[a-zA-Z]+)-(?P<pt2>[a-zA-Z]+)|(?P<pt3>[a-zA-Z]+)(?P<mm_offset>[+-]\d+)|(?P<pt>[a-zA-Z])"
+            pat = r"(?P<fraction>\d*[\.]?\d*)(?P<pt1>[a-zA-Z]+)-(?P<pt2>[a-zA-Z]+)|(?P<pt3>[a-zA-Z]+)(?P<mm_offset>[+-]\d+)|(?P<pt>[a-zA-Z])"
 
             hp = re.search(pat, hpextents[0]).groupdict()
             lp = re.search(pat, lpextents[0]).groupdict()
@@ -902,7 +903,8 @@ class Blade:
         mm_to_m = 0.001
         swBeginSta = []
         swEndSta = []
-        for comp_name in self.components:
+        comp_names = sorted(self.components, key=lambda k: self.components[k].group)
+        for comp_name in comp_names:
             comp = self.components[comp_name]
             mat = self.materials[comp.materialid]
             hpRegion, lpRegion = self.findRegionExtents(comp)
