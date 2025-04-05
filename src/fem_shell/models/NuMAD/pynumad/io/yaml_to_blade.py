@@ -65,53 +65,13 @@ def yaml_to_blade(blade, filename: str, write_airfoils: bool = False):
         blade_internal_structure, blade_outer_shape_bem
     )
 
-    ## Blade Components
-    N_layer_comp = len(blade_internal_structure["layers"])
+    blade.leband = _add_le_bands(blade_internal_structure["layers"])
+    blade.teband = _add_te_bands(blade_internal_structure["layers"])
 
-    # Spar Cap Width and Offset
-    # Obtain component name and index for hp and lp sides of sparcap
-    for i in range(N_layer_comp):
-        if "spar" in blade_internal_structure["layers"][i]["name"].lower():
-            name = blade_internal_structure["layers"][i]["name"]
-            if "suc" in blade_internal_structure["layers"][i]["side"].lower():
-                spar_lp_index = i
-                spar_lp_name = name
-            if "pres" in blade_internal_structure["layers"][i]["side"].lower():
-                spar_hp_index = i
-                spar_hp_name = name
-
-    # Because spar cap width must be constant, average the yaml file on
-    # pressure and suction surfaces across span
-    # blade.sparcapwidth = np.zeros((2))
-    blade.sparcapoffset = np.zeros((2))
-    blade.sparcapwidth_hp = (
-        np.array(blade_internal_structure["layers"][spar_hp_index]["width"]["values"]) * 1000
-    )
-    blade.sparcapwidth_lp = (
-        np.array(blade_internal_structure["layers"][spar_lp_index]["width"]["values"]) * 1000
-    )
-
-    blade.sparcapoffset_hp = (
-        np.array(blade_internal_structure["layers"][spar_hp_index]["offset_y_pa"]["values"]) * 1000
-    )
-    blade.sparcapoffset_lp = (
-        np.array(blade_internal_structure["layers"][spar_lp_index]["offset_y_pa"]["values"]) * 1000
-    )
-
-    # TE and LE Bands
-    for i in range(N_layer_comp):
-        if "reinf" in blade_internal_structure["layers"][i]["name"].lower():
-            if "le" in blade_internal_structure["layers"][i]["name"].lower():
-                I_LE = i
-            else:
-                I_TE = i
-
-    # Leading and Trailing Edge bands are constants in millimeters
-
-    blade.leband = np.array(blade_internal_structure["layers"][I_LE]["width"]["values"]) * 1000 / 2
-    blade.teband = np.array(blade_internal_structure["layers"][I_TE]["width"]["values"]) * 1000 / 2
     ### COMPONENTS
-    _add_components(blade, blade_internal_structure, spar_hp_index, spar_lp_index)
+    _add_components(blade, blade_internal_structure)
+
+    _add_spar_caps(blade, blade_internal_structure["layers"])
 
     blade.updateBlade()
     # save(blade_name)
@@ -303,7 +263,7 @@ def _add_materials(blade, material_data):
     return
 
 
-def _add_components(blade, blade_internal_structure, spar_hp, spar_lp):
+def _add_components(blade, blade_internal_structure):
     N_layer_comp = len(blade_internal_structure["layers"])
     component_list = list()
     for i in range(N_layer_comp):
@@ -340,10 +300,6 @@ def _add_components(blade, blade_internal_structure, spar_hp, spar_lp):
         #     comp['cp'](:,2) = cell2mat(blade_internal_structure['layers']{i}['thickness']['values'])'.*1000;  # use when each material ply is 1 mm
         cur_comp.pinnedends = 0
         component_list.append(cur_comp)
-
-    # Spar Caps (pressure and suction)
-    component_list[spar_hp].hpextents = ["b", "c"]
-    component_list[spar_lp].lpextents = ["b", "c"]
 
     for comp in range(len(component_list)):
         # uv coating
@@ -490,7 +446,6 @@ def _add_components(blade, blade_internal_structure, spar_hp, spar_lp):
     for comp in component_list:
         component_dict[comp.name] = comp
     blade.components = component_dict
-    return
 
 
 def writeNuMADAirfoil(coords, reftext, fname):
@@ -521,7 +476,7 @@ def writeNuMADAirfoil(coords, reftext, fname):
 
 def update_internal_structure(blade_internal_structure, blade_outer_shape_bem):
     bladeParts = ["layers", "webs"]
-    # Make sure each definition.ispan has layer thicknesses and widths
+    # Make sure each blade.ispan has layer thicknesses and widths
     fullSpanGrid = np.array(blade_outer_shape_bem["reference_axis"]["z"]["grid"])
     nStations = len(fullSpanGrid)
     keysToModify = {
@@ -565,3 +520,63 @@ def update_internal_structure(blade_internal_structure, blade_outer_shape_bem):
                     fullSpanValues
                 )
     return blade_internal_structure
+
+
+def _add_te_bands(blade_structure_dict):
+    teReinfKeys = [
+        l
+        for l in blade_structure_dict
+        if "te" in l["name"].lower() and "reinf" in l["name"].lower()
+    ]
+    if len(teReinfKeys) == 1:
+        teband = teReinfKeys[0]["width"]["values"] * 1000 / 2
+    elif len(teReinfKeys) == 2:
+        teband = (teReinfKeys[0]["width"]["values"] + teReinfKeys[1]["width"]["values"]) * 1000 / 2
+    else:
+        raise ValueError("Unknown number of TE reinforcements")
+    return teband
+
+
+def _add_le_bands(blade_structure_dict):
+    leReinfKeys = [
+        l
+        for l in blade_structure_dict
+        if "le" in l["name"].lower() and "reinf" in l["name"].lower()
+    ]
+    if len(leReinfKeys) == 1:
+        leband = leReinfKeys[0]["width"]["values"] * 1000 / 2
+    elif len(leReinfKeys) == 2:
+        leband = (leReinfKeys[0]["width"]["values"] + leReinfKeys[1]["width"]["values"]) * 1000 / 2
+    else:
+        raise ValueError("Invalid number of LE reinforcements")
+    return leband
+
+
+def _add_spar_caps(blade, blade_structure_dict):
+    sparCaps = [cap for cap in blade_structure_dict if "spar" in cap["name"].lower()]
+
+    if len(sparCaps) != 2:
+        raise ValueError("Incorrect number of spar cap components")
+
+    for iSparCap in range(2):
+        if "suc" in sparCaps[iSparCap]["side"].lower():
+            lpSideIndex = iSparCap
+        if "pres" in sparCaps[iSparCap]["side"].lower():
+            hpSideIndex = iSparCap
+
+    blade.sparcapwidth_lp = sparCaps[lpSideIndex]["width"]["values"] * 1000
+    try:
+        blade.sparcapoffset_lp = sparCaps[lpSideIndex]["offset_y_pa"]["values"] * 1000
+    except KeyError:
+        blade.sparcap_start_nd_arc = sparCaps[lpSideIndex]["start_nd_arc"]["values"]
+        blade.sparcap_end_nd_arc = sparCaps[lpSideIndex]["end_nd_arc"]["values"]
+
+    blade.sparcapwidth_hp = sparCaps[hpSideIndex]["width"]["values"] * 1000
+    try:
+        blade.sparcapoffset_hp = sparCaps[hpSideIndex]["offset_y_pa"]["values"] * 1000
+    except KeyError:
+        blade.sparcap_start_nd_arc = sparCaps[hpSideIndex]["start_nd_arc"]["values"]
+        blade.sparcap_end_nd_arc = sparCaps[hpSideIndex]["end_nd_arc"]["values"]
+    # Spar Caps (pressure and suction)
+    blade.components[sparCaps[hpSideIndex]["name"]].hpextents = ["b", "c"]
+    blade.components[sparCaps[lpSideIndex]["name"]].lpextents = ["b", "c"]
