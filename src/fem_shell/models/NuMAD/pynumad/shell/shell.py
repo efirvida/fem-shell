@@ -1,20 +1,12 @@
-import subprocess
-from os import getcwd
-from os.path import join
-
 import numpy as np
-import pynumad
-from pynumad.analysis.ansys.write import writeAnsysShellModel
-from pynumad.shell.Mesh3DClass import Mesh3D
 from pynumad.shell.MeshTools import correctOrientation, getDirectionCosines
-from pynumad.shell.ShellRegionClass import ShellRegion
 
 ##from pynumad.shell.shellClasses import shellRegion, elementSet, NuMesh3D, spatialGridList2D, spatialGridList3D
 from pynumad.shell.SurfaceClass import Surface
 from pynumad.utils.interpolation import interpolator_wrap
 
 
-def shellMeshGeneral(blade, forSolid, includeAdhesive, elementSize):
+def getShellMesh(blade, elementSize):
     """
     This method generates a finite element shell mesh for the blade, based on what is
     stored in blade.geometry, blade.keypoints, and blade.profiles.  Output is given as
@@ -24,7 +16,6 @@ def shellMeshGeneral(blade, forSolid, includeAdhesive, elementSize):
     -----------
     blade: Blade
     forSolid: bool
-    includeAdhesive: bool
     elementSize: float
 
     Returns
@@ -171,27 +162,6 @@ def shellMeshGeneral(blade, forSolid, includeAdhesive, elementSize):
     splineYi = splineYi.T
     splineZi = splineZi.T
     ## Determine the first spanwise section that needs adhesive
-    if includeAdhesive == 1:
-        stPt = 0
-        frstXS = 0
-        while frstXS == 0 and stPt < splineXi.shape[0]:
-            v1x = splineXi[stPt, 6] - splineXi[stPt, 4]
-            v1y = splineYi[stPt, 6] - splineYi[stPt, 4]
-            v1z = splineZi[stPt, 6] - splineZi[stPt, 4]
-            v2x = splineXi[stPt, 30] - splineXi[stPt, 32]
-            v2y = splineYi[stPt, 30] - splineYi[stPt, 32]
-            v2z = splineZi[stPt, 30] - splineZi[stPt, 32]
-            mag1 = np.sqrt(v1x * v1x + v1y * v1y + v1z * v1z)
-            mag2 = np.sqrt(v2x * v2x + v2y * v2y + v2z * v2z)
-            dp = (1 / (mag1 * mag2)) * (v1x * v2x + v1y * v2y + v1z * v2z)
-            if dp > 0.7071:
-                frstXS = stPt
-            stPt = stPt + 3
-
-        if frstXS == 0:
-            frstXS = splineXi.shape[0]
-    else:
-        frstXS = splineXi.shape[0]
 
     ## Generate the mesh using the splines as surface guides
 
@@ -361,8 +331,6 @@ def shellMeshGeneral(blade, forSolid, includeAdhesive, elementSize):
     ## Shear web sections
     swES = set()
     stPt = 0
-    web1Sets = np.array([])
-    web2Sets = np.array([])
     for i in range(rws - 1):
         if swstacks[0][i].plygroups:
             shellKp = np.zeros((16, 3))
@@ -648,100 +616,6 @@ def shellMeshGeneral(blade, forSolid, includeAdhesive, elementSize):
         nodeSets.append(newSet)
         shellData["sets"]["node"] = nodeSets
 
-    ## Generate mesh for trailing edge adhesive if requested
-    # print("getting adhesive mesh")
-    if includeAdhesive == 1:
-        stPt = frstXS
-        v1x = splineXi[stPt, 6] - splineXi[stPt, 4]
-        v1y = splineYi[stPt, 6] - splineYi[stPt, 4]
-        v1z = splineZi[stPt, 6] - splineZi[stPt, 4]
-        mag1 = np.sqrt(v1x * v1x + v1y * v1y + v1z * v1z)
-        v2x = splineXi[stPt, 30] - splineXi[stPt, 32]
-        v2y = splineYi[stPt, 30] - splineYi[stPt, 32]
-        v2z = splineZi[stPt, 30] - splineZi[stPt, 32]
-        mag2 = np.sqrt(v2x * v2x + v2y * v2y + v2z * v2z)
-        v3x = splineXi[stPt, 6] - splineXi[stPt, 30]
-        v3y = splineYi[stPt, 6] - splineYi[stPt, 30]
-        v3z = splineZi[stPt, 6] - splineZi[stPt, 30]
-        mag3 = np.sqrt(v3x * v3x + v3y * v3y + v3z * v3z)
-        v4x = splineXi[stPt, 4] - splineXi[stPt, 32]
-        v4y = splineYi[stPt, 4] - splineYi[stPt, 32]
-        v4z = splineZi[stPt, 4] - splineZi[stPt, 32]
-        mag4 = np.sqrt(v4x * v4x + v4y * v4y + v4z * v4z)
-        nE1 = np.ceil(mag1 / elementSize).astype(int)
-        nE2 = np.ceil(mag3 / elementSize).astype(int)
-        nE3 = np.ceil(mag2 / elementSize).astype(int)
-        nE4 = np.ceil(mag4 / elementSize).astype(int)
-        nEl = np.array([nE1, nE2, nE3, nE4])
-        gdLayer = 0
-        sweepElements = []
-        guideNds = []
-        while stPt < splineXi.shape[0]:
-            shellKp = np.zeros((9, 3))
-            shellKp[0, :] = np.array([splineXi[stPt, 4], splineYi[stPt, 4], splineZi[stPt, 4]])
-            shellKp[1, :] = np.array([splineXi[stPt, 6], splineYi[stPt, 6], splineZi[stPt, 6]])
-            shellKp[2, :] = np.array([splineXi[stPt, 30], splineYi[stPt, 30], splineZi[stPt, 30]])
-            shellKp[3, :] = np.array([splineXi[stPt, 32], splineYi[stPt, 32], splineZi[stPt, 32]])
-            shellKp[4, :] = np.array([splineXi[stPt, 5], splineYi[stPt, 5], splineZi[stPt, 5]])
-            shellKp[5, :] = 0.5 * shellKp[1, :] + 0.5 * shellKp[2, :]
-            shellKp[6, :] = np.array([splineXi[stPt, 31], splineYi[stPt, 31], splineZi[stPt, 31]])
-            shellKp[7, :] = 0.5 * shellKp[0, :] + 0.5 * shellKp[3, :]
-            shellKp[8, :] = 0.5 * shellKp[4, :] + 0.5 * shellKp[6, :]
-            sReg = ShellRegion("quad2", shellKp, nEl, elType="quad", meshMethod="free")
-            regMesh = sReg.createShellMesh()
-
-            if stPt == frstXS:
-                adhesMesh = Mesh3D(regMesh["nodes"], regMesh["elements"])
-            else:
-                guideNds.append(regMesh["nodes"])
-                layerSwEl = np.ceil(
-                    (splineZi[stPt, 4] - splineZi[(stPt - 3), 4]) / elementSize
-                ).astype(int)
-                sweepElements.append(layerSwEl)
-            stPt = stPt + 3
-
-        adMeshData = adhesMesh.createSweptMesh(
-            "toDestNodes", sweepElements, destNodes=guideNds, interpMethod="smooth"
-        )
-        shellData["adhesiveEls"] = adMeshData["elements"]
-        shellData["adhesiveNds"] = adMeshData["nodes"]
-        adEls = len(adMeshData["elements"])
-        adhesSet = {}
-        adhesSet["name"] = "adhesiveElements"
-        labList = list(range(0, adEls))
-        adhesSet["labels"] = labList
-        adMeshData["sets"] = {"element": [adhesSet], "node": []}
-        shellData["adhesiveElSet"] = adhesSet
-
-        print("getting constraints")
-        nDir = np.array([0.0, 1.0, 0.0])
-        adMeshData = get_surface_nodes(
-            adMeshData, "adhesiveElements", "LP_AdNodes", nDir, normTol=45.0
-        )
-        nDir = np.array([0.0, -1.0, 0.0])
-        adMeshData = get_surface_nodes(
-            adMeshData, "adhesiveElements", "HP_AdNodes", nDir, normTol=45.0
-        )
-        lpEls = []
-        hpEls = []
-        for es in shellData["sets"]["element"]:
-            if "LP_TE_REINF" in es["name"]:
-                lpEls.extend(es["labels"])
-            elif "HP_TE_REINF" in es["name"]:
-                hpEls.extend(es["labels"])
-        lpSet = {"name": "LP_TE_REINF", "labels": lpEls}
-        shellData = add_element_set(shellData, lpSet)
-        hpSet = {"name": "HP_TE_REINF", "labels": hpEls}
-        shellData = add_element_set(shellData, hpSet)
-        constraints = tie_2_meshes_constraints(
-            adMeshData, "LP_AdNodes", shellData, "LP_TE_REINF", 0.5 * elementSize
-        )
-        hpConst = tie_2_meshes_constraints(
-            adMeshData, "HP_AdNodes", shellData, "HP_TE_REINF", 0.5 * elementSize
-        )
-        constraints.extend(hpConst)
-        shellData["constraints"] = constraints
-
     matList = []
     for mn in blade.materials:
         newMat = {}
@@ -761,187 +635,3 @@ def shellMeshGeneral(blade, forSolid, includeAdhesive, elementSize):
     shellData["materials"] = matList
 
     return shellData
-
-
-def generateShellModel(blade, feaCode, includeAdhesive, meshData=None):
-    # This method generates a shell FEA model in one of the supported FEA codes; w/ or w/o adhesieve
-
-    if str(feaCode.lower()) == str("ansys"):
-        ansysPath = pynumad.path_data["ansysPath"]
-        # define ANSYS model settings (can be options in generateFEA)
-        config = {}
-        config["BoundaryCondition"] = "cantilevered"
-        config["elementType"] = "181"
-        config["MultipleLayerBehavior"] = "multiply"
-        config["dbgen"] = 1
-        config["dbname"] = "master"
-        # Generate a mesh using shell elements
-        APDLname = "buildAnsysShell.src"
-        ansys_product = "ANSYS"
-        blade.paths["job"] = getcwd()
-        filename = join(blade.paths["job"], APDLname)
-        if not meshData:
-            forSolid = 0
-            meshData = shellMeshGeneral(blade, forSolid, includeAdhesive)
-
-        writeAnsysShellModel(blade, filename, meshData, config)
-        if config["dbgen"]:
-            assert not len(ansysPath) == 0, (
-                "Path to ANSYS not specified. Aborting. Operation Not Permitted"
-            )
-            try:
-                # tcl: exec "$ANSYS_path" -b -p $AnsysProductVariable -I shell7.src -o output.txt
-                ansys_call = '"%s" -b -p %s -I %s -o output.txt' % (
-                    ansysPath,
-                    ansys_product,
-                    APDLname,
-                )
-                process = subprocess.run(ansys_call, shell=True)
-                # if status==0:
-                #     # dos command completed successfully; log written to output.txt
-                #     if 1:
-                #         print('ANSYS batch run to generate database (.db) has completed. See "output.txt" for any warnings.')
-                #     else:
-                #         print('ANSYS batch run to generate database (.db) has completed. See "output.txt" for any warnings.','ANSYS Call Completed')
-                # if status==7:
-                #     # an error has occured which is stored in output.txt
-                #     if 1:
-                #         print('Could not complete ANSYS call. See "output.txt" for details.')
-                #     else:
-                #         print('Could not complete ANSYS call. See "output.txt" for details.','Error: ANSYS Call')
-            finally:
-                pass
-    else:
-        raise Exception('FEA code "%s" not supported.', feaCode)
-
-    return meshData
-
-
-def solidMeshFromShell(blade, shellMesh, layerNumEls=[]):
-    shNodes = shellMesh["nodes"]
-    shElements = shellMesh["elements"]
-    elSets = shellMesh["sets"]["element"]
-    sectns = shellMesh["sections"]
-
-    ## Initialize 3D solid mesh from the shell mesh
-    bladeMesh = Mesh3D(shNodes, shElements)
-    ## Calculate unit normal vectors for all nodes
-    numNds = len(shNodes)
-    numShEls = len(shElements)
-    nodeNorms = np.zeros((numNds, 3))
-    for i in range(0, len(shElements)):
-        n1 = shElements[i, 0]
-        n2 = shElements[i, 1]
-        n3 = shElements[i, 2]
-        n4 = shElements[i, 3]
-        if n4 == -1:
-            v1 = shNodes[n3, :] - shNodes[n1, :]
-            v2 = shNodes[n2, :] - shNodes[n1, :]
-        else:
-            v1 = shNodes[n4, :] - shNodes[n2, :]
-            v2 = shNodes[n3, :] - shNodes[n1, :]
-        v3x = v1[1] * v2[2] - v1[2] * v2[1]
-        v3y = v1[2] * v2[0] - v1[0] * v2[2]
-        v3z = v1[0] * v2[1] - v1[1] * v2[0]
-        v3 = np.array([v3x, v3y, v3z])
-        mag = np.linalg.norm(v3)
-        uNorm = (1.0 / mag) * v3
-        for j in range(4):
-            nj = shElements[i, j]
-            if nj != -1:
-                nodeNorms[nj, :] = nodeNorms[nj, :] + uNorm
-
-    for i in range(numNds):
-        mag = np.linalg.norm(nodeNorms[i])
-        nodeNorms[i] = (1.0 / mag) * nodeNorms[i]
-
-    ## Extrude shell mesh into solid mesh
-    if len(layerNumEls) == 0:
-        layerNumEls = np.array([1, 1, 1])
-
-    prevLayer = shNodes.copy()
-    guideNds = list()
-    for i in range(0, len(layerNumEls)):
-        nodeDist = np.zeros(numNds)
-        nodeHitCt = np.zeros(numNds, dtype=int)
-        numSec, numStat = blade.stacks.shape
-        j = 0
-        for es in elSets:
-            layerThick = 0.001 * sectns[j]["layup"][i][1]
-            for el in es["labels"]:
-                for nd in shElements[el]:
-                    if nd != -1:
-                        nodeDist[nd] = nodeDist[nd] + layerThick
-                        nodeHitCt[nd] = nodeHitCt[nd] + 1
-            j = j + 1
-        newLayer = np.zeros((numNds, 3))
-        for j in range(0, numNds):
-            if nodeHitCt[j] != 0:
-                nodeDist[j] = nodeDist[j] / nodeHitCt[j]
-                newLayer[j] = prevLayer[j] + nodeDist[j] * nodeNorms[j]
-
-        ##
-        # print('layer ' + str(i))
-        # for deb in range(0,10):
-        # print(newLayer[deb])
-        ##
-        guideNds.append(newLayer)
-        prevLayer = newLayer.copy()
-
-    solidMesh = bladeMesh.createSweptMesh(
-        sweepMethod="toDestNodes",
-        sweepElements=layerNumEls,
-        destNodes=guideNds,
-        interpMethod="linear",
-    )
-
-    ## Construct the element set list, extrapolated from the shell model
-    newSetList = list()
-    newSectList = list()
-    esi = 0
-    for es in elSets:
-        elArray = np.array(es["labels"])
-        elLayer = 0
-        li = 1
-        for lne in layerNumEls:
-            newSet = dict()
-            newSet["name"] = es["name"] + "layer_" + str(li)
-            newLabels = list()
-            for i in range(0, lne):
-                newLabels.extend(elArray + numShEls * elLayer)
-                elLayer = elLayer + 1
-            newSet["labels"] = newLabels
-            newSetList.append(newSet)
-            newSec = dict()
-            newSec["type"] = "solid"
-            newSec["elementSet"] = newSet["name"]
-            newSec["material"] = sectns[esi]["layup"][li - 1][0]
-            newSectList.append(newSec)
-            li = li + 1
-        esi = esi + 1
-
-    solidMesh["sets"] = dict()
-    solidMesh["sets"]["element"] = newSetList
-    solidMesh["sections"] = newSectList
-
-    solidMesh["adhesiveNds"] = shellMesh["adhesiveNds"]
-    solidMesh["adhesiveEls"] = shellMesh["adhesiveEls"]
-    solidMesh["adhesiveElSet"] = shellMesh["adhesiveElSet"]
-
-    return solidMesh
-
-
-def getSolidMesh(blade, layerNumEls, elementSize):
-    ## Edit stacks to be usable for 3D solid mesh
-    blade.editStacksForSolidMesh()
-    ## Create shell mesh as seed
-    ## Note the new output structure of shellMeshGeneral, as a single python dictionary  -E Anderson
-    shellMesh = shellMeshGeneral(blade, 1, 1, elementSize)
-    print("finished shell mesh")
-    solidMesh = solidMeshFromShell(blade, shellMesh, layerNumEls)
-    return solidMesh
-
-
-def getShellMesh(blade, includeAdhesive, elementSize):
-    meshData = shellMeshGeneral(blade, 0, includeAdhesive, elementSize)
-    return meshData
