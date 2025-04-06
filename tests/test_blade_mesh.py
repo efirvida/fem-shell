@@ -2,7 +2,7 @@ import os
 
 import pytest
 
-from fem_shell.models.blade.mesh import BladeMesh, MeshElement, Node
+from fem_shell.models.blade.mesh import Blade, MeshElement, Node
 
 # Path to the reference directory
 blades_path = os.path.join(
@@ -26,7 +26,7 @@ def reset_counters():
 @pytest.mark.parametrize("blade_file", yaml_files, ids=yaml_file_ids)
 def test_blade_mesh_generation(blade_file):
     """Test blade mesh generation for all reference turbine YAML files"""
-    blade = BladeMesh(blade_file, element_size=0.5)
+    blade = Blade(blade_file, element_size=0.5)
     blade.generate()
 
     # Assertions

@@ -1,19 +1,21 @@
 from dataclasses import dataclass
 from typing import Dict, Iterable, List, Set, Tuple, Union
 
+import matplotlib.pyplot as plt
 import numpy as np
 
 from fem_shell.core.material import Material, OrthotropicMaterial
 from fem_shell.core.mesh import ElementSet, ElementType, MeshElement, MeshModel, Node, NodeSet
+from fem_shell.core.viewer import BladeGeometryVisualizer
 from fem_shell.elements import ElementFamily
-from fem_shell.models.blade.numad import Blade
+from fem_shell.models.blade.numad import Blade as numadBlade
 from fem_shell.models.blade.numad.mesh_gen import get_shell_mesh
 
 
-class BladeMesh:
+class Blade:
     def __init__(self, blade_yaml: str, element_size: float = 0.1, n_samples: int = 300) -> None:
         self.yaml_file = blade_yaml
-        self.blade_definition = Blade()
+        self.blade_definition = numadBlade()
         self.blade_definition.read_yaml(self.yaml_file)
         self.mesh = MeshModel()
 
@@ -65,13 +67,22 @@ class BladeMesh:
     def view(self) -> None:
         self.mesh.view()
 
+    def show_plots(self) -> None:
+        visualizer = BladeGeometryVisualizer(self.blade_definition)
+        visualizer.plot_airfoil_type_distribution()
+        visualizer.plot_chord_distribution()
+        visualizer.plot_pitch_axis_position()
+        visualizer.plot_thickness_to_chord_ratio()
+        visualizer.plot_twist_distribution()
+        plt.show()
+
 
 def material_factory(
     material_data: Dict[str, Union[Dict[str, float], Dict[str, Tuple[float, float, float]]]],
 ) -> Union[Material, OrthotropicMaterial]:
     """
-    Factory function to create a material object (either Isotropic or Orthotropic)
-    based on the provided material data.
+    Factory.s function to create a material object (either Isotropic or Orthotropic)
+    based on .sthe provided material data.
 
     Parameters
     ----------
@@ -143,7 +154,7 @@ class BladeSection:
 
 class BladeModel:
     def __init__(self, blade_yaml: str, element_size: float = 0.1, n_samples: int = 300) -> None:
-        self.blade_mesh_obj = BladeMesh(blade_yaml, element_size, n_samples)
+        self.blade_mesh_obj = Blade(blade_yaml, element_size, n_samples)
 
         self.generage_mesh()
         print(self.get_element_material(1))
