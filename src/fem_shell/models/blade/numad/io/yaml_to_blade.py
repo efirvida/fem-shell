@@ -9,12 +9,7 @@ from fem_shell.models.blade.numad.objects.component import Component
 from fem_shell.models.blade.numad.objects.definition import Definition
 from fem_shell.models.blade.numad.objects.material import Material
 from fem_shell.models.blade.numad.utils.interpolation import interpolator_wrap
-from fem_shell.models.blade.numad.utils.misc_utils import (
-    LARCetaL,
-    LARCetaT,
-    _parse_data,
-    full_keys_from_substrings,
-)
+from fem_shell.models.blade.numad.utils.misc_utils import _parse_data, full_keys_from_substrings
 
 
 def yaml_to_blade(blade, filename: str, write_airfoils: bool = False):
@@ -223,24 +218,6 @@ def _add_stations(
         definition.span,
     )
 
-    # for i in range(len(tc)):
-    #     afc = AirfoilDef(out_folder +
-    #     '/af_coords/' +
-    #     blade_outer_shape_bem['airfoil_position']['labels'][i] +
-    #     '.txt')
-    #     definition.add_station(afc,np.multiply(tc_xL[i],L))
-
-    # NOTE nothing happens to afc? Tentatively ignoring...
-    # If i return to this make sure to listify the afcs
-    ### AIRFOILS
-    # for i in range(len(tc)):
-    #     afc = AirfoilDef(out_folder + '/af_coords/' +
-    #         blade_outer_shape_bem['airfoil_position']['labels'][i] +
-    #         '.txt')
-    #     definition.add_station(afc,np.multiply(tc_xL[i],L))
-    # afc.resample #NOTE afc isn't used after this... why resample?
-    return
-
 
 def _add_materials(definition, material_data):
     materials_dict = dict()
@@ -280,7 +257,6 @@ def _add_materials(definition, material_data):
             cur_mat.g1g2 = np.nan
         if "alp0" in material_data[i]:
             cur_mat.alp0 = _parse_data(material_data[i]["alp0"])
-            cur_mat.etat = LARCetaT(cur_mat.alp0)
         else:
             cur_mat.alp0 = None
             cur_mat.etat = None
@@ -297,7 +273,6 @@ def _add_materials(definition, material_data):
             cur_mat.prxy = _parse_data(material_data[i]["nu"])
             cur_mat.prxz = _parse_data(material_data[i]["nu"])
             cur_mat.pryz = _parse_data(material_data[i]["nu"])
-            cur_mat.etal = LARCetaL(cur_mat.uss, cur_mat.ucs, cur_mat.alp0)
         else:
             cur_mat.ex = _parse_data(material_data[i]["E"][0])
             cur_mat.ey = _parse_data(material_data[i]["E"][1])
@@ -308,7 +283,6 @@ def _add_materials(definition, material_data):
             cur_mat.prxy = _parse_data(material_data[i]["nu"][0])
             cur_mat.prxz = _parse_data(material_data[i]["nu"][1])
             cur_mat.pryz = _parse_data(material_data[i]["nu"][2])
-            cur_mat.etal = LARCetaL(cur_mat.uss[0], cur_mat.ucs[1], cur_mat.alp0)
         try:
             cur_mat.m = material_data[i]["m"]
         except KeyError:
@@ -371,136 +345,155 @@ def _add_components(definition, blade_internal_structure, blade_structure_dict):
         component_list.append(cur_comp)
 
     component_dict = dict()
+
+    def get_layer_by_name(layer_name: str):
+        return [
+            l for l in blade_internal_structure["layers"] if layer_name.lower() in l["name"].lower()
+        ][0]
+
     for comp in component_list:
         component_dict[comp.name] = comp
 
     # Spar Caps (pressure and suction)
-    key_list = full_keys_from_substrings(component_dict.keys(), ["spar", "ps"])
-    component_dict[key_list[0]].hpextents = ["b", "c"]
+    spar_caps_ps = full_keys_from_substrings(component_dict, ["spar", "ps"])
+    component_dict[spar_caps_ps[0]].hpextents = ["b", "c"]
 
-    key_list = full_keys_from_substrings(component_dict.keys(), ["spar", "ss"])
-    component_dict[key_list[0]].lpextents = ["b", "c"]
+    spar_caps_ss = full_keys_from_substrings(component_dict, ["spar", "ps"])
+    component_dict[spar_caps_ss[0]].lpextents = ["b", "c"]
 
-    # uv coating
-    key_list = full_keys_from_substrings(component_dict.keys(), ["uv"])  # Try 1
-    if len(key_list) == 0:
-        key_list = full_keys_from_substrings(component_dict.keys(), ["gel"])  # Try 2
-
-    if len(key_list) == 1:
-        component_dict[key_list[0]].hpextents = ["le", "te"]
-        component_dict[key_list[0]].lpextents = ["le", "te"]
-    elif len(key_list) == 0:
-        raise ValueError("No UV or gelcoat found")
+    uv = full_keys_from_substrings(component_dict, ["uv"])
+    if len(uv) == 1:
+        component_dict[uv[0]].hpextents = ["le", "te"]
+        component_dict[uv[0]].lpextents = ["le", "te"]
+    elif len(uv) > 1:
+        raise ValueError("Incorrect number of uv components")
     else:
-        raise ValueError("Too many uv or gelcoat components")
+        raise ValueError("No uv components found")
 
     # Shell skin
-    key_list = full_keys_from_substrings(component_dict.keys(), ["shell"])
-    if len(key_list) == 2:
-        component_dict[key_list[0]].hpextents = ["le", "te"]
-        component_dict[key_list[0]].lpextents = ["le", "te"]
-        component_dict[key_list[1]].hpextents = ["le", "te"]
-        component_dict[key_list[1]].lpextents = ["le", "te"]
+    shell_skin = full_keys_from_substrings(component_dict, ["shell"])
+    if len(shell_skin) == 2:
+        component_dict[shell_skin[0]].hpextents = ["le", "te"]
+        component_dict[shell_skin[0]].lpextents = ["le", "te"]
+        component_dict[shell_skin[1]].hpextents = ["le", "te"]
+        component_dict[shell_skin[1]].lpextents = ["le", "te"]
     else:
         raise ValueError("Incorrect number of shell components")
 
     # TE Band(s)
-    key_list = full_keys_from_substrings(component_dict.keys(), ["te", "reinf"])
-    if len(key_list) == 1:
-        component_dict[key_list[0]].hpextents = ["d", "te"]
-        component_dict[key_list[0]].lpextents = ["d", "te"]
-    elif len(key_list) == 2:
-        tempKeyList = full_keys_from_substrings(key_list, ["ss"])
-        if len(tempKeyList) == 1:
-            component_dict[tempKeyList[0]].lpextents = ["d", "te"]
+    te = full_keys_from_substrings(component_dict, ["te", "reinf"])
+    if len(te) == 1:
+        component_dict[te[0]].hpextents = ["d", "te"]
+        component_dict[te[0]].lpextents = ["d", "te"]
+    elif len(te) == 2:
+        ss = full_keys_from_substrings(component_dict, ["te", "reinf", "ss"])
+        if len(ss) == 1:
+            component_dict[ss[0]].lpextents = ["d", "te"]
         else:
             ValueError("Incorrect number of te reinf ss components")
 
-        tempKeyList = full_keys_from_substrings(key_list, ["ps"])
-        if len(tempKeyList) == 1:
-            component_dict[tempKeyList[0]].hpextents = ["d", "te"]
+        ps = full_keys_from_substrings(component_dict, ["te", "reinf", "ss"])
+        if len(ps) == 1:
+            component_dict[ps[0]].hpextents = ["d", "te"]
         else:
             ValueError("Incorrect number of te reinf ps components")
     else:
         raise ValueError("Invalid number of LE reinforcements")
 
     # LE Band(s)
-    key_list = full_keys_from_substrings(component_dict.keys(), ["le", "reinf"])
-    if len(key_list) == 1:
-        component_dict[key_list[0]].hpextents = ["le", "a"]
-        component_dict[key_list[0]].lpextents = ["le", "a"]
-    elif len(key_list) == 2:
-        tempKeyList = full_keys_from_substrings(key_list, ["ss"])
-        if len(tempKeyList) == 1:
-            component_dict[tempKeyList[0]].lpextents = ["le", "a"]
+    le = full_keys_from_substrings(component_dict, ["le", "reinf"])
+    if len(le) == 1:
+        component_dict[le[0]].hpextents = ["le", "a"]
+        component_dict[le[0]].lpextents = ["le", "a"]
+    elif len(le) == 2:
+        ss = full_keys_from_substrings(component_dict, ["le", "reinf", "ss"])
+        if len(ss) == 1:
+            component_dict[ss[0]].lpextents = ["le", "a"]
         else:
             ValueError("Incorrect number of te reinf ss components")
 
-        tempKeyList = full_keys_from_substrings(key_list, ["ps"])
-        if len(tempKeyList) == 1:
-            component_dict[tempKeyList[0]].hpextents = ["le", "a"]
+        ps = full_keys_from_substrings(component_dict, ["le", "reinf", "ps"])
+        if len(ps) == 1:
+            component_dict[ps[0]].hpextents = ["le", "a"]
         else:
             ValueError("Incorrect number of te reinf ps components")
     else:
         raise ValueError("Invalid number of LE reinforcements")
 
     # Trailing edge suction-side panel
-    key_list = full_keys_from_substrings(component_dict.keys(), ["te_", "ss", "filler"])
-    if len(key_list) == 1:
-        component_dict[key_list[0]].lpextents = ["c", "d"]
+    te_ss_panel = full_keys_from_substrings(component_dict, ["te_", "ss", "filler"])
+    if len(te_ss_panel) == 1:
+        component_dict[te_ss_panel[0]].lpextents = ["c", "d"]
     else:
         raise ValueError("Invalid number of trailing edge suction-side panels")
 
     # Leading edge suction-side panel
-    key_list = full_keys_from_substrings(component_dict.keys(), ["le_", "ss", "filler"])
-    if len(key_list) == 1:
-        component_dict[key_list[0]].lpextents = ["a", "b"]
+    le_ss_panel = full_keys_from_substrings(component_dict, ["le_", "ss", "filler"])
+    if len(le_ss_panel) == 1:
+        component_dict[le_ss_panel[0]].lpextents = ["a", "b"]
     else:
         raise ValueError("Invalid number of leading edge suction-side panels")
 
     # Trailing edge suction-side panel
-    key_list = full_keys_from_substrings(component_dict.keys(), ["le_", "ps", "filler"])
-    if len(key_list) == 1:
-        component_dict[key_list[0]].hpextents = ["a", "b"]
+    le_ps_panel = full_keys_from_substrings(component_dict, ["le_", "ps", "filler"])
+    if len(le_ps_panel) == 1:
+        component_dict[le_ps_panel[0]].hpextents = ["a", "b"]
     else:
         raise ValueError("Invalid number of leading edge pressure-side panels")
 
     # Leading edge suction-side panel
-    key_list = full_keys_from_substrings(component_dict.keys(), ["te_", "ps", "filler"])
-    if len(key_list) == 1:
-        component_dict[key_list[0]].hpextents = ["c", "d"]
+    te_ps_panel = full_keys_from_substrings(component_dict, ["te_", "ps", "filler"])
+    if len(te_ps_panel) == 1:
+        component_dict[te_ps_panel[0]].hpextents = ["c", "d"]
     else:
         raise ValueError("Invalid number of trailing edge pressure-side panels")
 
     # Web
+    webs = full_keys_from_substrings(component_dict, ["web"])
+    for web in webs:
+        web_layer = get_layer_by_name(web)
+        if component_dict[web]:
+            component_dict[web].name = web_layer["name"]
+        else:
+            continue
+        if "fore" in web_layer["web"].lower() or "1" in web_layer["name"]:
+            # Web Skin1
+            if "skinle" in web_layer["name"].lower().replace("_", ""):
+                component_dict[web].hpextents = ["b"]
+                component_dict[web].lpextents = ["b"]
+                component_dict[web].group = 1
 
-    for comp in component_dict:
-        logging.debug(comp)
-    key_list = full_keys_from_substrings(component_dict.keys(), ["web", "fore"])  # Try 1
-    if len(key_list) == 0:
-        key_list = full_keys_from_substrings(component_dict.keys(), ["web", "1"])  # Try 2
+            # Web Filler
+            if "filler" in web_layer["name"].lower():
+                component_dict[web].hpextents = ["b"]
+                component_dict[web].lpextents = ["b"]
+                component_dict[web].group = 1
 
-    if len(key_list) > 0:
-        for key in key_list:
-            component_dict[key].hpextents = ["b"]
-            component_dict[key].lpextents = ["b"]
-            component_dict[key].group = 1
-    elif len(key_list) == 0:
-        raise ValueError("No fore web layers found found")
+            # Web Skin2
+            if "skinte" in web_layer["name"].lower().replace("_", ""):
+                component_dict[web].hpextents = ["b"]
+                component_dict[web].lpextents = ["b"]
+                component_dict[web].group = 1
 
-    key_list = full_keys_from_substrings(component_dict.keys(), ["web", "aft"])  # Try 1
-    if len(key_list) == 0:
-        key_list = full_keys_from_substrings(component_dict.keys(), ["web", "0"])  # Try 2
-    if len(key_list) == 0:
-        key_list = full_keys_from_substrings(component_dict.keys(), ["web", "rear"])  # Try 3
+        # Rear Shear
+        if "rear" in web_layer["web"].lower() or "0" in web_layer["name"]:
+            # Web Skin1
+            if "skinle" in web_layer["name"].lower().replace("_", ""):
+                component_dict[web].hpextents = ["c"]
+                component_dict[web].lpextents = ["c"]
+                component_dict[web].group = 2
 
-    if len(key_list) > 0:
-        for key in key_list:
-            component_dict[key].hpextents = ["c"]
-            component_dict[key].lpextents = ["c"]
-            component_dict[key].group = 2
-    elif len(key_list) == 0:
-        raise ValueError("No rear web layers found found")
+            # Web Filler
+            if "filler" in web_layer["name"].lower():
+                component_dict[web].hpextents = ["c"]
+                component_dict[web].lpextents = ["c"]
+                component_dict[web].group = 2
+
+            # Web Skin2
+            if "skinte" in web_layer["name"].lower().replace("_", ""):
+                component_dict[web].hpextents = ["c"]
+                component_dict[web].lpextents = ["c"]
+                component_dict[web].group = 2
 
     ### add components to blade
     definition.components = component_dict

@@ -4,14 +4,12 @@ import numpy as np
 from fem_shell.models.blade.numad.mesh_gen.boundary2d import *
 from fem_shell.models.blade.numad.mesh_gen.element_utils import *
 from fem_shell.models.blade.numad.mesh_gen.mesh2d import *
-from fem_shell.models.blade.numad.mesh_gen.mesh3d import Mesh3D
 from fem_shell.models.blade.numad.mesh_gen.mesh_tools import *
-from fem_shell.models.blade.numad.mesh_gen.shell_region import ShellRegion
 from fem_shell.models.blade.numad.mesh_gen.surface import Surface
 from fem_shell.models.blade.numad.utils.interpolation import interpolator_wrap
 
 
-def get_shell_mesh(blade, includeAdhesive, elementSize):
+def get_shell_mesh(blade, elementSize):
     """
     This method generates a finite element shell mesh for the blade, based on what is
     stored in blade.geometry.coordinates, blade.keypoints.key_points,
@@ -21,7 +19,6 @@ def get_shell_mesh(blade, includeAdhesive, elementSize):
     -----------
     blade: Blade
     forSolid: bool
-    includeAdhesive: bool
     elementSize: float
 
     Returns
@@ -59,16 +56,6 @@ def get_shell_mesh(blade, includeAdhesive, elementSize):
              - [materialid,thickness,angle] ## layer 2
              ...
           elementSet: set2Name
-    Nodes, elements and set for adhesive elements
-    adhesiveNds:
-        - [x, y, z]
-        ...
-    adhesiveEls:
-        - [n1,n2,n3,n4,n5,n6,n7,n8]
-        ...
-    adhesiveElSet:
-        name: 'adhesiveElements'
-        labels: [0,1,2,3....(number of adhesive elements)]
     """
     geometry = blade.geometry
     coordinates = geometry.coordinates
@@ -168,28 +155,6 @@ def get_shell_mesh(blade, includeAdhesive, elementSize):
     splineXi = splineXi.T
     splineYi = splineYi.T
     splineZi = splineZi.T
-    ## Determine the first spanwise section that needs adhesive
-    if includeAdhesive == 1:
-        stPt = 0
-        frstXS = 0
-        while frstXS == 0 and stPt < splineXi.shape[0]:
-            v1x = splineXi[stPt, 6] - splineXi[stPt, 4]
-            v1y = splineYi[stPt, 6] - splineYi[stPt, 4]
-            v1z = splineZi[stPt, 6] - splineZi[stPt, 4]
-            v2x = splineXi[stPt, 30] - splineXi[stPt, 32]
-            v2y = splineYi[stPt, 30] - splineYi[stPt, 32]
-            v2z = splineZi[stPt, 30] - splineZi[stPt, 32]
-            mag1 = np.sqrt(v1x * v1x + v1y * v1y + v1z * v1z)
-            mag2 = np.sqrt(v2x * v2x + v2y * v2y + v2z * v2z)
-            dp = (1 / (mag1 * mag2)) * (v1x * v2x + v1y * v2y + v1z * v2z)
-            if dp > 0.7071:
-                frstXS = stPt
-            stPt = stPt + 3
-
-        if frstXS == 0:
-            frstXS = splineXi.shape[0]
-    else:
-        frstXS = splineXi.shape[0]
 
     ## Generate the mesh using the splines as surface guides
 
@@ -645,100 +610,6 @@ def get_shell_mesh(blade, includeAdhesive, elementSize):
         nodeSets = []
         nodeSets.append(newSet)
         shellData["sets"]["node"] = nodeSets
-
-    ## Generate mesh for trailing edge adhesive if requested
-    # print("getting adhesive mesh")
-    if includeAdhesive == 1:
-        stPt = frstXS
-        v1x = splineXi[stPt, 6] - splineXi[stPt, 4]
-        v1y = splineYi[stPt, 6] - splineYi[stPt, 4]
-        v1z = splineZi[stPt, 6] - splineZi[stPt, 4]
-        mag1 = np.sqrt(v1x * v1x + v1y * v1y + v1z * v1z)
-        v2x = splineXi[stPt, 30] - splineXi[stPt, 32]
-        v2y = splineYi[stPt, 30] - splineYi[stPt, 32]
-        v2z = splineZi[stPt, 30] - splineZi[stPt, 32]
-        mag2 = np.sqrt(v2x * v2x + v2y * v2y + v2z * v2z)
-        v3x = splineXi[stPt, 6] - splineXi[stPt, 30]
-        v3y = splineYi[stPt, 6] - splineYi[stPt, 30]
-        v3z = splineZi[stPt, 6] - splineZi[stPt, 30]
-        mag3 = np.sqrt(v3x * v3x + v3y * v3y + v3z * v3z)
-        v4x = splineXi[stPt, 4] - splineXi[stPt, 32]
-        v4y = splineYi[stPt, 4] - splineYi[stPt, 32]
-        v4z = splineZi[stPt, 4] - splineZi[stPt, 32]
-        mag4 = np.sqrt(v4x * v4x + v4y * v4y + v4z * v4z)
-        nE1 = np.ceil(mag1 / elementSize).astype(int)
-        nE2 = np.ceil(mag3 / elementSize).astype(int)
-        nE3 = np.ceil(mag2 / elementSize).astype(int)
-        nE4 = np.ceil(mag4 / elementSize).astype(int)
-        nEl = np.array([nE1, nE2, nE3, nE4])
-        gdLayer = 0
-        sweepElements = []
-        guideNds = []
-        while stPt < splineXi.shape[0]:
-            shellKp = np.zeros((9, 3))
-            shellKp[0, :] = np.array([splineXi[stPt, 4], splineYi[stPt, 4], splineZi[stPt, 4]])
-            shellKp[1, :] = np.array([splineXi[stPt, 6], splineYi[stPt, 6], splineZi[stPt, 6]])
-            shellKp[2, :] = np.array([splineXi[stPt, 30], splineYi[stPt, 30], splineZi[stPt, 30]])
-            shellKp[3, :] = np.array([splineXi[stPt, 32], splineYi[stPt, 32], splineZi[stPt, 32]])
-            shellKp[4, :] = np.array([splineXi[stPt, 5], splineYi[stPt, 5], splineZi[stPt, 5]])
-            shellKp[5, :] = 0.5 * shellKp[1, :] + 0.5 * shellKp[2, :]
-            shellKp[6, :] = np.array([splineXi[stPt, 31], splineYi[stPt, 31], splineZi[stPt, 31]])
-            shellKp[7, :] = 0.5 * shellKp[0, :] + 0.5 * shellKp[3, :]
-            shellKp[8, :] = 0.5 * shellKp[4, :] + 0.5 * shellKp[6, :]
-            sReg = ShellRegion("quad2", shellKp, nEl, elType="quad", meshMethod="free")
-            regMesh = sReg.createShellMesh()
-
-            if stPt == frstXS:
-                adhesMesh = Mesh3D(regMesh["nodes"], regMesh["elements"])
-            else:
-                guideNds.append(regMesh["nodes"])
-                layerSwEl = np.ceil(
-                    (splineZi[stPt, 4] - splineZi[(stPt - 3), 4]) / elementSize
-                ).astype(int)
-                sweepElements.append(layerSwEl)
-            stPt = stPt + 3
-
-        adMeshData = adhesMesh.createSweptMesh(
-            "toDestNodes", sweepElements, destNodes=guideNds, interpMethod="smooth"
-        )
-        shellData["adhesiveEls"] = adMeshData["elements"]
-        shellData["adhesiveNds"] = adMeshData["nodes"]
-        adEls = len(adMeshData["elements"])
-        adhesSet = {}
-        adhesSet["name"] = "adhesiveElements"
-        labList = list(range(0, adEls))
-        adhesSet["labels"] = labList
-        adMeshData["sets"] = {"element": [adhesSet], "node": []}
-        shellData["adhesiveElSet"] = adhesSet
-
-        print("getting constraints")
-        nDir = np.array([0.0, 1.0, 0.0])
-        adMeshData = get_surface_nodes(
-            adMeshData, "adhesiveElements", "LP_AdNodes", nDir, normTol=45.0
-        )
-        nDir = np.array([0.0, -1.0, 0.0])
-        adMeshData = get_surface_nodes(
-            adMeshData, "adhesiveElements", "HP_AdNodes", nDir, normTol=45.0
-        )
-        lpEls = []
-        hpEls = []
-        for es in shellData["sets"]["element"]:
-            if "LP_TE_REINF" in es["name"]:
-                lpEls.extend(es["labels"])
-            elif "HP_TE_REINF" in es["name"]:
-                hpEls.extend(es["labels"])
-        lpSet = {"name": "LP_TE_REINF", "labels": lpEls}
-        shellData = add_element_set(shellData, lpSet)
-        hpSet = {"name": "HP_TE_REINF", "labels": hpEls}
-        shellData = add_element_set(shellData, hpSet)
-        constraints = tie_2_meshes_constraints(
-            adMeshData, "LP_AdNodes", shellData, "LP_TE_REINF", 0.5 * elementSize
-        )
-        hpConst = tie_2_meshes_constraints(
-            adMeshData, "HP_AdNodes", shellData, "HP_TE_REINF", 0.5 * elementSize
-        )
-        constraints.extend(hpConst)
-        shellData["constraints"] = constraints
 
     matList = []
     for mn in blade.definition.materials:

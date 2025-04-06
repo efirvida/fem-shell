@@ -29,7 +29,7 @@ class BladeMesh:
         n_stations = self.blade_definition.geometry.coordinates.shape[2]
         min_TE_lengths = 0.001 * np.ones(n_stations)
         self.blade_definition.expand_blade_geometry_te(min_TE_lengths)
-        return get_shell_mesh(self.blade_definition, 0, self.element_size)
+        return get_shell_mesh(self.blade_definition, self.element_size)
 
     def generate(self):
         self.numad_mesh_obj = self._generate_numad_shell_mesh()
