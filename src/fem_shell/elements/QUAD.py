@@ -122,7 +122,7 @@ class QUAD(PlaneElement):
 
     @property
     def C(self) -> np.ndarray:
-        """Constitutive matrix for plane stress
+        """Constitutive matrix for plane strain
 
         Returns
         -------
@@ -131,7 +131,15 @@ class QUAD(PlaneElement):
         """
         E = self.material.E
         nu = self.material.nu
-        return (E / (1 - nu**2)) * np.array([[1, nu, 0], [nu, 1, 0], [0, 0, (1 - nu) / 2]])
+        # Calcular los coeficientes de Lamé
+        lambd = E * nu / ((1 + nu) * (1 - 2 * nu))
+        mu = E / (2 * (1 + nu))
+
+        return np.array([
+            [lambd + 2 * mu, lambd, 0],
+            [lambd, lambd + 2 * mu, 0],
+            [0, 0, mu],
+        ])
 
     @property
     def K(self) -> np.ndarray:

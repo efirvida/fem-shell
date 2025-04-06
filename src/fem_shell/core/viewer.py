@@ -32,6 +32,188 @@ ELEMENTS_NODES_TO_VTK = {
     9: CellType.LAGRANGE_QUADRILATERAL,
 }
 
+import matplotlib.pyplot as plt
+
+
+class BladeGeometryVisualizer:
+    """Class for visualizing wind turbine blade geometric parameters."""
+
+    def __init__(self, blade_definition):
+        self.blade_definition = blade_definition
+
+    def plot_chord_distribution(self) -> tuple[plt.Figure, plt.Axes]:
+        """
+        Plot chord length distribution along the blade span.
+
+        Returns
+        -------
+        fig : plt.Figure
+            Figure object containing the plot
+        ax : plt.Axes
+            Axes object containing the plot elements
+
+        Examples
+        --------
+        >>> visualizer = BladeGeometryVisualizer()
+        >>> fig, ax = visualizer.plot_chord_distribution()
+        """
+        fig, ax = plt.subplots()
+        span = self.blade_definition.definition.span
+        chord = self.blade_definition.definition.chord
+
+        ax.plot(span, chord, "b-", linewidth=2)
+        ax.set_title("Chord Distribution Along Blade Span")
+        ax.set_xlabel("Normalized Span Position [-]", fontsize=10)
+        ax.set_ylabel("Chord Length [m]", fontsize=10)
+        ax.grid(True, linestyle="--", alpha=0.7)
+        plt.tight_layout()
+        return fig, ax
+
+    def plot_twist_distribution(self) -> tuple[plt.Figure, plt.Axes]:
+        """
+        Plot twist angle distribution along the blade span.
+
+        Returns
+        -------
+        fig : plt.Figure
+            Figure object containing the plot
+        ax : plt.Axes
+            Axes object containing the plot elements
+        """
+        fig, ax = plt.subplots()
+        span = self.blade_definition.definition.span
+        twist = self.blade_definition.definition.degreestwist
+
+        ax.plot(span, twist, "r--", linewidth=2)
+        ax.set_title("Twist Distribution Along Blade Span")
+        ax.set_xlabel("Normalized Span Position [-]", fontsize=10)
+        ax.set_ylabel("Twist Angle [deg]", fontsize=10)
+        ax.grid(True, linestyle=":", alpha=0.5)
+        plt.tight_layout()
+        return fig, ax
+
+    def plot_thickness_to_chord_ratio(self) -> tuple[plt.Figure, plt.Axes]:
+        """
+        Plot thickness-to-chord ratio distribution along the blade span.
+
+        Returns
+        -------
+        fig : plt.Figure
+            Figure object containing the plot
+        ax : plt.Axes
+            Axes object containing the plot elements
+        """
+        fig, ax = plt.subplots()
+        span = self.blade_definition.definition.span
+        thickness = self.blade_definition.definition.percentthick
+
+        ax.plot(span, thickness, "g-.", linewidth=2)
+        ax.set_title("Thickness-to-Chord Ratio Distribution")
+        ax.set_xlabel("Normalized Span Position [-]", fontsize=10)
+        ax.set_ylabel("Thickness/Chord Ratio [-]", fontsize=10)
+        ax.grid(True, linestyle="--", alpha=0.7)
+        plt.tight_layout()
+        return fig, ax
+
+    def plot_airfoil_type_distribution(self) -> tuple[plt.Figure, plt.Axes]:
+        """
+        Plot airfoil type distribution along the blade span using station data.
+
+        Returns
+        -------
+        fig : plt.Figure
+            Figure object containing the plot
+        ax : plt.Axes
+            Axes object containing the plot elements
+
+        Notes
+        -----
+        - Uses actual station data from blade definition
+        - Creates a categorical plot with airfoil reference labels
+        - Maintains original span positions from blade stations
+        """
+        fig, ax = plt.subplots(figsize=(10, 6))
+
+        # Extract data from blade stations
+        stations = self.blade_definition.definition.stations
+        span_positions = [s.spanlocation for s in stations]
+        airfoil_refs = [s.airfoil.reference for s in stations]
+
+        # Create numerical mapping for airfoil types
+        unique_airfoils = list(dict.fromkeys(airfoil_refs))  # Preserve order
+        airfoil_id_map = {ref: idx for idx, ref in enumerate(unique_airfoils)}
+        airfoil_ids = [airfoil_id_map[ref] for ref in airfoil_refs]
+
+        # Create scatter plot with text annotations
+        scatter = ax.scatter(
+            span_positions, airfoil_ids, c=airfoil_ids, cmap="tab20", s=100, edgecolor="k", zorder=3
+        )
+
+        # Configure axes and labels
+        ax.set_title("Airfoil Type Distribution Along Blade Span", fontsize=14)
+        ax.set_xlabel("Normalized Span Position [-]", fontsize=12)
+        ax.set_ylabel("Airfoil Type", fontsize=12)
+        ax.set_yticks(list(airfoil_id_map.values()))
+        ax.set_yticklabels(list(airfoil_id_map.keys()))
+        ax.grid(True, linestyle="--", alpha=0.6)
+
+        # Add span position markers
+        ax.vlines(
+            span_positions,
+            ymin=min(airfoil_ids) - 0.5,
+            ymax=max(airfoil_ids) + 0.5,
+            colors="lightgray",
+            linestyles="dotted",
+            zorder=1,
+        )
+
+        # Add legend with color mapping
+        legend_elements = [
+            plt.Line2D(
+                [0],
+                [0],
+                marker="o",
+                color="w",
+                markerfacecolor=plt.cm.tab20(i / len(unique_airfoils)),
+                markersize=10,
+                label=f"{ref} (ID: {i})",
+            )
+            for i, ref in enumerate(unique_airfoils)
+        ]
+
+        ax.legend(
+            handles=legend_elements,
+            title="Airfoil Types",
+            bbox_to_anchor=(1.05, 1),
+            loc="upper left",
+            fontsize=9,
+        )
+        plt.tight_layout()
+        return fig, ax
+
+    def plot_pitch_axis_position(self) -> tuple[plt.Figure, plt.Axes]:
+        """
+        Plot pitch axis position distribution along the blade span.
+
+        Returns
+        -------
+        fig : plt.Figure
+            Figure object containing the plot
+        ax : plt.Axes
+            Axes object containing the plot elements
+        """
+        fig, ax = plt.subplots()
+        span = self.blade_definition.definition.span
+        pitch_axis = self.blade_definition.definition.aerocenter
+
+        ax.plot(span, pitch_axis, "c^", markersize=6, markeredgecolor="k")
+        ax.set_title("Aerodynamic Center Distribution")
+        ax.set_xlabel("Normalized Span Position [-]", fontsize=10)
+        ax.set_ylabel("Aerodynamic Center [% chord]", fontsize=10)
+        ax.grid(True, linestyle="--", alpha=0.5)
+        plt.tight_layout()
+        return fig, ax
+
 
 class MeshViewer(QWidget):
     """A widget for visualizing finite element meshes with node and element sets.

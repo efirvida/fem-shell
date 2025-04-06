@@ -63,35 +63,6 @@ def mesh_to_yaml(meshData, file_name):
     mDataOut["sets"]["element"] = esList
     mDataOut["sections"] = sections
     mDataOut["elementOrientations"] = elOri
-    try:
-        adNds = list()
-        for nd in meshData["adhesiveNds"]:
-            ndstr = str(list(nd))
-            adNds.append(ndstr)
-        adEls = list()
-        for el in meshData["adhesiveEls"]:
-            elstr = str(list(el))
-            adEls.append(elstr)
-        mDataOut["adhesiveNds"] = adNds
-        mDataOut["adhesiveEls"] = adEls
-        mDataOut["adhesiveElSet"] = meshData["adhesiveElSet"]
-        mDataOut["adhesiveSection"] = meshData["adhesiveSection"]
-        constraints = list()
-        for c in meshData["constraints"]:
-            terms = list()
-            for t in c["terms"]:
-                newTerm = dict()
-                newTerm["nodeSet"] = t["nodeSet"]
-                newTerm["node"] = int(t["node"])
-                newTerm["coef"] = float(t["coef"])
-                terms.append(newTerm)
-            newConst = dict()
-            newConst["terms"] = terms
-            newConst["rhs"] = c["rhs"]
-            constraints.append(newConst)
-        mDataOut["constraints"] = constraints
-    except:
-        pass
 
     try:
         mDataOut["materials"] = meshData["materials"]
@@ -114,9 +85,4 @@ def yaml_to_mesh(fileName):
     inFile.close()
     meshData["nodes"] = np.array(meshData["nodes"])
     meshData["elements"] = np.array(meshData["elements"])
-    try:
-        meshData["adhesiveNds"] = np.array(meshData["adhesiveNds"])
-        meshData["adhesiveEls"] = np.array(meshData["adhesiveEls"])
-    except:
-        pass
     return meshData

@@ -99,6 +99,7 @@ for model_type, model in model_configs.items():
 
     # Solve and output
     U = problem.solve()
-    print(f"  Max displacement ({model_type}): {U.max():.4e} m\n")
+    print(f"  Max displacement ({model_type}): {U.array.max():.4e} m\n")
     # problem.view_results()
     problem.write_results(f"results_{model_type}.vtk")
+problem.print_solver_info()

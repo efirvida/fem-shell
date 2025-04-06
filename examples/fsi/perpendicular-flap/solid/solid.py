@@ -35,7 +35,7 @@ mesh.write_mesh("mesh.vtk")
 problem = LinearDynamicFSISolver(mesh, model_config)
 
 
-bottom_node_set = problem.get_dofs_by_nodeset_name("bottom", only_geometric_dofs=False)
+bottom_node_set = problem.get_dofs_by_nodeset_name("bottom")
 problem.add_dirichlet_conditions([DirichletCondition(bottom_node_set, 0.0)])
 problem.solve()
 

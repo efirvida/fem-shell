@@ -1,9 +1,9 @@
-from os.path import join
+import os
 
 from fem_shell.core.bc import DirichletCondition
 from fem_shell.core.material import IsotropicMaterial as Material
 from fem_shell.elements import ElementFamily
-from fem_shell.models.blade.mesh import BladeMesh
+from fem_shell.models.blade.mesh import Blade
 from fem_shell.solvers import ModalSolver
 
 # material definition
@@ -12,10 +12,13 @@ NU = 0.3
 RHO = 7850
 material = Material(name="Steel", E=E, nu=NU, rho=RHO)
 
-blade_yaml = join("examples", "blade.yaml")
-blade = BladeMesh(blade_yaml=blade_yaml, element_size=0.5)
+blade_yaml = os.path.join(
+    os.getcwd(), "examples", "reference_turbines", "yamls", "IEA-15-240-RWT_VolturnUS-S.yaml"
+)
+blade = Blade(blade_yaml=blade_yaml, element_size=0.1)
 blade.generate()
 mesh = blade.mesh
+mesh.view()
 
 # Select model type
 THICKNESS = 0.1

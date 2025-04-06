@@ -1,20 +1,15 @@
-import copy as cp
-
 import numpy as np
-from scipy import interpolate
 
 ##from pynumad.mesh_gen.shellClasses import shellRegion, elementSet, NuMesh3D, spatialGridList2D, spatialGridList3D
 from fem_shell.models.blade.numad.mesh_gen.boundary2d import *
 from fem_shell.models.blade.numad.mesh_gen.element_utils import *
 from fem_shell.models.blade.numad.mesh_gen.mesh2d import *
-from fem_shell.models.blade.numad.mesh_gen.mesh3d import Mesh3D
 from fem_shell.models.blade.numad.mesh_gen.mesh_tools import *
-from fem_shell.models.blade.numad.mesh_gen.shell_region import ShellRegion
 from fem_shell.models.blade.numad.mesh_gen.surface import Surface
 from fem_shell.models.blade.numad.utils.interpolation import interpolator_wrap
 
 
-def shell_mesh_general(blade, forSolid, includeAdhesive, elementSize):
+def get_shell_mesh(blade, elementSize):
     """
     This method generates a finite element shell mesh for the blade, based on what is
     stored in blade.geometry.coordinates, blade.keypoints.key_points,
@@ -24,7 +19,6 @@ def shell_mesh_general(blade, forSolid, includeAdhesive, elementSize):
     -----------
     blade: Blade
     forSolid: bool
-    includeAdhesive: bool
     elementSize: float
 
     Returns
@@ -62,16 +56,6 @@ def shell_mesh_general(blade, forSolid, includeAdhesive, elementSize):
              - [materialid,thickness,angle] ## layer 2
              ...
           elementSet: set2Name
-    Nodes, elements and set for adhesive elements
-    adhesiveNds:
-        - [x, y, z]
-        ...
-    adhesiveEls:
-        - [n1,n2,n3,n4,n5,n6,n7,n8]
-        ...
-    adhesiveElSet:
-        name: 'adhesiveElements'
-        labels: [0,1,2,3....(number of adhesive elements)]
     """
     geometry = blade.geometry
     coordinates = geometry.coordinates
@@ -156,40 +140,21 @@ def shell_mesh_general(blade, forSolid, includeAdhesive, elementSize):
     splineYi = interpolator_wrap(spParam, splineY[:, 0], spParami, "pchip")
     splineZi = interpolator_wrap(spParam, splineZ[:, 0], spParami, "pchip")
     for i in range(1, cls):
-        splineXi = np.vstack(
-            [splineXi, interpolator_wrap(spParam, splineX[:, i], spParami, "pchip")]
-        )
-        splineYi = np.vstack(
-            [splineYi, interpolator_wrap(spParam, splineY[:, i], spParami, "pchip")]
-        )
-        splineZi = np.vstack(
-            [splineZi, interpolator_wrap(spParam, splineZ[:, i], spParami, "pchip")]
-        )
+        splineXi = np.vstack([
+            splineXi,
+            interpolator_wrap(spParam, splineX[:, i], spParami, "pchip"),
+        ])
+        splineYi = np.vstack([
+            splineYi,
+            interpolator_wrap(spParam, splineY[:, i], spParami, "pchip"),
+        ])
+        splineZi = np.vstack([
+            splineZi,
+            interpolator_wrap(spParam, splineZ[:, i], spParami, "pchip"),
+        ])
     splineXi = splineXi.T
     splineYi = splineYi.T
     splineZi = splineZi.T
-    ## Determine the first spanwise section that needs adhesive
-    if includeAdhesive == 1:
-        stPt = 0
-        frstXS = 0
-        while frstXS == 0 and stPt < splineXi.shape[0]:
-            v1x = splineXi[stPt, 6] - splineXi[stPt, 4]
-            v1y = splineYi[stPt, 6] - splineYi[stPt, 4]
-            v1z = splineZi[stPt, 6] - splineZi[stPt, 4]
-            v2x = splineXi[stPt, 30] - splineXi[stPt, 32]
-            v2y = splineYi[stPt, 30] - splineYi[stPt, 32]
-            v2z = splineZi[stPt, 30] - splineZi[stPt, 32]
-            mag1 = np.sqrt(v1x * v1x + v1y * v1y + v1z * v1z)
-            mag2 = np.sqrt(v2x * v2x + v2y * v2y + v2z * v2z)
-            dp = (1 / (mag1 * mag2)) * (v1x * v2x + v1y * v2y + v1z * v2z)
-            if dp > 0.7071:
-                frstXS = stPt
-            stPt = stPt + 3
-
-        if frstXS == 0:
-            frstXS = splineXi.shape[0]
-    else:
-        frstXS = splineXi.shape[0]
 
     ## Generate the mesh using the splines as surface guides
 
@@ -216,86 +181,84 @@ def shell_mesh_general(blade, forSolid, includeAdhesive, elementSize):
         endSec = 11
         stSp = 0
         for j in range(stSec, endSec + 1):
-            shellKp = np.array(
+            shellKp = np.array([
+                [splineXi[stPt, stSp], splineYi[stPt, stSp], splineZi[stPt, stSp]],
                 [
-                    [splineXi[stPt, stSp], splineYi[stPt, stSp], splineZi[stPt, stSp]],
-                    [
-                        splineXi[stPt, stSp + 3],
-                        splineYi[stPt, stSp + 3],
-                        splineZi[stPt, stSp + 3],
-                    ],
-                    [
-                        splineXi[stPt + 3, stSp + 3],
-                        splineYi[stPt + 3, stSp + 3],
-                        splineZi[stPt + 3, stSp + 3],
-                    ],
-                    [
-                        splineXi[stPt + 3, stSp],
-                        splineYi[stPt + 3, stSp],
-                        splineZi[stPt + 3, stSp],
-                    ],
-                    [
-                        splineXi[stPt, stSp + 1],
-                        splineYi[stPt, stSp + 1],
-                        splineZi[stPt, stSp + 1],
-                    ],
-                    [
-                        splineXi[stPt, stSp + 2],
-                        splineYi[stPt, stSp + 2],
-                        splineZi[stPt, stSp + 2],
-                    ],
-                    [
-                        splineXi[stPt + 1, stSp + 3],
-                        splineYi[stPt + 1, stSp + 3],
-                        splineZi[stPt + 1, stSp + 3],
-                    ],
-                    [
-                        splineXi[stPt + 2, stSp + 3],
-                        splineYi[stPt + 2, stSp + 3],
-                        splineZi[stPt + 2, stSp + 3],
-                    ],
-                    [
-                        splineXi[stPt + 3, stSp + 2],
-                        splineYi[stPt + 3, stSp + 2],
-                        splineZi[stPt + 3, stSp + 2],
-                    ],
-                    [
-                        splineXi[stPt + 3, stSp + 1],
-                        splineYi[stPt + 3, stSp + 1],
-                        splineZi[stPt + 3, stSp + 1],
-                    ],
-                    [
-                        splineXi[stPt + 2, stSp],
-                        splineYi[stPt + 2, stSp],
-                        splineZi[stPt + 2, stSp],
-                    ],
-                    [
-                        splineXi[stPt + 1, stSp],
-                        splineYi[stPt + 1, stSp],
-                        splineZi[stPt + 1, stSp],
-                    ],
-                    [
-                        splineXi[stPt + 1, stSp + 1],
-                        splineYi[stPt + 1, stSp + 1],
-                        splineZi[stPt + 1, stSp + 1],
-                    ],
-                    [
-                        splineXi[stPt + 1, stSp + 2],
-                        splineYi[stPt + 1, stSp + 2],
-                        splineZi[stPt + 1, stSp + 2],
-                    ],
-                    [
-                        splineXi[stPt + 2, stSp + 2],
-                        splineYi[stPt + 2, stSp + 2],
-                        splineZi[stPt + 2, stSp + 2],
-                    ],
-                    [
-                        splineXi[stPt + 2, stSp + 1],
-                        splineYi[stPt + 2, stSp + 1],
-                        splineZi[stPt + 2, stSp + 1],
-                    ],
-                ]
-            )
+                    splineXi[stPt, stSp + 3],
+                    splineYi[stPt, stSp + 3],
+                    splineZi[stPt, stSp + 3],
+                ],
+                [
+                    splineXi[stPt + 3, stSp + 3],
+                    splineYi[stPt + 3, stSp + 3],
+                    splineZi[stPt + 3, stSp + 3],
+                ],
+                [
+                    splineXi[stPt + 3, stSp],
+                    splineYi[stPt + 3, stSp],
+                    splineZi[stPt + 3, stSp],
+                ],
+                [
+                    splineXi[stPt, stSp + 1],
+                    splineYi[stPt, stSp + 1],
+                    splineZi[stPt, stSp + 1],
+                ],
+                [
+                    splineXi[stPt, stSp + 2],
+                    splineYi[stPt, stSp + 2],
+                    splineZi[stPt, stSp + 2],
+                ],
+                [
+                    splineXi[stPt + 1, stSp + 3],
+                    splineYi[stPt + 1, stSp + 3],
+                    splineZi[stPt + 1, stSp + 3],
+                ],
+                [
+                    splineXi[stPt + 2, stSp + 3],
+                    splineYi[stPt + 2, stSp + 3],
+                    splineZi[stPt + 2, stSp + 3],
+                ],
+                [
+                    splineXi[stPt + 3, stSp + 2],
+                    splineYi[stPt + 3, stSp + 2],
+                    splineZi[stPt + 3, stSp + 2],
+                ],
+                [
+                    splineXi[stPt + 3, stSp + 1],
+                    splineYi[stPt + 3, stSp + 1],
+                    splineZi[stPt + 3, stSp + 1],
+                ],
+                [
+                    splineXi[stPt + 2, stSp],
+                    splineYi[stPt + 2, stSp],
+                    splineZi[stPt + 2, stSp],
+                ],
+                [
+                    splineXi[stPt + 1, stSp],
+                    splineYi[stPt + 1, stSp],
+                    splineZi[stPt + 1, stSp],
+                ],
+                [
+                    splineXi[stPt + 1, stSp + 1],
+                    splineYi[stPt + 1, stSp + 1],
+                    splineZi[stPt + 1, stSp + 1],
+                ],
+                [
+                    splineXi[stPt + 1, stSp + 2],
+                    splineYi[stPt + 1, stSp + 2],
+                    splineZi[stPt + 1, stSp + 2],
+                ],
+                [
+                    splineXi[stPt + 2, stSp + 2],
+                    splineYi[stPt + 2, stSp + 2],
+                    splineZi[stPt + 2, stSp + 2],
+                ],
+                [
+                    splineXi[stPt + 2, stSp + 1],
+                    splineYi[stPt + 2, stSp + 1],
+                    splineZi[stPt + 2, stSp + 1],
+                ],
+            ])
             # vec = shellKp[1, :] - shellKp[0, :]
             # mag = np.linalg.norm(vec)
             # nEl = np.array([], dtype=int)
@@ -358,33 +321,6 @@ def shell_mesh_general(blade, forSolid, includeAdhesive, elementSize):
             stSp = stSp + 3
         stPt = stPt + 3
 
-    ## Shift the appropriate splines if the mesh is for a solid model seed
-    if forSolid == 1:
-        caseIndex = np.array([[9, 27, 3], [12, 24, 3], [24, 12, 8], [27, 9, 8]])
-        for i in range(caseIndex.shape[0]):
-            spl = caseIndex[i, 0]
-            tgtSp = caseIndex[i, 1]
-            sec = caseIndex[i, 2]
-            stPt = 0
-            for j in range(rws - 1):
-                totalThick = 0
-                for k in range(3):
-                    tpp = 0.001 * stacks[sec, j].plygroups[k].thickness
-                    npls = stacks[sec, j].plygroups[k].nPlies
-                    totalThick = totalThick + tpp * npls
-                for k in range(3):
-                    vx = splineXi[stPt, tgtSp] - splineXi[stPt, spl]
-                    vy = splineYi[stPt, tgtSp] - splineYi[stPt, spl]
-                    vz = splineZi[stPt, tgtSp] - splineZi[stPt, spl]
-                    magInv = 1 / np.sqrt(vx * vx + vy * vy + vz * vz)
-                    ux = magInv * vx
-                    uy = magInv * vy
-                    uz = magInv * vz
-                    splineXi[stPt, spl] = splineXi[stPt, spl] + 0.1 * totalThick * ux
-                    splineYi[stPt, spl] = splineYi[stPt, spl] + 0.1 * totalThick * uy
-                    splineZi[stPt, spl] = splineZi[stPt, spl] + 0.1 * totalThick * uz
-                    stPt = stPt + 1
-
     ## Shear web sections
     swES = set()
     stPt = 0
@@ -395,24 +331,36 @@ def shell_mesh_general(blade, forSolid, includeAdhesive, elementSize):
             shellKp = np.zeros((16, 3))
             shellKp[0, :] = np.array([splineXi[stPt, 12], splineYi[stPt, 12], splineZi[stPt, 12]])
             shellKp[1, :] = np.array([splineXi[stPt, 24], splineYi[stPt, 24], splineZi[stPt, 24]])
-            shellKp[2, :] = np.array(
-                [splineXi[stPt + 3, 24], splineYi[stPt + 3, 24], splineZi[stPt + 3, 24]]
-            )
-            shellKp[3, :] = np.array(
-                [splineXi[stPt + 3, 12], splineYi[stPt + 3, 12], splineZi[stPt + 3, 12]]
-            )
-            shellKp[6, :] = np.array(
-                [splineXi[stPt + 1, 24], splineYi[stPt + 1, 24], splineZi[stPt + 1, 24]]
-            )
-            shellKp[7, :] = np.array(
-                [splineXi[stPt + 2, 24], splineYi[stPt + 2, 24], splineZi[stPt + 2, 24]]
-            )
-            shellKp[10, :] = np.array(
-                [splineXi[stPt + 2, 12], splineYi[stPt + 2, 12], splineZi[stPt + 2, 12]]
-            )
-            shellKp[11, :] = np.array(
-                [splineXi[stPt + 1, 12], splineYi[stPt + 1, 12], splineZi[stPt + 1, 12]]
-            )
+            shellKp[2, :] = np.array([
+                splineXi[stPt + 3, 24],
+                splineYi[stPt + 3, 24],
+                splineZi[stPt + 3, 24],
+            ])
+            shellKp[3, :] = np.array([
+                splineXi[stPt + 3, 12],
+                splineYi[stPt + 3, 12],
+                splineZi[stPt + 3, 12],
+            ])
+            shellKp[6, :] = np.array([
+                splineXi[stPt + 1, 24],
+                splineYi[stPt + 1, 24],
+                splineZi[stPt + 1, 24],
+            ])
+            shellKp[7, :] = np.array([
+                splineXi[stPt + 2, 24],
+                splineYi[stPt + 2, 24],
+                splineZi[stPt + 2, 24],
+            ])
+            shellKp[10, :] = np.array([
+                splineXi[stPt + 2, 12],
+                splineYi[stPt + 2, 12],
+                splineZi[stPt + 2, 12],
+            ])
+            shellKp[11, :] = np.array([
+                splineXi[stPt + 1, 12],
+                splineYi[stPt + 1, 12],
+                splineZi[stPt + 1, 12],
+            ])
             shellKp[4, :] = 0.6666 * shellKp[0, :] + 0.3333 * shellKp[1, :]
             shellKp[5, :] = 0.3333 * shellKp[0, :] + 0.6666 * shellKp[1, :]
             shellKp[8, :] = 0.6666 * shellKp[2, :] + 0.3333 * shellKp[3, :]
@@ -486,24 +434,36 @@ def shell_mesh_general(blade, forSolid, includeAdhesive, elementSize):
             shellKp = np.zeros((16, 3))
             shellKp[0, :] = np.array([splineXi[stPt, 27], splineYi[stPt, 27], splineZi[stPt, 27]])
             shellKp[1, :] = np.array([splineXi[stPt, 9], splineYi[stPt, 9], splineZi[stPt, 9]])
-            shellKp[2, :] = np.array(
-                [splineXi[stPt + 3, 9], splineYi[stPt + 3, 9], splineZi[stPt + 3, 9]]
-            )
-            shellKp[3, :] = np.array(
-                [splineXi[stPt + 3, 27], splineYi[stPt + 3, 27], splineZi[stPt + 3, 27]]
-            )
-            shellKp[6, :] = np.array(
-                [splineXi[stPt + 1, 9], splineYi[stPt + 1, 9], splineZi[stPt + 1, 9]]
-            )
-            shellKp[7, :] = np.array(
-                [splineXi[stPt + 2, 9], splineYi[stPt + 2, 9], splineZi[stPt + 2, 9]]
-            )
-            shellKp[10, :] = np.array(
-                [splineXi[stPt + 2, 27], splineYi[stPt + 2, 27], splineZi[stPt + 2, 27]]
-            )
-            shellKp[11, :] = np.array(
-                [splineXi[stPt + 1, 27], splineYi[stPt + 1, 27], splineZi[stPt + 1, 27]]
-            )
+            shellKp[2, :] = np.array([
+                splineXi[stPt + 3, 9],
+                splineYi[stPt + 3, 9],
+                splineZi[stPt + 3, 9],
+            ])
+            shellKp[3, :] = np.array([
+                splineXi[stPt + 3, 27],
+                splineYi[stPt + 3, 27],
+                splineZi[stPt + 3, 27],
+            ])
+            shellKp[6, :] = np.array([
+                splineXi[stPt + 1, 9],
+                splineYi[stPt + 1, 9],
+                splineZi[stPt + 1, 9],
+            ])
+            shellKp[7, :] = np.array([
+                splineXi[stPt + 2, 9],
+                splineYi[stPt + 2, 9],
+                splineZi[stPt + 2, 9],
+            ])
+            shellKp[10, :] = np.array([
+                splineXi[stPt + 2, 27],
+                splineYi[stPt + 2, 27],
+                splineZi[stPt + 2, 27],
+            ])
+            shellKp[11, :] = np.array([
+                splineXi[stPt + 1, 27],
+                splineYi[stPt + 1, 27],
+                splineZi[stPt + 1, 27],
+            ])
             shellKp[4, :] = 0.6666 * shellKp[0, :] + 0.3333 * shellKp[1, :]
             shellKp[5, :] = 0.3333 * shellKp[0, :] + 0.6666 * shellKp[1, :]
             shellKp[8, :] = 0.6666 * shellKp[2, :] + 0.3333 * shellKp[3, :]
@@ -651,100 +611,6 @@ def shell_mesh_general(blade, forSolid, includeAdhesive, elementSize):
         nodeSets.append(newSet)
         shellData["sets"]["node"] = nodeSets
 
-    ## Generate mesh for trailing edge adhesive if requested
-    # print("getting adhesive mesh")
-    if includeAdhesive == 1:
-        stPt = frstXS
-        v1x = splineXi[stPt, 6] - splineXi[stPt, 4]
-        v1y = splineYi[stPt, 6] - splineYi[stPt, 4]
-        v1z = splineZi[stPt, 6] - splineZi[stPt, 4]
-        mag1 = np.sqrt(v1x * v1x + v1y * v1y + v1z * v1z)
-        v2x = splineXi[stPt, 30] - splineXi[stPt, 32]
-        v2y = splineYi[stPt, 30] - splineYi[stPt, 32]
-        v2z = splineZi[stPt, 30] - splineZi[stPt, 32]
-        mag2 = np.sqrt(v2x * v2x + v2y * v2y + v2z * v2z)
-        v3x = splineXi[stPt, 6] - splineXi[stPt, 30]
-        v3y = splineYi[stPt, 6] - splineYi[stPt, 30]
-        v3z = splineZi[stPt, 6] - splineZi[stPt, 30]
-        mag3 = np.sqrt(v3x * v3x + v3y * v3y + v3z * v3z)
-        v4x = splineXi[stPt, 4] - splineXi[stPt, 32]
-        v4y = splineYi[stPt, 4] - splineYi[stPt, 32]
-        v4z = splineZi[stPt, 4] - splineZi[stPt, 32]
-        mag4 = np.sqrt(v4x * v4x + v4y * v4y + v4z * v4z)
-        nE1 = np.ceil(mag1 / elementSize).astype(int)
-        nE2 = np.ceil(mag3 / elementSize).astype(int)
-        nE3 = np.ceil(mag2 / elementSize).astype(int)
-        nE4 = np.ceil(mag4 / elementSize).astype(int)
-        nEl = np.array([nE1, nE2, nE3, nE4])
-        gdLayer = 0
-        sweepElements = []
-        guideNds = []
-        while stPt < splineXi.shape[0]:
-            shellKp = np.zeros((9, 3))
-            shellKp[0, :] = np.array([splineXi[stPt, 4], splineYi[stPt, 4], splineZi[stPt, 4]])
-            shellKp[1, :] = np.array([splineXi[stPt, 6], splineYi[stPt, 6], splineZi[stPt, 6]])
-            shellKp[2, :] = np.array([splineXi[stPt, 30], splineYi[stPt, 30], splineZi[stPt, 30]])
-            shellKp[3, :] = np.array([splineXi[stPt, 32], splineYi[stPt, 32], splineZi[stPt, 32]])
-            shellKp[4, :] = np.array([splineXi[stPt, 5], splineYi[stPt, 5], splineZi[stPt, 5]])
-            shellKp[5, :] = 0.5 * shellKp[1, :] + 0.5 * shellKp[2, :]
-            shellKp[6, :] = np.array([splineXi[stPt, 31], splineYi[stPt, 31], splineZi[stPt, 31]])
-            shellKp[7, :] = 0.5 * shellKp[0, :] + 0.5 * shellKp[3, :]
-            shellKp[8, :] = 0.5 * shellKp[4, :] + 0.5 * shellKp[6, :]
-            sReg = ShellRegion("quad2", shellKp, nEl, elType="quad", meshMethod="free")
-            regMesh = sReg.createShellMesh()
-
-            if stPt == frstXS:
-                adhesMesh = Mesh3D(regMesh["nodes"], regMesh["elements"])
-            else:
-                guideNds.append(regMesh["nodes"])
-                layerSwEl = np.ceil(
-                    (splineZi[stPt, 4] - splineZi[(stPt - 3), 4]) / elementSize
-                ).astype(int)
-                sweepElements.append(layerSwEl)
-            stPt = stPt + 3
-
-        adMeshData = adhesMesh.createSweptMesh(
-            "toDestNodes", sweepElements, destNodes=guideNds, interpMethod="smooth"
-        )
-        shellData["adhesiveEls"] = adMeshData["elements"]
-        shellData["adhesiveNds"] = adMeshData["nodes"]
-        adEls = len(adMeshData["elements"])
-        adhesSet = {}
-        adhesSet["name"] = "adhesiveElements"
-        labList = list(range(0, adEls))
-        adhesSet["labels"] = labList
-        adMeshData["sets"] = {"element": [adhesSet], "node": []}
-        shellData["adhesiveElSet"] = adhesSet
-
-        print("getting constraints")
-        nDir = np.array([0.0, 1.0, 0.0])
-        adMeshData = get_surface_nodes(
-            adMeshData, "adhesiveElements", "LP_AdNodes", nDir, normTol=45.0
-        )
-        nDir = np.array([0.0, -1.0, 0.0])
-        adMeshData = get_surface_nodes(
-            adMeshData, "adhesiveElements", "HP_AdNodes", nDir, normTol=45.0
-        )
-        lpEls = []
-        hpEls = []
-        for es in shellData["sets"]["element"]:
-            if "LP_TE_REINF" in es["name"]:
-                lpEls.extend(es["labels"])
-            elif "HP_TE_REINF" in es["name"]:
-                hpEls.extend(es["labels"])
-        lpSet = {"name": "LP_TE_REINF", "labels": lpEls}
-        shellData = add_element_set(shellData, lpSet)
-        hpSet = {"name": "HP_TE_REINF", "labels": hpEls}
-        shellData = add_element_set(shellData, hpSet)
-        constraints = tie_2_meshes_constraints(
-            adMeshData, "LP_AdNodes", shellData, "LP_TE_REINF", 0.5 * elementSize
-        )
-        hpConst = tie_2_meshes_constraints(
-            adMeshData, "HP_AdNodes", shellData, "HP_TE_REINF", 0.5 * elementSize
-        )
-        constraints.extend(hpConst)
-        shellData["constraints"] = constraints
-
     matList = []
     for mn in blade.definition.materials:
         newMat = {}
@@ -764,536 +630,3 @@ def shell_mesh_general(blade, forSolid, includeAdhesive, elementSize):
     shellData["materials"] = matList
 
     return shellData
-
-
-def get_shell_mesh(blade, includeAdhesive, elementSize):
-    meshData = shell_mesh_general(blade, 0, includeAdhesive, elementSize)
-    return meshData
-
-
-def get_root_mesh(
-    axisPts,
-    radius,
-    thickness,
-    elementSize,
-    elLayers,
-    config="inserts",
-    boltRad=None,
-    insertThk=None,
-    adhesiveThk=None,
-    numIns=None,
-    tubeThk=None,
-    tubeExtend=None,
-    extNumEls=None,
-):
-    if config == "inserts":
-        ## Create insert cross section mesh
-        thInc = 2.0 * np.pi / numIns
-        minR = radius[0] - thickness[0]  ## inner radius of root
-        midR = 0.5 * (2.0 * radius[0] - thickness[0])  ## mid-thickness radius of root
-
-        bd = Boundary2D()
-        x1 = (midR - boltRad) * np.cos(0.5 * thInc)
-        y1 = (midR - boltRad) * np.sin(0.5 * thInc)
-        x2 = (midR + boltRad) * np.cos(0.5 * thInc)
-        y2 = (midR + boltRad) * np.sin(0.5 * thInc)
-        kp = [[x1, y1], [x2, y2], [x1, y1]]
-        nEls = int(np.ceil(2.0 * np.pi * boltRad / elementSize))
-        bd.addSegment("arc", kp, nEls)
-        bdData = bd.getBoundaryMesh()
-
-        mesher = Mesh2D(bdData["nodes"], bdData["elements"])
-        boltMesh = mesher.createUnstructuredMesh("quad")
-        boltMesh = make3D(boltMesh)
-        # plotShellMesh(insMesh)
-
-        ## Create insert cross section mesh
-
-        insertRad = boltRad + insertThk
-        x1 = (midR - insertRad) * np.cos(0.5 * thInc)
-        y1 = (midR - insertRad) * np.sin(0.5 * thInc)
-        x2 = (midR + insertRad) * np.cos(0.5 * thInc)
-        y2 = (midR + insertRad) * np.sin(0.5 * thInc)
-        kp = [[x1, y1], [x2, y2], [x1, y1]]
-        bd.addSegment("arc", kp, nEls)
-        bdData = bd.getBoundaryMesh()
-
-        mesher = Mesh2D(bdData["nodes"], bdData["elements"])
-        insMesh = mesher.createUnstructuredMesh("quad")
-        insMesh = make3D(insMesh)
-        # plotShellMesh(adhMesh)
-
-        ## Create adhesive cross section mesh
-
-        bd = Boundary2D()
-        x1 = (midR - insertRad) * np.cos(0.5 * thInc)
-        y1 = (midR - insertRad) * np.sin(0.5 * thInc)
-        x2 = (midR + insertRad) * np.cos(0.5 * thInc)
-        y2 = (midR + insertRad) * np.sin(0.5 * thInc)
-        kp = [[x1, y1], [x2, y2], [x1, y1]]
-        bd.addSegment("arc", kp, nEls)
-
-        adhesiveRad = boltRad + insertThk + adhesiveThk
-        x1 = (midR - adhesiveRad) * np.cos(0.5 * thInc)
-        y1 = (midR - adhesiveRad) * np.sin(0.5 * thInc)
-        x2 = (midR + adhesiveRad) * np.cos(0.5 * thInc)
-        y2 = (midR + adhesiveRad) * np.sin(0.5 * thInc)
-        kp = [[x1, y1], [x2, y2], [x1, y1]]
-        bd.addSegment("arc", kp, nEls)
-        bdData = bd.getBoundaryMesh()
-
-        mesher = Mesh2D(bdData["nodes"], bdData["elements"])
-        adhMesh = mesher.createUnstructuredMesh("quad")
-        adhMesh = make3D(adhMesh)
-
-        ## Create root fill material unit cell mesh
-
-        bd = Boundary2D()
-        x1 = (midR - adhesiveRad) * np.cos(0.5 * thInc)
-        y1 = (midR - adhesiveRad) * np.sin(0.5 * thInc)
-        x2 = (midR + adhesiveRad) * np.cos(0.5 * thInc)
-        y2 = (midR + adhesiveRad) * np.sin(0.5 * thInc)
-        kp = [[x1, y1], [x2, y2], [x1, y1]]
-        bd.addSegment("arc", kp, nEls)
-
-        kp = [[minR, 0.0], [radius[0], 0.0]]
-        nEls = int(np.ceil(thickness[0] / elementSize))
-        bd.addSegment("line", kp, nEls)
-
-        x1 = radius[0]
-        y1 = 0.0
-        x2 = radius[0] * np.cos(0.5 * thInc)
-        y2 = radius[0] * np.sin(0.5 * thInc)
-        x3 = radius[0] * np.cos(thInc)
-        y3 = radius[0] * np.sin(thInc)
-        kp = [[x1, y1], [x2, y2], [x3, y3]]
-        nEls = int(np.ceil(radius[0] * thInc / elementSize))
-        bd.addSegment("arc", kp, nEls)
-
-        x1 = radius[0] * np.cos(thInc)
-        y1 = radius[0] * np.sin(thInc)
-        x2 = minR * np.cos(thInc)
-        y2 = minR * np.sin(thInc)
-        kp = [[x1, y1], [x2, y2]]
-        nEls = int(np.ceil(thickness[0] / elementSize))
-        bd.addSegment("line", kp, nEls)
-
-        x1 = minR
-        y1 = 0.0
-        x2 = minR * np.cos(0.5 * thInc)
-        y2 = minR * np.sin(0.5 * thInc)
-        x3 = minR * np.cos(thInc)
-        y3 = minR * np.sin(thInc)
-        kp = [[x1, y1], [x2, y2], [x3, y3]]
-        nEls = int(np.ceil(radius[0] * thInc / elementSize))
-        bd.addSegment("arc", kp, nEls)
-
-        bdData = bd.getBoundaryMesh()
-
-        mesher = Mesh2D(bdData["nodes"], bdData["elements"])
-        fillMesh = mesher.createUnstructuredMesh("quad")
-        fillMesh = make3D(fillMesh)
-        # plotShellMesh(fillMesh)
-
-        ## Create mesh of whole root cross section
-        faceSurf = Surface()
-
-        boltSets = []
-        insSets = []
-        adhSets = []
-        fillSets = []
-        for i in range(0, numIns):
-            rotAng = thInc * i * 180.0 / np.pi
-            newBolt = cp.deepcopy(boltMesh)
-            newBolt = rotate_mesh(newBolt, [0.0, 0.0, 0.0], [0.0, 0.0, 1.0], rotAng)
-            nm = "bolt_" + str(i)
-            faceSurf.addMesh(newBolt, name=nm)
-            boltSets.append(nm)
-            newIns = cp.deepcopy(insMesh)
-            newIns = rotate_mesh(newIns, [0.0, 0.0, 0.0], [0.0, 0.0, 1.0], rotAng)
-            nm = "insert_" + str(i)
-            faceSurf.addMesh(newIns, name=nm)
-            insSets.append(nm)
-            newAd = cp.deepcopy(adhMesh)
-            newAd = rotate_mesh(newAd, [0.0, 0.0, 0.0], [0.0, 0.0, 1.0], rotAng)
-            nm = "adhesive_" + str(i)
-            faceSurf.addMesh(newAd, name=nm)
-            adhSets.append(nm)
-            newFill = cp.deepcopy(fillMesh)
-            newFill = rotate_mesh(newFill, [0.0, 0.0, 0.0], [0.0, 0.0, 1.0], rotAng)
-            nm = "fill_" + str(i)
-            faceSurf.addMesh(newFill, name=nm)
-            fillSets.append(nm)
-
-        faceMesh = faceSurf.getSurfaceMesh()
-        # plotShellMesh(faceMesh)
-
-        tVec = [0.0, 0.0, axisPts[0]]
-        faceMesh = translate_mesh(faceMesh, tVec)
-
-        nPts = len(axisPts)
-        allZpts = np.linspace(axisPts[0], axisPts[nPts - 1], elLayers + 1)
-        radFun = interpolate.interp1d(axisPts, radius, kind="linear")
-        thkFun = interpolate.interp1d(axisPts, thickness, kind="linear")
-        ptRad = radFun(allZpts)
-        ptThk = thkFun(allZpts)
-
-        rootMesher = Mesh3D(faceMesh["nodes"], faceMesh["elements"])
-
-        gdNds = []
-        nEls = []
-        for i in range(1, len(allZpts)):
-            newNds = faceMesh["nodes"].copy()
-            thkFact = ptThk[i] / ptThk[0]
-            shftDist = ptRad[i] - ptRad[0] * thkFact
-            for j, nd in enumerate(newNds):
-                mag = np.linalg.norm(nd[0:2])
-                unitXY = (1.0 / mag) * nd[0:2]
-                newXY = thkFact * nd[0:2] + shftDist * unitXY
-                newNds[j, 0:2] = newXY
-                newNds[j, 2] = allZpts[i]
-            gdNds.append(newNds)
-            nEls.append(1)
-
-        rootMesh = rootMesher.createSweptMesh(
-            "toDestNodes", nEls, destNodes=gdNds, interpMethod="linear"
-        )
-
-        # rootMesher = Mesh3D(faceMesh['nodes'],faceMesh['elements'])
-        # sD = axisPts[nPts-1] - axisPts[0]
-        # rootMesh = rootMesher.createSweptMesh('inDirection',elLayers,sweepDistance=sD,axis=[0.,0.,1.])
-
-        # plotSolidMesh(rootMesh)
-
-        extSets = get_extruded_sets(faceMesh, elLayers)
-
-        rootMesh["sets"] = extSets
-
-        rootMesh = get_element_set_union(rootMesh, boltSets, "allBolts")
-        rootMesh = get_element_set_union(rootMesh, insSets, "allInsert")
-        rootMesh = get_element_set_union(rootMesh, adhSets, "allAdhesive")
-        rootMesh = get_element_set_union(rootMesh, fillSets, "allFill")
-
-        rootMesh = get_matching_node_sets(rootMesh)
-
-        sections = []
-
-        newSec = {}
-        newSec["type"] = "solid"
-        newSec["elementSet"] = "allBolts"
-        newSec["material"] = "boltMat"
-        newSec["xDir"] = [0.0, 0.0, 1.0]
-        newSec["xyDir"] = [1.0, 0.0, 0.0]
-        sections.append(newSec)
-
-        newSec = {}
-        newSec["type"] = "solid"
-        newSec["elementSet"] = "allInsert"
-        newSec["material"] = "insertMat"
-        newSec["xDir"] = [0.0, 0.0, 1.0]
-        newSec["xyDir"] = [1.0, 0.0, 0.0]
-        sections.append(newSec)
-
-        newSec = {}
-        newSec["type"] = "solid"
-        newSec["elementSet"] = "allAdhesive"
-        newSec["material"] = "adhesiveMat"
-        newSec["xDir"] = [0.0, 0.0, 1.0]
-        newSec["xyDir"] = [1.0, 0.0, 0.0]
-        sections.append(newSec)
-
-        newSec = {}
-        newSec["type"] = "solid"
-        newSec["elementSet"] = "allFill"
-        newSec["material"] = "fillMat"
-        newSec["xDir"] = [0.0, 0.0, 1.0]
-        newSec["xyDir"] = [1.0, 0.0, 0.0]
-        sections.append(newSec)
-
-        rootMesh["sections"] = sections
-
-        return rootMesh
-
-    else:
-        ## Create main root
-        circEls = int(2.0 * np.pi * radius[0] / elementSize)
-        minR = radius[0] - thickness[0]
-        hFillThk = 0.5 * (thickness[0] - 2.0 * adhesiveThk - tubeThk)
-        faceSurf = Surface()
-
-        ## Inner fill
-        print("Inner fill")
-
-        bd = Boundary2D()
-        xi = 0.0
-
-        y1 = -minR
-        y2 = minR
-        kp = [[xi, y1], [xi, y2], [xi, y1]]
-        bd.addSegment("arc", kp, circEls)
-
-        # y1 = -minR - hFillThk
-        # y2 = minR + hFillThk
-        # kp = [[xi,y1],
-        # [xi,y2],
-        # [xi,y1]]
-        # bd.addSegment('arc',kp,circEls)
-
-        bdData = bd.getBoundaryMesh()
-        mesher = Mesh2D(bdData["nodes"], bdData["elements"])
-        # layerMesh = mesher.createUnstructuredMesh('quad')
-        sEls = int(np.ceil(hFillThk / elementSize))
-        layerMesh = mesher.createSweptMesh(
-            "fromPoint", sEls, sweepDistance=hFillThk, point=[0.0, 0.0]
-        )
-        layerMesh = make3D(layerMesh)
-        faceSurf.addMesh(layerMesh, name="innerFill")
-
-        ## Inner adhesive
-        print("Inner adhesive")
-
-        bd = Boundary2D()
-        xi = 0.0
-
-        y1 = -minR - hFillThk
-        y2 = minR + hFillThk
-        kp = [[xi, y1], [xi, y2], [xi, y1]]
-        bd.addSegment("arc", kp, circEls)
-
-        # y1 = -minR - hFillThk - adhesiveThk
-        # y2 = minR + hFillThk + adhesiveThk
-        # kp = [[xi,y1],
-        # [xi,y2],
-        # [xi,y1]]
-        # bd.addSegment('arc',kp,circEls)
-
-        bdData = bd.getBoundaryMesh()
-        mesher = Mesh2D(bdData["nodes"], bdData["elements"])
-        # layerMesh = mesher.createUnstructuredMesh('quad')
-        sEls = int(np.ceil(adhesiveThk / elementSize))
-        layerMesh = mesher.createSweptMesh(
-            "fromPoint", sEls, sweepDistance=adhesiveThk, point=[0.0, 0.0]
-        )
-        layerMesh = make3D(layerMesh)
-        faceSurf.addMesh(layerMesh, name="innerAdhesive")
-
-        ## Tube
-        print("Tube")
-
-        bd = Boundary2D()
-        xi = 0.0
-
-        y1 = -minR - hFillThk - adhesiveThk
-        y2 = minR + hFillThk + adhesiveThk
-        kp = [[xi, y1], [xi, y2], [xi, y1]]
-        bd.addSegment("arc", kp, circEls)
-
-        # y1 = -minR - hFillThk - adhesiveThk - tubeThk
-        # y2 = minR + hFillThk + adhesiveThk + tubeThk
-        # kp = [[xi,y1],
-        # [xi,y2],
-        # [xi,y1]]
-        # bd.addSegment('arc',kp,circEls)
-
-        bdData = bd.getBoundaryMesh()
-        mesher = Mesh2D(bdData["nodes"], bdData["elements"])
-        # layerMesh = mesher.createUnstructuredMesh('quad')
-        sEls = int(np.ceil(tubeThk / elementSize))
-        layerMesh = mesher.createSweptMesh(
-            "fromPoint", sEls, sweepDistance=tubeThk, point=[0.0, 0.0]
-        )
-        layerMesh = make3D(layerMesh)
-        faceSurf.addMesh(layerMesh, name="tube")
-
-        ## Outer adhesive
-        print("Outer adhesive")
-
-        bd = Boundary2D()
-        xi = 0.0
-
-        y1 = -radius[0] + hFillThk + adhesiveThk
-        y2 = -y1
-        kp = [[xi, y1], [xi, y2], [xi, y1]]
-        bd.addSegment("arc", kp, circEls)
-
-        # y1 = -radius[0] + hFillThk
-        # y2 = -y1
-        # kp = [[xi,y1],
-        # [xi,y2],
-        # [xi,y1]]
-        # bd.addSegment('arc',kp,circEls)
-
-        bdData = bd.getBoundaryMesh()
-        mesher = Mesh2D(bdData["nodes"], bdData["elements"])
-        # layerMesh = mesher.createUnstructuredMesh('quad')
-        sEls = int(np.ceil(adhesiveThk / elementSize))
-        layerMesh = mesher.createSweptMesh(
-            "fromPoint", sEls, sweepDistance=adhesiveThk, point=[0.0, 0.0]
-        )
-        layerMesh = make3D(layerMesh)
-        faceSurf.addMesh(layerMesh, name="outerAdhesive")
-
-        ## Outer fill
-        print("Outer fill")
-
-        bd = Boundary2D()
-        xi = 0.0
-
-        y1 = -radius[0] + hFillThk
-        y2 = -y1
-        kp = [[xi, y1], [xi, y2], [xi, y1]]
-        bd.addSegment("arc", kp, circEls)
-
-        # y1 = -radius[0]
-        # y2 = -y1
-        # kp = [[xi,y1],
-        # [xi,y2],
-        # [xi,y1]]
-        # bd.addSegment('arc',kp,circEls)
-
-        bdData = bd.getBoundaryMesh()
-        mesher = Mesh2D(bdData["nodes"], bdData["elements"])
-        # layerMesh = mesher.createUnstructuredMesh('quad')
-        sEls = int(np.ceil(hFillThk / elementSize))
-        layerMesh = mesher.createSweptMesh(
-            "fromPoint", sEls, sweepDistance=hFillThk, point=[0.0, 0.0]
-        )
-        layerMesh = make3D(layerMesh)
-        faceSurf.addMesh(layerMesh, name="outerFill")
-
-        ## Build 3D mesh
-        faceMesh = faceSurf.getSurfaceMesh()
-
-        tVec = [0.0, 0.0, axisPts[0]]
-        faceMesh = translate_mesh(faceMesh, tVec)
-
-        nPts = len(axisPts)
-        allZpts = np.linspace(axisPts[0], axisPts[nPts - 1], elLayers + 1)
-        radFun = interpolate.interp1d(axisPts, radius, kind="linear")
-        thkFun = interpolate.interp1d(axisPts, thickness, kind="linear")
-        ptRad = radFun(allZpts)
-        ptThk = thkFun(allZpts)
-
-        rootMesher = Mesh3D(faceMesh["nodes"], faceMesh["elements"])
-
-        gdNds = []
-        nEls = []
-        for i in range(1, len(allZpts)):
-            newNds = faceMesh["nodes"].copy()
-            thkFact = ptThk[i] / ptThk[0]
-            shftDist = ptRad[i] - ptRad[0] * thkFact
-            for j, nd in enumerate(newNds):
-                mag = np.linalg.norm(nd[0:2])
-                unitXY = (1.0 / mag) * nd[0:2]
-                newXY = thkFact * nd[0:2] + shftDist * unitXY
-                newNds[j, 0:2] = newXY
-                newNds[j, 2] = allZpts[i]
-            gdNds.append(newNds)
-            nEls.append(1)
-
-        rootMesh = rootMesher.createSweptMesh(
-            "toDestNodes", nEls, destNodes=gdNds, interpMethod="linear"
-        )
-
-        extSets = get_extruded_sets(faceMesh, len(nEls))
-
-        rootMesh["sets"] = extSets
-
-        ## Build tube extension
-        print("extension")
-
-        faceSurf = Surface()
-        bd = Boundary2D()
-        xi = 0.0
-
-        y1 = -minR - hFillThk - adhesiveThk
-        y2 = minR + hFillThk + adhesiveThk
-        kp = [[xi, y1], [xi, y2], [xi, y1]]
-        bd.addSegment("arc", kp, circEls)
-
-        # y1 = -minR - hFillThk - adhesiveThk - tubeThk
-        # y2 = minR + hFillThk + adhesiveThk + tubeThk
-        # kp = [[xi,y1],
-        # [xi,y2],
-        # [xi,y1]]
-        # bd.addSegment('arc',kp,circEls)
-
-        bdData = bd.getBoundaryMesh()
-        mesher = Mesh2D(bdData["nodes"], bdData["elements"])
-        # layerMesh = mesher.createUnstructuredMesh('quad')
-        sEls = int(np.ceil(tubeThk / elementSize))
-        layerMesh = mesher.createSweptMesh(
-            "fromPoint", sEls, sweepDistance=tubeThk, point=[0.0, 0.0]
-        )
-        layerMesh = make3D(layerMesh)
-        faceSurf.addMesh(layerMesh, name="tubeExtension")
-
-        faceMesh = faceSurf.getSurfaceMesh()
-
-        tVec = [0.0, 0.0, axisPts[0]]
-        faceMesh = translate_mesh(faceMesh, tVec)
-
-        extMesher = Mesh3D(layerMesh["nodes"], layerMesh["elements"])
-        extMesh = extMesher.createSweptMesh(
-            "inDirection", extNumEls, sweepDistance=tubeExtend, axis=[0.0, 0.0, -1.0]
-        )
-
-        extSets = get_extruded_sets(faceMesh, extNumEls)
-
-        extMesh["sets"] = extSets
-
-        fullMesh = merge_meshes(rootMesh, extMesh)
-
-        sections = []
-
-        newSec = {}
-        newSec["type"] = "solid"
-        newSec["elementSet"] = "innerFill"
-        newSec["material"] = "fillMat"
-        newSec["xDir"] = [0.0, 0.0, 1.0]
-        newSec["xyDir"] = [1.0, 0.0, 0.0]
-        sections.append(newSec)
-
-        newSec = {}
-        newSec["type"] = "solid"
-        newSec["elementSet"] = "innerAdhesive"
-        newSec["material"] = "adhesiveMat"
-        newSec["xDir"] = [0.0, 0.0, 1.0]
-        newSec["xyDir"] = [1.0, 0.0, 0.0]
-        sections.append(newSec)
-
-        newSec = {}
-        newSec["type"] = "solid"
-        newSec["elementSet"] = "tube"
-        newSec["material"] = "tubeMat"
-        newSec["xDir"] = [0.0, 0.0, 1.0]
-        newSec["xyDir"] = [1.0, 0.0, 0.0]
-        sections.append(newSec)
-
-        newSec = {}
-        newSec["type"] = "solid"
-        newSec["elementSet"] = "outerAdhesive"
-        newSec["material"] = "adhesiveMat"
-        newSec["xDir"] = [0.0, 0.0, 1.0]
-        newSec["xyDir"] = [1.0, 0.0, 0.0]
-        sections.append(newSec)
-
-        newSec = {}
-        newSec["type"] = "solid"
-        newSec["elementSet"] = "outerFill"
-        newSec["material"] = "fillMat"
-        newSec["xDir"] = [0.0, 0.0, 1.0]
-        newSec["xyDir"] = [1.0, 0.0, 0.0]
-        sections.append(newSec)
-
-        newSec = {}
-        newSec["type"] = "solid"
-        newSec["elementSet"] = "tubeExtension"
-        newSec["material"] = "tubeMat"
-        newSec["xDir"] = [0.0, 0.0, 1.0]
-        newSec["xyDir"] = [1.0, 0.0, 0.0]
-        sections.append(newSec)
-
-        fullMesh["sections"] = sections
-
-        return fullMesh

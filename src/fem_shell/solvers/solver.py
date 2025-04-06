@@ -1,5 +1,5 @@
 from abc import ABC, abstractmethod
-from typing import Dict, List, Set
+from typing import Dict, List, Set, Tuple
 
 import meshio
 import numpy as np
@@ -79,6 +79,13 @@ class Solver(ABC):
         self.domain = MeshAssembler(mesh=self.mesh_obj, model=self.model_properties)
         self.dirichlet_conditions: List[DirichletCondition] = []
         self.body_forces: List[BodyForce] = []
+        self._vector_form: Dict = {}
+
+    @property
+    def vector_form(self) -> Dict[str, Tuple]:
+        if not self._vector_form:
+            self._vector_form = self.domain._element_map[0].vector_form
+        return self._vector_form
 
     def get_dofs_by_nodeset_name(self, name: str, only_geometric_dofs: bool = True) -> Set[int]:
         """
@@ -94,7 +101,15 @@ class Solver(ABC):
         Set[int]
             Set of DOFs corresponding to the node set.
         """
-        return self.domain.get_dofs_by_nodeset(name, only_geometric_dofs)
+        dofs_per_node = self.domain.dofs_per_node
+        node_ids = self.get_nodeids_by_nodeset_name(name)
+
+        # Versión optimizada con generador y range
+        return {
+            dof
+            for node_id in node_ids
+            for dof in range(node_id * dofs_per_node, (node_id + 1) * dofs_per_node)
+        }
 
     def get_nodeids_by_nodeset_name(self, name: str) -> Set[int]:
         """
@@ -121,7 +136,7 @@ class Solver(ABC):
         bcs : List[DirichletCondition]
             List of Dirichlet boundary conditions.
         """
-        self.dirichlet_conditions = bcs
+        self.dirichlet_conditions.extend(bcs)
 
     def add_body_forces(self, bcs: List[BodyForce]) -> None:
         """
@@ -154,9 +169,9 @@ class Solver(ABC):
             (i.e., `self.u` is set) before calling this method.
         """
         # 'vector_form' is assumed to be a dict mapping vector field names to lists of component names.
-        vector_form = self.domain.vector_form
+        vector_form = self.vector_form
         vector_components = [comp for vector in vector_form.values() for comp in vector]
-        U = self.u.reshape(-1, self.domain.dofs_per_node)
+        U = self.u.array.reshape(-1, self.domain.dofs_per_node)
 
         points = self.mesh_obj.coords_array
         point_data: Dict[str, np.ndarray] = {}
@@ -190,9 +205,9 @@ class Solver(ABC):
 
     def view_results(self):
         # 'vector_form' is assumed to be a dict mapping vector field names to lists of component names.
-        vector_form = self.domain.vector_form
+        vector_form = self.vector_form
         vector_components = [comp for vector in vector_form.values() for comp in vector]
-        U = self.u.reshape(-1, len(vector_components))  # self.u must be defined after solving
+        U = self.u.array.reshape(-1, len(vector_components))  # self.u must be defined after solving
 
         point_data: Dict[str, np.ndarray] = {}
 

@@ -1,221 +1,211 @@
-from __future__ import absolute_import
-
-from typing import Dict, Literal, Sequence
+from typing import Dict, Iterable, Optional
 
 import numpy as np
+from mpi4py import MPI
+from petsc4py import PETSc
 
 from fem_shell.core.mesh import MeshModel
-from fem_shell.elements import ElementFactory
+from fem_shell.elements import ElementFactory, FemElement
 
 
 class MeshAssembler:
-    """Assembles global matrices and vectors from element contributions.
-
-    Attributes
-    ----------
-    mesh : MeshModel
-        The mesh containing the elements to assemble.
-    model : Dict
-        Material properties and other model-specific parameters.
-    _element_map : Dict[int, FemElement]
-        Maps element IDs to their corresponding finite element objects.
-    _element_global_dofs_map : Dict[int, list]
-        Maps element IDs to their corresponding global DOF indices.
-    _dofs_count : int
-        Total number of global degrees of freedom.
-    """
-
     def __init__(self, mesh: MeshModel, model: Dict):
         """
-        Initializes the MeshAssembler.
+        Finite Element assembler using PETSc for distributed sparse matrices.
 
         Parameters
         ----------
         mesh : MeshModel
-            The mesh containing elements to assemble.
-        element_family : ElementFamily
-            The family of elements to be used.
+            The computational mesh containing nodes and elements
         model : Dict
-            Model-specific parameters like material properties.
+            Material and element configuration dictionary
+
+        Attributes
+        ----------
+        dofs_count : int
+            Total number of degrees of freedom in the system
+        _dofs_array : np.ndarray
+            Element-to-DOF connectivity array
+        _ke_array : np.ndarray
+            Precomputed local stiffness matrices
+        _me_array : np.ndarray
+            Precomputed local mass matrices
         """
         self.mesh = mesh
-        self.element_family = model["elements"]["element_family"]
         self.model = model["elements"]
-        self.simple_element_definition = self.simple_model()
-
-        self._element_map = {}
-        self._element_global_dofs_map = {}
-        self._nodes_global_dofs_map: Dict[int, Sequence[int]] = {}
+        self.comm = MPI.COMM_WORLD
+        self._element_map: Dict[int, FemElement] = {}
+        self._dofs_array: np.ndarray = None
+        self._node_dofs_map: Dict[int, Iterable] = {}
+        self._ke_array: np.ndarray = None
+        self._me_array: np.ndarray = None
+        self.dofs_per_node: int = 0
+        self.spatial_dim: int = 0
         self.dofs_count: int = 0
-        self._dofs_per_node: int = 0
-        self._spatial_dim: int = 0
-        self.vector_form: Dict = {}
-
+        self._row_nnz: Optional[np.ndarray] = None
         self._precompute_elements()
+        self._compute_sparsity_pattern()
 
-    def simple_model(self):
+    def _precompute_elements(self):
+        """Precompute element matrices and DOF connectivity arrays."""
+        elements = self.mesh.elements
+        if not elements:
+            return
+
+        dofs_list = []
+        ke_list = []
+        me_list = []
+
+        for element in elements:
+            fem_element = ElementFactory.get_element(mesh_element=element, **self.model)
+            if not fem_element:
+                continue
+
+            self._node_dofs_map.update(fem_element.global_dof_indices)
+
+            dofs = np.array(
+                [dof for node in fem_element.global_dof_indices.values() for dof in node],
+                dtype=np.int64,
+            )
+
+            self._element_map[element.id] = fem_element
+            dofs_list.append(dofs)
+            ke_list.append(fem_element.K)
+            me_list.append(fem_element.M)
+
+            if not self.dofs_per_node:
+                self.dofs_per_node = fem_element.dofs_per_node
+                self.spatial_dim = fem_element.spatial_dimmension
+
+        self._dofs_array = np.array(dofs_list, dtype=np.int64)
+        self._ke_array = np.array(ke_list, dtype=np.float64)
+        self._me_array = np.array(me_list, dtype=np.float64)
+        self.dofs_count = self.mesh.node_count * self.dofs_per_node
+
+    def _compute_sparsity_pattern(self):
         """
-        Determines if the model is simple (direct material definition) or complex (element-based definition).
+        Compute the sparse matrix non-zero pattern for efficient preallocation.
+
+        Notes
+        -----
+        Determines the number of non-zeros per matrix row using element
+        connectivity information. Critical for PETSc matrix performance.
+        """
+        nnz = [set() for _ in range(self.dofs_count)]
+        for elem_dofs in self._dofs_array:
+            for dof_i in elem_dofs:
+                nnz[dof_i].update(dof_j for dof_j in elem_dofs)
+
+        self._row_nnz = np.array([len(s) for s in nnz], dtype=PETSc.IntType)
+
+    def _create_petsc_matrix(self) -> PETSc.Mat:
+        """
+        Create a PETSc sparse matrix with optimized memory preallocation.
 
         Returns
         -------
-        bool
-            - True: If the model is simple (direct material definition).
-            - False: If the model is complex (element-based definition).
+        PETSc.Mat
+            A sparse matrix configured for efficient assembly
 
-        Raises
-        ------
-        ValueError
-            - If the model has an unknown behavior.
-            - If the number of elements in the model does not match the mesh element count.
+        Notes
+        -----
+        Uses AIJ format (Compressed Sparse Row) by default. For better
+        GPU performance consider setting type to 'seqaijcusparse'
         """
-        if not isinstance(self.model, dict):
-            raise ValueError("self.model must be a dictionary.")
+        mat = PETSc.Mat().create(self.comm)
+        mat.setType("aij")
+        mat.setSizes([self.dofs_count, self.dofs_count])
 
-        if "material" in self.model and "element_family" in self.model:
-            return True
-        elif all(isinstance(key, int) for key in self.model):
-            if not hasattr(self, "mesh") or not hasattr(self.mesh, "elements_count"):
-                raise AttributeError("self.mesh or self.mesh.elements_count is not defined.")
-            if len(self.model) != self.mesh.elements_count:
-                raise ValueError(
-                    "Model with element wise definition does not match element count. "
-                    "You must have a model for each element."
-                )
-            return False
-        else:
-            raise ValueError("Unknown model behavior.")
+        d_nnz = self._row_nnz.astype(PETSc.IntType)
+        o_nnz = np.zeros_like(d_nnz)  # Ajustar según particionado paralelo
 
-    def _precompute_elements(self) -> None:
-        """Precomputes the finite element objects and global DOF mappings."""
-        if not self._element_map:
-            for element in self.mesh.elements:
-                if self.simple_element_definition:
-                    model = self.model
-                else:
-                    model = self.model[element.id]
+        mat.setPreallocationNNZ((d_nnz, o_nnz))
+        mat.setUp()
+        mat.setOption(PETSc.Mat.Option.NEW_NONZERO_ALLOCATION_ERR, False)
+        return mat
 
-                fem_element = ElementFactory.get_element(mesh_element=element, **model)
-                if fem_element:
-                    if not self._dofs_per_node:
-                        self._dofs_per_node = fem_element.dofs_per_node
-                    if not self._spatial_dim:
-                        self._spatial_dim = fem_element.spatial_dimmension
-
-                    self.vector_form = fem_element.vector_form
-                    self._element_map[element.id] = fem_element
-                    self._element_global_dofs_map[element.id] = [
-                        dof for node in fem_element.global_dof_indices.values() for dof in node
-                    ]
-                    self._nodes_global_dofs_map.update(fem_element.global_dof_indices)
-
-            # Count the total number of unique global DOFs
-            self.dofs_count = len({
-                dof for dofs in self._element_global_dofs_map.values() for dof in dofs
-            })
-
-    @property
-    def dofs_per_node(self) -> int:
-        return self._dofs_per_node
-
-    @property
-    def spatial_dim(self) -> Literal[2] | Literal[3]:
-        return self._spatial_dim
-
-    def _assemble_matrix(self, attribute: str) -> np.ndarray:
+    def assemble_stiffness_matrix(self) -> PETSc.Mat:
         """
-        Generalized assembly function for global matrices or vectors.
+        Assemble the global stiffness matrix using PETSc.
+
+        Returns
+        -------
+        PETSc.Mat
+            Distributed sparse stiffness matrix
+
+        Notes
+        -----
+        Performs parallel assembly using local element contributions.
+        Matrix entries are accumulated using ADD_VALUES mode.
+        """
+        K = self._create_petsc_matrix()
+        K.setOption(PETSc.Mat.Option.NEW_NONZERO_ALLOCATION_ERR, False)
+
+        for e in range(self._dofs_array.shape[0]):
+            dofs = self._dofs_array[e].astype(PETSc.IntType)
+            ke = self._ke_array[e].flatten(order="C")  # Row-major flattening
+
+            # Use block insertion for better performance
+            K.setValuesLocal(dofs, dofs, ke, addv=PETSc.InsertMode.ADD_VALUES)
+
+        K.assemble()
+        return K
+
+    def assemble_mass_matrix(self) -> PETSc.Mat:
+        """
+        Assemble the global mass matrix using PETSc.
+
+        Returns
+        -------
+        PETSc.Mat
+            Distributed sparse mass matrix
+        """
+        M = self._create_petsc_matrix()
+        M.setOption(PETSc.Mat.Option.NEW_NONZERO_ALLOCATION_ERR, False)
+
+        for e in range(self._dofs_array.shape[0]):
+            dofs = self._dofs_array[e].astype(PETSc.IntType)
+            me = self._me_array[e].flatten(order="C")
+
+            M.setValuesLocal(dofs, dofs, me, addv=PETSc.InsertMode.ADD_VALUES)
+
+        M.assemble()
+        return M
+
+    def assemble_load_vector(self, load_condition) -> PETSc.Vec:
+        """
+        Assemble the global load vector using PETSc.
 
         Parameters
         ----------
-        attribute : str
-            Name of the local attribute to assemble ('K', 'M', or 'F').
-        is_matrix : bool, optional
-            True if assembling a matrix (default), False if assembling a vector.
+        load_condition : LoadCondition
+            The loading condition to apply
 
         Returns
         -------
-        np.ndarray
-            Assembled global matrix or vector.
+        PETSc.Vec
+            Distributed load vector
+
+        Notes
+        -----
+        Supports both nodal and distributed loading conditions.
         """
-        # Initialize global container (matrix or vector)
-        global_container = np.zeros((self.dofs_count, self.dofs_count))
+        f = PETSc.Vec().create(self.comm)
+        f.setSizes(self.dofs_count)
+        f.setUp()
+        f.zeroEntries()
 
-        # Loop over each element
-        for element_id, element in self._element_map.items():
-            # Get global DOFs for the current element
-            global_dofs = self._element_global_dofs_map[element_id]
-            # Get local matrix or vector
-            local_contribution = getattr(element, attribute)
+        fe_list = [
+            self._element_map[eid].body_load(load_condition.value) for eid in self._element_map
+        ]
+        fe_array = np.array(fe_list, dtype=PETSc.ScalarType)
 
-            for i, global_i in enumerate(global_dofs):
-                for j, global_j in enumerate(global_dofs):
-                    global_container[global_i, global_j] += local_contribution[i, j]
+        for e in range(fe_array.shape[0]):
+            dofs = self._dofs_array[e].astype(PETSc.IntType)
+            fe = fe_array[e]
 
-        return global_container
+            # Use local-to-global mapping if using mesh partitioning
+            f.setValuesLocal(dofs, fe, addv=PETSc.InsertMode.ADD_VALUES)
 
-    def assemble_stiffness_matrix(self) -> np.ndarray:
-        """Assembles the global stiffness matrix.
-
-        Returns
-        -------
-        np.ndarray
-            Global stiffness matrix.
-        """
-        return self._assemble_matrix("K")
-
-    def assemble_mass_matrix(self) -> np.ndarray:
-        """Assembles the global mass matrix.
-
-        Returns
-        -------
-        np.ndarray
-            Global mass matrix.
-        """
-        return self._assemble_matrix("M")
-
-    def assemble_load_vector(self, load_condition) -> np.ndarray:
-        """
-        Ensambla el vector global de fuerzas integrando la carga en cada elemento.
-
-        Parámetros
-        ----------
-        f_vec : array, shape (2,)
-            Vector de carga volumétrica, por ejemplo [0, -rho * g].
-
-        Retorna
-        -------
-        f_global : array, shape (ndof,)
-        """
-        # FIXME Add, support for surface load, this need to have surface load vector in element
-        kind = "body_force"
-
-        load_vector = load_condition.value
-
-        global_container = np.zeros(self.dofs_count)
-        for element_id, element in self._element_map.items():
-            # Get global DOFs for the current element
-            global_dofs = self._element_global_dofs_map[element_id]
-            # Get local matrix or vector
-            if kind == "body_force":
-                local_contribution = element.body_load(load_vector)
-
-            global_container[global_dofs] += local_contribution
-
-        return global_container
-
-    def get_dofs_by_nodeset(self, name: str, only_geometric: bool = True):
-        nodes_set = self.mesh.get_node_set(name)
-        if only_geometric:
-            return {
-                dof
-                for node in nodes_set.nodes.values()
-                for dof in self._nodes_global_dofs_map[node.id]
-                if node.geometric_node
-            }
-        else:
-            return {
-                dof
-                for node in nodes_set.nodes.values()
-                for dof in self._nodes_global_dofs_map[node.id]
-            }
+        f.assemble()
+        return f

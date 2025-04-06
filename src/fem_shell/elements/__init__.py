@@ -1,1 +1,1 @@
-from .elements import ElementFactory, ElementFamily
+from .elements import ElementFactory, ElementFamily, FemElement

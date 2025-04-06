@@ -3,7 +3,7 @@ from matplotlib import animation
 from matplotlib import pyplot as plt
 
 from fem_shell.core.bc import DirichletCondition
-from fem_shell.core.material import Material
+from fem_shell.core.material import IsotropicMaterial as Material
 from fem_shell.core.mesh import SquareShapeMesh
 from fem_shell.elements import ElementFamily
 from fem_shell.solvers import LinearDynamicSolver
@@ -28,7 +28,8 @@ NX, NY = 20, 5  # Divisiones de la malla
 model_configs = {
     "solver": {
         "total_time": 2.0,
-        "time_step": 0.005,
+        "time_step": 1e-3,
+        "use_critical_dt": False,
         "save_history": True,
         "output_folder": "results",
     },

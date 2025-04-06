@@ -3,19 +3,17 @@ import logging
 import os
 import sys
 import xml.etree.ElementTree as ET
-from typing import Dict, Iterable, List, Optional, Sequence, Tuple
+from typing import Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 import precice
 import yaml
-from scipy.linalg import solve
+from petsc4py import PETSc
 
 from fem_shell.core.assembler import MeshAssembler
 from fem_shell.core.bc import BoundaryConditionManager
 from fem_shell.core.mesh import MeshModel
 from fem_shell.solvers.linear import LinearDynamicSolver
-
-logging.basicConfig(level=logging.INFO)
 
 
 class Config:
@@ -187,8 +185,6 @@ class Config:
 
         return None
 
-        return None
-
     def __repr__(self) -> str:
         """
         Official string representation of the object for debugging.
@@ -219,18 +215,25 @@ class Config:
 
 
 class SolverState:
-    def __init__(self, states: Iterable):
-        """Store a list of function as states for those
-        iteration that not converge
-        """
-        states_cp = []
+    def __init__(self, states: Tuple[PETSc.Vec, PETSc.Vec, PETSc.Vec, float]):
+        """Almacena estados (vectores PETSc) para checkpointing eficiente."""
+        self._state = []
         for state in states:
-            states_cp.append(copy.deepcopy(state))
-        self.__state = states_cp
+            if isinstance(state, PETSc.Vec):
+                self._state.append(state.copy())
+            else:
+                # Para escalares (como el tiempo 't') u otros tipos
+                self._state.append(copy.deepcopy(state))
 
     def get_state(self):
-        """Returns the state of the solver."""
-        return self.__state
+        """Devuelve los vectores clonados."""
+        return self._state
+
+    def __del__(self):
+        """Liberar memoria de vectores PETSc al destruir el objeto."""
+        for vec in self._state:
+            if isinstance(vec, PETSc.Vec):
+                vec.destroy()
 
 
 class Adapter:
@@ -288,7 +291,7 @@ class Adapter:
         read_data = self._interface.read_data(
             mesh_name, data_name, self._precice_vertex_ids, self.dt
         )
-        return copy.deepcopy(read_data)
+        return copy.deepcopy(read_data.astype(PETSc.ScalarType))
 
     def write_data(self, write_function) -> None:
         """Writes data to preCICE. Depending on the dimensions of the simulation.
@@ -343,7 +346,7 @@ class Adapter:
         nodes = {node.id: node.coords for _set in self._node_sets for node in _set.nodes.values()}
 
         self._interface_coords = np.array(list(nodes.values()))[:, : self._domain.spatial_dim]
-        self._interface_dofs = np.array([self._domain._nodes_global_dofs_map[n] for n in nodes])
+        self._interface_dofs = np.array([self._domain._node_dofs_map[n] for n in nodes])
 
         self._precice_vertex_ids = self._interface.set_mesh_vertices(
             self._config.mesh_name, self._interface_coords
@@ -474,8 +477,8 @@ class Adapter:
     def interface_dofs(self):
         """Returns the interface degrees of freedom."""
         if self._interface_dofs.shape[0] > 3:
-            return self._interface_dofs[:, :3]
-        return self._interface_dofs
+            return self._interface_dofs[:, :3].astype(PETSc.IntType)
+        return self._interface_dofs.astype(PETSc.IntType)
 
     @property
     def interface_coordinates(self):
@@ -503,14 +506,62 @@ class LinearDynamicFSISolver(LinearDynamicSolver):
     def __init__(self, mesh: MeshModel, fem_model_properties: Dict):
         super().__init__(mesh, fem_model_properties)
         self.precice_participant = Adapter(fem_model_properties["solver"]["adapter_cfg"])
+        self._prepared = False
+
+    def _setup_solver(self):
+        """Configure PETSc linear solver with residual monitoring support"""
+        self._solver = PETSc.KSP().create(self.comm)
+        self._solver.setType("cg")
+
+        # Configurar precondicionador para el solucionador principal
+        pc = self._solver.getPC()
+
+        opts = PETSc.Options()
+        if self.domain.dofs_count > 1e5:
+            pc.setType("hypre")
+            opts["pc_hypre_type"] = "boomeramg"
+            opts["pc_hypre_boomeramg_coarsen_type"] = "Falgout"
+            opts["pc_hypre_boomeramg_interp_type"] = "classical"
+            opts["pc_hypre_boomeramg_relax_type_all"] = "symmetric-sor/jacobi"
+            opts["pc_hypre_boomeramg_strong_threshold"] = 0.5
+            opts["pc_hypre_boomeramg_max_levels"] = 5
+            opts["pc_hypre_boomeramg_print_statistics"] = 0
+            self._solver.setTolerances(rtol=1e-6, atol=1e-8, max_it=500)
+        else:
+            pc.setType("ilu")
+            opts["pc_factor_mat_ordering_type"] = "natural"
+            opts["pc_factor_shift_type"] = "inblocks"
+            self._solver.setTolerances(rtol=1e-8, atol=1e-12, max_it=500)
+
+        self._solver.setFromOptions()
+
+        # Configurar solucionador para M_red (precondicionador simple)
+        self._m_solver = PETSc.KSP().create(self.comm)
+        self._m_solver.setType("preonly")
+        m_pc = self._m_solver.getPC()
+        m_pc.setType("jacobi")  # Precondicionador rápido para matriz bien condicionada
+        self._m_solver.setTolerances(rtol=1e-12, max_it=1)
+        self._m_solver.setFromOptions()
+
+    def lump_mass_matrix(self, M: PETSc.Mat) -> PETSc.Mat:
+        """Convierte la matriz de masa M en una matriz lumped (diagonal)."""
+        diag = PETSc.Vec().createMPI(M.getSize()[0], comm=M.getComm())  # Vector para la diagonal
+        M.getRowSum(diag)  # La diagonal será la suma de las filas
+        M_lumped = PETSc.Mat().createAIJ(size=M.getSize(), comm=M.getComm())  # Usar AIJ
+        M_lumped.setDiagonal(diag)
+        M_lumped.assemble()
+        return M_lumped
 
     def solve(self):
         """Perform dynamic analysis using improved Newmark-β method."""
         # Ensamblaje inicial de matrices
         self.K = self.domain.assemble_stiffness_matrix()
-
         self.M = self.domain.assemble_mass_matrix()
-        self.F = np.zeros(self.domain.dofs_count)
+        self.M = self.lump_mass_matrix(self.M)
+
+        force_temp = PETSc.Vec().createMPI(self.domain.dofs_count, comm=self.comm)
+        force_temp.set(0.0)
+        self.F = force_temp
 
         # Aplicación de condiciones de frontera
         bc_manager = BoundaryConditionManager(self.K, self.F, self.M, self.domain.dofs_per_node)
@@ -528,6 +579,12 @@ class LinearDynamicFSISolver(LinearDynamicSolver):
 
         self.free_dofs = bc_manager.free_dofs
 
+        # Configure solver
+        if not self._prepared:
+            self._setup_solver()
+            self._solver.setOperators(K_red)
+            self._prepared = True
+
         # Coeficientes de Newmark-β
         beta = self.solver_params["beta"]
         gamma = self.solver_params["gamma"]
@@ -538,15 +595,23 @@ class LinearDynamicFSISolver(LinearDynamicSolver):
 
         # Matriz de rigidez efectiva
         K_eff = K_red + a0 * M_red
+        self._solver.setOperators(K_eff)
 
         # Condiciones iniciales
-        u = np.zeros_like(F_red)
-        v = np.zeros_like(F_red)
-        try:
-            a = solve(M_red, F_red - K_red @ u, assume_a="pos")
-        except LinAlgError:
-            print("Singular M_red matrix. Review boundary conditions.")
-            raise
+        u = K_red.createVecRight()
+        v = K_red.createVecRight()
+
+        # 1. Crear vector residual (F_red - K_red*u)
+        residual = F_red.duplicate()  # Crea vector del mismo tamaño que F_red
+        residual.copy(F_red)  # Copia F_red al residual
+        K_red.mult(u, residual)  # residual = K_red*u (sobrescribe)
+        residual.scale(-1.0)  # residual = -K_red*u
+        residual.axpy(1.0, F_red)  # residual = F_red - K_red*u
+
+        # 2. Resolver el sistema M_red*a = residual
+        a = M_red.createVecRight()  # Crea vector para solución
+        self._m_solver.setOperators(M_red)  # Establece matriz del sistema
+        self._m_solver.solve(residual, a)  # Resuelve M_red*a = residual
 
         t = 0
         while self.precice_participant.is_coupling_ongoing:
@@ -558,15 +623,25 @@ class LinearDynamicFSISolver(LinearDynamicSolver):
             interface_dofs = self.precice_participant.interface_dofs
 
             F_new = self.F.copy()
-            F_new[interface_dofs] = data
-            F_new_red = F_new[bc_manager.free_dofs]
+            F_new.setValues(interface_dofs, data)
+            F_new_red = bc_manager.reduce_vector(F_new)
 
-            F_eff = F_new_red + M_red @ (a0 * u + a2 * v + a3 * a)
+            # Optimización: evitar operaciones redundantes
+            temp_vec = a0 * u  # Precalculo de términos
+            temp_vec.axpy(a2, v)  # temp_vec += a2 * v
+            temp_vec.axpy(a3, a)  # temp_vec += a3 * a
+
+            # Crear un vector de salida para la multiplicación
+            temp_result = M_red.createVecRight()
+            M_red.mult(temp_vec, temp_result)  # temp_result = M_red @ temp_vec
+
+            F_eff = F_new_red + temp_result
 
             # Resolver para el desplazamiento
-            u_new = solve(K_eff, F_eff, assume_a="pos")
+            u_new = K_eff.createVecRight()
+            self._solver.solve(F_eff, u_new)
 
-            self.precice_participant.write_data(self._full_solution(u_new, bc_manager))
+            self.precice_participant.write_data(bc_manager.expand_solution(u_new).array)
             self.precice_participant.advance(self.dt)
 
             if self.precice_participant.requires_reading_checkpoint:
@@ -581,9 +656,8 @@ class LinearDynamicFSISolver(LinearDynamicSolver):
                 u, v, a = u_new, v_new, a_new
                 t += self.dt
 
-        # Reconstrucción final
-        self.u = self._full_solution(u, bc_manager)
-        self.v = self._full_solution(v, bc_manager)
-        self.a = self._full_solution(a, bc_manager)
+        self.u = bc_manager.expand_solution(u)
+        self.v = bc_manager.expand_solution(v)
+        self.a = bc_manager.expand_solution(a)
 
         return self.u, self.v, self.a

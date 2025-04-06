@@ -73,7 +73,6 @@ __pypackages__/
 
 # Mallas y datos regenerables (en cualquier nivel)
 **/constant/polyMesh/*
-**/system/decomposeParDict
 
 # Procesamiento paralelo (anidado)
 **/processor*/
