@@ -87,7 +87,7 @@ class Solver(ABC):
             self._vector_form = self.domain._element_map[0].vector_form
         return self._vector_form
 
-    def get_dofs_by_nodeset_name(self, name: str) -> Set[int]:
+    def get_dofs_by_nodeset_name(self, name: str, only_geometric_dofs: bool = True) -> Set[int]:
         """
         Retrieve the degrees of freedom (DOFs) associated with a given node set.
 

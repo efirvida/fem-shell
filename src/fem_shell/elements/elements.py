@@ -1,5 +1,5 @@
 from enum import IntEnum
-from typing import Dict, Iterable, List, Sequence, Tuple, Union
+from typing import Dict, Iterable, List, Literal, Sequence, Tuple, Union
 
 import numpy as np
 
@@ -37,6 +37,14 @@ class FemElement:
         FemElement._id_counter += 1
 
     @property
+    def spatial_dimmension(self) -> Literal[2] | Literal[3]:
+        if self.element_family == ElementFamily.PLANE:
+            return 2
+        elif self.element_family == ElementFamily.SHELL:
+            return 3
+        return 2
+
+    @property
     def global_dof_indices(self) -> Dict[int, Tuple[int]]:
         """
         Devuelve los índices globales de los grados de libertad (DOFs) asociados a los nodos del elemento.
@@ -68,7 +76,6 @@ class ShellElement(FemElement):
     ):
         super().__init__(name, node_coords, node_ids, material, dofs_per_node)
         self.thickness = thickness
-        self.spatial_dimmension = 3
         self.element_family = ElementFamily.SHELL
 
     def __repr__(self):
@@ -85,7 +92,6 @@ class PlaneElement(FemElement):
         dofs_per_node: int,
     ):
         super().__init__(name, node_coords, node_ids, material, dofs_per_node)
-        self.spatial_dimmension = 2
         self.element_family = ElementFamily.PLANE
 
     def __repr__(self):
