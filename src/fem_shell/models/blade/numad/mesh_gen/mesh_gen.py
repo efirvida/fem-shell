@@ -629,4 +629,8 @@ def get_shell_mesh(blade, elementSize):
 
     shellData["materials"] = matList
 
+    shellData["splineXi"] = splineXi
+    shellData["splineYi"] = splineYi
+    shellData["splineZi"] = splineZi
+
     return shellData

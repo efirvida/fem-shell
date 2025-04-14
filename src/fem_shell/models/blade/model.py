@@ -149,29 +149,6 @@ class Blade:
                     *closest_point,  # Usamos el punto de intersección, no el punto del array
                 ))
 
-            #     # Plot
-            #     plt.plot(points[:, 0], points[:, 1], "g--", alpha=0.5)
-            #     plt.scatter(
-            #         *closest_point,
-            #         color="blue",
-            #         label="Intersección más cercana" if i == 1 else "",
-            #     )
-            #     plt.scatter(
-            #         *offset_points_array[closest_offset_point_index],
-            #         s=80,
-            #         facecolors="none",
-            #         edgecolors="orange",
-            #         label="Punto offset" if i == 1 else "",
-            #     )
-
-            # # Dibujar perfil y curva offset
-            # plt.plot(offset_x, offset_y, "k-", label="Curva offset")
-            # plt.plot(*zip(*profile_points), "r.-", label="Perfil base")
-            # plt.axis("equal")
-            # plt.legend()
-            # plt.title("Búsqueda de puntos offset por normales")
-            # plt.show()
-
             return np.array(offset_points)
 
         def reparameterize_spline(x, y, n_points=500):
@@ -357,7 +334,9 @@ class Blade:
             airfoil_spline_z = np.full_like(airfoil_spline_x, current_z)
             airfoil_spline = np.column_stack([airfoil_spline_x, airfoil_spline_y, airfoil_spline_z])
 
+            # ==============================
             # BOUNDARY LAYER SECTION
+            # ==============================
             # Crear buffer para obtener el spline de offset
             x_coords = np.array(airfoil_spline_x)
             chord_length = x_coords.max() - x_coords.min()
@@ -382,8 +361,10 @@ class Blade:
             )
             lower_bl_points_idx = lower_bl_points[:, 0]
 
-            bl_end_point_idx = (bl_spline_x.size + upper_bl_points_idx[0].astype(int)) // 2
-            bl_start_point_idx = lower_bl_points_idx[0].astype(int) // 2
+            # bl_end_point_idx = (bl_spline_x.size + upper_bl_points_idx[0].astype(int)) // 3
+            # bl_start_point_idx = lower_bl_points_idx[0].astype(int) // 5
+            bl_end_point_idx = bl_spline_x.shape[0] - 3
+            bl_start_point_idx = 3
 
             bl_keypoints = sorted([
                 int(pt)
@@ -395,13 +376,15 @@ class Blade:
                     bl_end_point_idx,
                 ]
             ])
-            bl_keypoints = np.array(bl_keypoints) - bl_keypoints[0]
             bl_spline = rotate_spline_arrays(bl_spline_x, bl_spline_y, bl_keypoints[0])
+            bl_keypoints = np.array(bl_keypoints) - bl_keypoints[0]
 
-            bl_spline_z = np.full_like(bl_spline, current_z)
-            bl_spline = np.column_stack([bl_spline_x, bl_spline_y, bl_spline_z])
+            bl_spline_z = np.full((bl_spline.shape[0], 1), current_z)
+            bl_spline = np.hstack([bl_spline, bl_spline_z])
 
+            # ==============================
             # OUTERDOMAIN SECTION
+            # ==============================
             outter = airfoil_polygon.buffer(chord_length * R)
             outter_spline_x, outter_spline_y = outter.exterior.xy
             outter_spline_x, outter_spline_y = reparameterize_spline(
@@ -418,10 +401,12 @@ class Blade:
             )
             lower_outter_points_idx = lower_outter_points[:, 0]
 
-            outter_end_point_idx = (
-                outter_spline_x.size + upper_outter_points_idx[0].astype(int)
-            ) // 2
-            outter_start_point_idx = lower_outter_points_idx[0].astype(int) // 2
+            # outter_end_point_idx = (
+            #     outter_spline_x.size + upper_outter_points_idx[0].astype(int)
+            # ) // 2
+            # outter_start_point_idx = lower_outter_points_idx[0].astype(int) // 2
+            outter_end_point_idx = outter_spline_x.shape[0] - 3
+            outter_start_point_idx = 3
 
             outter_keypoints = sorted([
                 int(pt)
@@ -433,13 +418,13 @@ class Blade:
                     outter_end_point_idx,
                 ]
             ])
-            outter_keypoints = np.array(outter_keypoints) - outter_keypoints[0]
             outter_spline = rotate_spline_arrays(
                 outter_spline_x, outter_spline_y, outter_keypoints[0]
             )
+            outter_keypoints = np.array(outter_keypoints) - outter_keypoints[0]
 
-            outter_spline_z = np.full_like(outter_spline, current_z)
-            outter_spline = np.column_stack([outter_spline_x, outter_spline_y, outter_spline_z])
+            outter_spline_z = np.full((outter_spline.shape[0], 1), current_z)
+            outter_spline = np.hstack([outter_spline, outter_spline_z])
 
             self.airfoil_list.append({
                 "keypoints": {
@@ -453,6 +438,32 @@ class Blade:
                     "out": outter_spline,
                 },
             })
+
+            # # Graficar resultados
+            # plt.figure(figsize=(8, 6))
+
+            # # PLOT AIRFOIL
+            # plt.plot(airfoil_spline[:, 0], airfoil_spline[:, 1], label="AIRFOIL")
+            # for i, pt in enumerate(airfoil_keypoints):
+            #     plt.scatter(airfoil_spline[pt][0], airfoil_spline[pt][1])
+            #     plt.text(airfoil_spline[pt][0], airfoil_spline[pt][1], f"{i}-{pt}")
+
+            # # PLOT BL
+            # plt.plot(bl_spline[:, 0], bl_spline[:, 1], "b-", label="BL")
+            # for i, pt in enumerate(bl_spline):
+            #     if i in bl_keypoints:
+            #         plt.scatter(pt[0], pt[1])
+            #         plt.text(pt[0], bl_spline[i][1], f"{i}")
+
+            # # PLOT OUTTER
+            # plt.plot(outter_spline[:, 0], outter_spline[:, 1], "b-", label="OUTTER DOMAIN")
+            # for i, pt in enumerate(outter_spline):
+            #     if i in outter_keypoints:
+            #         plt.scatter(pt[0], pt[1])
+            #         plt.text(pt[0], outter_spline[i][1], f"{i}")
+
+            # plt.gca().set_aspect("equal")
+            # plt.show()
 
 
 def material_factory(
