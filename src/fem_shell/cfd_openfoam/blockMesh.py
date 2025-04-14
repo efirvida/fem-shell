@@ -2,6 +2,8 @@ import json
 import os
 import shutil
 import subprocess
+import threading
+import time
 import uuid
 from concurrent import futures
 from copy import deepcopy
@@ -45,6 +47,10 @@ class KeyPoint:
         self.id = KeyPoint._id_counter
         KeyPoint._id_counter += 1
 
+    @classmethod
+    def reset(cls):
+        cls._id_counter = 0
+
     def __repr__(self):
         return f"<KeyPoint id={self.id} coords={self.coords.tolist()}>"
 
@@ -54,6 +60,7 @@ class BlockMesh:
         self.definition = blade_definition
 
     def generate(self, blade_definition):
+        KeyPoint.reset()
         self.definition = blade_definition
         points_map = {}
         points = []
@@ -234,8 +241,8 @@ class BlockMesh:
             f.write("edges \n(\n")
             for spl in splines:
                 coords = " ".join([f"({p[0]} {p[1]} {p[2]})" for p in spl["coords"]])
-                f.write(f"    polyLine {spl['from_point']} {spl['to_point']} ( {coords} )\n")
-            f.write(");\n\n")
+                f.write(f"\n    polyLine {spl['from_point']} {spl['to_point']} ( {coords} )")
+            f.write("\n);\n\n")
 
             f.write("blocks \n(\n")
             for blk in blocks:
@@ -328,35 +335,50 @@ class BlockMesh:
             return objective
 
         def evaluate(x):
-            KeyPoint._id_counter = 0
-            eval_id = str(uuid.uuid4())[:8]
-            eval_dir = os.path.join(work_dir, f"worker_{os.getpid()}", f"eval_{eval_id}")
+            eval_id = f"{os.getpid()}_{threading.get_ident()}_{uuid.uuid4().hex[:8]}"
+            eval_dir = os.path.join(work_dir, f"eval_{eval_id}")
+            os.makedirs(eval_dir, exist_ok=True)
 
             original_dir = os.getcwd()
-            try:
-                # Configuración del caso
-                shutil.copytree(TEST_CASE, eval_dir)
-                x_int = np.round(x).astype(int)
+            # Configuración del caso
+            shutil.copytree(TEST_CASE, eval_dir, dirs_exist_ok=True)
 
-                # Actualizar geometría
-                step_definition = update_geometry(x_int)
-                self.write_blockmesh(eval_dir, step_definition)
-
-                # Ejecutar simulación
-                os.chdir(eval_dir)
-                os.chmod("run.sh", 0o755)
-                subprocess.run(
-                    ["./run.sh"], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+            # Actualizar geometría
+            variables = x.reshape(-1, POINTS_PER_SECTIONS)
+            step_definition = update_geometry(variables)
+            self.write_blockmesh(eval_dir, step_definition)
+            blockmesh_path = os.path.join(eval_dir, "system", "blockMeshDict")
+            if not wait_for_file(blockmesh_path, timeout=5, interval=0.1):
+                np.savetxt(
+                    os.path.join(eval_dir, "variables"),
+                    variables.astype(int),
+                    delimiter=",",
+                    fmt="%d",
                 )
-                os.chdir(original_dir)
-
+                return float("inf")
+            os.chmod(os.path.join(eval_dir, "run.sh"), 0o755)
+            try:
+                subprocess.run(
+                    ["./run.sh"],
+                    check=True,
+                    cwd=eval_dir,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                )
                 # Obtener métricas
                 mesh_quality = get_metrics(eval_dir)
                 objective = calculate_objective(mesh_quality)
                 if os.path.exists(eval_dir):
-                    shutil.rmtree(eval_dir)
+                    shutil.rmtree(eval_dir, ignore_errors=True)
             except Exception as e:
                 print(f"Error en evaluación {eval_id}: {str(e)}")
+                variables = x.reshape(-1, POINTS_PER_SECTIONS)
+                np.savetxt(
+                    os.path.join(eval_dir, "variables"),
+                    variables.astype(int),
+                    delimiter=",",
+                    fmt="%d",
+                )
                 objective = float("inf")
             finally:
                 os.chdir(original_dir)
@@ -364,24 +386,15 @@ class BlockMesh:
             return objective
 
         def update_geometry(x: np.ndarray):
-            x = np.round(x).astype(int)
             new_definition = deepcopy(OPTIMIZATION_BLADE_DEFINITION)
-            transformations = x.reshape(-1, POINTS_PER_SECTIONS)
+            transformations = x.copy()
             half = transformations.shape[0] // 2
             transformations_bl = transformations[:half]
             transformations_out = transformations[half:]
             for i, sec in enumerate(new_definition):
-                # Keypoints originales (índices)
-                original_bl = np.array(sec["keypoints"]["bl"][1:])
-                original_out = np.array(sec["keypoints"]["out"][1:])
-
-                # Aplicar desplazamientos con restricciones
-                new_bl = apply_safe_displacements(original_bl, transformations_bl[i])
-                new_out = apply_safe_displacements(original_out, transformations_out[i])
-
-                sec["keypoints"]["bl"][1:] = new_bl.tolist()
-                sec["keypoints"]["out"][1:] = new_out.tolist()
-            return new_definition
+                sec["keypoints"]["bl"][1:] += transformations_bl[i]
+                sec["keypoints"]["out"][1:] += transformations_out[i]
+            return deepcopy(new_definition)
 
         def get_metrics(case_path: str) -> dict[str, float]:
             """Obtiene métricas de calidad de malla con manejo robusto de errores"""
@@ -472,7 +485,9 @@ class BlockMesh:
             return metrics
 
         optimizer = ng.optimizers.DiscreteOnePlusOne(
-            parametrization=parametrization, budget=100, num_workers=2
+            parametrization=parametrization,
+            budget=2000,
+            num_workers=14,
         )
 
         def print_progress(optimizer, x, value):
@@ -492,8 +507,6 @@ class BlockMesh:
             )
 
         # Resultados finales
-        print(f"\nOptimización completada. Mejor valor: {best_objective:.2f}")
-        best_definition = update_geometry(recommendation.value)
         np.savetxt("results", recommendation.value)
         return best_definition
 
@@ -527,22 +540,10 @@ def split_splines(spline: np.ndarray, keypoints: list | np.ndarray) -> list:
     >>> len(subsplines)
     3
     """
-    segments = []
-    for i in range(len(keypoints) - 1):
-        start = keypoints[i]
-        end = keypoints[i + 1]
+    if not np.all(np.diff(keypoints) > 0):
+        raise ValueError("Keypoints must be sorted and unique")
 
-        # Asegurar start < end
-        if start >= end:
-            start, end = end, start
-
-        # Limitar al tamaño del spline
-        start = max(0, min(start, len(spline) - 1))
-        end = max(0, min(end, len(spline) - 1))
-
-        segments.append(spline[start : end + 1])
-
-    return segments
+    return [spline[start : end + 1] for start, end in zip(keypoints[:-1], keypoints[1:])]
 
 
 def apply_safe_displacements(original: np.ndarray, displacements: np.ndarray) -> np.ndarray:
@@ -571,3 +572,13 @@ def apply_safe_displacements(original: np.ndarray, displacements: np.ndarray) ->
 
 
 # Simulación: reemplazá por tu código real
+
+
+def wait_for_file(path: str, timeout: float, interval: float = 0.1) -> bool:
+    """Espera hasta que el archivo exista y sea accesible"""
+    start = time.time()
+    while (time.time() - start) < timeout:
+        if os.path.isfile(path) and os.access(path, os.R_OK):
+            return True
+        time.sleep(interval)
+    return False
