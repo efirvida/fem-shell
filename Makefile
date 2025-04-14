@@ -6,9 +6,7 @@
 BOOST_VERSION      := 1.81.0
 EIGEN_VERSION      := 3.4.0
 FOAM_VERSION       := 2406
-GDBM_VERSION       := 1.23
 LIBFFI_VERSION     := 3.4.2
-LIBUUID_VERSION    := 1.0.3
 LIBXML2_VERSION    := 2.13.6
 NCURSES_VERSION    := 6.3
 OMPI_VERSION       := 4.1.8
@@ -25,9 +23,7 @@ BOOST_TAR          := boost_$(subst .,_,$(BOOST_VERSION)).tar.bz2
 BZ2_TAR            := bzip2-master.tar.gz
 EIGEN_TAR          := eigen-$(EIGEN_VERSION).tar.gz
 FOAM_TAR           := openfoam-OpenFOAM-v$(FOAM_VERSION).tar.gz
-GDBM_TAR           := gdbm-$(GDBM_VERSION).tar.gz
 LIBFFI_TAR         := libffi-$(LIBFFI_VERSION).tar.gz
-LIBUUID_TAR        := libuuid-$(LIBUUID_VERSION).tar.gz
 LIBXML2_TAR        := libxml2_v$(LIBXML2_VERSION).tar.gz
 NCURSES_TAR        := ncurses-$(NCURSES_VERSION).tar.gz
 OMPI_TAR           := openmpi-$(OMPI_VERSION).tar.gz
@@ -55,6 +51,8 @@ MAKE_CMD      := LD_LIBRARY_PATH=$(VENV_DIR)/lib:$(VENV_DIR)/lib64 \
 				 LD_LIBRARY_PATH=$(VENV_DIR)/lib:$(VENV_DIR)/lib64 \
 				 make install PREFIX=$(VENV_DIR)
 CONFIGURE_CMD := LD_LIBRARY_PATH=$(VENV_DIR)/lib:$(VENV_DIR)/lib64 \
+				 LDFLAGS="-L$(VENV_DIR)/lib -L$(VENV_DIR)/lib64 -Wl,-rpath,$(VENV_DIR)/lib:$(VENV_DIR)/lib64" \
+				 CPPFLAGS="-I$(VENV_DIR)/include" \
 				 ./configure --prefix=$(VENV_DIR)
 PIP_INSTALL   := PETSC_DIR=$(VENV_DIR) LD_LIBRARY_PATH=$(VENV_DIR)/lib:$(VENV_DIR)/lib64 \
 				 $(VENV_DIR)/bin/pip3 install --no-cache-dir --force-reinstall
@@ -125,19 +123,18 @@ $(SOURCES_DIR)/download.done:
 		https://develop.openfoam.com/Development/openfoam/-/archive/OpenFOAM-v$(FOAM_VERSION)/$(FOAM_TAR) \
 		https://dl.openfoam.com/source/v$(FOAM_VERSION)/ThirdParty-v$(FOAM_VERSION).tgz \
 		https://download.open-mpi.org/release/open-mpi/v$(OMPI_SHORT_VERSION)/$(OMPI_TAR) \
-		https://ftp.gnu.org/gnu/gdbm/$(GDBM_TAR) \
 		https://ftp.gnu.org/gnu/ncurses/$(NCURSES_TAR) \
 		https://ftp.gnu.org/gnu/readline/$(READLINE_TAR) \
 		https://github.com/libffi/libffi/releases/download/v$(LIBFFI_VERSION)/$(LIBFFI_TAR) \
 		https://github.com/precice/precice/archive/$(PRECICE_TAR) \
+		https://gitlab.com/bzip2/bzip2/-/archive/master/$(BZ2_TAR) \
 		https://gitlab.com/libeigen/eigen/-/archive/$(EIGEN_VERSION)/$(EIGEN_TAR) \
 		https://gitlab.gnome.org/GNOME/libxml2/-/archive/v$(LIBXML2_VERSION)/$(LIBXML2_TAR) \
 		https://slepc.upv.es/download/distrib/$(SLEPC_TAR) \
-		https://sourceforge.net/projects/libuuid/files/$(LIBUUID_TAR) \
+		https://sqlite.org/2025/sqlite-autoconf-3490100.tar.gz \
 		https://web.cels.anl.gov/projects/petsc/download/release-snapshots/$(PETSC_TAR) \
 		https://www.openssl.org/source/$(OPENSSL_TAR) \
-		https://www.python.org/ftp/python/$(PYTHON_VERSION)/$(PYTHON_TAR) \
-		https://gitlab.com/bzip2/bzip2/-/archive/master/$(BZ2_TAR)
+		https://www.python.org/ftp/python/$(PYTHON_VERSION)/$(PYTHON_TAR)
 	@touch $@
 
 #-------------------------------------------------------------------------------
@@ -158,10 +155,8 @@ endef
 #-------------------------------------------------------------------------------
 # Python Build
 #-------------------------------------------------------------------------------
-$(eval $(call build-library,libffi,$(LIBFFI_TAR),--disable-static))
+$(eval $(call build-library,libffi,$(LIBFFI_TAR),--disable-dependency-tracking))
 $(eval $(call build-library,ncurses,$(NCURSES_TAR),--with-shared --with-termlib --without-debug))
-$(eval $(call build-library,gdbm,$(GDBM_TAR),--with-shared))
-$(eval $(call build-library,libuuid,$(LIBUUID_TAR),--with-shared))
 
 $(VENV_DIR)/.openssl.done: $(SOURCES_DIR)/download.done
 	@echo "Building OpenSSL..."
@@ -187,23 +182,37 @@ $(VENV_DIR)/.readline.done: $(SOURCES_DIR)/download.done $(VENV_DIR)/.ncurses.do
 	@mkdir -p $(BUILD_DIR)/readline
 	@tar -xzf $(SOURCES_DIR)/$(READLINE_TAR) -C $(BUILD_DIR)/readline --strip-components=1
 	@cd $(BUILD_DIR)/readline && \
-		$(CONFIGURE_CMD) LDFLAGS="-L$(VENV_DIR)/lib -lncurses" --with-curses --with-shared-termcap-library --with-shared --with-termlib && \
+		$(CONFIGURE_CMD) LDFLAGS="-L$(VENV_DIR)/lib -lncurses" --with-curses --enable-shared && \
+		$(MAKE_CMD)
+	@touch $@
+	
+$(VENV_DIR)/.sqlite.done: $(SOURCES_DIR)/download.done
+	@echo "Building SQlite..."
+	@mkdir -p $(BUILD_DIR)/sqlite
+	@tar -xzf $(SOURCES_DIR)/sqlite-autoconf-3490100.tar.gz -C $(BUILD_DIR)/sqlite --strip-components=1
+	@cd $(BUILD_DIR)/sqlite && \
+		$(CONFIGURE_CMD) --enable-shared --enable-readline && \
 		$(MAKE_CMD)
 	@touch $@
 
 $(VENV_DIR)/.python.done: $(SOURCES_DIR)/download.done \
-	$(VENV_DIR)/.ncurses.done \
 	$(VENV_DIR)/.readline.done \
 	$(VENV_DIR)/.bz2.done \
 	$(VENV_DIR)/.libffi.done \
 	$(VENV_DIR)/.openssl.done \
-	$(VENV_DIR)/.gdbm.done
+	$(VENV_DIR)/.sqlite.done
 	@echo "Building Python $(PYTHON_VERSION)..."
 	@mkdir -p $(BUILD_DIR)/python
 	@tar -xzf $(SOURCES_DIR)/$(PYTHON_TAR) -C $(BUILD_DIR)/python --strip-components=1
 	@cd $(BUILD_DIR)/python && \
-		$(CONFIGURE_CMD) --enable-optimizations --enable-shared && \
-		$(MAKE_CMD)
+		$(CONFIGURE_CMD) \
+			--enable-optimizations \
+			--enable-shared \
+			--disable-test-modules \
+			--with-openssl=$(VENV_DIR) \
+			--with-readline=readline \
+			--with-ensurepip=install
+	@cd $(BUILD_DIR)/python && $(MAKE_CMD)
 	@ln -sf $(VENV_DIR)/bin/python3 $(VENV_DIR)/bin/python
 	@touch $@
 
@@ -213,8 +222,8 @@ $(VENV_DIR)/.python.done: $(SOURCES_DIR)/download.done \
 $(VENV_DIR)/.python_env.done: $(VENV_DIR)/.python.done
 
 	@ln -sf $(VENV_DIR)/bin/pip3 $(VENV_DIR)/bin/pip
-	$(PIP_INSTALL) --upgrade pip setuptools wheel ipython
-	$(PIP_INSTALL) mpi4py petsc4py slepc4py pyprecice==$(PRECICE_VERSION)
+	$(PIP_INSTALL) --upgrade pip setuptools wheel ipython ipykernel jupyterlab pytest pytest-cov
+	$(PIP_INSTALL) mpi4py "petsc4py==$(PETSC_VERSION)" "slepc4py==$(PETSC_VERSION)" pyprecice==$(PRECICE_VERSION)
 	$(PIP_INSTALL) -e .
 
 	@touch $@
