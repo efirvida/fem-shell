@@ -283,7 +283,7 @@ class BlockMesh:
 
         # Espacio de búsqueda
         parametrization = ng.p.Array(shape=(n_points,)).set_integer_casting()
-        parametrization.set_bounds(-10, 10)  # Límites para desplazamientos enteros
+        parametrization.set_bounds(-5, 5)  # Límites para desplazamientos enteros
 
         def calculate_objective(mesh_quality: dict) -> float:
             # Valores normalizados con límites recomendados de OpenFOAM
@@ -337,25 +337,26 @@ class BlockMesh:
         def evaluate(x):
             eval_id = f"{os.getpid()}_{threading.get_ident()}_{uuid.uuid4().hex[:8]}"
             eval_dir = os.path.join(work_dir, f"eval_{eval_id}")
-            os.makedirs(eval_dir, exist_ok=True)
-
             original_dir = os.getcwd()
-            # Configuración del caso
-            shutil.copytree(TEST_CASE, eval_dir, dirs_exist_ok=True)
+            try:
+                variables = x.reshape(-1, POINTS_PER_SECTIONS)
+                step_definition = update_geometry(variables)
+                shutil.copytree(TEST_CASE, eval_dir, dirs_exist_ok=True)
+                self.write_blockmesh(eval_dir, step_definition)
+            except IndexError:
+                KeyPoint.reset()
+                shutil.rmtree(eval_dir, ignore_errors=True)
+                return float("inf")
+            except ValueError:
+                KeyPoint.reset()
+                shutil.rmtree(eval_dir, ignore_errors=True)
+                return float("inf")
 
-            # Actualizar geometría
-            variables = x.reshape(-1, POINTS_PER_SECTIONS)
-            step_definition = update_geometry(variables)
-            self.write_blockmesh(eval_dir, step_definition)
             blockmesh_path = os.path.join(eval_dir, "system", "blockMeshDict")
             if not wait_for_file(blockmesh_path, timeout=5, interval=0.1):
-                np.savetxt(
-                    os.path.join(eval_dir, "variables"),
-                    variables.astype(int),
-                    delimiter=",",
-                    fmt="%d",
-                )
+                shutil.rmtree(eval_dir, ignore_errors=True)
                 return float("inf")
+
             os.chmod(os.path.join(eval_dir, "run.sh"), 0o755)
             try:
                 subprocess.run(
@@ -368,26 +369,18 @@ class BlockMesh:
                 # Obtener métricas
                 mesh_quality = get_metrics(eval_dir)
                 objective = calculate_objective(mesh_quality)
-                if os.path.exists(eval_dir):
-                    shutil.rmtree(eval_dir, ignore_errors=True)
-            except Exception as e:
-                print(f"Error en evaluación {eval_id}: {str(e)}")
-                variables = x.reshape(-1, POINTS_PER_SECTIONS)
-                np.savetxt(
-                    os.path.join(eval_dir, "variables"),
-                    variables.astype(int),
-                    delimiter=",",
-                    fmt="%d",
-                )
-                objective = float("inf")
-            finally:
-                os.chdir(original_dir)
+            except Exception:
+                shutil.rmtree(eval_dir, ignore_errors=True)
+                return float("inf")
+
+            os.chdir(original_dir)
+            shutil.rmtree(eval_dir, ignore_errors=True)
 
             return objective
 
-        def update_geometry(x: np.ndarray):
+        def update_geometry(variables: np.ndarray):
             new_definition = deepcopy(OPTIMIZATION_BLADE_DEFINITION)
-            transformations = x.copy()
+            transformations = np.ceil(variables.copy()).astype(int)
             half = transformations.shape[0] // 2
             transformations_bl = transformations[:half]
             transformations_out = transformations[half:]
@@ -454,8 +447,7 @@ class BlockMesh:
                             num_patches = content.count("type patch;")
                             # Suavizado inversamente proporcional al número de parches
                             metrics["smoothness"] = 1.0 / (1.0 + num_patches)
-                    except Exception as e:
-                        print(f"Error leyendo boundary file: {str(e)}")
+                    except Exception:
                         metrics["smoothness"] = 0.0
 
                 # 4. Verificación de errores adicionales
@@ -463,15 +455,14 @@ class BlockMesh:
                     metrics["nErrorDeterminant"] += 5
                     metrics["nErrorFaceWeight"] += 5
 
-            except json.JSONDecodeError as e:
-                print(f"Error decodificando JSON: {str(e)}")
+            except json.JSONDecodeError:
                 metrics.update({
                     "maxNonOrth": 180.0,
                     "nErrorDeterminant": 20,
                     "nErrorFaceWeight": 20,
                 })
-            except Exception as e:
-                print(f"Error inesperado obteniendo métricas: {str(e)}")
+            except Exception:
+                pass
                 # Mantener los valores por defecto ya establecidos
 
             # Asegurar tipos correctos para todas las métricas
@@ -484,15 +475,14 @@ class BlockMesh:
 
             return metrics
 
-        optimizer = ng.optimizers.DiscreteOnePlusOne(
+        optimizer = ng.optimizers.PSO(
             parametrization=parametrization,
-            budget=2000,
-            num_workers=14,
+            budget=1000000,
+            num_workers=30,
         )
 
         def print_progress(optimizer, x, value):
             if optimizer.num_ask % 10 == 0:
-                print(f"Iteración {optimizer.num_ask}: Value = {value:.2e}")
                 with open("optimization_log.csv", "a") as f:
                     f.write(f"{optimizer.num_ask},{value}\n")
 
@@ -503,12 +493,11 @@ class BlockMesh:
                 evaluate,
                 executor=executor,
                 batch_mode=False,
-                verbosity=0,  # Desactivar logs automáticos de Nevergrad
+                verbosity=2,  # Desactivar logs automáticos de Nevergrad
             )
 
         # Resultados finales
         np.savetxt("results", recommendation.value)
-        return best_definition
 
 
 def split_splines(spline: np.ndarray, keypoints: list | np.ndarray) -> list:
@@ -540,38 +529,11 @@ def split_splines(spline: np.ndarray, keypoints: list | np.ndarray) -> list:
     >>> len(subsplines)
     3
     """
+    keypoints = sorted(keypoints)
     if not np.all(np.diff(keypoints) > 0):
         raise ValueError("Keypoints must be sorted and unique")
 
     return [spline[start : end + 1] for start, end in zip(keypoints[:-1], keypoints[1:])]
-
-
-def apply_safe_displacements(original: np.ndarray, displacements: np.ndarray) -> np.ndarray:
-    """Aplica desplazamientos manteniendo:
-    - Índices en [0, 499]
-    - Orden creciente
-    """
-    new = original.copy()
-    n_points = 500  # Total de puntos en el spline
-
-    # Aplicar desplazamientos
-    new += displacements
-
-    # 1. Limitar al rango [0, 499]
-    np.clip(new, 0, n_points - 1, out=new)
-
-    # 2. Forzar orden creciente
-    for j in range(1, len(new)):
-        if new[j] <= new[j - 1]:
-            # Ajustar al mínimo espacio posible
-            new[j] = new[j - 1] + 1
-
-    # Última verificación
-    np.clip(new, 0, n_points - 1, out=new)
-    return new
-
-
-# Simulación: reemplazá por tu código real
 
 
 def wait_for_file(path: str, timeout: float, interval: float = 0.1) -> bool:
