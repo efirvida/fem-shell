@@ -11,4 +11,4 @@ blade.generate_mesh()
 blade.generate_blocks_sections()
 
 bm = BlockMesh(blade.airfoil_list)
-bm.optimize("/home/efirvida/Desktop/dev/fem-shell/examples/optimization")
+bm.optimize("/dev/shm/ramdisk_algoritmo")

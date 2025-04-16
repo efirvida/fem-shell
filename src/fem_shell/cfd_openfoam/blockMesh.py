@@ -7,7 +7,7 @@ import time
 import uuid
 from concurrent import futures
 from copy import deepcopy
-from typing import Iterable, Union
+from typing import Any, Dict, Iterable, List, Union
 
 import nevergrad as ng
 import numpy as np
@@ -263,241 +263,205 @@ class BlockMesh:
             f.write("    }\n")
             f.write(");\n")
 
-    def optimize(self, work_dir):
-        OPTIMIZATION_BLADE_DEFINITION = deepcopy(self.definition)
-        TEST_CASE = os.path.join(os.path.dirname(__file__), "test_case")
+    def optimize(self, work_dir: str):
+        original_definition = deepcopy(self.definition)
+        test_case = os.path.join(os.path.dirname(__file__), "test_case")
+
         if os.path.exists(work_dir):
             shutil.rmtree(work_dir)
 
-        # Preparar datos iniciales
-        bl_kp = []
-        out_kp = []
-        for sec in self.definition:
-            bl_kp.append(sec["keypoints"]["bl"][1:])
-            out_kp.append(sec["keypoints"]["out"][1:])
+        bl_kp, out_kp = self._extract_keypoints()
+        num_points = bl_kp.size + out_kp.size
+        points_per_section = bl_kp.shape[1]
+        parametrization = (
+            ng.p.Array(shape=(num_points, points_per_section))
+            .set_bounds(-10, 10)
+            .set_integer_casting()
+        )
 
-        BL_KP = np.array(bl_kp, dtype=np.int64)
-        OUT_KP = np.array(out_kp, dtype=np.int64)
-        n_points = BL_KP.size + OUT_KP.size
-        POINTS_PER_SECTIONS = BL_KP.shape[1]
-
-        # Espacio de búsqueda
-        parametrization = ng.p.Array(shape=(n_points,)).set_integer_casting()
-        parametrization.set_bounds(-5, 5)  # Límites para desplazamientos enteros
-
-        def calculate_objective(mesh_quality: dict) -> float:
-            # Valores normalizados con límites recomendados de OpenFOAM
-            maxNonOrth = mesh_quality.get("maxNonOrth", 180)
-            avgNonOrth = mesh_quality.get("avgNonOrth", 90)
-            maxSkew = mesh_quality.get("maxSkew", 4)
-            avgSkew = mesh_quality.get("avgSkew", 2)
-            aspectRatio = mesh_quality.get("maxAspectRatio", 100)
-            minVolume = mesh_quality.get("minVolume", 1e-18)
-            nErrorDeterminant = mesh_quality.get("nErrorDeterminant", 0)
-            nErrorFaceWeight = mesh_quality.get("nErrorFaceWeight", 0)
-            totalCells = mesh_quality.get("nCells", 1)
-            smoothness = mesh_quality.get("smoothness", 0)
-
-            # Penalizaciones no lineales para métricas críticas
-            nonOrth_penalty = (maxNonOrth / 65) ** 3 + (avgNonOrth / 40) ** 2
-            skew_penalty = (maxSkew / 3.5) ** 3 + (avgSkew / 2) ** 2
-            aspect_penalty = (aspectRatio / 10) ** 2
-            volume_penalty = 1 / (minVolume + 1e-16)
-            error_penalty = 1000 * (nErrorDeterminant + nErrorFaceWeight)
-            smoothness_penalty = 10 * (1 - smoothness) ** 2
-            complexity_penalty = np.log(totalCells / 1e5 + 1)
-
-            # Pesos relativos basados en importancia para CFD
-            weights = {
-                "nonOrth": 2.0,  # Máxima prioridad
-                "skew": 1.5,
-                "aspect": 0.8,
-                "errors": 5.0,  # Penalización fuerte por celdas inválidas
-                "volume": 3.0,
-                "smoothness": 1.2,
-                "complexity": 0.5,
-            }
-
-            objective = (
-                weights["nonOrth"] * nonOrth_penalty
-                + weights["skew"] * skew_penalty
-                + weights["aspect"] * aspect_penalty
-                + weights["errors"] * error_penalty
-                + weights["volume"] * volume_penalty
-                + weights["smoothness"] * smoothness_penalty
-                + weights["complexity"] * complexity_penalty
+        def evaluate(x: np.ndarray) -> float:
+            return self._evaluate_candidate(
+                x=x.copy(),
+                work_dir=work_dir,
+                test_case=test_case,
+                original_definition=original_definition,
             )
-
-            # Penalización exponencial por violar límites críticos
-            if maxNonOrth > 80 or maxSkew > 4 or nErrorDeterminant > 0 or minVolume < 1e-15:
-                objective *= np.exp(5 * (maxNonOrth / 80 + maxSkew / 4))
-
-            return objective
-
-        def evaluate(x):
-            eval_id = f"{os.getpid()}_{threading.get_ident()}_{uuid.uuid4().hex[:8]}"
-            eval_dir = os.path.join(work_dir, f"eval_{eval_id}")
-            original_dir = os.getcwd()
-            try:
-                variables = x.reshape(-1, POINTS_PER_SECTIONS)
-                step_definition = update_geometry(variables)
-                shutil.copytree(TEST_CASE, eval_dir, dirs_exist_ok=True)
-                self.write_blockmesh(eval_dir, step_definition)
-            except IndexError:
-                KeyPoint.reset()
-                shutil.rmtree(eval_dir, ignore_errors=True)
-                return float("inf")
-            except ValueError:
-                KeyPoint.reset()
-                shutil.rmtree(eval_dir, ignore_errors=True)
-                return float("inf")
-
-            blockmesh_path = os.path.join(eval_dir, "system", "blockMeshDict")
-            if not wait_for_file(blockmesh_path, timeout=5, interval=0.1):
-                shutil.rmtree(eval_dir, ignore_errors=True)
-                return float("inf")
-
-            os.chmod(os.path.join(eval_dir, "run.sh"), 0o755)
-            try:
-                subprocess.run(
-                    ["./run.sh"],
-                    check=True,
-                    cwd=eval_dir,
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
-                )
-                # Obtener métricas
-                mesh_quality = get_metrics(eval_dir)
-                objective = calculate_objective(mesh_quality)
-            except Exception:
-                shutil.rmtree(eval_dir, ignore_errors=True)
-                return float("inf")
-
-            os.chdir(original_dir)
-            shutil.rmtree(eval_dir, ignore_errors=True)
-
-            return objective
-
-        def update_geometry(variables: np.ndarray):
-            new_definition = deepcopy(OPTIMIZATION_BLADE_DEFINITION)
-            transformations = np.ceil(variables.copy()).astype(int)
-            half = transformations.shape[0] // 2
-            transformations_bl = transformations[:half]
-            transformations_out = transformations[half:]
-            for i, sec in enumerate(new_definition):
-                sec["keypoints"]["bl"][1:] += transformations_bl[i]
-                sec["keypoints"]["out"][1:] += transformations_out[i]
-            return deepcopy(new_definition)
-
-        def get_metrics(case_path: str) -> dict[str, float]:
-            """Obtiene métricas de calidad de malla con manejo robusto de errores"""
-
-            # Valores por defecto (indicando mala calidad)
-            default_metrics = {
-                "maxNonOrth": 180.0,  # Máximo valor posible (muy malo)
-                "avgNonOrth": 90.0,  # Valor promedio malo
-                "maxSkew": 4.0,  # Skewness crítico
-                "avgSkew": 2.0,  # Skewness promedio alto
-                "maxAspectRatio": 100.0,  # Relación de aspecto muy pobre
-                "minVolume": 1e-18,  # Volumen mínimo casi cero
-                "nErrorDeterminant": 10,  # Múltiples celdas inválidas
-                "nErrorFaceWeight": 10,  # Múltiples caras problemáticas
-                "nCells": 1,  # Mínimo número de celdas
-                "smoothness": 0.0,  # Mínima suavidad
-                "meshOK": False,  # Indica si el mesh es válido
-            }
-
-            metrics = default_metrics.copy()
-
-            try:
-                # 1. Procesar checkMesh.json
-                check_mesh_json = os.path.join(case_path, "checkMesh.json")
-                if os.path.exists(check_mesh_json):
-                    with open(check_mesh_json, "r") as f:
-                        mesh_data = json.load(f)
-
-                    # Actualizar solo las métricas existentes en el archivo
-                    for key in mesh_data:
-                        if key in metrics:
-                            metrics[key] = float(mesh_data[key])
-
-                # 2. Verificar log.checkMesh para validación adicional
-                check_mesh_log = os.path.join(case_path, "log.checkMesh")
-                if os.path.exists(check_mesh_log):
-                    with open(check_mesh_log, "r") as f:
-                        log_content = f.read()
-
-                        # Verificar si el mesh es válido
-                        metrics["meshOK"] = "Mesh OK" in log_content
-
-                        # Extraer número de celdas si no está en el JSON
-                        if "nCells" not in mesh_data:
-                            for line in log_content.split("\n"):
-                                if "cells:" in line:
-                                    parts = line.strip().split()
-                                    metrics["nCells"] = int(parts[-1])
-                                    break
-
-                # 3. Calcular métrica de suavizado (número de parches)
-                boundary_file = os.path.join(case_path, "constant/polyMesh/boundary")
-                if os.path.exists(boundary_file):
-                    try:
-                        with open(boundary_file, "r") as f:
-                            content = f.read()
-                            num_patches = content.count("type patch;")
-                            # Suavizado inversamente proporcional al número de parches
-                            metrics["smoothness"] = 1.0 / (1.0 + num_patches)
-                    except Exception:
-                        metrics["smoothness"] = 0.0
-
-                # 4. Verificación de errores adicionales
-                if not metrics["meshOK"]:
-                    metrics["nErrorDeterminant"] += 5
-                    metrics["nErrorFaceWeight"] += 5
-
-            except json.JSONDecodeError:
-                metrics.update({
-                    "maxNonOrth": 180.0,
-                    "nErrorDeterminant": 20,
-                    "nErrorFaceWeight": 20,
-                })
-            except Exception:
-                pass
-                # Mantener los valores por defecto ya establecidos
-
-            # Asegurar tipos correctos para todas las métricas
-            for key in metrics:
-                if key != "meshOK":
-                    if isinstance(metrics[key], (int, float)):
-                        metrics[key] = float(metrics[key])
-                    else:
-                        metrics[key] = 0.0
-
-            return metrics
 
         optimizer = ng.optimizers.PSO(
             parametrization=parametrization,
-            budget=1000000,
-            num_workers=30,
+            budget=2000,
+            num_workers=2,
         )
-
-        def print_progress(optimizer, x, value):
-            if optimizer.num_ask % 10 == 0:
-                with open("optimization_log.csv", "a") as f:
-                    f.write(f"{optimizer.num_ask},{value}\n")
-
-        optimizer.register_callback("tell", print_progress)
+        optimizer.register_callback("tell", self._log_progress)
 
         with futures.ThreadPoolExecutor(max_workers=optimizer.num_workers) as executor:
             recommendation = optimizer.minimize(
                 evaluate,
                 executor=executor,
                 batch_mode=False,
-                verbosity=2,  # Desactivar logs automáticos de Nevergrad
+                verbosity=4,
             )
 
-        # Resultados finales
-        np.savetxt("results", recommendation.value)
+        np.savetxt(
+            os.path.join(os.getcwd(), "results.csv"), recommendation.value, delimiter=",", fmt="%d"
+        )
+
+    def _extract_keypoints(self):
+        bl_kp = [sec["keypoints"]["bl"][1:] for sec in self.definition]
+        out_kp = [sec["keypoints"]["out"][1:] for sec in self.definition]
+        return np.array(bl_kp, dtype=np.int64), np.array(out_kp, dtype=np.int64)
+
+    def _evaluate_candidate(
+        self,
+        x: np.ndarray,
+        work_dir: str,
+        test_case: str,
+        original_definition: List[Dict[str, Any]],
+    ) -> float:
+        eval_id = f"{os.getpid()}_{threading.get_ident()}_{uuid.uuid4().hex[:8]}"
+        eval_dir = os.path.join(work_dir, f"eval_{eval_id}")
+        os.makedirs(eval_dir, exist_ok=True)
+
+        try:
+            step_definition = self._update_geometry(x, original_definition)
+            shutil.copytree(test_case, eval_dir, dirs_exist_ok=True)
+            self.write_blockmesh(eval_dir, step_definition)
+        except (IndexError, ValueError):
+            KeyPoint.reset()
+            shutil.rmtree(eval_dir, ignore_errors=True)
+            return float("inf")
+
+        blockmesh_path = os.path.join(eval_dir, "system", "blockMeshDict")
+        if not wait_for_file(blockmesh_path, timeout=5, interval=0.1):
+            shutil.rmtree(eval_dir, ignore_errors=True)
+            return float("inf")
+
+        try:
+            subprocess.run(
+                ["./run.sh"],
+                cwd=eval_dir,
+                check=True,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            mesh_quality = self._get_mesh_metrics(eval_dir)
+            objective = self._calculate_objective(mesh_quality)
+        except Exception:
+            shutil.rmtree(eval_dir, ignore_errors=True)
+            return float("inf")
+        finally:
+            shutil.rmtree(eval_dir, ignore_errors=True)
+
+        return objective
+
+    def _update_geometry(
+        self, variables: np.ndarray, definition: List[Dict[str, Any]]
+    ) -> List[Dict[str, Any]]:
+        updated_definition = deepcopy(definition)
+        half = variables.shape[0] // 2
+        for i, sec in enumerate(updated_definition):
+            sec["keypoints"]["bl"][1:] += variables[:half][i]
+            sec["keypoints"]["out"][1:] += variables[half:][i]
+        return updated_definition
+
+    def _calculate_objective(self, mesh: Dict[str, float]) -> float:
+        weights = {
+            "nonOrth": 2.0,
+            "skew": 1.5,
+            "aspect": 0.8,
+            "errors": 5.0,
+            "volume": 3.0,
+            "smoothness": 1.2,
+            "complexity": 0.5,
+        }
+
+        nonOrth_penalty = (mesh["maxNonOrth"] / 65) ** 3 + (mesh["avgNonOrth"] / 40) ** 2
+        skew_penalty = (mesh["maxSkew"] / 3.5) ** 3 + (mesh["avgSkew"] / 2) ** 2
+        aspect_penalty = (mesh["maxAspectRatio"] / 10) ** 2
+        volume_penalty = 1 / (mesh["minVolume"] + 1e-16)
+        error_penalty = 1000 * (mesh["nErrorDeterminant"] + mesh["nErrorFaceWeight"])
+        smoothness_penalty = 10 * (1 - mesh["smoothness"]) ** 2
+        complexity_penalty = np.log(mesh["nCells"] / 1e5 + 1)
+
+        objective = (
+            weights["nonOrth"] * nonOrth_penalty
+            + weights["skew"] * skew_penalty
+            + weights["aspect"] * aspect_penalty
+            + weights["errors"] * error_penalty
+            + weights["volume"] * volume_penalty
+            + weights["smoothness"] * smoothness_penalty
+            + weights["complexity"] * complexity_penalty
+        )
+
+        if (
+            mesh["maxNonOrth"] > 80
+            or mesh["maxSkew"] > 4
+            or mesh["nErrorDeterminant"] > 0
+            or mesh["minVolume"] < 1e-15
+        ):
+            objective *= np.exp(5 * (mesh["maxNonOrth"] / 80 + mesh["maxSkew"] / 4))
+
+        return objective
+
+    def _get_mesh_metrics(self, case_path: str) -> Dict[str, float]:
+        metrics = {
+            "maxNonOrth": 180.0,
+            "avgNonOrth": 90.0,
+            "maxSkew": 4.0,
+            "avgSkew": 2.0,
+            "maxAspectRatio": 100.0,
+            "minVolume": 1e-18,
+            "nErrorDeterminant": 10,
+            "nErrorFaceWeight": 10,
+            "nCells": 1,
+            "smoothness": 0.0,
+            "meshOK": False,
+        }
+
+        try:
+            json_path = os.path.join(case_path, "checkMesh.json")
+            if os.path.exists(json_path):
+                with open(json_path, "r") as f:
+                    data = json.load(f)
+                    for k in metrics:
+                        if k in data:
+                            metrics[k] = float(data[k])
+
+            log_path = os.path.join(case_path, "log.checkMesh")
+            if os.path.exists(log_path):
+                with open(log_path, "r") as f:
+                    log = f.read()
+                    metrics["meshOK"] = "Mesh OK" in log
+                    if "nCells" not in data:
+                        for line in log.split("\n"):
+                            if "cells:" in line:
+                                metrics["nCells"] = int(line.strip().split()[-1])
+                                break
+
+            boundary_path = os.path.join(case_path, "constant/polyMesh/boundary")
+            if os.path.exists(boundary_path):
+                with open(boundary_path, "r") as f:
+                    content = f.read()
+                    num_patches = content.count("type patch;")
+                    metrics["smoothness"] = 1.0 / (1.0 + num_patches)
+
+            if not metrics["meshOK"]:
+                metrics["nErrorDeterminant"] += 5
+                metrics["nErrorFaceWeight"] += 5
+
+        except Exception:
+            pass
+
+        for key in metrics:
+            if key != "meshOK":
+                metrics[key] = float(metrics.get(key, 0.0))
+
+        return metrics
+
+    def _log_progress(self, optimizer: Any, x: Any, value: float):
+        if optimizer.num_ask % 10 == 0:
+            with open("optimization_log.csv", "a") as f:
+                f.write(f"{optimizer.num_ask},{value}\n")
 
 
 def split_splines(spline: np.ndarray, keypoints: list | np.ndarray) -> list:
