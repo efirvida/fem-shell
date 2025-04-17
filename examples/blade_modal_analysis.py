@@ -40,6 +40,7 @@ problem = ModalSolver(mesh=mesh, fem_model_properties=model_configs)
 # Apply boundary conditions
 clamped = problem.get_dofs_by_nodeset_name("RootNodes")
 problem.add_dirichlet_conditions([DirichletCondition(clamped, 0.0)])
+print(f"Amount of Dof: {problem.domain.dofs_count}")
 
 # Solve and output
 frequencies, _ = problem.solve()

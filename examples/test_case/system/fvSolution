@@ -58,32 +58,16 @@ solvers
 
 PIMPLE
 {
-    momentumPredictor   no;
-    correctPhi          no;
-    nOuterCorrectors    50;
-    nCorrectors         1;
+    nCorrectors 4;
     nNonOrthogonalCorrectors 1;
-
-    pRefCell        0;
-    pRefValue       0;
-
-    moveMeshOuterCorrectors true;
-
-    consistent true;
-    residualControl
-    {
-        U 
-        {
-            tolerance 1e-4;
-            relTol 0;
-        }
-        p
-        {
-            tolerance 1e-4;
-            relTol 0;
-        }
-    }
+    // tolerance 1.0e-14;
+    // relTol 5e-3;
+    consistent  true;
+    correctPhi  true;
+    momentumPredictor true; 
+    nOuterCorrectors	1;
 }
+
 
 potentialFlow
 {

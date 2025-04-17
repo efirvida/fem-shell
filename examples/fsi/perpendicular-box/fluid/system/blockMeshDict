@@ -19,9 +19,9 @@ scale 1;
 
 // Parámetros ajustados del dominio y la viga
 domain_x0    -30;       // extremo izquierdo
-domain_x3     50;       // extremo derecho
+domain_x3     40;       // extremo derecho
 domain_y0      0;       // piso
-domain_y2     40;       // techo
+domain_y2     20;       // techo
 domain_z0    -20;       // parte trasera (ampliado para espacio alrededor de la viga)
 domain_z3     20;       // parte delantera
 
@@ -31,7 +31,7 @@ beamY    10;   // alto de la viga
 beamZ    15;   // profundidad de la viga (ajustado para caber en el dominio)
 
 // Número de celdas por unidad de longitud
-cellsPerUnit  2;
+cellsPerUnit  3;
 
 // Puntos de partición corregidos en z (evitar solapamiento)
 x0 #eval {$domain_x0};

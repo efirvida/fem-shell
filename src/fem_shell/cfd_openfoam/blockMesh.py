@@ -78,12 +78,13 @@ class BlockMesh:
                 "coords": spline_coords,
             })
 
-        def add_block(from_point, blocks_x, blocks_y, blocks_z):
+        def add_block(from_point, blocks_x, blocks_y, blocks_z, grading):
             blocks.append({
                 "point_ids": from_point,
                 "blocks_x": blocks_x,
                 "blocks_y": blocks_y,
                 "blocks_z": blocks_z,
+                "grading": grading,
             })
 
         for sec_id, sec in enumerate(blade_definition):
@@ -139,7 +140,7 @@ class BlockMesh:
                 out_coords[out_kp[-1] :],
             )
 
-        NX, NY, NZ = 10, 10, 10
+        NX, NY, NZ = 10,10,10
 
         n_sections = len(blade_definition)
         for sec in range(n_sections - 1):
@@ -176,13 +177,13 @@ class BlockMesh:
                 ]
 
                 mid = n_rings // 2
-                if (i >= mid - 1 and i <= mid) or i == 0 or i == n_rings - 1:
-                    ny = NY * 5
+                if (i >= mid - 1 and i <= mid):
+                    ny = NY * 2
                 else:
                     ny = NY
 
-                add_block(Bl_blk, NX, ny, NZ)
-                add_block(OUT_blk, NX, ny, NZ)
+                add_block(Bl_blk, NX, ny, NZ,(20,1,1))
+                add_block(OUT_blk, NX, ny, NZ,(1,1,1))
                 boundaries.append([
                     points_map[f"af-{af_kp_current[i]}-sec-{sec}"],
                     points_map[f"af-{af_kp_current[i + 1]}-sec-{sec}"],
@@ -210,8 +211,8 @@ class BlockMesh:
                 points_map[f"out-{out_kp_next[0]}-sec-{sec + 1}"],
                 points_map[f"bl-{bl_kp_next[0]}-sec-{sec + 1}"],
             ]
-            add_block(Bl_blk_0, NX, 5, NZ)
-            add_block(OUT_blk_0, NX, 5, NZ)
+            add_block(Bl_blk_0, NX, 3, NZ, (20,1,1))
+            add_block(OUT_blk_0, NX, 3, NZ,(1,1,1))
 
         return {"points": points, "blocks": blocks, "splines": splines, "boundaries": boundaries}
 
@@ -247,7 +248,7 @@ class BlockMesh:
             f.write("blocks \n(\n")
             for blk in blocks:
                 f.write(
-                    f"    hex ({' '.join(str(i) for i in blk['point_ids'])}) ({blk['blocks_x']} {blk['blocks_y']} {blk['blocks_z']}) simpleGrading ({15} 1 1 )\n"
+                    f"    hex ({' '.join(str(i) for i in blk['point_ids'])}) ({blk['blocks_x']} {blk['blocks_y']} {blk['blocks_z']}) simpleGrading ({" ".join(str(i) for i in blk['grading'])})\n"
                 )
             f.write(");\n\n")
 
@@ -276,7 +277,8 @@ class BlockMesh:
         parametrization = (
             ng.p.Array(shape=(num_points, points_per_section))
             .set_bounds(-10, 10)
-            .set_integer_casting()
+            .set_mutation(sigma=2.0)  # Paso de mutación adaptativo
+            .set_integer_casting()  # Mantener casting a enteros
         )
 
         def evaluate(x: np.ndarray) -> float:
@@ -287,11 +289,11 @@ class BlockMesh:
                 original_definition=original_definition,
             )
 
-        optimizer = ng.optimizers.PSO(
+        optimizer = ng.optimizers.NGOpt(
             parametrization=parametrization,
-            budget=2000,
-            num_workers=2,
-        )
+            budget=500_000,
+            num_workers=45,
+        )       
         optimizer.register_callback("tell", self._log_progress)
 
         with futures.ThreadPoolExecutor(max_workers=optimizer.num_workers) as executor:
@@ -299,7 +301,7 @@ class BlockMesh:
                 evaluate,
                 executor=executor,
                 batch_mode=False,
-                verbosity=4,
+                verbosity=1,
             )
 
         np.savetxt(
@@ -365,43 +367,59 @@ class BlockMesh:
         return updated_definition
 
     def _calculate_objective(self, mesh: Dict[str, float]) -> float:
+        # Penalización base para geometrías inválidas
+        base_penalty = 1e6 if not mesh["meshOK"] else  0
+        
+        # Limitar valores extremos para evitar explosión de penalizaciones
+        max_nonorth = min(mesh["maxNonOrth"], 200)  # Capamos a 200° máximo para cálculo
+        avg_nonorth = min(mesh["avgNonOrth"], 100)
+        max_skew = min(mesh["maxSkew"], 10)
+        avg_skew = min(mesh["avgSkew"], 5)
+        max_aspect = min(mesh["maxAspectRatio"], 50)
+        min_volume = max(mesh["minVolume"], 1e-20)  # Evitar división por cero
+        
+        # Cálculo de métricas con límites controlados
+        nonOrth_penalty = (max_nonorth / 65)**3 + (avg_nonorth / 40)**2
+        skew_penalty = (max_skew / 3.5)**3 + (avg_skew / 2)**2
+        aspect_penalty = (max_aspect / 10)**2
+        volume_penalty = 1 / min_volume
+        error_penalty = 1000 * (mesh["nErrorDeterminant"] + mesh["nErrorFaceWeight"])
+        smoothness_penalty = 10 * (1 - mesh["smoothness"])**2
+        complexity_penalty = np.log(mesh["nCells"] / 1e5 + 1)
+        
+        # Factores multiplicativos para condiciones críticas
+        critical_factor = 1.0
+        if (max_nonorth > 80 or 
+            max_skew > 4 or 
+            mesh["nErrorDeterminant"] > 0 or 
+            mesh["minVolume"] < 1e-15):
+            critical_factor += np.exp(0.5 * (max_nonorth / 80 + max_skew / 4))
+        
+        # Pesos dinámicos basados en calidad base
         weights = {
-            "nonOrth": 2.0,
-            "skew": 1.5,
+            "nonOrth": 2.0 * critical_factor,
+            "skew": 1.5 * critical_factor,
             "aspect": 0.8,
             "errors": 5.0,
             "volume": 3.0,
             "smoothness": 1.2,
             "complexity": 0.5,
         }
-
-        nonOrth_penalty = (mesh["maxNonOrth"] / 65) ** 3 + (mesh["avgNonOrth"] / 40) ** 2
-        skew_penalty = (mesh["maxSkew"] / 3.5) ** 3 + (mesh["avgSkew"] / 2) ** 2
-        aspect_penalty = (mesh["maxAspectRatio"] / 10) ** 2
-        volume_penalty = 1 / (mesh["minVolume"] + 1e-16)
-        error_penalty = 1000 * (mesh["nErrorDeterminant"] + mesh["nErrorFaceWeight"])
-        smoothness_penalty = 10 * (1 - mesh["smoothness"]) ** 2
-        complexity_penalty = np.log(mesh["nCells"] / 1e5 + 1)
-
+        
+        # Cálculo final del objetivo con límite superior
         objective = (
-            weights["nonOrth"] * nonOrth_penalty
-            + weights["skew"] * skew_penalty
-            + weights["aspect"] * aspect_penalty
-            + weights["errors"] * error_penalty
-            + weights["volume"] * volume_penalty
-            + weights["smoothness"] * smoothness_penalty
-            + weights["complexity"] * complexity_penalty
+            weights["nonOrth"] * nonOrth_penalty +
+            weights["skew"] * skew_penalty +
+            weights["aspect"] * aspect_penalty +
+            weights["errors"] * error_penalty +
+            weights["volume"] * volume_penalty +
+            weights["smoothness"] * smoothness_penalty +
+            weights["complexity"] * complexity_penalty +
+            base_penalty
         )
-
-        if (
-            mesh["maxNonOrth"] > 80
-            or mesh["maxSkew"] > 4
-            or mesh["nErrorDeterminant"] > 0
-            or mesh["minVolume"] < 1e-15
-        ):
-            objective *= np.exp(5 * (mesh["maxNonOrth"] / 80 + mesh["maxSkew"] / 4))
-
-        return objective
+        
+        # Limitar el máximo valor para estabilidad numérica
+        return min(objective, 1e9 )
 
     def _get_mesh_metrics(self, case_path: str) -> Dict[str, float]:
         metrics = {

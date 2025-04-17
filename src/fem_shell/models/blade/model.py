@@ -361,10 +361,10 @@ class Blade:
             )
             lower_bl_points_idx = lower_bl_points[:, 0]
 
-            # bl_end_point_idx = (bl_spline_x.size + upper_bl_points_idx[0].astype(int)) // 3
-            # bl_start_point_idx = lower_bl_points_idx[0].astype(int) // 5
-            bl_end_point_idx = bl_spline_x.shape[0] - 3
-            bl_start_point_idx = 3
+            bl_end_point_idx = (bl_spline_x.size + upper_bl_points_idx[0].astype(int)) // 2
+            bl_start_point_idx = lower_bl_points_idx[0].astype(int) // 2
+            # bl_end_point_idx = bl_spline_x.shape[0] - 3
+            # bl_start_point_idx = 3
 
             bl_keypoints = sorted([
                 int(pt)
@@ -401,12 +401,12 @@ class Blade:
             )
             lower_outter_points_idx = lower_outter_points[:, 0]
 
-            # outter_end_point_idx = (
-            #     outter_spline_x.size + upper_outter_points_idx[0].astype(int)
-            # ) // 2
-            # outter_start_point_idx = lower_outter_points_idx[0].astype(int) // 2
-            outter_end_point_idx = outter_spline_x.shape[0] - 3
-            outter_start_point_idx = 3
+            outter_end_point_idx = (
+                outter_spline_x.size + upper_outter_points_idx[0].astype(int)
+            ) // 2
+            outter_start_point_idx = lower_outter_points_idx[0].astype(int) // 2
+            # outter_end_point_idx = outter_spline_x.shape[0] - 3
+            # outter_start_point_idx = 3
 
             outter_keypoints = sorted([
                 int(pt)

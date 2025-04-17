@@ -7,14 +7,14 @@ from fem_shell.solvers.fsi import LinearDynamicFSISolver
 
 # material definition
 
-E = 4000000
+E = 210e8
 NU = 0.3
-RHO = 3000
+RHO = 780
 material = Material(name="Steel", E=E, nu=NU, rho=RHO)
 
 # Domain geometry
 WIDTH, HEIGHT = 1.0, 10.0
-NX, NY, NZ = 4, 40, 20
+NX, NY, NZ = 4, 40, 40
 
 model_config = {
     "solver": {
