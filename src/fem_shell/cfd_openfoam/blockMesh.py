@@ -17,9 +17,9 @@ from fem_shell.models.blade.model import Blade
 HEADER = """
 /*--------------------------------*- C++ -*----------------------------------*\
 | =========                 |                                                 |
-| \\      /  F ield         |                                                 |
-|  \\    /   O peration     |                                                 |
-|   \\  /    A nd           |                                                 |
+| \\      /  F ield         | OpenFOAM: The Open Source CFD Toolbox           |
+|  \\    /   O peration     | Version:  v2412                                 |
+|   \\  /    A nd           | Website:  www.openfoam.com                      |
 |    \\/     M anipulation  |                                                 |
 \\*---------------------------------------------------------------------------*/
 FoamFile
@@ -59,15 +59,46 @@ class BlockMesh:
     def __init__(self, blade_definition: Blade | None = None) -> None:
         self.definition = blade_definition
 
-    def generate(self, blade_definition):
+    def generate(self, definition):
+        """Generate blade mesh structure from blade definition.
+
+        Args:
+            blade_definition: List of dictionaries containing blade section definitions
+
+        Returns:
+            Dictionary containing points, blocks, splines and boundaries
+        """
         KeyPoint.reset()
-        self.definition = blade_definition
+
+        # Constants
+        NY = 10
+        NY_factor = 2
+        NX_BL = NY * NY_factor
+        NX_OUTTER = NY * NY_factor
+        BL_GRADING = (4, 1, 1)
+        OUTTER_GRADING = (4, 1, 1)
+
+        TOP_BL_GRADING = BL_GRADING
+        TOP_OUTTER_GRADING = OUTTER_GRADING
+
+        blade_definition = definition["sections"]
+        chords = definition["chords"]
+        min_chord = chords.min()
+        max_chord = chords.max()
+
+        # Ajuste lineal inverso (más celdas cuando la cuerda es pequeña)
+        spans = [z["splines"]["af"][0, 2] for z in blade_definition]
+        blade_length = spans[-1]
+        base_nz = int(np.ceil(np.diff(spans).mean()))
+
+        # Initialize data structures
         points_map = {}
         points = []
         blocks = []
         splines = []
         boundaries = []
 
+        # Helper functions
         def add_point(kp):
             points.append(kp)
 
@@ -78,112 +109,167 @@ class BlockMesh:
                 "coords": spline_coords,
             })
 
-        def add_block(from_point, blocks_x, blocks_y, blocks_z, grading):
+        def add_block(point_ids, blocks_x, blocks_y, blocks_z, grading):
             blocks.append({
-                "point_ids": from_point,
+                "point_ids": point_ids,
                 "blocks_x": blocks_x,
                 "blocks_y": blocks_y,
                 "blocks_z": blocks_z,
                 "grading": grading,
             })
 
-        for sec_id, sec in enumerate(blade_definition):
-            af_kp = sec["keypoints"]["af"]
-            af_coords = sec["splines"]["af"]
-            for point_id in af_kp:
-                kp = KeyPoint(coords=af_coords[point_id])
-                points_map[f"af-{point_id}-sec-{sec_id}"] = kp.id
-                add_point(kp)
-
-            af_splines = split_splines(af_coords, af_kp)
-            for kp_idx in range(len(af_kp) - 1):
-                from_kp = points_map[f"af-{af_kp[kp_idx]}-sec-{sec_id}"]
-                to_kp = points_map[f"af-{af_kp[kp_idx + 1]}-sec-{sec_id}"]
-                coords = af_splines[kp_idx]
-                add_spline(from_kp, to_kp, coords)
-
-            bl_kp = sec["keypoints"]["bl"]
-            bl_coords = sec["splines"]["bl"]
-            for point_id in bl_kp:
-                kp = KeyPoint(coords=bl_coords[point_id])
-                points_map[f"bl-{point_id}-sec-{sec_id}"] = kp.id
-                add_point(kp)
-
-            bl_splines = split_splines(bl_coords, bl_kp)
-            for kp_idx in range(len(bl_kp) - 1):
-                from_kp = points_map[f"bl-{bl_kp[kp_idx]}-sec-{sec_id}"]
-                to_kp = points_map[f"bl-{bl_kp[kp_idx + 1]}-sec-{sec_id}"]
-                coords = bl_splines[kp_idx]
-                add_spline(from_kp, to_kp, coords)
-
-            out_kp = sec["keypoints"]["out"]
-            out_coords = sec["splines"]["out"]
-            for point_id in out_kp:
-                kp = KeyPoint(coords=out_coords[point_id])
-                points_map[f"out-{point_id}-sec-{sec_id}"] = kp.id
-                add_point(kp)
-            add_spline(
-                points_map[f"bl-{bl_kp[-1]}-sec-{sec_id}"],
-                points_map[f"bl-{bl_kp[0]}-sec-{sec_id}"],
-                bl_coords[bl_kp[-1] :],
-            )
-
-            out_splines = split_splines(out_coords, out_kp)
-            for kp_idx in range(len(out_kp) - 1):
-                from_kp = points_map[f"out-{out_kp[kp_idx]}-sec-{sec_id}"]
-                to_kp = points_map[f"out-{out_kp[kp_idx + 1]}-sec-{sec_id}"]
-                coords = out_splines[kp_idx]
-                add_spline(from_kp, to_kp, coords)
-            add_spline(
-                points_map[f"out-{out_kp[-1]}-sec-{sec_id}"],
-                points_map[f"out-{out_kp[0]}-sec-{sec_id}"],
-                out_coords[out_kp[-1] :],
-            )
-
-        NX, NY, NZ = 10,10,10
+        # Add closing section
+        closing_section = deepcopy(blade_definition[-1])
+        for spline in closing_section["splines"].values():
+            spline[:, 2] = blade_length + np.diff(spans).mean()
+        blade_definition.append(closing_section)
+        self.definition = deepcopy(blade_definition)
 
         n_sections = len(blade_definition)
-        for sec in range(n_sections - 1):
-            af_kp_current = blade_definition[sec]["keypoints"]["af"]
-            bl_kp_current = blade_definition[sec]["keypoints"]["bl"]
-            out_kp_current = blade_definition[sec]["keypoints"]["out"]
 
-            af_kp_next = blade_definition[sec + 1]["keypoints"]["af"]
-            bl_kp_next = blade_definition[sec + 1]["keypoints"]["bl"]
-            out_kp_next = blade_definition[sec + 1]["keypoints"]["out"]
+        # Process each section
+        for sec_id, sec in enumerate(blade_definition):
+            self._process_section(sec, sec_id, points_map, add_point, add_spline)
 
-            n_rings = len(af_kp_next) - 1
-            for i in range(n_rings):
-                Bl_blk = [
-                    points_map[f"af-{af_kp_current[i]}-sec-{sec}"],
-                    points_map[f"bl-{bl_kp_current[i]}-sec-{sec}"],
-                    points_map[f"bl-{bl_kp_current[i + 1]}-sec-{sec}"],
-                    points_map[f"af-{af_kp_current[i + 1]}-sec-{sec}"],
-                    points_map[f"af-{af_kp_next[i]}-sec-{sec + 1}"],
-                    points_map[f"bl-{bl_kp_next[i]}-sec-{sec + 1}"],
-                    points_map[f"bl-{bl_kp_next[i + 1]}-sec-{sec + 1}"],
-                    points_map[f"af-{af_kp_next[i + 1]}-sec-{sec + 1}"],
-                ]
+        # Create blocks between sections
+        for sec in range(n_sections - 2):
+            chord = chords[sec]
+            nz = int(base_nz * (max_chord / chord) ** 1.15)
 
-                OUT_blk = [
-                    points_map[f"bl-{bl_kp_current[i]}-sec-{sec}"],
-                    points_map[f"out-{out_kp_current[i]}-sec-{sec}"],
-                    points_map[f"out-{out_kp_current[i + 1]}-sec-{sec}"],
-                    points_map[f"bl-{bl_kp_current[i + 1]}-sec-{sec}"],
-                    points_map[f"bl-{bl_kp_next[i]}-sec-{sec + 1}"],
-                    points_map[f"out-{out_kp_next[i]}-sec-{sec + 1}"],
-                    points_map[f"out-{out_kp_next[i + 1]}-sec-{sec + 1}"],
-                    points_map[f"bl-{bl_kp_next[i + 1]}-sec-{sec + 1}"],
-                ]
+            self._create_blocks_between_sections(
+                sec,
+                blade_definition,
+                points_map,
+                boundaries,
+                True,
+                add_block,
+                NY,
+                nz,
+                NX_BL,
+                NX_OUTTER,
+                BL_GRADING,
+                OUTTER_GRADING,
+                NY_factor,
+            )
 
-                mid = n_rings // 2
-                if (i >= mid - 1 and i <= mid):
-                    ny = NY * 2
-                else:
-                    ny = NY
+        # Create top blocks
+        self._create_blocks_between_sections(
+            n_sections - 2,
+            blade_definition,
+            points_map,
+            boundaries,
+            False,
+            add_block,
+            NY,
+            nz,
+            NX_BL,
+            NX_OUTTER,
+            TOP_BL_GRADING,
+            TOP_OUTTER_GRADING,
+            NY_factor,
+        )
+        self._create_top_blocks(
+            n_sections,
+            blade_definition,
+            points_map,
+            boundaries,
+            add_block,
+            NY,
+            nz,
+            NX_BL,
+            (1, 1, 1),
+        )
 
-                add_block(Bl_blk, NX, ny, NZ,(20,1,1))
-                add_block(OUT_blk, NX, ny, NZ,(1,1,1))
+        return {"points": points, "blocks": blocks, "splines": splines, "boundaries": boundaries}
+
+    def _process_section(self, section, section_id, points_map, add_point, add_spline):
+        """Process a single blade section."""
+        # Add closing spline for blade
+        for group_name in ("af", "bl", "out"):
+            self._process_spline_group(
+                section, group_name, section_id, points_map, add_point, add_spline
+            )
+            if group_name != "af":
+                kp = section["keypoints"][group_name]
+                coords = section["splines"][group_name]
+                add_spline(
+                    points_map[f"{group_name}-{kp[-1]}-sec-{section_id}"],
+                    points_map[f"{group_name}-{kp[0]}-sec-{section_id}"],
+                    coords[kp[-1] :],
+                )
+
+    def _process_spline_group(
+        self, section, group_name, section_id, points_map, add_point, add_spline
+    ):
+        """Process a group of splines (af, bl, or out)."""
+        keypoints = section["keypoints"][group_name]
+        coords = section["splines"][group_name]
+
+        # Add keypoints
+        for point_id in keypoints:
+            kp = KeyPoint(coords=coords[point_id])
+            points_map[f"{group_name}-{point_id}-sec-{section_id}"] = kp.id
+            add_point(kp)
+
+        # Add splines between keypoints
+        group_splines = split_splines(coords, keypoints)
+        for kp_idx in range(len(keypoints) - 1):
+            from_kp = points_map[f"{group_name}-{keypoints[kp_idx]}-sec-{section_id}"]
+            to_kp = points_map[f"{group_name}-{keypoints[kp_idx + 1]}-sec-{section_id}"]
+            add_spline(from_kp, to_kp, group_splines[kp_idx])
+
+    def _create_blocks_between_sections(
+        self,
+        sec,
+        blade_definition,
+        points_map,
+        boundaries,
+        inclute_TE_in_blade_patch,
+        add_block,
+        NY,
+        nz,
+        NX_BL,
+        NX_OUTTER,
+        BL_GRADING,
+        OUTTER_GRADING,
+        NY_factor=2,
+    ):
+        """Create blocks between two adjacent sections."""
+        current_sec = blade_definition[sec]
+        next_sec = blade_definition[sec + 1]
+
+        af_kp_current = current_sec["keypoints"]["af"]
+        bl_kp_current = current_sec["keypoints"]["bl"]
+        out_kp_current = current_sec["keypoints"]["out"]
+
+        af_kp_next = next_sec["keypoints"]["af"]
+        bl_kp_next = next_sec["keypoints"]["bl"]
+        out_kp_next = next_sec["keypoints"]["out"]
+
+        n_rings = len(af_kp_next) - 1
+
+        for i in range(n_rings):
+            # Create blade block
+            Bl_blk = self._create_block_points(
+                "af", "bl", i, sec, points_map, af_kp_current, bl_kp_current, af_kp_next, bl_kp_next
+            )
+
+            # Create outer block
+            OUT_blk = self._create_block_points(
+                "bl",
+                "out",
+                i,
+                sec,
+                points_map,
+                bl_kp_current,
+                out_kp_current,
+                bl_kp_next,
+                out_kp_next,
+            )
+
+            ny = NY * NY_factor if i in (3, 5) else NY
+
+            if sec != len(blade_definition) - 2:
                 boundaries.append([
                     points_map[f"af-{af_kp_current[i]}-sec-{sec}"],
                     points_map[f"af-{af_kp_current[i + 1]}-sec-{sec}"],
@@ -191,30 +277,158 @@ class BlockMesh:
                     points_map[f"af-{af_kp_next[i + 1]}-sec-{sec + 1}"],
                 ])
 
-            Bl_blk_0 = [
+            add_block(Bl_blk, NX_BL, ny, nz, BL_GRADING)
+            add_block(OUT_blk, NX_OUTTER, ny, nz, OUTTER_GRADING)
+
+        # Create special blocks for the first/last keypoints
+        self._create_special_blocks(
+            sec,
+            points_map,
+            add_block,
+            af_kp_current,
+            bl_kp_current,
+            out_kp_current,
+            af_kp_next,
+            bl_kp_next,
+            out_kp_next,
+            boundaries,
+            inclute_TE_in_blade_patch,
+            NX_BL,
+            NX_OUTTER,
+            NY,
+            nz,
+            BL_GRADING,
+            OUTTER_GRADING,
+        )
+
+    def _create_block_points(
+        self, from_group, to_group, i, sec, points_map, current_kp1, current_kp2, next_kp1, next_kp2
+    ):
+        """Create point IDs for a block between two groups."""
+        return [
+            points_map[f"{from_group}-{current_kp1[i]}-sec-{sec}"],
+            points_map[f"{to_group}-{current_kp2[i]}-sec-{sec}"],
+            points_map[f"{to_group}-{current_kp2[i + 1]}-sec-{sec}"],
+            points_map[f"{from_group}-{current_kp1[i + 1]}-sec-{sec}"],
+            points_map[f"{from_group}-{next_kp1[i]}-sec-{sec + 1}"],
+            points_map[f"{to_group}-{next_kp2[i]}-sec-{sec + 1}"],
+            points_map[f"{to_group}-{next_kp2[i + 1]}-sec-{sec + 1}"],
+            points_map[f"{from_group}-{next_kp1[i + 1]}-sec-{sec + 1}"],
+        ]
+
+    def _create_special_blocks(
+        self,
+        sec,
+        points_map,
+        add_block,
+        af_kp_current,
+        bl_kp_current,
+        out_kp_current,
+        af_kp_next,
+        bl_kp_next,
+        out_kp_next,
+        boundaries,
+        close_TE,
+        NX_BL,
+        NX_OUTTER,
+        NY,
+        nz,
+        BL_GRADING,
+        OUTTER_GRADING,
+    ):
+        """Create special blocks for the first/last keypoints."""
+        Bl_blk_0 = [
+            points_map[f"af-{af_kp_current[-1]}-sec-{sec}"],
+            points_map[f"bl-{bl_kp_current[-1]}-sec-{sec}"],
+            points_map[f"bl-{bl_kp_current[0]}-sec-{sec}"],
+            points_map[f"af-{af_kp_current[0]}-sec-{sec}"],
+            points_map[f"af-{af_kp_next[-1]}-sec-{sec + 1}"],
+            points_map[f"bl-{bl_kp_next[-1]}-sec-{sec + 1}"],
+            points_map[f"bl-{bl_kp_next[0]}-sec-{sec + 1}"],
+            points_map[f"af-{af_kp_next[0]}-sec-{sec + 1}"],
+        ]
+
+        OUT_blk_0 = [
+            points_map[f"bl-{bl_kp_current[-1]}-sec-{sec}"],
+            points_map[f"out-{out_kp_current[-1]}-sec-{sec}"],
+            points_map[f"out-{out_kp_current[0]}-sec-{sec}"],
+            points_map[f"bl-{bl_kp_current[0]}-sec-{sec}"],
+            points_map[f"bl-{bl_kp_next[-1]}-sec-{sec + 1}"],
+            points_map[f"out-{out_kp_next[-1]}-sec-{sec + 1}"],
+            points_map[f"out-{out_kp_next[0]}-sec-{sec + 1}"],
+            points_map[f"bl-{bl_kp_next[0]}-sec-{sec + 1}"],
+        ]
+
+        add_block(Bl_blk_0, NX_BL, NY, nz, BL_GRADING)
+        add_block(OUT_blk_0, NX_OUTTER, NY, nz, OUTTER_GRADING)
+
+        if close_TE:
+            boundaries.append([
                 points_map[f"af-{af_kp_current[-1]}-sec-{sec}"],
-                points_map[f"bl-{bl_kp_current[-1]}-sec-{sec}"],
-                points_map[f"bl-{bl_kp_current[0]}-sec-{sec}"],
                 points_map[f"af-{af_kp_current[0]}-sec-{sec}"],
                 points_map[f"af-{af_kp_next[-1]}-sec-{sec + 1}"],
-                points_map[f"bl-{bl_kp_next[-1]}-sec-{sec + 1}"],
-                points_map[f"bl-{bl_kp_next[0]}-sec-{sec + 1}"],
                 points_map[f"af-{af_kp_next[0]}-sec-{sec + 1}"],
-            ]
-            OUT_blk_0 = [
-                points_map[f"bl-{bl_kp_current[-1]}-sec-{sec}"],
-                points_map[f"out-{out_kp_current[-1]}-sec-{sec}"],
-                points_map[f"out-{out_kp_current[0]}-sec-{sec}"],
-                points_map[f"bl-{bl_kp_current[0]}-sec-{sec}"],
-                points_map[f"bl-{bl_kp_next[-1]}-sec-{sec + 1}"],
-                points_map[f"out-{out_kp_next[-1]}-sec-{sec + 1}"],
-                points_map[f"out-{out_kp_next[0]}-sec-{sec + 1}"],
-                points_map[f"bl-{bl_kp_next[0]}-sec-{sec + 1}"],
-            ]
-            add_block(Bl_blk_0, NX, 3, NZ, (20,1,1))
-            add_block(OUT_blk_0, NX, 3, NZ,(1,1,1))
+            ])
 
-        return {"points": points, "blocks": blocks, "splines": splines, "boundaries": boundaries}
+    def _create_top_blocks(
+        self,
+        n_sections,
+        blade_definition,
+        points_map,
+        boundaries,
+        add_block,
+        NY,
+        nz,
+        NX_BL,
+        grading,
+    ):
+        """Create blocks at the top of the blade."""
+        af_kp_prev = blade_definition[n_sections - 2]["keypoints"]["af"]
+        af_kp_last = blade_definition[n_sections - 1]["keypoints"]["af"]
+
+        # Define top blocks
+        blk_top = (
+            self._create_top_block_points(
+                0, 1, 8, 9, af_kp_prev, af_kp_last, points_map, n_sections
+            ),
+            self._create_top_block_points(
+                1, 2, 7, 8, af_kp_prev, af_kp_last, points_map, n_sections
+            ),
+            self._create_top_block_points(
+                2, 3, 6, 7, af_kp_prev, af_kp_last, points_map, n_sections
+            ),
+            self._create_top_block_points(
+                3, 4, 5, 6, af_kp_prev, af_kp_last, points_map, n_sections
+            ),
+        )
+
+        # Add boundaries
+        boundaries.extend([
+            [points_map[f"af-{af_kp_prev[i]}-sec-{n_sections - 2}"] for i in [0, 1, 8, 9]],
+            [points_map[f"af-{af_kp_prev[i]}-sec-{n_sections - 2}"] for i in [1, 2, 7, 8]],
+            [points_map[f"af-{af_kp_prev[i]}-sec-{n_sections - 2}"] for i in [2, 3, 6, 7]],
+            [points_map[f"af-{af_kp_prev[i]}-sec-{n_sections - 2}"] for i in [3, 4, 5, 6]],
+        ])
+
+        # Add top blocks
+        for blk in blk_top[:-1]:
+            add_block(blk, NY, NY, nz, grading)
+        add_block(blk_top[-1], NX_BL, NY, nz, grading)
+
+    def _create_top_block_points(
+        self, i1, i2, i3, i4, af_kp_prev, af_kp_last, points_map, n_sections
+    ):
+        """Create point IDs for a top block."""
+        return [
+            points_map[f"af-{af_kp_prev[i1]}-sec-{n_sections - 2}"],
+            points_map[f"af-{af_kp_prev[i2]}-sec-{n_sections - 2}"],
+            points_map[f"af-{af_kp_prev[i3]}-sec-{n_sections - 2}"],
+            points_map[f"af-{af_kp_prev[i4]}-sec-{n_sections - 2}"],
+            points_map[f"af-{af_kp_last[i1]}-sec-{n_sections - 1}"],
+            points_map[f"af-{af_kp_last[i2]}-sec-{n_sections - 1}"],
+            points_map[f"af-{af_kp_last[i3]}-sec-{n_sections - 1}"],
+            points_map[f"af-{af_kp_last[i4]}-sec-{n_sections - 1}"],
+        ]
 
     def write_blockmesh(self, of_case_path: str, definition=None):
         self._of_case_path = of_case_path
@@ -248,7 +462,7 @@ class BlockMesh:
             f.write("blocks \n(\n")
             for blk in blocks:
                 f.write(
-                    f"    hex ({' '.join(str(i) for i in blk['point_ids'])}) ({blk['blocks_x']} {blk['blocks_y']} {blk['blocks_z']}) simpleGrading ({" ".join(str(i) for i in blk['grading'])})\n"
+                    f"    hex ({' '.join(str(i) for i in blk['point_ids'])}) ({blk['blocks_x']} {blk['blocks_y']} {blk['blocks_z']}) simpleGrading ({' '.join(str(i) for i in blk['grading'])})\n"
                 )
             f.write(");\n\n")
 
@@ -293,7 +507,7 @@ class BlockMesh:
             parametrization=parametrization,
             budget=500_000,
             num_workers=45,
-        )       
+        )
         optimizer.register_callback("tell", self._log_progress)
 
         with futures.ThreadPoolExecutor(max_workers=optimizer.num_workers) as executor:
@@ -368,8 +582,8 @@ class BlockMesh:
 
     def _calculate_objective(self, mesh: Dict[str, float]) -> float:
         # Penalización base para geometrías inválidas
-        base_penalty = 1e6 if not mesh["meshOK"] else  0
-        
+        base_penalty = 1e6 if not mesh["meshOK"] else 0
+
         # Limitar valores extremos para evitar explosión de penalizaciones
         max_nonorth = min(mesh["maxNonOrth"], 200)  # Capamos a 200° máximo para cálculo
         avg_nonorth = min(mesh["avgNonOrth"], 100)
@@ -377,24 +591,26 @@ class BlockMesh:
         avg_skew = min(mesh["avgSkew"], 5)
         max_aspect = min(mesh["maxAspectRatio"], 50)
         min_volume = max(mesh["minVolume"], 1e-20)  # Evitar división por cero
-        
+
         # Cálculo de métricas con límites controlados
-        nonOrth_penalty = (max_nonorth / 65)**3 + (avg_nonorth / 40)**2
-        skew_penalty = (max_skew / 3.5)**3 + (avg_skew / 2)**2
-        aspect_penalty = (max_aspect / 10)**2
+        nonOrth_penalty = (max_nonorth / 65) ** 3 + (avg_nonorth / 40) ** 2
+        skew_penalty = (max_skew / 3.5) ** 3 + (avg_skew / 2) ** 2
+        aspect_penalty = (max_aspect / 10) ** 2
         volume_penalty = 1 / min_volume
         error_penalty = 1000 * (mesh["nErrorDeterminant"] + mesh["nErrorFaceWeight"])
-        smoothness_penalty = 10 * (1 - mesh["smoothness"])**2
+        smoothness_penalty = 10 * (1 - mesh["smoothness"]) ** 2
         complexity_penalty = np.log(mesh["nCells"] / 1e5 + 1)
-        
+
         # Factores multiplicativos para condiciones críticas
         critical_factor = 1.0
-        if (max_nonorth > 80 or 
-            max_skew > 4 or 
-            mesh["nErrorDeterminant"] > 0 or 
-            mesh["minVolume"] < 1e-15):
+        if (
+            max_nonorth > 80
+            or max_skew > 4
+            or mesh["nErrorDeterminant"] > 0
+            or mesh["minVolume"] < 1e-15
+        ):
             critical_factor += np.exp(0.5 * (max_nonorth / 80 + max_skew / 4))
-        
+
         # Pesos dinámicos basados en calidad base
         weights = {
             "nonOrth": 2.0 * critical_factor,
@@ -405,21 +621,21 @@ class BlockMesh:
             "smoothness": 1.2,
             "complexity": 0.5,
         }
-        
+
         # Cálculo final del objetivo con límite superior
         objective = (
-            weights["nonOrth"] * nonOrth_penalty +
-            weights["skew"] * skew_penalty +
-            weights["aspect"] * aspect_penalty +
-            weights["errors"] * error_penalty +
-            weights["volume"] * volume_penalty +
-            weights["smoothness"] * smoothness_penalty +
-            weights["complexity"] * complexity_penalty +
-            base_penalty
+            weights["nonOrth"] * nonOrth_penalty
+            + weights["skew"] * skew_penalty
+            + weights["aspect"] * aspect_penalty
+            + weights["errors"] * error_penalty
+            + weights["volume"] * volume_penalty
+            + weights["smoothness"] * smoothness_penalty
+            + weights["complexity"] * complexity_penalty
+            + base_penalty
         )
-        
+
         # Limitar el máximo valor para estabilidad numérica
-        return min(objective, 1e9 )
+        return min(objective, 1e9)
 
     def _get_mesh_metrics(self, case_path: str) -> Dict[str, float]:
         metrics = {

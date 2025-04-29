@@ -81,13 +81,15 @@ class Blade:
         del spline.
         """
 
-        R = 2
+        BL_CHORD_FRACTION = 0.1
+        OUTTER_CHORD_FRACTION = 2
+
         n_points = 500
         n_spline_divisions = 5
         tolerance = 1e-6
 
         keypoints_in_section = self._numad_blade.keypoints.key_points.T
-        self.airfoil_list = []
+        airfoil_list = []
 
         # Identificar splines que coinciden con keypoints
         spline_indices = []
@@ -97,6 +99,11 @@ class Blade:
                 spline_indices.append(i)
 
         def find_offset_points(profile_points, offset_x, offset_y):
+            """
+            Para cada punto de profile_points devuelve una tupla
+            (closest_offset_point_index, x_intersect, y_intersect).
+            Si no hay intersección, se devuelve (-1, np.nan, np.nan).
+            """
             offset_curve = shp.LineString(np.column_stack((offset_x, offset_y)))
             offset_points = []
             offset_points_array = np.column_stack((offset_x, offset_y))
@@ -149,7 +156,7 @@ class Blade:
                     *closest_point,  # Usamos el punto de intersección, no el punto del array
                 ))
 
-            return np.array(offset_points)
+            return np.array(offset_points, dtype=float)
 
         def reparameterize_spline(x, y, n_points=500):
             """
@@ -279,8 +286,9 @@ class Blade:
             # return numpy array
             return np.array([x_rotated, y_rotated]).T
 
-        for spline_id in spline_indices:
+        for section_id, spline_id in enumerate(spline_indices):
             # Datos del spline actual
+            chord_length = self._numad_blade.geometry.ichord[section_id]
             airfoil_spline_x = self._numad_mesh["splineXi"][spline_id][2:-2].copy()
             airfoil_spline_y = self._numad_mesh["splineYi"][spline_id][2:-2].copy()
             z_spline = self._numad_mesh["splineZi"][spline_id][2:-2].copy()
@@ -312,23 +320,35 @@ class Blade:
             te_airfoil_0 = (airfoil_spline_x[0], airfoil_spline_y[0])
             te_airfoil_1 = (airfoil_spline_x[-1], airfoil_spline_y[-1])
 
+            le_airfoil_idx = airfoil_spline_x.size // 2
+            le_offset_points = 15
             upper_airfoil_points = generate_equidistant_points(
-                te_airfoil_1, le_airfoil, (airfoil_spline_x, airfoil_spline_y), n_spline_divisions
+                te_airfoil_1,
+                le_airfoil,
+                (airfoil_spline_x, airfoil_spline_y),
+                n_spline_divisions,
             )
             upper_airfoil_points_idx = upper_airfoil_points[:, 0]
 
             # Generar puntos equidistantes para el perfil inferior (4 puntos: TE1 + 2 intermedios + LE)
             lower_airfoil_points = generate_equidistant_points(
-                te_airfoil_0, le_airfoil, (airfoil_spline_x, airfoil_spline_y), n_spline_divisions
+                te_airfoil_0,
+                le_airfoil,
+                (airfoil_spline_x, airfoil_spline_y),
+                n_spline_divisions,
             )
+
             lower_airfoil_points_idx = lower_airfoil_points[:, 0]
 
             airfoil_keypoints = sorted({
                 int(p)
                 for p in [
                     *lower_airfoil_points_idx,
+                    le_airfoil_idx - le_offset_points,
+                    le_airfoil_idx + le_offset_points,
                     *upper_airfoil_points_idx,
                 ]
+                if p != le_airfoil_idx
             })
 
             airfoil_spline_z = np.full_like(airfoil_spline_x, current_z)
@@ -338,10 +358,7 @@ class Blade:
             # BOUNDARY LAYER SECTION
             # ==============================
             # Crear buffer para obtener el spline de offset
-            x_coords = np.array(airfoil_spline_x)
-            chord_length = x_coords.max() - x_coords.min()
-            buffer_fraction = 0.2  # 20% de la cuerda
-            buffer_distance = chord_length * buffer_fraction
+            buffer_distance = chord_length * BL_CHORD_FRACTION
             bl_polygon = airfoil_polygon.buffer(buffer_distance)
             # Extraer contorno exterior y reparametrizar a 500 puntos
             bl_spline_x, bl_spline_y = bl_polygon.exterior.xy
@@ -361,8 +378,10 @@ class Blade:
             )
             lower_bl_points_idx = lower_bl_points[:, 0]
 
-            bl_end_point_idx = (bl_spline_x.size + upper_bl_points_idx[0].astype(int)) // 2
-            bl_start_point_idx = lower_bl_points_idx[0].astype(int) // 2
+            bl_end_point_idx = bl_spline_x.size - (
+                (bl_spline_x.size - upper_bl_points_idx[0].astype(int)) // 4
+            )
+            bl_start_point_idx = lower_bl_points_idx[0].astype(int) // 4
             # bl_end_point_idx = bl_spline_x.shape[0] - 3
             # bl_start_point_idx = 3
 
@@ -371,7 +390,8 @@ class Blade:
                 for pt in [
                     bl_start_point_idx,
                     *lower_bl_points_idx,
-                    le_bl_idx,
+                    le_bl_idx - int(le_offset_points * 1.2),
+                    le_bl_idx + le_offset_points,
                     *upper_bl_points_idx,
                     bl_end_point_idx,
                 ]
@@ -385,13 +405,11 @@ class Blade:
             # ==============================
             # OUTERDOMAIN SECTION
             # ==============================
-            outter = airfoil_polygon.buffer(chord_length * R)
-            outter_spline_x, outter_spline_y = outter.exterior.xy
+            outter_buffer_distance = airfoil_polygon.buffer(chord_length * OUTTER_CHORD_FRACTION)
+            outter_spline_x, outter_spline_y = outter_buffer_distance.exterior.xy
             outter_spline_x, outter_spline_y = reparameterize_spline(
                 outter_spline_x[::-1], outter_spline_y[::-1], n_points
             )
-            le_outter_idx = outter_spline_x.size // 2
-
             upper_outter_points = find_offset_points(
                 upper_airfoil_points[:, 1:], outter_spline_x, outter_spline_y
             )
@@ -407,13 +425,15 @@ class Blade:
             outter_start_point_idx = lower_outter_points_idx[0].astype(int) // 2
             # outter_end_point_idx = outter_spline_x.shape[0] - 3
             # outter_start_point_idx = 3
+            le_outter_idx = bl_spline_y.size // 2
 
             outter_keypoints = sorted([
                 int(pt)
                 for pt in [
                     outter_start_point_idx,
                     *lower_outter_points_idx,
-                    le_outter_idx,
+                    le_outter_idx - int(le_offset_points * 1.4),
+                    le_outter_idx + le_offset_points,
                     *upper_outter_points_idx,
                     outter_end_point_idx,
                 ]
@@ -426,7 +446,7 @@ class Blade:
             outter_spline_z = np.full((outter_spline.shape[0], 1), current_z)
             outter_spline = np.hstack([outter_spline, outter_spline_z])
 
-            self.airfoil_list.append({
+            airfoil_list.append({
                 "keypoints": {
                     "af": airfoil_keypoints,
                     "bl": bl_keypoints,
@@ -438,32 +458,36 @@ class Blade:
                     "out": outter_spline,
                 },
             })
+        self.blocks_definition = {
+            "chords": self._numad_blade.geometry.ichord,
+            "sections": airfoil_list,
+        }
 
-            # # Graficar resultados
-            # plt.figure(figsize=(8, 6))
+        # Graficar resultados
+        # plt.figure(figsize=(8, 6))
 
-            # # PLOT AIRFOIL
-            # plt.plot(airfoil_spline[:, 0], airfoil_spline[:, 1], label="AIRFOIL")
-            # for i, pt in enumerate(airfoil_keypoints):
-            #     plt.scatter(airfoil_spline[pt][0], airfoil_spline[pt][1])
-            #     plt.text(airfoil_spline[pt][0], airfoil_spline[pt][1], f"{i}-{pt}")
+        # # PLOT AIRFOIL
+        # plt.plot(airfoil_spline[:, 0], airfoil_spline[:, 1], label="AIRFOIL")
+        # for i, pt in enumerate(airfoil_keypoints):
+        #     plt.scatter(airfoil_spline[pt][0], airfoil_spline[pt][1])
+        #     plt.text(airfoil_spline[pt][0], airfoil_spline[pt][1], f"{i}", size=20)
 
-            # # PLOT BL
-            # plt.plot(bl_spline[:, 0], bl_spline[:, 1], "b-", label="BL")
-            # for i, pt in enumerate(bl_spline):
-            #     if i in bl_keypoints:
-            #         plt.scatter(pt[0], pt[1])
-            #         plt.text(pt[0], bl_spline[i][1], f"{i}")
+        # # PLOT BL
+        # plt.plot(bl_spline[:, 0], bl_spline[:, 1], "b-", label="BL")
+        # for i, pt in enumerate(bl_spline):
+        #     if i in bl_keypoints:
+        #         plt.scatter(pt[0], pt[1])
+        #         plt.text(pt[0], bl_spline[i][1], f"{i}")
 
-            # # PLOT OUTTER
-            # plt.plot(outter_spline[:, 0], outter_spline[:, 1], "b-", label="OUTTER DOMAIN")
-            # for i, pt in enumerate(outter_spline):
-            #     if i in outter_keypoints:
-            #         plt.scatter(pt[0], pt[1])
-            #         plt.text(pt[0], outter_spline[i][1], f"{i}")
+        # # PLOT OUTTER
+        # plt.plot(outter_spline[:, 0], outter_spline[:, 1], "b-", label="OUTTER DOMAIN")
+        # for i, pt in enumerate(outter_spline):
+        #     if i in outter_keypoints:
+        #         plt.scatter(pt[0], pt[1])
+        #         plt.text(pt[0], outter_spline[i][1], f"{i}")
 
-            # plt.gca().set_aspect("equal")
-            # plt.show()
+        # plt.gca().set_aspect("equal")
+        # plt.show()
 
 
 def material_factory(
