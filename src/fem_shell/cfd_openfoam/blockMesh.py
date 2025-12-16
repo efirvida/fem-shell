@@ -73,10 +73,10 @@ class BlockMesh:
         # Constants
         NY = 10
         NY_factor = 2
-        NX_BL = NY * NY_factor
-        NX_OUTTER = NY * NY_factor
-        BL_GRADING = (4, 1, 1)
-        OUTTER_GRADING = (4, 1, 1)
+        NX_BL = 10
+        NX_OUTTER = NY
+        BL_GRADING = (NX_BL, 1, 1)
+        OUTTER_GRADING = (1, 1, 1)
 
         TOP_BL_GRADING = BL_GRADING
         TOP_OUTTER_GRADING = OUTTER_GRADING
@@ -89,7 +89,9 @@ class BlockMesh:
         # Ajuste lineal inverso (más celdas cuando la cuerda es pequeña)
         spans = [z["splines"]["af"][0, 2] for z in blade_definition]
         blade_length = spans[-1]
-        base_nz = int(np.ceil(np.diff(spans).mean()))
+        # 0,3125
+        base_nz = int(np.ceil(np.diff(spans).mean())) * 2
+        base_nz = int(np.ceil(np.diff(spans).mean()) / 0.3125)
 
         # Initialize data structures
         points_map = {}
@@ -118,12 +120,75 @@ class BlockMesh:
                 "grading": grading,
             })
 
-        # Add closing section
-        closing_section = deepcopy(blade_definition[-1])
-        for spline in closing_section["splines"].values():
-            spline[:, 2] = blade_length + np.diff(spans).mean()
-        blade_definition.append(closing_section)
-        self.definition = deepcopy(blade_definition)
+        # # Add closing section
+        # n_fit_sections = 10  # usar las últimas 3 secciones para extrapolar la curvatura
+
+        # # Nuevo valor de Z (como antes)
+        # z_last = blade_definition[-1]["splines"]["af"][0, 2]
+        # dz = np.diff(spans).mean()
+        # z_new = z_last + dz
+
+        # # Nueva sección basada en la última
+        # closing_section = deepcopy(blade_definition[-1])
+
+        # # Paso 1: calcular ancho promedio de los últimos 4 'out'
+        # last_out_splines = [
+        #     blade_definition[i]["splines"]["out"] for i in range(-int(n_fit_sections // 2), 0)
+        # ]
+        # widths = []
+        # for out in last_out_splines:
+        #     center = out.mean(axis=0)
+        #     radius = np.linalg.norm(out[:, :2] - center[:2], axis=1)
+        #     widths.append(np.mean(radius))
+        # avg_width = np.mean(widths)
+
+        # # Paso 2: ancho del último perfil
+        # last_out = blade_definition[-1]["splines"]["out"]
+        # center_last = last_out.mean(axis=0)
+        # radius_last = np.linalg.norm(last_out[:, :2] - center_last[:2], axis=1)
+        # width_last = np.mean(radius_last)
+
+        # # Paso 3: calcular factor de escala total
+        # scale_factor = avg_width / width_last
+
+        # # Paso 4: extrapolar cada spline ("af", "bl", "out")
+        # for spline_name, spline in closing_section["splines"].items():
+        #     num_points = spline.shape[0]
+        #     new_spline = np.zeros_like(spline)
+
+        #     for pt_idx in range(num_points):
+        #         x_vals, y_vals, z_vals = [], [], []
+
+        #         for i in range(-n_fit_sections, 0):  # ej: -10 a -1
+        #             pt = blade_definition[i]["splines"][spline_name][pt_idx]
+        #             x_vals.append(pt[0])
+        #             y_vals.append(pt[1])
+        #             z_vals.append(pt[2])
+
+        #         px = np.polyfit(z_vals, x_vals, deg=2)
+        #         py = np.polyfit(z_vals, y_vals, deg=2)
+
+        #         new_spline[pt_idx, 0] = np.polyval(px, z_new)
+        #         new_spline[pt_idx, 1] = np.polyval(py, z_new)
+        #         new_spline[pt_idx, 2] = z_new
+
+        #     closing_section["splines"][spline_name] = new_spline
+
+        # # Paso 5: añadir la nueva sección extrapolada
+        # blade_definition.append(closing_section)
+
+        # # Paso 6: aplicar escalado progresivo a los últimos 3 perfiles 'out' + extrapolado
+        # n_scaled_sections = 2  # últimos 3 + extrapolado
+
+        # # Aplicar el escalado
+        # for i in range(-n_scaled_sections, 0):
+        #     spline = blade_definition[i]["splines"]["out"]
+        #     center = spline.mean(axis=0)
+        #     vectors_xy = spline[:, :2] - center[:2]
+        #     scaled_xy = vectors_xy * scale_factor
+        #     spline[:, :2] = center[:2] + scaled_xy
+
+        # self.definition = deepcopy(blade_definition)
 
         n_sections = len(blade_definition)
 
@@ -132,9 +197,10 @@ class BlockMesh:
             self._process_section(sec, sec_id, points_map, add_point, add_spline)
 
         # Create blocks between sections
-        for sec in range(n_sections - 2):
+        for sec in range(n_sections - 1):
             chord = chords[sec]
-            nz = int(base_nz * (max_chord / chord) ** 1.15)
+            # nz = int(base_nz * (max_chord / chord) ** 1)
+            nz = base_nz
 
             self._create_blocks_between_sections(
                 sec,
@@ -153,32 +219,32 @@ class BlockMesh:
             )
 
         # Create top blocks
-        self._create_blocks_between_sections(
-            n_sections - 2,
-            blade_definition,
-            points_map,
-            boundaries,
-            False,
-            add_block,
-            NY,
-            nz,
-            NX_BL,
-            NX_OUTTER,
-            TOP_BL_GRADING,
-            TOP_OUTTER_GRADING,
-            NY_factor,
-        )
-        self._create_top_blocks(
-            n_sections,
-            blade_definition,
-            points_map,
-            boundaries,
-            add_block,
-            NY,
-            nz,
-            NX_BL,
-            (1, 1, 1),
-        )
+        # self._create_blocks_between_sections(
+        #     n_sections - 2,
+        #     blade_definition,
+        #     points_map,
+        #     boundaries,
+        #     False,
+        #     add_block,
+        #     NY,
+        #     nz,
+        #     NX_BL,
+        #     NX_OUTTER,
+        #     TOP_BL_GRADING,
+        #     TOP_OUTTER_GRADING,
+        #     NY_factor,
+        # )
+        # self._create_top_blocks(
+        #     n_sections,
+        #     blade_definition,
+        #     points_map,
+        #     boundaries,
+        #     add_block,
+        #     NY,
+        #     nz,
+        #     NX_BL,
+        #     (1, 1, 1),
+        # )
 
         return {"points": points, "blocks": blocks, "splines": splines, "boundaries": boundaries}
 
@@ -269,7 +335,7 @@ class BlockMesh:
 
             ny = NY * NY_factor if i in (3, 5) else NY
 
-            if sec != len(blade_definition) - 2:
+            if sec != len(blade_definition):
                 boundaries.append([
                     points_map[f"af-{af_kp_current[i]}-sec-{sec}"],
                     points_map[f"af-{af_kp_current[i + 1]}-sec-{sec}"],
@@ -359,8 +425,8 @@ class BlockMesh:
             points_map[f"bl-{bl_kp_next[0]}-sec-{sec + 1}"],
         ]
 
-        add_block(Bl_blk_0, NX_BL, NY, nz, BL_GRADING)
-        add_block(OUT_blk_0, NX_OUTTER, NY, nz, OUTTER_GRADING)
+        add_block(Bl_blk_0, NX_BL, 10, nz, BL_GRADING)
+        add_block(OUT_blk_0, NX_OUTTER, 10, nz, OUTTER_GRADING)
 
         if close_TE:
             boundaries.append([
@@ -467,9 +533,9 @@ class BlockMesh:
             f.write(");\n\n")
 
             f.write("boundary \n(\n")
-            f.write("    blade \n")
+            f.write("    bladePatch \n")
             f.write("    {\n")
-            f.write("        type wall;\n")
+            f.write("        type patch;\n")
             f.write("        faces\n")
             f.write("        (\n")
             for face in boundaries:

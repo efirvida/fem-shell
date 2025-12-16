@@ -1,0 +1,45 @@
+# Git files
+.git/
+.gitignore
+.gitattributes
+
+# Python cache and build artifacts
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.so
+*.egg
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# IDE and editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Test and coverage files
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+.nox/
+
+# Examples and documentation
+examples/
+README.md
+*.md
+
+# Test files
+tests/
+
+# Temporary files
+*.tmp
+*.log
+*.cache

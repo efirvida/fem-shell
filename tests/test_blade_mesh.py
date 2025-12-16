@@ -2,7 +2,7 @@ import os
 
 import pytest
 
-from fem_shell.models.blade.mesh import Blade, MeshElement, Node
+from fem_shell.models.blade.model import Blade, MeshElement, Node
 
 # Path to the reference directory
 blades_path = os.path.join(
@@ -27,7 +27,7 @@ def reset_counters():
 def test_blade_mesh_generation(blade_file):
     """Test blade mesh generation for all reference turbine YAML files"""
     blade = Blade(blade_file, element_size=0.5)
-    blade.generate()
+    blade.generate_mesh()
 
     # Assertions
     assert blade.mesh.node_count > 0, f"{blade_file} has no nodes"

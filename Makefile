@@ -4,6 +4,8 @@
 
 # Version configurations
 BOOST_VERSION      := 1.81.0
+CGNS_VERSION       := 4.5.0
+CGNSUTILS_VERSION  := 2.8.1
 EIGEN_VERSION      := 3.4.0
 FOAM_VERSION       := 2406
 LIBFFI_VERSION     := 3.4.2
@@ -13,7 +15,8 @@ OMPI_VERSION       := 4.1.8
 OMPI_SHORT_VERSION := $OMPI_VERSION := 4.1.8
 OMPI_SHORT_VERSION := $(word 1,$(subst ., ,$(OMPI_VERSION))).$(word 2,$(subst ., ,$(OMPI_VERSION)))
 OPENSSL_VERSION    := 3.4.1
-PETSC_VERSION      := 3.22.2
+PETSC_VERSION      := 3.21.6
+SLEPC_VERSION      := 3.21.2
 PRECICE_VERSION    := 3.2.0
 PYTHON_VERSION     := 3.12.9
 READLINE_VERSION   := 8.2
@@ -21,6 +24,8 @@ READLINE_VERSION   := 8.2
 # Dependency file names
 BOOST_TAR          := boost_$(subst .,_,$(BOOST_VERSION)).tar.bz2
 BZ2_TAR            := bzip2-master.tar.gz
+CGNS_TAR           := v$(CGNS_VERSION).tar.gz
+CGNSUTILS_TAR      := v$(CGNSUTILS_VERSION).tar.gz
 EIGEN_TAR          := eigen-$(EIGEN_VERSION).tar.gz
 FOAM_TAR           := openfoam-OpenFOAM-v$(FOAM_VERSION).tar.gz
 LIBFFI_TAR         := libffi-$(LIBFFI_VERSION).tar.gz
@@ -32,7 +37,7 @@ PETSC_TAR          := petsc-$(PETSC_VERSION).tar.gz
 PRECICE_TAR        := v$(PRECICE_VERSION).tar.gz
 PYTHON_TAR         := Python-$(PYTHON_VERSION).tgz
 READLINE_TAR       := readline-$(READLINE_VERSION).tar.gz
-SLEPC_TAR          := slepc-$(PETSC_VERSION).tar.gz
+SLEPC_TAR          := slepc-$(SLEPC_VERSION).tar.gz
 
 # Directory configurations
 export PATH            := ${VENV_DIR}/bin:${VENV_DIR}/sbin:/bin:/usr/bin
@@ -44,7 +49,7 @@ SOURCES_DIR := $(PWD)/.sources
 BUILD_DIR   := $(SOURCES_DIR)/build
 
 # Build Commands
-NPROC         := $(nproc)
+NPROC         := 3
 DOWNLOAD      := wget -nc
 MAKE_CMD      := LD_LIBRARY_PATH=$(VENV_DIR)/lib:$(VENV_DIR)/lib64 \
 				 make -j$(NPROC) && \
@@ -82,10 +87,9 @@ export LD_LIBRARY_PATH := $(VENV_DIR)/lib:$(VENV_DIR)/lib64:$(LD_LIBRARY_PATH)
 #-------------------------------------------------------------------------------
 # Main Targets
 #-------------------------------------------------------------------------------
-.PHONY: all clean pip
-.NOTPARALLEL: $(VENV_DIR)/.python.done $(VENV_DIR)/.petsc.done
+.PHONY: all clean pip docker docker-build docker-build-low-memory
 
-all: download_sources python petsc slepc precice openfoam python_env
+all: download_sources python petsc slepc precice openfoam python_env pyhyp
 	pip freeze > requirements.lock
 	@echo "====================================="
 	@echo "# All components built successfully #"
@@ -93,6 +97,17 @@ all: download_sources python petsc slepc precice openfoam python_env
 
 clean:
 	rm -rf $(VENV_DIR) $(SOURCES_DIR)/build $(SOURCES_DIR)/download.done
+
+# Docker targets
+docker-build-low-memory:
+	@echo "Building Docker image with low memory optimizations..."
+	@./build-docker-low-memory.sh
+
+docker-build: docker-build-low-memory
+
+docker:
+	@echo "Starting Docker container..."
+	@docker run --rm -it fem-shell:latest bash
 
 #-------------------------------------------------------------------------------
 # Minimal Targets
@@ -111,6 +126,8 @@ python: $(VENV_DIR)/.python.done
 
 slepc: $(VENV_DIR)/.slepc.done
 
+pyhyp: $(VENV_DIR)/.pyhyp.done
+
 #-------------------------------------------------------------------------------
 # Download sources
 #-------------------------------------------------------------------------------
@@ -126,6 +143,8 @@ $(SOURCES_DIR)/download.done:
 		https://ftp.gnu.org/gnu/ncurses/$(NCURSES_TAR) \
 		https://ftp.gnu.org/gnu/readline/$(READLINE_TAR) \
 		https://github.com/libffi/libffi/releases/download/v$(LIBFFI_VERSION)/$(LIBFFI_TAR) \
+		https://github.com/CGNS/CGNS/archive/refs/tags/$(CGNS_TAR) \
+		https://github.com/mdolab/cgnsutilities/archive/refs/tags/$(CGNSUTILS_TAR) \
 		https://github.com/precice/precice/archive/$(PRECICE_TAR) \
 		https://gitlab.com/bzip2/bzip2/-/archive/master/$(BZ2_TAR) \
 		https://gitlab.com/libeigen/eigen/-/archive/$(EIGEN_VERSION)/$(EIGEN_TAR) \
@@ -222,8 +241,8 @@ $(VENV_DIR)/.python.done: $(SOURCES_DIR)/download.done \
 $(VENV_DIR)/.python_env.done: $(VENV_DIR)/.python.done
 
 	@ln -sf $(VENV_DIR)/bin/pip3 $(VENV_DIR)/bin/pip
-	$(PIP_INSTALL) --upgrade pip setuptools wheel ipython ipykernel jupyterlab pytest pytest-cov
-	$(PIP_INSTALL) mpi4py "petsc4py==$(PETSC_VERSION)" "slepc4py==$(PETSC_VERSION)" pyprecice==$(PRECICE_VERSION)
+	# $(PIP_INSTALL) --upgrade pip setuptools wheel ipython ipykernel jupyterlab pytest pytest-cov
+	$(PIP_INSTALL) mpi4py "petsc4py==$(PETSC_VERSION)" "slepc4py==$(SLEPC_VERSION)" pyprecice==$(PRECICE_VERSION)
 	$(PIP_INSTALL) -e .
 
 	@touch $@
@@ -255,6 +274,8 @@ $(VENV_DIR)/.petsc.done: $(VENV_DIR)/.openmpi.done $(VENV_DIR)/.boost.done
 			--with-mpi-dir=$(VENV_DIR) \
 			--with-debugging=0 \
 			--with-boost-dir=$(VENV_DIR) \
+			--with-fortran-bindings=1 \
+			--with-cxx-dialect=C++11 \
 			--download-fblaslapack \
 			--download-hdf5 \
 			--download-metis \
@@ -405,4 +426,47 @@ $(VENV_DIR)/.openfoam.done:
 		cp -rf platforms/linux64GccDPInt64/scotch*/* $(FOAM_INST_DIR)/openfoam
 
 	rm -rf $(WM_PROJECT_DIR) $(FOAM_INST_DIR)/ThirdParty-v$(FOAM_VERSION)
+	@touch $@
+
+
+#-------------------------------------------------------------------------------
+# pyHyp
+#-------------------------------------------------------------------------------
+
+$(VENV_DIR)/.cgns.done:
+	@echo "Installing CGNS..."
+	@mkdir -p $(BUILD_DIR)/cgns/build
+	@tar -xzf $(SOURCES_DIR)/$(CGNS_TAR) -C $(BUILD_DIR)/cgns --strip-components=1
+	@cd $(BUILD_DIR)/cgns/build && \
+		$(CMAKE_CMD) .. \
+			-DCGNS_ENABLE_FORTRAN=ON \
+			-DCGNS_ENABLE_64BIT=ON \
+			-D CGNS_ENABLE_HDF5=ON \
+			-DCGNS_BUILD_CGNSTOOLS=OFF \
+			-DCMAKE_C_FLAGS="-fPIC" \
+			-DCMAKE_Fortran_FLAGS="-fPIC" && \
+		$(MAKE_CMD)
+	@touch $@
+	
+$(VENV_DIR)/.cgnsutils.done: $(VENV_DIR)/.cgns.done $(VENV_DIR)/.python.done $(VENV_DIR)/.petsc.done
+	@echo "Installing cgnsutils..."
+	@mkdir -p $(BUILD_DIR)/cgnsutils
+	@tar -xzf $(SOURCES_DIR)/$(CGNSUTILS_TAR) -C $(BUILD_DIR)/cgnsutils --strip-components=1
+	@cd $(BUILD_DIR)/cgnsutils && \
+		cp config/defaults/config.LINUX_GFORTRAN.mk config/config.mk && \
+		CGNS_HOME=$(VENV_DIR) make
+	@cd $(BUILD_DIR)/cgnsutils && \
+		CGNS_HOME=$(VENV_DIR) $(PIP_INSTALL) .
+	@touch $@
+	
+$(VENV_DIR)/.pyhyp.done: $(VENV_DIR)/.cgns.done $(VENV_DIR)/.cgnsutils.done $(VENV_DIR)/.python.done $(VENV_DIR)/.petsc.done
+	@echo "Installing pyhyp..."
+	@mkdir -p $(BUILD_DIR)/pyhyp
+	git clone --depth=1 https://github.com/mdolab/pyhyp.git $(BUILD_DIR)/pyhyp || true
+	$(PIP_INSTALL) mdolab-baseclasses
+	@cd $(BUILD_DIR)/pyhyp && \
+		cp config/defaults/config.LINUX_GFORTRAN.mk config/config.mk && \
+		CGNS_HOME=$(VENV_DIR) PETSC_DIR=$(VENV_DIR) make
+	@cd $(BUILD_DIR)/pyhyp && \
+		pip install .
 	@touch $@

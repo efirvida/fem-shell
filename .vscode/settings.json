@@ -35,5 +35,6 @@
         "**/constant/g": "OpenFOAM",
         "**/0/*": "OpenFOAM",
     },
-    "terminal.integrated.defaultProfile.linux": "zsh"
+    "terminal.integrated.defaultProfile.linux": "zsh",
+    "djlint.showInstallError": false
 }

@@ -1,5 +1,5 @@
 # ================== Etapa de construcción ================== #
-FROM python:3.12-slim AS builder
+FROM python:3.12-slim-bookworm AS builder
 
 ARG FOAM_VERSION=2406
 
@@ -17,6 +17,7 @@ RUN apt-get update -y && \
         gfortran \
         git \
         gnuplot \
+        libarpack2-dev \
         libboost-all-dev \
         libcgal-dev \
         libeigen3-dev \
@@ -28,8 +29,10 @@ RUN apt-get update -y && \
         libncurses-dev \
         libreadline-dev \
         libscotch-dev \
+        libspooles-dev \
         libxml2-dev \
         libxt-dev \
+        libyaml-cpp-dev \
         make \
         tar \
         wget \
@@ -80,6 +83,20 @@ RUN pip3 install --no-cache-dir numpy && \
     cmake --build build --parallel $(nproc) && \
     cmake --install build && \
     rm -rf /tmp/precice
+
+WORKDIR /tmp/ccx
+RUN wget http://www.dhondt.de/ccx_2.20.src.tar.bz2 && \
+    wget https://github.com/precice/calculix-adapter/archive/refs/heads/master.tar.gz && \
+    tar xvjf ccx_2.20.src.tar.bz2 && \
+    tar -xzf master.tar.gz && \
+    cd calculix-adapter-master && \
+    sed -i 's/\$(HOME)\/CalculiX\/ccx_\$(CCX_VERSION)\/src/\/tmp\/ccx\/CalculiX\/ccx_2.20\/src/g' Makefile && \
+    sed -i 's#FFLAGS = -Wall -O3 -fopenmp \$(INCLUDES)#FFLAGS = -Wall -O3 -fopenmp -fallow-argument-mismatch \$(INCLUDES)#g'  Makefile && \
+    make clean && \
+    make && \
+    cp bin/ccx_preCICE /usr/local/bin && \
+    chmod +x /usr/local/bin/ccx_preCICE
+    
 
 ARG SOURCES_DIR=/sources
 RUN mkdir -p ${SOURCES_DIR} && \
@@ -167,7 +184,7 @@ RUN find /opt/openfoam -type f -exec strip --strip-unneeded {} \; || true && \
 WORKDIR /workspace
 COPY src /workspace/
 COPY pyproject.toml /workspace/
-RUN pip install --no-cache-dir . && rm -rf *
+RUN pip install --no-cache-dir -e . && rm -rf *
 RUN pip install --no-cache-dir --upgrade pip
 RUN pip install --no-cache-dir \
     ipython \
@@ -175,19 +192,24 @@ RUN pip install --no-cache-dir \
     petsc4py \
     polars \
     pyprecice \
+    precice-cli \
+    trimesh \
     slepc4py
 
 RUN rm -rf /root/.cache/pip /tmp/*
 
 # # ================== Etapa de ejecución ================== #
-FROM python:3.12-slim
+FROM python:3.12-slim-bookworm
 
 ARG FOAM_VERSION=2406
 
 # Dependencias de tiempo de ejecución
 RUN apt-get update -y && \
     apt-get install -y --no-install-recommends \
-        gfortran \
+        libgfortran5 \
+        libarpack2 \
+        libgomp1 \
+        libblas3 \
         libboost-filesystem1.74.0 \
         libboost-log1.74.0 \
         libboost-program-options1.74.0 \
@@ -201,6 +223,7 @@ RUN apt-get update -y && \
         libmetis5 \
         libnl-3-200 \
         libscotch-7.0 \
+        libspooles2.2 \
         libxcursor1 \
         libxft2 \
         libxinerama1 \
@@ -208,6 +231,7 @@ RUN apt-get update -y && \
         libxml2 \
         libxrender1 \
         libxt6 \ 
+        libyaml-cpp0.7 \
         && rm -rf /var/lib/apt/lists/*
 
 # Copiar instalaciones desde el builder

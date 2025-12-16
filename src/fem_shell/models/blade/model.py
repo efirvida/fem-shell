@@ -4,6 +4,7 @@ from typing import Dict, Iterable, List, Set, Tuple, Union
 import matplotlib.pyplot as plt
 import numpy as np
 import shapely as shp
+from scipy.interpolate import CubicSpline
 
 from fem_shell.core.material import Material, OrthotropicMaterial
 from fem_shell.core.mesh import ElementSet, ElementType, MeshElement, MeshModel, Node, NodeSet
@@ -81,8 +82,8 @@ class Blade:
         del spline.
         """
 
-        BL_CHORD_FRACTION = 0.1
-        OUTTER_CHORD_FRACTION = 2
+        BL_CHORD_FRACTION = 0.2
+        OUTTER_CHORD_FRACTION = 0.7
 
         n_points = 500
         n_spline_divisions = 5
@@ -378,13 +379,13 @@ class Blade:
             )
             lower_bl_points_idx = lower_bl_points[:, 0]
 
+            # bl_end_point_idx = bl_spline_x.shape[0] - 3
+            # bl_start_point_idx = 3
+
             bl_end_point_idx = bl_spline_x.size - (
                 (bl_spline_x.size - upper_bl_points_idx[0].astype(int)) // 4
             )
             bl_start_point_idx = lower_bl_points_idx[0].astype(int) // 4
-            # bl_end_point_idx = bl_spline_x.shape[0] - 3
-            # bl_start_point_idx = 3
-
             bl_keypoints = sorted([
                 int(pt)
                 for pt in [
@@ -419,13 +420,12 @@ class Blade:
             )
             lower_outter_points_idx = lower_outter_points[:, 0]
 
+            le_outter_idx = bl_spline_y.size // 2
+
             outter_end_point_idx = (
                 outter_spline_x.size + upper_outter_points_idx[0].astype(int)
             ) // 2
             outter_start_point_idx = lower_outter_points_idx[0].astype(int) // 2
-            # outter_end_point_idx = outter_spline_x.shape[0] - 3
-            # outter_start_point_idx = 3
-            le_outter_idx = bl_spline_y.size // 2
 
             outter_keypoints = sorted([
                 int(pt)
@@ -458,6 +458,10 @@ class Blade:
                     "out": outter_spline,
                 },
             })
+
+        # airfoil_list[-1]["splines"]["out"] = airfoil_list[-2]["splines"]["out"]
+        # airfoil_list[-1]["keypoints"]["out"] = airfoil_list[-2]["keypoints"]["out"]
+
         self.blocks_definition = {
             "chords": self._numad_blade.geometry.ichord,
             "sections": airfoil_list,
@@ -466,20 +470,20 @@ class Blade:
         # Graficar resultados
         # plt.figure(figsize=(8, 6))
 
-        # # PLOT AIRFOIL
-        # plt.plot(airfoil_spline[:, 0], airfoil_spline[:, 1], label="AIRFOIL")
+        # PLOT AIRFOIL
+        # plt.plot(airfoil_spline[:, 0], airfoil_spline[:, 1], "x", label="AIRFOIL")
         # for i, pt in enumerate(airfoil_keypoints):
         #     plt.scatter(airfoil_spline[pt][0], airfoil_spline[pt][1])
         #     plt.text(airfoil_spline[pt][0], airfoil_spline[pt][1], f"{i}", size=20)
 
-        # # PLOT BL
+        # PLOT BL
         # plt.plot(bl_spline[:, 0], bl_spline[:, 1], "b-", label="BL")
         # for i, pt in enumerate(bl_spline):
         #     if i in bl_keypoints:
         #         plt.scatter(pt[0], pt[1])
         #         plt.text(pt[0], bl_spline[i][1], f"{i}")
 
-        # # PLOT OUTTER
+        # PLOT OUTTER
         # plt.plot(outter_spline[:, 0], outter_spline[:, 1], "b-", label="OUTTER DOMAIN")
         # for i, pt in enumerate(outter_spline):
         #     if i in outter_keypoints:

@@ -40,6 +40,25 @@ def yaml_to_blade(blade, filename: str, write_airfoils: bool = False):
     # initialize definition
     definition = Definition()
     blade.definition = definition
+    try:
+        blade.definition.hub_diameter = data["components"]["hub"]["outer_shape_bem"]["diameter"]
+    except:
+        try:
+            blade.definition.hub_diameter = data["components"]["hub"]["diameter"]
+        except KeyError as err:
+            raise err
+    try:
+        blade.definition.rotor_diameter = data["assembly"]["rotor_diameter"]
+    except KeyError:
+        pass
+
+    try:
+        blade.definition.hub_height = data["assembly"]["hub_height"]
+    except KeyError:
+        try:
+            blade.definition.hub_height = blade.definition.rotor_diameter / 2 * 1.3
+        except:
+            pass
 
     # Obtain blade outer shape bem
     blade_outer_shape_bem = data["components"]["blade"]["outer_shape_bem"]
@@ -98,6 +117,11 @@ def yaml_to_blade(blade, filename: str, write_airfoils: bool = False):
     _add_components(definition, blade_internal_structure, blade_structure_dict)
 
     blade.update_blade()
+
+    if not blade.definition.hub_height:
+        blade.definition.rotor_diameter = blade.definition.span[-1] * 2
+        blade.definition.hub_height = blade.definition.rotor_diameter / 2 * 1.3
+
     # save(blade_name)
     # BladeDef_to_NuMADfile(obj,numad_name,matdb_name,numad_af_folder)
     return blade

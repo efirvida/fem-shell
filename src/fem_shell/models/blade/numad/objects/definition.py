@@ -78,6 +78,9 @@ class Definition:
         self.sweep: ndarray = None
         self.teband: float = None
         self.leband: float = None
+        self.rotor_diameter: float = None
+        self.hub_diameter: float = None
+        self.hub_height: float = None
 
         # init properties
         self._natural_offset: int = 1

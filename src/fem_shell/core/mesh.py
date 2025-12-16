@@ -634,7 +634,7 @@ class MeshModel:
             The path to the output file (e.g., "mesh.vtk").
         file_format : str, optional
             The file format to use (default is "vtk").
-            Supported formats: vtk, vtu, msh, etc.
+            Supported formats: vtk, vtu, msh, inp, fmt, etc.
 
         Raises
         ------
@@ -648,8 +648,10 @@ class MeshModel:
         if not self.elements:
             raise ValueError("Mesh has no elements.")
 
-        if filename.endswith("inp"):
+        if filename.endswith(".inp"):
             self.write_ccx_mesh(filename)
+        elif filename.endswith(".msh"):
+            self.write_gmsh_mesh(filename)
         else:
             points = self.coords_array
             cells = []
@@ -658,8 +660,11 @@ class MeshModel:
 
             # Create mesh object and write file
             mesh = meshio.Mesh(points=points, cells=cells)
-            meshio.write(filename, mesh, **kwaargs)
-            print(f"Mesh written to {filename}.")
+            if filename.endswith(".fmt"):
+                self.write_plot3d(mesh, filename)
+            else:
+                meshio.write(filename, mesh, **kwaargs)
+                print(f"Mesh written to {filename}.")
 
     def write_ccx_mesh(self, filename: str):
         ELEMENTS_TO_CALCULIX = {"quad": "S4", "triangle": "S3"}
@@ -718,6 +723,265 @@ class MeshModel:
             f.write("\n********************************\n")
             f.write("**        STEPS SECTION       **\n")
             f.write("********************************\n")
+
+    def write_gmsh_mesh(self, filename: str) -> None:
+        """
+        Write the mesh to a Gmsh MSH file format.
+
+        This method exports the mesh in Gmsh format (.msh) including physical groups
+        for node sets and element sets, allowing further manipulation in Gmsh software.
+
+        Parameters
+        ----------
+        filename : str
+            The path to the output file (should end with .msh).
+
+        Notes
+        -----
+        - Element sets are exported as physical surfaces
+        - Node sets are exported as physical points
+        - Uses Gmsh MSH file format version 4.1
+        - Element types mapping:
+            - triangle (3 nodes) -> Gmsh type 2
+            - triangle6 (6 nodes) -> Gmsh type 9
+            - quad (4 nodes) -> Gmsh type 3
+            - quad8 (8 nodes) -> Gmsh type 16
+            - quad9 (9 nodes) -> Gmsh type 10
+        """
+        # Gmsh element type mapping
+        ELEMENT_TYPE_TO_GMSH = {
+            ElementType.triangle: 2,    # 3-node triangle
+            ElementType.triangle6: 9,   # 6-node second order triangle
+            ElementType.quad: 3,        # 4-node quadrangle
+            ElementType.quad8: 16,      # 8-node second order quadrangle
+            ElementType.quad9: 10,      # 9-node second order quadrangle
+        }
+
+        if not self.nodes:
+            raise ValueError("Mesh has no nodes.")
+        if not self.elements:
+            raise ValueError("Mesh has no elements.")
+
+        # Create node ID mapping (internal ID -> 1-based index for Gmsh)
+        node_id_to_gmsh = {node.id: i + 1 for i, node in enumerate(self.nodes)}
+
+        with open(filename, "wt") as f:
+            # Write MeshFormat section
+            f.write("$MeshFormat\n")
+            f.write("4.1 0 8\n")  # version 4.1, ASCII, size_t = 8
+            f.write("$EndMeshFormat\n")
+
+            # Write PhysicalNames section if there are sets
+            physical_names = []
+            physical_tag = 1
+
+            # Element sets as surfaces (dimension 2)
+            elset_tags = {}
+            for name in self.element_sets.keys():
+                physical_names.append((2, physical_tag, name))
+                elset_tags[name] = physical_tag
+                physical_tag += 1
+
+            # Node sets as points (dimension 0)
+            nset_tags = {}
+            for name in self.node_sets.keys():
+                physical_names.append((0, physical_tag, name))
+                nset_tags[name] = physical_tag
+                physical_tag += 1
+
+            if physical_names:
+                f.write("$PhysicalNames\n")
+                f.write(f"{len(physical_names)}\n")
+                for dim, tag, name in physical_names:
+                    f.write(f"{dim} {tag} \"{name}\"\n")
+                f.write("$EndPhysicalNames\n")
+
+            # Write Entities section
+            # Count entities needed
+            num_points = len(self.node_sets)
+            num_surfaces = max(1, len(self.element_sets))  # At least 1 surface for all elements
+
+            f.write("$Entities\n")
+            f.write(f"{num_points} 0 {num_surfaces} 0\n")  # numPoints numCurves numSurfaces numVolumes
+
+            # Write point entities (for node sets)
+            point_tag = 1
+            nset_entity_tags = {}
+            for name, node_set in self.node_sets.items():
+                if node_set.nodes:
+                    # Get bounding box of node set
+                    coords = np.array([node.coords for node in node_set.nodes.values()])
+                    min_coords = coords.min(axis=0)
+                    max_coords = coords.max(axis=0)
+                    center = (min_coords + max_coords) / 2
+                    f.write(f"{point_tag} {center[0]} {center[1]} {center[2]} 1 {nset_tags[name]}\n")
+                    nset_entity_tags[name] = point_tag
+                    point_tag += 1
+
+            # Write surface entities
+            surface_tag = 1
+            elset_entity_tags = {}
+            coords = self.coords_array
+            min_coords = coords.min(axis=0)
+            max_coords = coords.max(axis=0)
+
+            if self.element_sets:
+                for name, element_set in self.element_sets.items():
+                    # Surface entity with physical tag
+                    f.write(f"{surface_tag} {min_coords[0]} {min_coords[1]} {min_coords[2]} ")
+                    f.write(f"{max_coords[0]} {max_coords[1]} {max_coords[2]} ")
+                    f.write(f"1 {elset_tags[name]} 0\n")
+                    elset_entity_tags[name] = surface_tag
+                    surface_tag += 1
+            else:
+                # Single surface entity for all elements
+                f.write(f"1 {min_coords[0]} {min_coords[1]} {min_coords[2]} ")
+                f.write(f"{max_coords[0]} {max_coords[1]} {max_coords[2]} 0 0\n")
+
+            f.write("$EndEntities\n")
+
+            # Write Nodes section
+            f.write("$Nodes\n")
+            # numEntityBlocks numNodes minNodeTag maxNodeTag
+            f.write(f"1 {len(self.nodes)} 1 {len(self.nodes)}\n")
+            # Entity block: entityDim entityTag parametric numNodesInBlock
+            f.write(f"2 1 0 {len(self.nodes)}\n")
+            # Node tags
+            for i, node in enumerate(self.nodes):
+                f.write(f"{i + 1}\n")
+            # Node coordinates
+            for node in self.nodes:
+                f.write(f"{node.x} {node.y} {node.z}\n")
+            f.write("$EndNodes\n")
+
+            # Write Elements section
+            f.write("$Elements\n")
+
+            # Group elements by type and entity
+            element_blocks = []
+
+            if self.element_sets:
+                # Create blocks for each element set
+                for name, element_set in self.element_sets.items():
+                    # Group elements by type within this set
+                    elements_by_type = {}
+                    for el in element_set.elements:
+                        if el.element_type not in elements_by_type:
+                            elements_by_type[el.element_type] = []
+                        elements_by_type[el.element_type].append(el)
+
+                    for el_type, elements in elements_by_type.items():
+                        gmsh_type = ELEMENT_TYPE_TO_GMSH.get(el_type)
+                        if gmsh_type:
+                            element_blocks.append({
+                                'entity_tag': elset_entity_tags[name],
+                                'gmsh_type': gmsh_type,
+                                'elements': elements
+                            })
+
+                # Add elements not in any set
+                elements_in_sets = set()
+                for el_set in self.element_sets.values():
+                    elements_in_sets.update(el.id for el in el_set.elements)
+
+                elements_not_in_sets = [el for el in self.elements if el.id not in elements_in_sets]
+                if elements_not_in_sets:
+                    elements_by_type = {}
+                    for el in elements_not_in_sets:
+                        if el.element_type not in elements_by_type:
+                            elements_by_type[el.element_type] = []
+                        elements_by_type[el.element_type].append(el)
+
+                    for el_type, elements in elements_by_type.items():
+                        gmsh_type = ELEMENT_TYPE_TO_GMSH.get(el_type)
+                        if gmsh_type:
+                            element_blocks.append({
+                                'entity_tag': 1,  # Default entity
+                                'gmsh_type': gmsh_type,
+                                'elements': elements
+                            })
+            else:
+                # No element sets, group all elements by type
+                elements_by_type = {}
+                for el in self.elements:
+                    if el.element_type not in elements_by_type:
+                        elements_by_type[el.element_type] = []
+                    elements_by_type[el.element_type].append(el)
+
+                for el_type, elements in elements_by_type.items():
+                    gmsh_type = ELEMENT_TYPE_TO_GMSH.get(el_type)
+                    if gmsh_type:
+                        element_blocks.append({
+                            'entity_tag': 1,
+                            'gmsh_type': gmsh_type,
+                            'elements': elements
+                        })
+
+            # Count total elements
+            total_elements = sum(len(block['elements']) for block in element_blocks)
+
+            # numEntityBlocks numElements minElementTag maxElementTag
+            f.write(f"{len(element_blocks)} {total_elements} 1 {total_elements}\n")
+
+            element_tag = 1
+            for block in element_blocks:
+                # entityDim entityTag elementType numElementsInBlock
+                f.write(f"2 {block['entity_tag']} {block['gmsh_type']} {len(block['elements'])}\n")
+                for el in block['elements']:
+                    node_ids_gmsh = " ".join(str(node_id_to_gmsh[nid]) for nid in el.node_ids)
+                    f.write(f"{element_tag} {node_ids_gmsh}\n")
+                    element_tag += 1
+
+            f.write("$EndElements\n")
+
+            # Write NodeData section for node sets (as point data)
+            if self.node_sets:
+                f.write("$NodeData\n")
+                f.write("1\n")  # one string tag
+                f.write("\"NodeSets\"\n")  # name of the view
+                f.write("1\n")  # one real tag
+                f.write("0.0\n")  # time value
+                f.write("3\n")  # three integer tags
+                f.write("0\n")  # time step index
+                f.write("1\n")  # number of field components
+                f.write(f"{len(self.nodes)}\n")  # number of nodes
+
+                # Assign a value to each node based on which set it belongs to
+                node_values = {}
+                for i, node in enumerate(self.nodes):
+                    node_values[node.id] = 0  # Default value
+
+                set_value = 1
+                for name, node_set in self.node_sets.items():
+                    for node_id in node_set.node_ids:
+                        node_values[node_id] = set_value
+                    set_value += 1
+
+                for i, node in enumerate(self.nodes):
+                    f.write(f"{i + 1} {node_values[node.id]}\n")
+
+                f.write("$EndNodeData\n")
+
+        print(f"Gmsh mesh written to {filename}")
+
+    def write_plot3d(self, mesh, filename: str):
+        """
+        Write the mesh to filename in PLOT3D format
+        """
+        points = mesh.points
+        imax = np.unique(points[:, 0]).size
+        jmax = np.unique(points[:, 1]).size
+        kmax = np.unique(points[:, 2]).size
+        _2d = kmax == 1
+        with open(filename, "w") as p3dfile:
+            if not _2d:
+                print(imax, jmax, kmax, file=p3dfile)
+                for value in points.flatten(order="F"):
+                    print(value, file=p3dfile)
+            else:
+                print(imax, jmax, file=p3dfile)
+                for value in points[:, 0:2].flatten(order="F"):
+                    print(value, file=p3dfile)
 
     def translate_mesh(
         self,
