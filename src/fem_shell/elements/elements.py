@@ -103,21 +103,17 @@ class ElementFactory:
     def get_element(
         element_family: ElementFamily, mesh_element: MeshElement, **kwargs
     ) -> FemElement | bool:
-        from .MITC4 import MITC4, MITC4Layered
+        from .MITC4 import MITC4Plus
         from .QUAD import QUAD4, QUAD8, QUAD9
 
-        SHELL_ELEMENT_MAP = {4: MITC4}
-        LAYERED_SHELL_ELEMENT_MAP = {4: MITC4Layered}
+        SHELL_ELEMENT_MAP = {4: MITC4Plus}
         PLANE_ELEMENT_MAP = {4: QUAD4, 8: QUAD8, 9: QUAD9}
 
         node_ids = mesh_element.node_ids
         node_coords = mesh_element.node_coords
         try:
             if element_family == ElementFamily.SHELL:
-                if "layers" in kwargs:
-                    element = LAYERED_SHELL_ELEMENT_MAP[mesh_element.node_count]
-                else:
-                    element = SHELL_ELEMENT_MAP[mesh_element.node_count]
+                element = SHELL_ELEMENT_MAP[mesh_element.node_count]
             elif element_family == ElementFamily.PLANE:
                 element = PLANE_ELEMENT_MAP[mesh_element.node_count]
             else:
