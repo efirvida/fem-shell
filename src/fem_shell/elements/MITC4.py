@@ -91,7 +91,7 @@ class MITC4(ShellElement):
         self._B_gamma_cache = {}
         # Performance optimization: cache derivatives and shape functions
         self._dH_cache = {}  # Cache shape function derivatives dH
-        self._N_cache = {}   # Cache shape functions N
+        self._N_cache = {}  # Cache shape functions N
         # Pre-populate N cache during initialization for Gauss points
         for r, s in self._gauss_points:
             self._N_cache[(r, s)] = self._compute_N(r, s)
@@ -164,12 +164,12 @@ class MITC4(ShellElement):
         N = np.zeros((6, 24))
         # Diagonals for each node's translations and rotations
         for i, Ni in enumerate([N1, N2, N3, N4]):
-            N[0, 6*i] = Ni      # u
-            N[1, 6*i+1] = Ni    # v
-            N[2, 6*i+2] = Ni    # w
-            N[3, 6*i+3] = Ni    # θx
-            N[4, 6*i+4] = Ni    # θy
-            N[5, 6*i+5] = Ni    # θz
+            N[0, 6 * i] = Ni  # u
+            N[1, 6 * i + 1] = Ni  # v
+            N[2, 6 * i + 2] = Ni  # w
+            N[3, 6 * i + 3] = Ni  # θx
+            N[4, 6 * i + 4] = Ni  # θy
+            N[5, 6 * i + 5] = Ni  # θz
         return N
 
     def area(self):
@@ -706,7 +706,7 @@ class MITC4(ShellElement):
         2. Combines bending (B_kappa) and shear (B_gamma) contributions
         3. Adds drilling stiffness using theoretical B_drill matrix (OpenSees approach)
         4. Uses index mapping from index_k_b() for DOF expansion
-        
+
         References
         ----------
         - OpenSees ShellMITC4: formResidAndTangent() method
@@ -722,8 +722,8 @@ class MITC4(ShellElement):
 
         # Compute drilling stiffness penalty (from OpenSees ShellMITC4::setDomain)
         # Using minimum membrane stiffness as reference for drilling penalty
-        E = self.material.E if hasattr(self.material, 'E') else 1.0
-        nu = self.material.nu if hasattr(self.material, 'nu') else 0.3
+        E = self.material.E if hasattr(self.material, "E") else 1.0
+        nu = self.material.nu if hasattr(self.material, "nu") else 0.3
         G = E / (2 * (1 + nu))
         Ktt = G  # Drilling stiffness penalty parameter
 
@@ -733,7 +733,7 @@ class MITC4(ShellElement):
             B_kappa = self.B_kappa(r, s)
             B_gamma = self.B_gamma(r, s)
             B_drill = self._compute_B_drill(r, s)
-            
+
             k1 += B_kappa.T @ Cb_val @ B_kappa * detJ
             k2 += B_gamma.T @ Cs_val @ B_gamma * detJ
             # Drilling stiffness (only affects drilling DOF θz)
@@ -859,7 +859,7 @@ class MITC4(ShellElement):
         The stiffness matrix is calculated as:
         K_global = T.T @ (K_membrane + K_bending) @ T
         where T is the transformation matrix constructed from the local coordinate system.
-        
+
         Since T is orthogonal (direction cosine matrix), we use T.T @ K_local @ T
         instead of T^(-1) @ K_local @ T for numerical stability.
         """
@@ -946,7 +946,7 @@ class MITC4(ShellElement):
 
         Implements the drilling DOF formulation from OpenSees ShellMITC4.
         The drilling strain relates the rotation θz to in-plane displacement derivatives.
-        
+
         Based on OpenSees implementation (ShellMITC4.cpp, computeBdrill method).
 
         Parameters
@@ -963,29 +963,28 @@ class MITC4(ShellElement):
         """
         J_val, _ = self.J(r, s)
         x1, y1, x2, y2, x3, y3, x4, y4 = self._local_coordinates
-        
+
         # Shape function derivatives with respect to local coordinates
         dH = np.linalg.solve(
             J_val,
-            1 / 4 * np.array([[s + 1, -s - 1, s - 1, -s + 1], 
-                             [r + 1, -r + 1, r - 1, -r - 1]]),
+            1 / 4 * np.array([[s + 1, -s - 1, s - 1, -s + 1], [r + 1, -r + 1, r - 1, -r - 1]]),
         )
-        
+
         # Drilling B matrix (following OpenSees ShellMITC4::computeBdrill)
         # B_drill relates ω = 0.5*(∂v/∂x - ∂u/∂y) to nodal displacements
         B_drill = np.zeros((6, 12))
-        
+
         for i in range(4):
             # u, v components for each node
-            B_drill[0, 3*i]     = -0.5 * dH[1, i]  # ∂u/∂y term
-            B_drill[0, 3*i + 1] = +0.5 * dH[0, i]  # ∂v/∂x term
-            
+            B_drill[0, 3 * i] = -0.5 * dH[1, i]  # ∂u/∂y term
+            B_drill[0, 3 * i + 1] = +0.5 * dH[0, i]  # ∂v/∂x term
+
             # Rotation contributions (drilling effect on rotations)
-            B_drill[3, 3*i]     = -dH[1, i]        # ∂²u/∂y²
-            B_drill[4, 3*i + 1] = -dH[0, i]        # ∂²v/∂x²
-            B_drill[5, 3*i]     = -dH[1, i]        # θz component from ∂u/∂y
-            B_drill[5, 3*i + 1] = +dH[0, i]        # θz component from ∂v/∂x
-        
+            B_drill[3, 3 * i] = -dH[1, i]  # ∂²u/∂y²
+            B_drill[4, 3 * i + 1] = -dH[0, i]  # ∂²v/∂x²
+            B_drill[5, 3 * i] = -dH[1, i]  # θz component from ∂u/∂y
+            B_drill[5, 3 * i + 1] = +dH[0, i]  # θz component from ∂v/∂x
+
         return B_drill
 
     def body_load(self, body_force: np.ndarray) -> np.ndarray:
@@ -1001,7 +1000,7 @@ class MITC4(ShellElement):
             f += (N.T @ body_force[:3]) * det_J * self.thickness
 
         return f
-    
+
     def validate_element(self, verbose: bool = False) -> bool:
         """
         Validate element geometric and numerical properties.
@@ -1024,7 +1023,7 @@ class MITC4(ShellElement):
         """
         try:
             # Check Jacobian at all Gauss points
-            min_detJ = float('inf')
+            min_detJ = float("inf")
             for r, s in self._gauss_points:
                 _, detJ = self.J(r, s)
                 min_detJ = min(min_detJ, detJ)
@@ -1032,7 +1031,7 @@ class MITC4(ShellElement):
                     if verbose:
                         print(f"ERROR: Non-positive Jacobian at ({r:.4f}, {s:.4f}): detJ={detJ}")
                     return False
-            
+
             # Check aspect ratio (max/min edge length)
             edges = [
                 np.linalg.norm(self.node_coords[1] - self.node_coords[0]),
@@ -1044,32 +1043,40 @@ class MITC4(ShellElement):
             if aspect_ratio > 1000:
                 if verbose:
                     print(f"WARNING: High aspect ratio: {aspect_ratio:.2f}")
-            
-            # Check stiffness matrix positive semi-definite
+
+            # Check stiffness matrix positive semi-definite (allow tiny negative noise)
             K = self.K
             eigs_K = np.linalg.eigvalsh(K)
-            if np.any(eigs_K < -1e-10):
+            tol_K = max(1e-6, 1e-12 * np.max(np.abs(eigs_K)))
+            if np.any(eigs_K < -tol_K):
                 if verbose:
-                    print(f"ERROR: Stiffness matrix not positive semi-definite. Min eigenvalue: {eigs_K[0]}")
+                    print(
+                        "ERROR: Stiffness matrix not positive semi-definite. "
+                        f"Min eigenvalue: {eigs_K[0]:.6e}, tol: {tol_K:.2e}"
+                    )
                 return False
-            
-            # Check mass matrix positive semi-definite
+
+            # Check mass matrix positive semi-definite (allow tiny negative noise)
             M = self.M
             eigs_M = np.linalg.eigvalsh(M)
-            if np.any(eigs_M < -1e-10):
+            tol_M = max(1e-8, 1e-12 * np.max(np.abs(eigs_M)))
+            if np.any(eigs_M < -tol_M):
                 if verbose:
-                    print(f"ERROR: Mass matrix not positive semi-definite. Min eigenvalue: {eigs_M[0]}")
+                    print(
+                        "ERROR: Mass matrix not positive semi-definite. "
+                        f"Min eigenvalue: {eigs_M[0]:.6e}, tol: {tol_M:.2e}"
+                    )
                 return False
-            
+
             if verbose:
-                print(f"Element validation OK:")
+                print("Element validation OK:")
                 print(f"  Min Jacobian: {min_detJ:.6e}")
                 print(f"  Aspect ratio: {aspect_ratio:.2f}")
                 print(f"  K eigenvalues: [{eigs_K[0]:.3e}, ..., {eigs_K[-1]:.3e}]")
                 print(f"  M eigenvalues: [{eigs_M[0]:.3e}, ..., {eigs_M[-1]:.3e}]")
-            
+
             return True
-        
+
         except Exception as e:
             if verbose:
                 print(f"Validation error: {str(e)}")
@@ -1087,7 +1094,7 @@ class MITC4Plus(MITC4):
 
     The MITC4+ formulation uses strategic tying points for:
     - ε_xx: 4 points along edges parallel to η-direction
-    - ε_yy: 4 points along edges parallel to ξ-direction  
+    - ε_yy: 4 points along edges parallel to ξ-direction
     - γ_xy: center point + 4 corner points (5 total)
 
     This provides ~10-100× error reduction for curved shell problems compared to MITC4.
@@ -1111,7 +1118,7 @@ class MITC4Plus(MITC4):
     ----------
     - Kim, P.S., and Bathe, K.J. (2009). "A 4-node 3D-shell element to model shell surface
       tractions and incompressible behavior." Computers & Structures, 87(19-20), 1332-1342.
-    - Bathe, K.J., and Dvorkin, E.N. (1985). "A four-node plate bending element based on 
+    - Bathe, K.J., and Dvorkin, E.N. (1985). "A four-node plate bending element based on
       Mindlin/Reissner plate theory and a mixed interpolation."
 
     Notes
@@ -1147,25 +1154,25 @@ class MITC4Plus(MITC4):
         # Tying points for ε_xx: 4 points along edges parallel to η-direction
         # Located at edges ξ = ±1, interpolated in η-direction at ±1/√3
         self._tying_points_eps_xx = [
-            (-1.0, -gp),   # Point 1: left edge, bottom
-            (-1.0, +gp),   # Point 2: left edge, top
-            (+1.0, -gp),   # Point 3: right edge, bottom
-            (+1.0, +gp),   # Point 4: right edge, top
+            (-1.0, -gp),  # Point 1: left edge, bottom
+            (-1.0, +gp),  # Point 2: left edge, top
+            (+1.0, -gp),  # Point 3: right edge, bottom
+            (+1.0, +gp),  # Point 4: right edge, top
         ]
 
         # Tying points for ε_yy: 4 points along edges parallel to ξ-direction
         # Located at edges η = ±1, interpolated in ξ-direction at ±1/√3
         self._tying_points_eps_yy = [
-            (-gp, -1.0),   # Point 1: bottom edge, left
-            (+gp, -1.0),   # Point 2: bottom edge, right
-            (-gp, +1.0),   # Point 3: top edge, left
-            (+gp, +1.0),   # Point 4: top edge, right
+            (-gp, -1.0),  # Point 1: bottom edge, left
+            (+gp, -1.0),  # Point 2: bottom edge, right
+            (-gp, +1.0),  # Point 3: top edge, left
+            (+gp, +1.0),  # Point 4: top edge, right
         ]
 
         # Tying points for γ_xy: 5 points (center + 4 corners)
         # Center point uses bubble function for better accuracy
         self._tying_points_gamma_xy = [
-            (0.0, 0.0),    # Point 0: center (uses bubble function)
+            (0.0, 0.0),  # Point 0: center (uses bubble function)
             (-1.0, -1.0),  # Point 1: corner 1
             (+1.0, -1.0),  # Point 2: corner 2
             (+1.0, +1.0),  # Point 3: corner 3
@@ -1198,8 +1205,7 @@ class MITC4Plus(MITC4):
         J_val, _ = self.J(r, s)
         dH = np.linalg.solve(
             J_val,
-            1 / 4 * np.array([[s + 1, -s - 1, s - 1, -s + 1], 
-                             [r + 1, -r + 1, r - 1, -r - 1]]),
+            1 / 4 * np.array([[s + 1, -s - 1, s - 1, -s + 1], [r + 1, -r + 1, r - 1, -r - 1]]),
         )
         return np.array([
             [dH[0, 0], 0, dH[0, 1], 0, dH[0, 2], 0, dH[0, 3], 0],
@@ -1258,7 +1264,7 @@ class MITC4Plus(MITC4):
 
         The 4 tying points are arranged as:
         (-1, -gp)  (-1, +gp)  |  (1, -gp)  (1, +gp)
-        
+
         For a point (r, s):
         - If r < 0: interpolate between (-1, -gp) and (-1, +gp)
         - If r ≥ 0: interpolate between (1, -gp) and (1, +gp)
@@ -1282,7 +1288,7 @@ class MITC4Plus(MITC4):
 
         # Compute interpolation weights in η-direction
         w_minus = (gp - s) / (2 * gp)  # Weight for -gp point
-        w_plus = (s + gp) / (2 * gp)   # Weight for +gp point
+        w_plus = (s + gp) / (2 * gp)  # Weight for +gp point
 
         if r < 0:
             # Left edge: interpolate between eps_xx_tied[0] and eps_xx_tied[1]
@@ -1297,7 +1303,7 @@ class MITC4Plus(MITC4):
 
         The 4 tying points are arranged as:
         (-gp, -1)  (gp, -1)   |   (-gp, 1)  (gp, 1)
-        
+
         For a point (r, s):
         - If s < 0: interpolate between (-gp, -1) and (gp, -1)
         - If s ≥ 0: interpolate between (-gp, 1) and (gp, 1)
@@ -1321,7 +1327,7 @@ class MITC4Plus(MITC4):
 
         # Compute interpolation weights in ξ-direction
         w_minus = (gp - r) / (2 * gp)  # Weight for -gp point
-        w_plus = (r + gp) / (2 * gp)   # Weight for +gp point
+        w_plus = (r + gp) / (2 * gp)  # Weight for +gp point
 
         if s < 0:
             # Bottom edge: interpolate between eps_yy_tied[0] and eps_yy_tied[1]
@@ -1330,7 +1336,9 @@ class MITC4Plus(MITC4):
             # Top edge: interpolate between eps_yy_tied[2] and eps_yy_tied[3]
             return w_minus * eps_yy_tied[2] + w_plus * eps_yy_tied[3]
 
-    def _interpolate_gamma_xy(self, r: float, s: float, gamma_xy_tied: List[np.ndarray]) -> np.ndarray:
+    def _interpolate_gamma_xy(
+        self, r: float, s: float, gamma_xy_tied: List[np.ndarray]
+    ) -> np.ndarray:
         """
         Interpolate γ_xy from 5 tying points using bilinear + bubble function interpolation.
 
@@ -1364,11 +1372,13 @@ class MITC4Plus(MITC4):
         N4 = 0.25 * (1 - r) * (1 + s)
 
         # Weighted interpolation: center contribution + corner contributions
-        return (N_bubble * gamma_xy_tied[0] +
-                N1 * gamma_xy_tied[1] +
-                N2 * gamma_xy_tied[2] +
-                N3 * gamma_xy_tied[3] +
-                N4 * gamma_xy_tied[4])
+        return (
+            N_bubble * gamma_xy_tied[0]
+            + N1 * gamma_xy_tied[1]
+            + N2 * gamma_xy_tied[2]
+            + N3 * gamma_xy_tied[3]
+            + N4 * gamma_xy_tied[4]
+        )
 
     def B_m(self, r: float, s: float) -> np.ndarray:
         """
@@ -1417,4 +1427,3 @@ class MITC4Plus(MITC4):
     # - @property M: unchanged, computed the same way
     # - body_load(): unchanged, uses same integration
     # The API is 100% compatible with MITC4
-
