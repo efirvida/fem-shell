@@ -15,8 +15,8 @@ OMPI_VERSION       := 4.1.8
 OMPI_SHORT_VERSION := $OMPI_VERSION := 4.1.8
 OMPI_SHORT_VERSION := $(word 1,$(subst ., ,$(OMPI_VERSION))).$(word 2,$(subst ., ,$(OMPI_VERSION)))
 OPENSSL_VERSION    := 3.4.1
-PETSC_VERSION      := 3.21.6
-SLEPC_VERSION      := 3.21.2
+PETSC_VERSION      := 3.24.2
+SLEPC_VERSION      := 3.24.1
 PRECICE_VERSION    := 3.2.0
 PYTHON_VERSION     := 3.12.9
 READLINE_VERSION   := 8.2
@@ -175,7 +175,9 @@ endef
 # Python Build
 #-------------------------------------------------------------------------------
 $(eval $(call build-library,libffi,$(LIBFFI_TAR),--disable-dependency-tracking))
-$(eval $(call build-library,ncurses,$(NCURSES_TAR),--with-shared --with-termlib --without-debug))
+# ncurses: disable C++ bindings to avoid libstdc++ conflicts on modern compilers
+# Also skip ADA to speed up and reduce toolchain requirements
+$(eval $(call build-library,ncurses,$(NCURSES_TAR),--with-shared --with-termlib --without-debug --without-cxx --without-cxx-binding --without-ada))
 
 $(VENV_DIR)/.openssl.done: $(SOURCES_DIR)/download.done
 	@echo "Building OpenSSL..."
@@ -201,34 +203,49 @@ $(VENV_DIR)/.readline.done: $(SOURCES_DIR)/download.done $(VENV_DIR)/.ncurses.do
 	@mkdir -p $(BUILD_DIR)/readline
 	@tar -xzf $(SOURCES_DIR)/$(READLINE_TAR) -C $(BUILD_DIR)/readline --strip-components=1
 	@cd $(BUILD_DIR)/readline && \
-		$(CONFIGURE_CMD) LDFLAGS="-L$(VENV_DIR)/lib -lncurses" --with-curses --enable-shared && \
-		$(MAKE_CMD)
+		CC=gcc \
+		LD_LIBRARY_PATH=$(VENV_DIR)/lib:$(VENV_DIR)/lib64 \
+		LDFLAGS="-L$(VENV_DIR)/lib -L$(VENV_DIR)/lib64 -Wl,-rpath,$(VENV_DIR)/lib:$(VENV_DIR)/lib64" \
+		CPPFLAGS="-I$(VENV_DIR)/include -I$(VENV_DIR)/include/ncurses" \
+		TERMCAP_LIB=-ltinfo \
+		./configure --prefix=$(VENV_DIR) --with-curses --enable-shared && \
+		LD_LIBRARY_PATH=$(VENV_DIR)/lib:$(VENV_DIR)/lib64 CPPFLAGS="-I$(VENV_DIR)/include -I$(VENV_DIR)/include/ncurses" make -j$(NPROC) && \
+		LD_LIBRARY_PATH=$(VENV_DIR)/lib:$(VENV_DIR)/lib64 make -C shlib clean && \
+		LD_LIBRARY_PATH=$(VENV_DIR)/lib:$(VENV_DIR)/lib64 make -C shlib -j$(NPROC) SHLIB_LIBS="-ltinfo -lncurses" && \
+		LD_LIBRARY_PATH=$(VENV_DIR)/lib:$(VENV_DIR)/lib64 make -C shlib DESTDIR= install && \
+		LD_LIBRARY_PATH=$(VENV_DIR)/lib:$(VENV_DIR)/lib64 make install PREFIX=$(VENV_DIR)
 	@touch $@
 	
-$(VENV_DIR)/.sqlite.done: $(SOURCES_DIR)/download.done
+$(VENV_DIR)/.sqlite.done: $(SOURCES_DIR)/download.done $(VENV_DIR)/.readline.done
 	@echo "Building SQlite..."
 	@mkdir -p $(BUILD_DIR)/sqlite
 	@tar -xzf $(SOURCES_DIR)/sqlite-autoconf-3490100.tar.gz -C $(BUILD_DIR)/sqlite --strip-components=1
 	@cd $(BUILD_DIR)/sqlite && \
-		$(CONFIGURE_CMD) --enable-shared --enable-readline && \
-		$(MAKE_CMD)
+		LD_LIBRARY_PATH=$(VENV_DIR)/lib:$(VENV_DIR)/lib64 \
+		CPPFLAGS="-I$(VENV_DIR)/include -I$(VENV_DIR)/include/ncurses" \
+		LDFLAGS="-L$(VENV_DIR)/lib -L$(VENV_DIR)/lib64 -Wl,-rpath,$(VENV_DIR)/lib:$(VENV_DIR)/lib64" \
+		LIBS="-lreadline -lncurses -ltinfo -lpthread -ldl -lz -lm" \
+		./configure --prefix=$(VENV_DIR) --enable-shared --enable-readline && \
+		LD_LIBRARY_PATH=$(VENV_DIR)/lib:$(VENV_DIR)/lib64 make -j$(NPROC) && \
+		LD_LIBRARY_PATH=$(VENV_DIR)/lib:$(VENV_DIR)/lib64 make install PREFIX=$(VENV_DIR)
 	@touch $@
 
 $(VENV_DIR)/.python.done: $(SOURCES_DIR)/download.done \
 	$(VENV_DIR)/.readline.done \
 	$(VENV_DIR)/.bz2.done \
 	$(VENV_DIR)/.libffi.done \
-	$(VENV_DIR)/.openssl.done \
 	$(VENV_DIR)/.sqlite.done
 	@echo "Building Python $(PYTHON_VERSION)..."
 	@mkdir -p $(BUILD_DIR)/python
 	@tar -xzf $(SOURCES_DIR)/$(PYTHON_TAR) -C $(BUILD_DIR)/python --strip-components=1
 	@cd $(BUILD_DIR)/python && \
-		$(CONFIGURE_CMD) \
+		LD_LIBRARY_PATH=$(VENV_DIR)/lib:$(VENV_DIR)/lib64 \
+		LDFLAGS="-L$(VENV_DIR)/lib -L$(VENV_DIR)/lib64 -Wl,-rpath,$(VENV_DIR)/lib:$(VENV_DIR)/lib64" \
+		CPPFLAGS="-I$(VENV_DIR)/include" \
+		./configure --prefix=$(VENV_DIR) \
 			--enable-optimizations \
 			--enable-shared \
 			--disable-test-modules \
-			--with-openssl=$(VENV_DIR) \
 			--with-readline=readline \
 			--with-ensurepip=install
 	@cd $(BUILD_DIR)/python && $(MAKE_CMD)
@@ -277,14 +294,9 @@ $(VENV_DIR)/.petsc.done: $(VENV_DIR)/.openmpi.done $(VENV_DIR)/.boost.done
 			--with-fortran-bindings=1 \
 			--with-cxx-dialect=C++11 \
 			--download-fblaslapack \
-			--download-hdf5 \
 			--download-metis \
-			--download-hypre \
-			--download-scalapack \
-			--download-mumps \
-			--download-superlu_dist \
 			--download-fftw \
-			--download-parmetis \
+			--download-ptscotch \
 			--download-zlib && \
 		make LD_LIBRARY_PATH=$(VENV_DIR)/lib:$(VENV_DIR)/lib64 -j$(NPROC) PETSC_DIR=$(BUILD_DIR)/petsc all && \
 		make LD_LIBRARY_PATH=$(VENV_DIR)/lib:$(VENV_DIR)/lib64 PETSC_DIR=$(BUILD_DIR)/petsc install
@@ -295,7 +307,7 @@ $(VENV_DIR)/.slepc.done: $(VENV_DIR)/.petsc.done
 	@mkdir -p $(BUILD_DIR)/slepc
 	@tar -xzf $(SOURCES_DIR)/$(SLEPC_TAR) -C $(BUILD_DIR)/slepc --strip-components=1
 	@cd $(BUILD_DIR)/slepc && \
-		PETSC_DIR=$(VENV_DIR) SLEPC_DIR=$(BUILD_DIR)/slepc $(CONFIGURE_CMD) --with-scalapack && \
+		PETSC_DIR=$(VENV_DIR) SLEPC_DIR=$(BUILD_DIR)/slepc $(CONFIGURE_CMD) && \
 		make  LD_LIBRARY_PATH=$(VENV_DIR)/lib:$(VENV_DIR)/lib64 -j$(NPROC) PETSC_DIR=$(VENV_DIR) SLEPC_DIR=$(BUILD_DIR)/slepc all && \
 		make  LD_LIBRARY_PATH=$(VENV_DIR)/lib:$(VENV_DIR)/lib64 -j$(NPROC) PETSC_DIR=$(VENV_DIR) SLEPC_DIR=$(BUILD_DIR)/slepc install
 	@touch $@

@@ -8,6 +8,7 @@ authors = [
 dependencies = [
     "gmsh>=4.13.1",
     "matplotlib>=3.10.1",
+  "polars>=0.20.0",
     "meshio>=5.3.5",
     "nevergrad>=1.0.11",
     "numpy>=2.2.5",
