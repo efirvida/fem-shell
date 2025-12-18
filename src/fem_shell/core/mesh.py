@@ -750,11 +750,11 @@ class MeshModel:
         """
         # Gmsh element type mapping
         ELEMENT_TYPE_TO_GMSH = {
-            ElementType.triangle: 2,    # 3-node triangle
-            ElementType.triangle6: 9,   # 6-node second order triangle
-            ElementType.quad: 3,        # 4-node quadrangle
-            ElementType.quad8: 16,      # 8-node second order quadrangle
-            ElementType.quad9: 10,      # 9-node second order quadrangle
+            ElementType.triangle: 2,  # 3-node triangle
+            ElementType.triangle6: 9,  # 6-node second order triangle
+            ElementType.quad: 3,  # 4-node quadrangle
+            ElementType.quad8: 16,  # 8-node second order quadrangle
+            ElementType.quad9: 10,  # 9-node second order quadrangle
         }
 
         if not self.nodes:
@@ -793,7 +793,7 @@ class MeshModel:
                 f.write("$PhysicalNames\n")
                 f.write(f"{len(physical_names)}\n")
                 for dim, tag, name in physical_names:
-                    f.write(f"{dim} {tag} \"{name}\"\n")
+                    f.write(f'{dim} {tag} "{name}"\n')
                 f.write("$EndPhysicalNames\n")
 
             # Write Entities section
@@ -802,7 +802,9 @@ class MeshModel:
             num_surfaces = max(1, len(self.element_sets))  # At least 1 surface for all elements
 
             f.write("$Entities\n")
-            f.write(f"{num_points} 0 {num_surfaces} 0\n")  # numPoints numCurves numSurfaces numVolumes
+            f.write(
+                f"{num_points} 0 {num_surfaces} 0\n"
+            )  # numPoints numCurves numSurfaces numVolumes
 
             # Write point entities (for node sets)
             point_tag = 1
@@ -814,7 +816,9 @@ class MeshModel:
                     min_coords = coords.min(axis=0)
                     max_coords = coords.max(axis=0)
                     center = (min_coords + max_coords) / 2
-                    f.write(f"{point_tag} {center[0]} {center[1]} {center[2]} 1 {nset_tags[name]}\n")
+                    f.write(
+                        f"{point_tag} {center[0]} {center[1]} {center[2]} 1 {nset_tags[name]}\n"
+                    )
                     nset_entity_tags[name] = point_tag
                     point_tag += 1
 
@@ -874,9 +878,9 @@ class MeshModel:
                         gmsh_type = ELEMENT_TYPE_TO_GMSH.get(el_type)
                         if gmsh_type:
                             element_blocks.append({
-                                'entity_tag': elset_entity_tags[name],
-                                'gmsh_type': gmsh_type,
-                                'elements': elements
+                                "entity_tag": elset_entity_tags[name],
+                                "gmsh_type": gmsh_type,
+                                "elements": elements,
                             })
 
                 # Add elements not in any set
@@ -896,9 +900,9 @@ class MeshModel:
                         gmsh_type = ELEMENT_TYPE_TO_GMSH.get(el_type)
                         if gmsh_type:
                             element_blocks.append({
-                                'entity_tag': 1,  # Default entity
-                                'gmsh_type': gmsh_type,
-                                'elements': elements
+                                "entity_tag": 1,  # Default entity
+                                "gmsh_type": gmsh_type,
+                                "elements": elements,
                             })
             else:
                 # No element sets, group all elements by type
@@ -912,13 +916,13 @@ class MeshModel:
                     gmsh_type = ELEMENT_TYPE_TO_GMSH.get(el_type)
                     if gmsh_type:
                         element_blocks.append({
-                            'entity_tag': 1,
-                            'gmsh_type': gmsh_type,
-                            'elements': elements
+                            "entity_tag": 1,
+                            "gmsh_type": gmsh_type,
+                            "elements": elements,
                         })
 
             # Count total elements
-            total_elements = sum(len(block['elements']) for block in element_blocks)
+            total_elements = sum(len(block["elements"]) for block in element_blocks)
 
             # numEntityBlocks numElements minElementTag maxElementTag
             f.write(f"{len(element_blocks)} {total_elements} 1 {total_elements}\n")
@@ -927,7 +931,7 @@ class MeshModel:
             for block in element_blocks:
                 # entityDim entityTag elementType numElementsInBlock
                 f.write(f"2 {block['entity_tag']} {block['gmsh_type']} {len(block['elements'])}\n")
-                for el in block['elements']:
+                for el in block["elements"]:
                     node_ids_gmsh = " ".join(str(node_id_to_gmsh[nid]) for nid in el.node_ids)
                     f.write(f"{element_tag} {node_ids_gmsh}\n")
                     element_tag += 1
@@ -938,7 +942,7 @@ class MeshModel:
             if self.node_sets:
                 f.write("$NodeData\n")
                 f.write("1\n")  # one string tag
-                f.write("\"NodeSets\"\n")  # name of the view
+                f.write('"NodeSets"\n')  # name of the view
                 f.write("1\n")  # one real tag
                 f.write("0.0\n")  # time value
                 f.write("3\n")  # three integer tags
@@ -1693,6 +1697,451 @@ class BoxSurfaceMesh:
         """Creates a unit cube (1x1x1) centered at origin"""
         return cls(
             (0, 0, 0), (1, 1, 1), divisions, divisions, divisions, quadratic, triangular
+        ).generate()
+
+
+class MultiFlapMesh:
+    """
+    Generates a structured 2D mesh for multiple flaps connected to a common base.
+
+    The geometry consists of:
+    - A horizontal base (rectangle) at y=0 with fixed boundary condition
+    - Multiple vertical flaps extending upward from the base
+
+    This allows the solver to handle a single connected mesh instead of
+    multiple independent meshes.
+
+    Parameters
+    ----------
+    n_flaps : int
+        Number of flaps
+    flap_width : float
+        Width of each flap (X direction)
+    flap_height : float
+        Height of each flap (Y direction)
+    x_spacing : float
+        Spacing between consecutive flaps (edge to edge)
+    base_height : float
+        Height of the base strip (Y direction)
+    nx_flap : int
+        Number of divisions in X direction for each flap
+    ny_flap : int
+        Number of divisions in Y direction for each flap
+    nx_base_segment : int
+        Number of divisions in X for base segments between flaps
+    ny_base : int
+        Number of divisions in Y for the base
+    quadratic : bool
+        Use quadratic elements (default: False)
+    """
+
+    def __init__(
+        self,
+        n_flaps: int,
+        flap_width: float,
+        flap_height: float,
+        x_spacing: float,
+        base_height: float = 0.05,
+        nx_flap: int = 4,
+        ny_flap: int = 20,
+        nx_base_segment: int = 10,
+        ny_base: int = 2,
+        quadratic: bool = False,
+    ):
+        self.n_flaps = n_flaps
+        self.flap_width = flap_width
+        self.flap_height = flap_height
+        self.x_spacing = x_spacing
+        self.base_height = base_height
+        self.nx_flap = nx_flap
+        self.ny_flap = ny_flap
+        self.nx_base_segment = nx_base_segment
+        self.ny_base = ny_base
+        self.quadratic = quadratic
+
+        # Storage for geometry entities
+        self.points = {}
+        self.lines = {}
+        self.surfaces = {}
+        self.flap_surfaces = []
+        self.base_surfaces = []
+
+    def _calculate_positions(self) -> List[dict]:
+        """Calculate X positions of all flaps centered around x=0"""
+        total_width = self.n_flaps * self.flap_width + (self.n_flaps - 1) * self.x_spacing
+        x_start = -total_width / 2
+
+        positions = []
+        for i in range(self.n_flaps):
+            x_left = x_start + i * (self.flap_width + self.x_spacing)
+            positions.append({
+                "index": i + 1,
+                "x_left": x_left,
+                "x_right": x_left + self.flap_width,
+            })
+        return positions
+
+    def generate(self) -> "MeshModel":
+        """Generates and returns the MeshModel instance"""
+        gmsh.initialize()
+        try:
+            gmsh.option.setNumber("General.Terminal", 0)
+            gmsh.model.add("multiflap")
+
+            self._create_geometry()
+            gmsh.model.geo.synchronize()
+
+            self._configure_mesh()
+            gmsh.model.mesh.generate(2)
+            gmsh.model.mesh.optimize()
+
+            return self._create_mesh_model()
+        finally:
+            gmsh.finalize()
+
+    def _create_geometry(self):
+        """Create the multi-flap geometry with base"""
+        flap_positions = self._calculate_positions()
+
+        # Y coordinates
+        y_base_bottom = -self.base_height
+        y_base_top = 0.0
+        y_flap_top = self.flap_height
+
+        # Calculate total base width (from leftmost to rightmost point)
+        x_left_total = flap_positions[0]["x_left"]
+        x_right_total = flap_positions[-1]["x_right"]
+
+        # Create points for the entire structure
+        point_id = 1
+
+        # Bottom base points (y = -base_height)
+        base_bottom_points = []
+        x_coords = [x_left_total]
+        for fp in flap_positions:
+            x_coords.extend([fp["x_left"], fp["x_right"]])
+        x_coords.append(x_right_total)
+        x_coords = sorted(set(x_coords))  # Remove duplicates
+
+        for x in x_coords:
+            self.points[f"bb_{point_id}"] = gmsh.model.geo.addPoint(x, y_base_bottom, 0)
+            base_bottom_points.append((x, self.points[f"bb_{point_id}"]))
+            point_id += 1
+
+        # Base top / Flap bottom points (y = 0)
+        base_top_points = []
+        for x in x_coords:
+            self.points[f"bt_{point_id}"] = gmsh.model.geo.addPoint(x, y_base_top, 0)
+            base_top_points.append((x, self.points[f"bt_{point_id}"]))
+            point_id += 1
+
+        # Flap top points (y = flap_height) - only at flap positions
+        flap_top_points = []
+        for fp in flap_positions:
+            p_left = gmsh.model.geo.addPoint(fp["x_left"], y_flap_top, 0)
+            p_right = gmsh.model.geo.addPoint(fp["x_right"], y_flap_top, 0)
+            self.points[f"ft_{fp['index']}_left"] = p_left
+            self.points[f"ft_{fp['index']}_right"] = p_right
+            flap_top_points.append({
+                "index": fp["index"],
+                "x_left": fp["x_left"],
+                "x_right": fp["x_right"],
+                "p_left": p_left,
+                "p_right": p_right,
+            })
+
+        # Create lines and surfaces
+        self._create_base_structure(base_bottom_points, base_top_points, flap_positions)
+        self._create_flaps(base_top_points, flap_top_points, flap_positions)
+
+        # Add physical groups
+        self._add_physical_groups(flap_positions)
+
+    def _create_base_structure(self, base_bottom_points, base_top_points, flap_positions):
+        """Create the base horizontal strip"""
+        # Create horizontal lines at bottom and top of base
+        bottom_lines = []
+        top_lines = []
+
+        for i in range(len(base_bottom_points) - 1):
+            l_bottom = gmsh.model.geo.addLine(
+                base_bottom_points[i][1], base_bottom_points[i + 1][1]
+            )
+            l_top = gmsh.model.geo.addLine(base_top_points[i][1], base_top_points[i + 1][1])
+            bottom_lines.append(l_bottom)
+            top_lines.append(l_top)
+
+        # Create vertical lines connecting bottom to top
+        vertical_lines = []
+        for i in range(len(base_bottom_points)):
+            l_vert = gmsh.model.geo.addLine(base_bottom_points[i][1], base_top_points[i][1])
+            vertical_lines.append(l_vert)
+
+        # Create base surfaces (segments between vertical lines)
+        for i in range(len(bottom_lines)):
+            loop = gmsh.model.geo.addCurveLoop([
+                bottom_lines[i],
+                vertical_lines[i + 1],
+                -top_lines[i],
+                -vertical_lines[i],
+            ])
+            surf = gmsh.model.geo.addPlaneSurface([loop])
+            self.base_surfaces.append(surf)
+
+        self.lines["base_bottom"] = bottom_lines
+        self.lines["base_top"] = top_lines
+        self.lines["base_vertical"] = vertical_lines
+
+    def _create_flaps(self, base_top_points, flap_top_points, flap_positions):
+        """Create the vertical flaps extending from the base"""
+        # Create a lookup for base_top points by x coordinate
+        base_top_lookup = {round(x, 10): p for x, p in base_top_points}
+
+        for ftp in flap_top_points:
+            idx = ftp["index"]
+            x_left = round(ftp["x_left"], 10)
+            x_right = round(ftp["x_right"], 10)
+
+            # Get base top points for this flap
+            p_base_left = base_top_lookup[x_left]
+            p_base_right = base_top_lookup[x_right]
+
+            # Flap top points
+            p_top_left = ftp["p_left"]
+            p_top_right = ftp["p_right"]
+
+            # Create flap lines - counter-clockwise orientation starting from base_left
+            l_left = gmsh.model.geo.addLine(p_base_left, p_top_left)  # going up
+            l_top = gmsh.model.geo.addLine(p_top_left, p_top_right)  # going right
+            l_right = gmsh.model.geo.addLine(p_top_right, p_base_right)  # going down
+            l_bottom = gmsh.model.geo.addLine(
+                p_base_right, p_base_left
+            )  # going left (back to start)
+
+            # Create flap surface - use positive orientations since lines are already CCW
+            loop = gmsh.model.geo.addCurveLoop([l_left, l_top, l_right, l_bottom])
+            surf = gmsh.model.geo.addPlaneSurface([loop])
+
+            self.flap_surfaces.append({
+                "index": idx,
+                "surface": surf,
+                "l_left": l_left,
+                "l_top": l_top,
+                "l_right": l_right,
+                "l_bottom": l_bottom,
+            })
+
+    def _add_physical_groups(self, flap_positions):
+        """Add physical groups for boundary conditions"""
+        # Base bottom (fixed/clamped boundary)
+        all_bottom_lines = self.lines["base_bottom"]
+        gmsh.model.addPhysicalGroup(1, all_bottom_lines, name="base_bottom")
+
+        # Left and right edges of base
+        gmsh.model.addPhysicalGroup(1, [self.lines["base_vertical"][0]], name="base_left")
+        gmsh.model.addPhysicalGroup(1, [self.lines["base_vertical"][-1]], name="base_right")
+
+        # Each flap gets its own physical groups for coupling
+        for flap_data in self.flap_surfaces:
+            idx = flap_data["index"]
+            gmsh.model.addPhysicalGroup(1, [flap_data["l_left"]], name=f"flap{idx}_left")
+            gmsh.model.addPhysicalGroup(1, [flap_data["l_top"]], name=f"flap{idx}_top")
+            gmsh.model.addPhysicalGroup(1, [flap_data["l_right"]], name=f"flap{idx}_right")
+            gmsh.model.addPhysicalGroup(2, [flap_data["surface"]], name=f"flap{idx}")
+
+        # All flap coupling surfaces (for FSI)
+        all_flap_left = [f["l_left"] for f in self.flap_surfaces]
+        all_flap_top = [f["l_top"] for f in self.flap_surfaces]
+        all_flap_right = [f["l_right"] for f in self.flap_surfaces]
+        gmsh.model.addPhysicalGroup(1, all_flap_left, name="flaps_left")
+        gmsh.model.addPhysicalGroup(1, all_flap_top, name="flaps_top")
+        gmsh.model.addPhysicalGroup(1, all_flap_right, name="flaps_right")
+
+        # All surfaces
+        all_surfaces = self.base_surfaces + [f["surface"] for f in self.flap_surfaces]
+        gmsh.model.addPhysicalGroup(2, all_surfaces, name="all_surfaces")
+
+    def _configure_mesh(self):
+        """Configure mesh parameters"""
+        # Set transfinite curves for base
+        for line in self.lines["base_bottom"]:
+            # Determine nx based on segment type
+            gmsh.model.mesh.setTransfiniteCurve(line, self.nx_base_segment + 1)
+
+        for line in self.lines["base_top"]:
+            gmsh.model.mesh.setTransfiniteCurve(line, self.nx_base_segment + 1)
+
+        for line in self.lines["base_vertical"]:
+            gmsh.model.mesh.setTransfiniteCurve(line, self.ny_base + 1)
+
+        # Set transfinite for base surfaces
+        for surf in self.base_surfaces:
+            gmsh.model.mesh.setTransfiniteSurface(surf)
+            gmsh.model.mesh.setRecombine(2, surf)
+
+        # Set transfinite curves for flaps
+        for flap_data in self.flap_surfaces:
+            gmsh.model.mesh.setTransfiniteCurve(flap_data["l_left"], self.ny_flap + 1)
+            gmsh.model.mesh.setTransfiniteCurve(flap_data["l_right"], self.ny_flap + 1)
+            gmsh.model.mesh.setTransfiniteCurve(flap_data["l_top"], self.nx_flap + 1)
+            gmsh.model.mesh.setTransfiniteCurve(flap_data["l_bottom"], self.nx_flap + 1)
+
+            gmsh.model.mesh.setTransfiniteSurface(flap_data["surface"])
+            gmsh.model.mesh.setRecombine(2, flap_data["surface"])
+
+        # Mesh algorithm
+        gmsh.option.setNumber("Mesh.Algorithm", 8)
+        gmsh.option.setNumber("Mesh.RecombineAll", 1)
+
+        if self.quadratic:
+            gmsh.option.setNumber("Mesh.ElementOrder", 2)
+
+    def _create_mesh_model(self) -> "MeshModel":
+        """Converts Gmsh mesh to MeshModel instance"""
+        mesh_model = MeshModel()
+
+        # Get 2D elements
+        elementTypes, elementTags, nodeTags = gmsh.model.mesh.getElements(2)
+
+        # Build set of geometric node tags (corner nodes)
+        geometric_node_tags = set()
+        for et, conn in zip(elementTypes, nodeTags):
+            props = gmsh.model.mesh.getElementProperties(et)
+            total_nodes = props[3]
+            e_type = ELEMENT_NODES_MAP[total_nodes]
+            if e_type in (ElementType.quad, ElementType.quad8, ElementType.quad9):
+                num_corners = 4
+            elif e_type in (ElementType.triangle, ElementType.triangle6):
+                num_corners = 3
+            else:
+                raise ValueError(f"Unsupported element type: {e_type}")
+            geometric_node_tags.update(
+                nodeTags[0].reshape(-1, total_nodes)[:, :num_corners].flatten()
+            )
+
+        # Get all nodes
+        node_tags, coords, _ = gmsh.model.mesh.getNodes()
+        coords = np.array(coords).reshape(-1, 3)
+
+        # Create mapping from Gmsh node tags to MeshModel node IDs
+        self._gmsh_tag_to_id = {}
+        for i, (tag, coord) in enumerate(zip(node_tags, coords)):
+            is_geometric = tag in geometric_node_tags
+            mesh_model.add_node(Node(coord, geometric_node=is_geometric))
+            self._gmsh_tag_to_id[int(tag)] = i
+
+        # Add elements
+        self._add_elements(mesh_model)
+
+        # Create node sets
+        self._create_node_sets(mesh_model)
+
+        return mesh_model
+
+    def _add_elements(self, mesh_model: "MeshModel"):
+        """Add elements to the mesh model"""
+        elem_types = gmsh.model.mesh.getElementTypes()
+        for elem_type in elem_types:
+            elem_props = gmsh.model.mesh.getElementProperties(elem_type)
+            if elem_props[1] == 2:  # 2D elements
+                _, elem_node_tags = gmsh.model.mesh.getElementsByType(elem_type)
+                num_nodes = elem_props[3]
+                connectivity = elem_node_tags.reshape(-1, num_nodes)
+
+                for nodes in connectivity:
+                    # Use the mapping from Gmsh tags to MeshModel IDs
+                    node_objs = [
+                        mesh_model.get_node_by_id(self._gmsh_tag_to_id[int(nt)]) for nt in nodes
+                    ]
+
+                    # Check orientation and fix if needed (ensure CCW)
+                    if len(node_objs) >= 4:
+                        coords = [n.coords[:2] for n in node_objs[:4]]
+                        # Compute signed area using shoelace formula
+                        area = 0.0
+                        for i in range(4):
+                            j = (i + 1) % 4
+                            area += coords[i][0] * coords[j][1]
+                            area -= coords[j][0] * coords[i][1]
+                        # If negative (clockwise), flip orientation
+                        if area < 0:
+                            if len(node_objs) == 4:  # QUAD4
+                                node_objs = [node_objs[0], node_objs[3], node_objs[2], node_objs[1]]
+                            elif len(node_objs) == 8:  # QUAD8
+                                node_objs = [
+                                    node_objs[0],
+                                    node_objs[3],
+                                    node_objs[2],
+                                    node_objs[1],
+                                    node_objs[7],
+                                    node_objs[6],
+                                    node_objs[5],
+                                    node_objs[4],
+                                ]
+                            elif len(node_objs) == 9:  # QUAD9
+                                node_objs = [
+                                    node_objs[0],
+                                    node_objs[3],
+                                    node_objs[2],
+                                    node_objs[1],
+                                    node_objs[7],
+                                    node_objs[6],
+                                    node_objs[5],
+                                    node_objs[4],
+                                    node_objs[8],
+                                ]
+
+                    e_type = ELEMENT_NODES_MAP.get(len(nodes), ElementType.quad)
+                    mesh_model.add_element(MeshElement(nodes=node_objs, element_type=e_type))
+
+    def _create_node_sets(self, mesh_model: "MeshModel"):
+        """Create node sets for boundaries"""
+        physical_groups = gmsh.model.getPhysicalGroups()
+
+        for dim, tag in physical_groups:
+            name = gmsh.model.getPhysicalName(dim, tag)
+            if dim == 1 and name:  # Line boundaries with valid names
+                node_tags = gmsh.model.mesh.getNodesForPhysicalGroup(dim, tag)[0]
+                # Use the mapping from Gmsh tags to MeshModel IDs
+                node_ids = [self._gmsh_tag_to_id[int(nt)] for nt in node_tags]
+                node_objs = {mesh_model.get_node_by_id(nid) for nid in node_ids}
+                mesh_model.add_node_set(NodeSet(name=name, nodes=node_objs))
+
+        # Add "all" node set
+        all_nodes = {node for node in mesh_model.nodes}
+        mesh_model.add_node_set(NodeSet(name="all", nodes=all_nodes))
+
+        # Add "bottom" alias for base_bottom (for compatibility)
+        if "base_bottom" in mesh_model.node_sets:
+            bottom_nodes = mesh_model.node_sets["base_bottom"].nodes
+            mesh_model.add_node_set(NodeSet(name="bottom", nodes=set(bottom_nodes.values())))
+
+    @classmethod
+    def create_from_config(
+        cls,
+        n_flaps: int,
+        flap_width: float,
+        flap_height: float,
+        x_spacing: float,
+        base_height: float = 0.05,
+        nx_flap: int = 4,
+        ny_flap: int = 20,
+        nx_base_segment: int = 10,
+        ny_base: int = 2,
+        quadratic: bool = False,
+    ) -> "MeshModel":
+        """Create multi-flap mesh from parameters"""
+        return cls(
+            n_flaps=n_flaps,
+            flap_width=flap_width,
+            flap_height=flap_height,
+            x_spacing=x_spacing,
+            base_height=base_height,
+            nx_flap=nx_flap,
+            ny_flap=ny_flap,
+            nx_base_segment=nx_base_segment,
+            ny_base=ny_base,
+            quadratic=quadratic,
         ).generate()
 
 
