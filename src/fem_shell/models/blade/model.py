@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-from typing import Dict, Iterable, List, Set, Tuple, Union
+from typing import Dict, Iterable, List, Optional, Tuple, Union
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -7,67 +7,70 @@ import shapely as shp
 from scipy.interpolate import CubicSpline
 
 from fem_shell.core.material import Material, OrthotropicMaterial
-from fem_shell.core.mesh import ElementSet, ElementType, MeshElement, MeshModel, Node, NodeSet
+from fem_shell.core.mesh import MeshModel
+from fem_shell.core.mesh.generators import BladeMesh, RotorMesh
 from fem_shell.core.viewer import BladeGeometryVisualizer
 from fem_shell.elements import ElementFamily
-from fem_shell.models.blade.numad import Blade as numadBlade
-from fem_shell.models.blade.numad.mesh_gen import get_shell_mesh
 
 
 class Blade:
+    """
+    Wind turbine blade model with mesh generation and visualization capabilities.
+
+    This class wraps the BladeMesh generator and provides additional
+    functionality for blade visualization and geometry inspection.
+
+    Parameters
+    ----------
+    blade_yaml : str
+        Path to the blade YAML definition file
+    element_size : float, optional
+        Target element size for meshing (default: 0.1)
+    n_samples : int, optional
+        Number of samples for airfoil discretization (default: 300)
+    """
+
     def __init__(self, blade_yaml: str, element_size: float = 0.1, n_samples: int = 300) -> None:
         self.yaml_file = blade_yaml
-        self._numad_blade = numadBlade()
-        self._numad_blade.read_yaml(self.yaml_file)
-        self.mesh = MeshModel()
-
         self.element_size = element_size
         self.n_samples = n_samples
-        self._numad_mesh: Dict[str, Iterable[Union[List, Set, np.ndarray]]] = {}
 
-        for stat in self._numad_blade.definition.stations:
-            stat.airfoil.resample(n_samples=n_samples)
+        self._mesh_generator: Optional[BladeMesh] = None
+        self.mesh: Optional[MeshModel] = None
+        self._numad_mesh: Dict = {}
+        self._numad_blade = None
 
-    def generate_mesh(self):
-        self._numad_blade.update_blade()
-        n_stations = self._numad_blade.geometry.coordinates.shape[2]
-        min_TE_lengths = 0.001 * np.ones(n_stations)
-        self._numad_blade.expand_blade_geometry_te(min_TE_lengths)
-        self._numad_mesh = get_shell_mesh(self._numad_blade, self.element_size)
+    def generate_mesh(self, renumber: Optional[str] = None):
+        """
+        Generate the blade mesh from the YAML definition.
 
-        for node in self._numad_mesh["nodes"]:
-            self.mesh.add_node(Node(node))
-
-        for node_ids in self._numad_mesh["elements"]:
-            if node_ids[3] == -1:
-                element_type = ElementType.triangle
-                node_ids = node_ids[:3]
-            else:
-                element_type = ElementType.quad
-            node_objs = [self.mesh.get_node_by_id(n_id) for n_id in node_ids]
-            self.mesh.add_element(MeshElement(nodes=node_objs, element_type=element_type))
-
-        for element_set in self._numad_mesh["sets"]["element"]:
-            name = element_set["name"]
-            elements = {self.mesh.get_element_by_id(i) for i in element_set["labels"]}
-            self.mesh.add_element_set(ElementSet(name=name, elements=elements))
-
-        for node_set in self._numad_mesh["sets"]["node"]:
-            name = node_set["name"]
-            nodes = {self.mesh.get_node_by_id(i) for i in node_set["labels"]}
-            self.mesh.add_node_set(NodeSet(name=name, nodes=nodes))
-
-        for element_set in [
-            eset for eset in self.mesh.element_sets.values() if "all" in eset.name.lower()
-        ]:
-            name = element_set.name.replace("Els", "Nods")
-            nodes = {node for element in element_set.elements for node in element.nodes}
-            self.mesh.add_node_set(NodeSet(name=name, nodes=nodes))
+        Parameters
+        ----------
+        renumber : str, optional
+            Renumbering algorithm to apply after mesh generation.
+            - None (default): No renumbering
+            - "simple": Direct index assignment
+            - "rcm": Reverse Cuthill-McKee for bandwidth reduction
+        """
+        self._mesh_generator = BladeMesh(
+            yaml_file=self.yaml_file,
+            element_size=self.element_size,
+            n_samples=self.n_samples,
+        )
+        self.mesh = self._mesh_generator.generate(renumber=renumber, verbose=True)
+        self._numad_mesh = self._mesh_generator.numad_mesh_data
+        self._numad_blade = self._mesh_generator.numad_blade
 
     def view(self) -> None:
+        """Visualize the blade mesh."""
+        if self.mesh is None:
+            raise RuntimeError("Mesh has not been generated yet. Call generate_mesh() first.")
         self.mesh.view()
 
     def show_plots(self) -> None:
+        """Display blade geometry plots."""
+        if self._numad_blade is None:
+            raise RuntimeError("Mesh has not been generated yet. Call generate_mesh() first.")
         visualizer = BladeGeometryVisualizer(self._numad_blade)
         visualizer.plot_airfoil_type_distribution()
         visualizer.plot_chord_distribution()
@@ -76,11 +79,19 @@ class Blade:
         visualizer.plot_twist_distribution()
         plt.show()
 
+    def write_mesh(self, filename: str, **kwargs) -> None:
+        """Write the blade mesh to a file."""
+        if self.mesh is None:
+            raise RuntimeError("Mesh has not been generated yet. Call generate_mesh() first.")
+        self.mesh.write_mesh(filename, **kwargs)
+
     def generate_blocks_sections(self):
         """Genera la estructura completa de datos para perfiles aerodinámicos y cilindros,
         estableciendo el Leading Edge (LE) como el punto medio entre los puntos centrales
         del spline.
         """
+        if self._numad_blade is None or self._numad_mesh is None:
+            raise RuntimeError("Mesh has not been generated yet. Call generate_mesh() first.")
 
         BL_CHORD_FRACTION = 0.2
         OUTTER_CHORD_FRACTION = 0.7
@@ -492,6 +503,75 @@ class Blade:
 
         # plt.gca().set_aspect("equal")
         # plt.show()
+
+
+class Rotor:
+    """
+    Wind turbine rotor model with mesh generation capabilities.
+
+    This class wraps the RotorMesh generator and provides additional
+    functionality for rotor visualization.
+
+    Parameters
+    ----------
+    blade_yaml : str
+        Path to the blade YAML definition file
+    n_blades : int
+        Number of blades in the rotor
+    hub_radius : float, optional
+        Radial distance from rotation axis to blade root
+    element_size : float, optional
+        Target element size for meshing (default: 0.1)
+    n_samples : int, optional
+        Number of samples for airfoil discretization (default: 300)
+    """
+
+    def __init__(
+        self,
+        blade_yaml: str,
+        n_blades: int,
+        hub_radius: Optional[float] = None,
+        element_size: float = 0.1,
+        n_samples: int = 300,
+    ) -> None:
+        self.blade_yaml = blade_yaml
+        self.n_blades = n_blades
+        self.hub_radius = hub_radius
+        self.element_size = element_size
+        self.n_samples = n_samples
+
+        self._mesh_generator: Optional[RotorMesh] = None
+        self.mesh: Optional[MeshModel] = None
+
+    def generate_mesh(self, renumber: Optional[str] = None):
+        """
+        Generate the rotor mesh.
+
+        Parameters
+        ----------
+        renumber : str, optional
+            Renumbering algorithm to apply after mesh generation.
+        """
+        self._mesh_generator = RotorMesh(
+            yaml_file=self.blade_yaml,
+            n_blades=self.n_blades,
+            hub_radius=self.hub_radius,
+            element_size=self.element_size,
+            n_samples=self.n_samples,
+        )
+        self.mesh = self._mesh_generator.generate(renumber=renumber, verbose=True)
+
+    def view(self) -> None:
+        """Visualize the rotor mesh."""
+        if self.mesh is None:
+            raise RuntimeError("Mesh has not been generated yet. Call generate_mesh() first.")
+        self.mesh.view()
+
+    def write_mesh(self, filename: str, **kwargs) -> None:
+        """Write the rotor mesh to a file."""
+        if self.mesh is None:
+            raise RuntimeError("Mesh has not been generated yet. Call generate_mesh() first.")
+        self.mesh.write_mesh(filename, **kwargs)
 
 
 def material_factory(

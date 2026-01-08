@@ -1,5 +1,5 @@
 import os
-from typing import Dict, Iterable, List, Tuple
+from typing import Dict, Iterable, List, Optional, Tuple
 
 import matplotlib.pyplot as plt
 import meshio
@@ -11,6 +11,7 @@ from slepc4py import SLEPc
 
 from fem_shell.core.bc import BodyForce, BoundaryConditionManager
 from fem_shell.core.mesh import MeshModel
+from fem_shell.solvers.checkpoint import CheckpointManager
 from fem_shell.solvers.solver import Solver
 
 
@@ -210,6 +211,8 @@ class LinearDynamicSolver(Solver):
         self.critical_dt: float = 0.0
         self.free_dofs = []
         self.comm = MPI.COMM_WORLD
+        self._checkpoint_manager: Optional[CheckpointManager] = None
+        self._init_checkpoint_manager()
 
     def _validate_params(self, params: Dict) -> Dict:
         """Validate and set default solver parameters.
@@ -233,9 +236,40 @@ class LinearDynamicSolver(Solver):
             "use_critical_dt": False,
             "safety_factor": 0.8,
             "output_folder": "results",
+            "write_interval": 0.0,  # Write checkpoint every N seconds (0=disabled)
+            "start_from": "startTime",  # "startTime" or "latestTime"
+            "save_deformed_mesh": True,  # Save deformed mesh in HDF5 format at each checkpoint
+            "deformed_mesh_scale": 1.0,  # Scale factor for displacements when saving deformed mesh
+            "reset_state_on_restart": False,  # If True, zero state vectors when restoring time
+            "start_time": 0.0,  # OpenFOAM-like startTime keyword
+            "write_initial_state": True,  # Write t=0 checkpoint with undeformed mesh (OpenFOAM-like)
         }
 
-        validated = {**defaults, **self.solver_params}
+        # Accept OpenFOAM-style aliases
+        params = dict(self.solver_params)
+        if "startFrom" in params and "start_from" not in params:
+            params["start_from"] = params["startFrom"]
+        if "startTime" in params and "start_time" not in params:
+            params["start_time"] = params["startTime"]
+
+        validated = {**defaults, **params}
+
+        # Convert numeric parameters from strings if needed (YAML can sometimes load as strings)
+        numeric_params = [
+            "beta",
+            "gamma",
+            "eta_m",
+            "eta_k",
+            "safety_factor",
+            "total_time",
+            "time_step",
+            "force_max_cap",
+            "force_ramp_time",
+            "write_interval",
+        ]
+        for param in numeric_params:
+            if param in validated and validated[param] is not None:
+                validated[param] = float(validated[param])
 
         if "total_time" not in validated:
             raise KeyError("'total_time' is a required parameter")
@@ -248,7 +282,134 @@ class LinearDynamicSolver(Solver):
         if validated["safety_factor"] <= 0 or validated["safety_factor"] > 1:
             raise ValueError("Safety factor must be in (0, 1]")
 
+        # Validate write_interval (now float for time-based writing)
+        if validated["write_interval"] < 0:
+            raise ValueError("write_interval must be >= 0")
+
+        # Validate start_from
+        if validated["start_from"] not in ("startTime", "latestTime", "firstTime"):
+            raise ValueError("start_from must be 'startTime', 'latestTime', or 'firstTime'")
+
+        if not isinstance(validated.get("start_time", 0.0), (int, float)):
+            raise ValueError("start_time must be numeric")
+
+        if not isinstance(validated.get("write_initial_state", True), bool):
+            raise ValueError("write_initial_state must be a boolean")
+
         self.solver_params = validated
+
+    def _init_checkpoint_manager(self) -> None:
+        """Initialize checkpoint manager if write_interval > 0 or start_from == 'latestTime'."""
+        write_interval = self.solver_params.get("write_interval", 0)
+        start_from = self.solver_params.get("start_from", "startTime")
+        write_initial_state = self.solver_params.get("write_initial_state", True)
+
+        if write_interval > 0 or start_from in ("latestTime", "firstTime") or write_initial_state:
+            self._checkpoint_manager = CheckpointManager(
+                output_folder=self.solver_params["output_folder"],
+                write_interval=write_interval,
+                mesh_obj=self.mesh_obj,
+                vector_form=self.vector_form,
+                dofs_per_node=self.domain.dofs_per_node,
+                save_deformed_mesh=self.solver_params.get("save_deformed_mesh", True),
+                deformed_mesh_scale=self.solver_params.get("deformed_mesh_scale", 1.0),
+                write_initial_state=write_initial_state,
+            )
+
+    def _try_restore_checkpoint(self) -> Optional[Dict]:
+        """
+        Attempt to restore from latest checkpoint if start_from == 'latestTime'.
+
+        Returns
+        -------
+        dict or None
+            Checkpoint data if restored, None otherwise.
+        """
+        start_from = self.solver_params.get("start_from", "startTime")
+
+        if start_from not in ("latestTime", "firstTime"):
+            return None
+
+        if self._checkpoint_manager is None:
+            return None
+
+        if start_from == "firstTime":
+            checkpoint_info = self._checkpoint_manager.find_first()
+        else:
+            checkpoint_info = self._checkpoint_manager.find_latest()
+        if checkpoint_info is None:
+            print("  ⚠️  No checkpoint found, starting from t=0", flush=True)
+            return None
+
+        print(f"  🔄 Restarting from checkpoint: t={checkpoint_info.time:.6f} s", flush=True)
+
+        # Load checkpoint data
+        checkpoint_data = self._checkpoint_manager.load(checkpoint_info.path)
+
+        # Rebuild PVD to include previous timesteps
+        self._checkpoint_manager.rebuild_pvd_from_disk()
+
+        if start_from == "firstTime":
+            # Only return time metadata; caller may want to start fresh state but continue time
+            return {
+                "t": checkpoint_info.time,
+                "time_step": checkpoint_info.time_step,
+                "dt": checkpoint_data.get("dt", None),
+            }
+
+        return checkpoint_data
+
+    def _handle_checkpoint(
+        self,
+        t: float,
+        time_step: int,
+        dt: float,
+        u_red: np.ndarray,
+        v_red: np.ndarray,
+        a_red: np.ndarray,
+        u_full: np.ndarray,
+        v_full: Optional[np.ndarray] = None,
+        a_full: Optional[np.ndarray] = None,
+    ) -> None:
+        """
+        Handle checkpoint writing if conditions are met.
+
+        Parameters
+        ----------
+        t : float
+            Current physical time.
+        time_step : int
+            Current timestep number.
+        dt : float
+            Time step size.
+        u_red, v_red, a_red : np.ndarray
+            Reduced state vectors (for restart).
+        u_full : np.ndarray
+            Full displacement vector (for VTU).
+        v_full, a_full : np.ndarray, optional
+            Full velocity/acceleration vectors (for VTU).
+        """
+        if self._checkpoint_manager is None:
+            return
+
+        if not self._checkpoint_manager.should_write(t):
+            return
+
+        state = {
+            "u_red": u_red,
+            "v_red": v_red,
+            "a_red": a_red,
+        }
+
+        self._checkpoint_manager.write(
+            t=t,
+            time_step=time_step,
+            dt=dt,
+            state=state,
+            u_full=u_full,
+            v_full=v_full,
+            a_full=a_full,
+        )
 
     def _compute_critical_timestep(self, K: PETSc.Mat, M: PETSc.Mat) -> float:
         """Cálculo del paso crítico usando SLEPc"""
@@ -332,6 +493,10 @@ class LinearDynamicSolver(Solver):
             # 5. Almacenar resultados
             if self.solver_params["save_history"] and self.comm.rank == 0:
                 self._store_results(t, bc_applier.expand_solution(u_new))
+
+        # Finalize checkpoint manager to ensure all async writes complete
+        if self._checkpoint_manager is not None:
+            self._checkpoint_manager.finalize(timeout=60.0)
 
         return u, v, a
 

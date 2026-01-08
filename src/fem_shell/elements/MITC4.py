@@ -13,7 +13,7 @@ Adapted from JaxSSO which is Copyright (c) 2021 Gaoyuan Wu under MIT License.
 This adaptation maintains the same MIT License terms.
 """
 
-from typing import List, Tuple
+from typing import List, Optional, Tuple
 
 import numpy as np
 
@@ -56,7 +56,20 @@ class MITC4(ShellElement):
 
     Notes
     -----
+    **Formulation Assumptions**:
+
+    - **Linear Elasticity**: This element assumes linear elastic material behavior
+      and small strain kinematics. Large displacement/rotation (geometric
+      nonlinearity) is NOT supported by this element formulation.
+
+    - **Reissner-Mindlin Theory**: Suitable for thin to moderately thick shells.
+      Includes transverse shear deformation effects.
+
+    - **Shear Locking Free**: Mixed interpolation of transverse shear strains
+      prevents spurious shear locking in thin shell limit.
+
     The element formulation follows the MITC4 procedure described in:
+
     - Bathe, K.J., and Dvorkin, E.N. (1985). "A four-node plate bending element
       based on Mindlin/Reissner plate theory and a mixed interpolation."
     """
@@ -71,6 +84,7 @@ class MITC4(ShellElement):
         thickness: float,
         kx_mod: float = 1.0,
         ky_mod: float = 1.0,
+        shear_correction_factor: Optional[float] = None,
     ):
         super().__init__(
             "MITC4",
@@ -81,8 +95,23 @@ class MITC4(ShellElement):
             thickness=thickness,
         )
 
+        self.element_type = "MITC4"
         self.kx_mod = kx_mod
         self.ky_mod = ky_mod
+
+        # Shear correction factor priority:
+        # 1. Element constructor parameter (highest)
+        # 2. Material property
+        # 3. Default 5/6 (exact for isotropic rectangular sections)
+        if shear_correction_factor is not None:
+            self._shear_correction_factor = shear_correction_factor
+        elif (
+            hasattr(material, "shear_correction_factor")
+            and material.shear_correction_factor is not None
+        ):
+            self._shear_correction_factor = material.shear_correction_factor
+        else:
+            self._shear_correction_factor = 5.0 / 6.0
 
         gp = 1 / np.sqrt(3)
         self._gauss_points = [(gp, gp), (-gp, gp), (-gp, -gp), (gp, -gp)]
@@ -569,7 +598,7 @@ class MITC4(ShellElement):
         \\[
         C_s = \frac{E h k}{2(1+\nu)} \\mathbf{I}
         \\]
-        where \\( k = \frac{5}{6} \\) is the shear correction factor, \\( h \\) is the thickness,
+        where \\( k \\) is the shear correction factor (default 5/6), \\( h \\) is the thickness,
         \\( E \\) is Young's modulus, and \\( \nu \\) is Poisson's ratio.
 
         For orthotropic materials, the matrix is:
@@ -580,8 +609,19 @@ class MITC4(ShellElement):
         \\end{bmatrix}
         \\]
         where \\( G_{13} \\) and \\( G_{23} \\) are the transverse shear moduli.
+
+        The shear correction factor \\( k \\) can be specified at:
+        1. Element construction (highest priority)
+        2. Material property
+        3. Default value of 5/6 (exact for isotropic rectangular sections)
+
+        Typical values:
+        - Isotropic: 5/6 ≈ 0.833
+        - Unidirectional composite: 0.78-0.85
+        - Quasi-isotropic laminate: 0.70-0.78
+        - Sandwich with soft core: 0.15-0.40
         """
-        k = 5 / 6
+        k = self._shear_correction_factor
         h = self.thickness
 
         if isinstance(self.material, OrthotropicMaterial):
@@ -1082,6 +1122,309 @@ class MITC4(ShellElement):
                 print(f"Validation error: {str(e)}")
             return False
 
+    def compute_geometric_stiffness(
+        self,
+        sigma_membrane: np.ndarray,
+        transform_to_global: bool = True,
+    ) -> np.ndarray:
+        """
+        Compute the geometric stiffness matrix (stress stiffening) for the shell element.
+
+        This method implements the geometric stiffness matrix K_G arising from membrane
+        prestress, which captures the stress-stiffening effect. The formulation follows
+        Ko, Lee & Bathe (2017) "The MITC4+ shell element in geometric nonlinear analysis".
+
+        The geometric stiffness accounts for the effect of in-plane (membrane) stresses
+        on out-of-plane (bending) stiffness. This is essential for:
+        - Rotating structures (centrifugal stiffening)
+        - Prestressed structures
+        - Buckling analysis
+        - Large rotation problems
+
+        Mathematical formulation:
+        K_G = ∫_A B_G^T · S_m · B_G · dA
+
+        where:
+        - B_G: Geometric strain-displacement matrix (relates displacement gradients
+               to nodal DOFs)
+        - S_m: Membrane stress matrix in block diagonal form:
+               S_m = diag([σ], [σ], [σ]) where [σ] = [[σ_xx, σ_xy], [σ_xy, σ_yy]]
+
+        Parameters
+        ----------
+        sigma_membrane : np.ndarray
+            Membrane stress tensor at element centroid, can be:
+            - Shape (3,): Voigt notation [σ_xx, σ_yy, σ_xy] (Pa)
+            - Shape (2, 2): Full tensor [[σ_xx, σ_xy], [σ_xy, σ_yy]] (Pa)
+        transform_to_global : bool, optional
+            If True, transform result to global coordinates. Default True.
+
+        Returns
+        -------
+        np.ndarray
+            24x24 geometric stiffness matrix
+
+        Notes
+        -----
+        The geometric stiffness matrix is symmetric and can be positive or negative
+        depending on the stress state:
+        - Tensile stresses (σ > 0): K_G is positive → increases effective stiffness
+        - Compressive stresses (σ < 0): K_G is negative → decreases effective stiffness
+
+        For rotating blades, centrifugal forces create tensile membrane stresses that
+        stiffen the structure, raising natural frequencies.
+
+        References
+        ----------
+        - Ko, Y., Lee, P.S., and Bathe, K.J. (2017). "The MITC4+ shell element in
+          geometric nonlinear analysis." Computers & Structures, 185, 1-14.
+        - Bathe, K.J. (1996). "Finite Element Procedures", Prentice Hall, Chapter 6.
+        - Cook, R.D. et al. (2001). "Concepts and Applications of Finite Element
+          Analysis", 4th ed., Section 18.2.
+
+        Examples
+        --------
+        >>> # Centrifugal stress from rotation
+        >>> omega = 1.5  # rad/s
+        >>> rho = 1500  # kg/m³
+        >>> r_avg = 50  # m (average radius)
+        >>> sigma_cf = rho * omega**2 * r_avg  # Centrifugal stress (Pa)
+        >>> sigma_membrane = np.array([sigma_cf, 0, 0])  # Tension in radial direction
+        >>> K_G = element.compute_geometric_stiffness(sigma_membrane)
+        """
+        # Convert stress to 2x2 tensor form if given in Voigt notation
+        if sigma_membrane.shape == (3,):
+            sigma_xx, sigma_yy, sigma_xy = sigma_membrane
+            S_2x2 = np.array([[sigma_xx, sigma_xy], [sigma_xy, sigma_yy]])
+        elif sigma_membrane.shape == (2, 2):
+            S_2x2 = sigma_membrane
+        else:
+            raise ValueError(
+                f"sigma_membrane must have shape (3,) or (2,2), got {sigma_membrane.shape}"
+            )
+
+        # Initialize geometric stiffness matrix (24x24)
+        K_G = np.zeros((24, 24))
+
+        # 2x2 Gauss integration
+        for r, s in self._gauss_points:
+            _, detJ = self.J(r, s)
+
+            # Compute geometric B matrix at this Gauss point
+            B_G = self._compute_B_geometric(r, s)
+
+            # Build block diagonal stress matrix S_m (6x6)
+            # S_m = diag([S_2x2], [S_2x2], [S_2x2])
+            # This accounts for all 3 displacement components (u, v, w)
+            S_m = np.zeros((6, 6))
+            S_m[0:2, 0:2] = S_2x2  # u-displacement block
+            S_m[2:4, 2:4] = S_2x2  # v-displacement block
+            S_m[4:6, 4:6] = S_2x2  # w-displacement block
+
+            # Integrate: K_G += B_G^T · S_m · B_G · detJ · thickness
+            K_G += self.thickness * (B_G.T @ S_m @ B_G) * detJ
+
+        # Force symmetry (numerical precision)
+        K_G = 0.5 * (K_G + K_G.T)
+
+        if transform_to_global:
+            T = self.T()
+            K_G = T.T @ K_G @ T
+
+        return K_G
+
+    def _compute_B_geometric(self, r: float, s: float) -> np.ndarray:
+        """
+        Compute the geometric strain-displacement matrix B_G.
+
+        This matrix relates the displacement gradients (∂u/∂x, ∂u/∂y, ∂v/∂x, etc.)
+        to the nodal degrees of freedom. It's used in the geometric stiffness
+        formulation to capture the nonlinear strain terms.
+
+        The structure of B_G is:
+        [∂u/∂x]     [dN1/dx,   0,      0,    0, 0, 0, dN2/dx, ...]   [u1]
+        [∂u/∂y]     [dN1/dy,   0,      0,    0, 0, 0, dN2/dy, ...]   [v1]
+        [∂v/∂x]  =  [  0,   dN1/dx,    0,    0, 0, 0,   0,    ...]   [w1]
+        [∂v/∂y]     [  0,   dN1/dy,    0,    0, 0, 0,   0,    ...]   [θx1]
+        [∂w/∂x]     [  0,      0,   dN1/dx,  0, 0, 0,   0,    ...]   [θy1]
+        [∂w/∂y]     [  0,      0,   dN1/dy,  0, 0, 0,   0,    ...]   [θz1]
+                                                                      ...
+
+        Parameters
+        ----------
+        r : float
+            Parametric coordinate in ξ-direction [-1, 1]
+        s : float
+            Parametric coordinate in η-direction [-1, 1]
+
+        Returns
+        -------
+        np.ndarray
+            6x24 geometric strain-displacement matrix
+        """
+        # Get shape function derivatives in local coordinates
+        dH = self._get_dH(r, s)  # 2x4 matrix: [dN/dx; dN/dy] for 4 nodes
+
+        # Build B_G matrix (6 rows × 24 cols)
+        # 6 rows: [∂u/∂x, ∂u/∂y, ∂v/∂x, ∂v/∂y, ∂w/∂x, ∂w/∂y]
+        # 24 cols: 4 nodes × 6 DOFs = [u1,v1,w1,θx1,θy1,θz1, u2,v2,w2,...]
+        B_G = np.zeros((6, 24))
+
+        for i in range(4):  # Loop over 4 nodes
+            base_col = 6 * i  # Starting column for node i
+
+            dNi_dx = dH[0, i]  # ∂Ni/∂x
+            dNi_dy = dH[1, i]  # ∂Ni/∂y
+
+            # ∂u/∂x and ∂u/∂y (row 0, 1) → u DOF (column base_col + 0)
+            B_G[0, base_col + 0] = dNi_dx  # ∂u/∂x
+            B_G[1, base_col + 0] = dNi_dy  # ∂u/∂y
+
+            # ∂v/∂x and ∂v/∂y (row 2, 3) → v DOF (column base_col + 1)
+            B_G[2, base_col + 1] = dNi_dx  # ∂v/∂x
+            B_G[3, base_col + 1] = dNi_dy  # ∂v/∂y
+
+            # ∂w/∂x and ∂w/∂y (row 4, 5) → w DOF (column base_col + 2)
+            B_G[4, base_col + 2] = dNi_dx  # ∂w/∂x
+            B_G[5, base_col + 2] = dNi_dy  # ∂w/∂y
+
+        return B_G
+
+    def compute_membrane_stress_from_displacement(
+        self, u_local: np.ndarray, r: float = 0.0, s: float = 0.0
+    ) -> np.ndarray:
+        """
+        Compute membrane stress at a point given nodal displacements.
+
+        This is a utility method to compute the membrane stress tensor from
+        the current displacement state, which can then be used as input to
+        compute_geometric_stiffness().
+
+        Parameters
+        ----------
+        u_local : np.ndarray
+            Nodal displacement vector in local coordinates (24,)
+        r : float, optional
+            Parametric coordinate, default 0.0 (center)
+        s : float, optional
+            Parametric coordinate, default 0.0 (center)
+
+        Returns
+        -------
+        np.ndarray
+            Membrane stress in Voigt notation [σ_xx, σ_yy, σ_xy] (Pa)
+
+        Notes
+        -----
+        σ = C_m · ε_m where ε_m = B_m · u_membrane
+        """
+        # Extract membrane DOFs from full displacement vector
+        # Membrane DOFs: u, v for each node → positions [0,1,6,7,12,13,18,19]
+        membrane_dof_indices = np.array([0, 1, 6, 7, 12, 13, 18, 19])
+        u_membrane = u_local[membrane_dof_indices]
+
+        # Compute membrane strain
+        B_m = self.B_m(r, s)  # 3x8
+        epsilon_m = B_m @ u_membrane  # [ε_xx, ε_yy, γ_xy]
+
+        # Compute stress using constitutive matrix
+        C_m = self.Cm()  # 3x3
+        sigma_m = C_m @ epsilon_m  # [σ_xx, σ_yy, σ_xy]
+
+        return sigma_m
+
+    def compute_centrifugal_prestress(
+        self,
+        omega: float,
+        rotation_axis: np.ndarray,
+        rotation_center: np.ndarray,
+    ) -> np.ndarray:
+        """
+        Compute membrane prestress from centrifugal loading for a rotating element.
+
+        This calculates the membrane stress state caused by centrifugal forces,
+        which is the primary source of geometric stiffening in rotating structures
+        like wind turbine blades.
+
+        The centrifugal stress in a rotating blade varies with position:
+        σ_rr(r) ≈ ρω²∫_r^R r' dr' = (ρω²/2)(R² - r²)
+
+        For simplicity, this method computes the stress at the element centroid
+        using a simplified radial stress model.
+
+        Parameters
+        ----------
+        omega : float
+            Angular velocity (rad/s)
+        rotation_axis : np.ndarray
+            Unit vector defining rotation axis (3,)
+        rotation_center : np.ndarray
+            Point on rotation axis (3,)
+
+        Returns
+        -------
+        np.ndarray
+            Membrane stress in Voigt notation [σ_xx, σ_yy, σ_xy] (Pa)
+
+        Notes
+        -----
+        The returned stress is in the local coordinate system of the element.
+        For accurate results in complex geometries, the stress should be computed
+        from a static analysis with centrifugal body forces.
+
+        This simplified method is suitable for:
+        - Quick estimates of stress stiffening effects
+        - Initialization of nonlinear analysis
+        - Validation and testing
+        """
+        # Normalize rotation axis
+        axis = np.asarray(rotation_axis, dtype=float)
+        axis = axis / np.linalg.norm(axis)
+        center = np.asarray(rotation_center, dtype=float)
+
+        # Compute element centroid in global coordinates
+        centroid_global = np.mean(self.node_coords, axis=0)
+
+        # Vector from rotation center to centroid
+        r_vec = centroid_global - center
+
+        # Project out the component along rotation axis to get radial distance
+        r_parallel = np.dot(r_vec, axis) * axis
+        r_radial_vec = r_vec - r_parallel
+        r_radial = np.linalg.norm(r_radial_vec)
+
+        if r_radial < 1e-10:
+            # Element is on the rotation axis - no centrifugal stress
+            return np.zeros(3)
+
+        # Radial direction (unit vector pointing outward from axis)
+        radial_dir = r_radial_vec / r_radial
+
+        # Centrifugal acceleration: a_c = ω² · r
+        # Centrifugal stress (simplified): σ ≈ ρ · ω² · r · L_char
+        # where L_char is a characteristic length (use element dimension)
+        rho = self.material.rho
+        L_char = np.sqrt(self.area())  # Characteristic element length
+
+        # Simplified centrifugal stress magnitude
+        sigma_cf = rho * omega**2 * r_radial * L_char
+
+        # Transform radial direction to local coordinates
+        T = self.T()
+        T_3x3 = T[:3, :3]  # Extract 3x3 rotation part
+        radial_local = T_3x3 @ radial_dir
+
+        # Project stress into local membrane plane (x-y plane)
+        # σ_xx = σ_cf · cos²θ, σ_yy = σ_cf · sin²θ, σ_xy = σ_cf · sinθcosθ
+        cos_theta = radial_local[0]  # x-component
+        sin_theta = radial_local[1]  # y-component
+
+        sigma_xx = sigma_cf * cos_theta**2
+        sigma_yy = sigma_cf * sin_theta**2
+        sigma_xy = sigma_cf * cos_theta * sin_theta
+
+        return np.array([sigma_xx, sigma_yy, sigma_xy])
+
 
 class MITC4Plus(MITC4):
     """
@@ -1135,6 +1478,7 @@ class MITC4Plus(MITC4):
         thickness: float,
         kx_mod: float = 1.0,
         ky_mod: float = 1.0,
+        shear_correction_factor: Optional[float] = None,
     ):
         super().__init__(
             node_coords=node_coords,
@@ -1143,6 +1487,7 @@ class MITC4Plus(MITC4):
             thickness=thickness,
             kx_mod=kx_mod,
             ky_mod=ky_mod,
+            shear_correction_factor=shear_correction_factor,
         )
 
         # Set element name to distinguish from MITC4
@@ -1422,8 +1767,10 @@ class MITC4Plus(MITC4):
         ])
 
     # Inherited from MITC4:
-    # - __init__ shares same parameters and initialization
     # - @property K: uses self.k_m() (which now calls MITC4Plus.B_m()) + self.k_b()
     # - @property M: unchanged, computed the same way
     # - body_load(): unchanged, uses same integration
+    # - compute_geometric_stiffness(): inherited from MITC4
+    # - compute_membrane_stress_from_displacement(): inherited from MITC4
+    # - compute_centrifugal_prestress(): inherited from MITC4
     # The API is 100% compatible with MITC4

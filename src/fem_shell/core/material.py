@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-from typing import Tuple, Union
+from typing import Optional, Tuple, Union
 
 
 @dataclass
@@ -17,12 +17,16 @@ class IsotropicMaterial:
         Poisson's ratio of the material.
     rho : float
         Density of the material.
+    shear_correction_factor : Optional[float]
+        Shear correction factor for Reissner-Mindlin shells.
+        Default is None (uses 5/6). For sandwich panels use ~0.25.
     """
 
     name: str
     E: float
     nu: float
     rho: float
+    shear_correction_factor: Optional[float] = None
 
 
 @dataclass
@@ -42,6 +46,10 @@ class OrthotropicMaterial:
         Poisson's ratio in three planes (nu12, nu23, nu31).
     rho : float
         Density of the material.
+    shear_correction_factor : Optional[float]
+        Shear correction factor for Reissner-Mindlin shells.
+        Default is None (uses 5/6). For laminates typically 0.70-0.85,
+        for sandwich panels with soft core use 0.15-0.40.
     """
 
     name: str
@@ -49,6 +57,7 @@ class OrthotropicMaterial:
     G: Tuple[float, float, float]
     nu: Tuple[float, float, float]
     rho: float
+    shear_correction_factor: Optional[float] = None
 
     @property
     def E1(self) -> float:

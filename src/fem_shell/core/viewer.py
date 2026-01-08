@@ -3,13 +3,18 @@ import pyvista as pv
 from PySide6.QtCore import Qt, Slot
 from PySide6.QtWidgets import (
     QApplication,
+    QColorDialog,
     QComboBox,
+    QDialog,
+    QGridLayout,
     QGroupBox,
     QHBoxLayout,
     QHeaderView,
     QLabel,
     QLineEdit,
     QMessageBox,
+    QPushButton,
+    QSizePolicy,
     QSlider,
     QSplitter,
     QTableWidget,
@@ -242,6 +247,11 @@ class MeshViewer(QWidget):
         self.mesh = mesh
         self.current_grid = None
         self.is_2D_mesh = not bool(self.mesh.coords_array[:, 2].sum())
+        # Visualization colors (start from plotter defaults later)
+        self.background_color = None
+        self.mesh_color = (0.83, 0.83, 0.85)
+        self.edge_color = (0.2, 0.2, 0.24)
+        self.point_color = (1.0, 0.4, 0.0)
         self.init_ui()
         self.create_set_table()
 
@@ -250,8 +260,16 @@ class MeshViewer(QWidget):
         self.setWindowTitle("Mesh Viewer")
         self.setMinimumSize(800, 600)
 
-        # Main layout using QSplitter for resizable panels
-        main_layout = QHBoxLayout(self)
+        # Main vertical layout with toolbar at top
+        main_layout = QVBoxLayout(self)
+        main_layout.setContentsMargins(0, 0, 0, 0)
+        main_layout.setSpacing(0)
+
+        # Create and add toolbar (kept compact)
+        toolbar = self._create_toolbar()
+        main_layout.addWidget(toolbar)
+
+        # Content layout using QSplitter for resizable panels
         splitter = QSplitter(Qt.Horizontal)
 
         # Control panel (left)
@@ -283,16 +301,23 @@ class MeshViewer(QWidget):
         self.sets_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeToContents)
         self.sets_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeToContents)
         self.sets_table.itemChanged.connect(self.update_plot)
+        # Hide row numbers
+        self.sets_table.verticalHeader().setVisible(False)
         sets_layout.addWidget(self.sets_table)
 
         self.sets_group.setLayout(sets_layout)
         control_layout.addWidget(self.sets_group)
+        # Make sets group expand to fill space
+        control_layout.setStretchFactor(self.sets_group, 1)
 
         splitter.addWidget(control_widget)
 
         # PyVista visualization panel (right)
         pv.set_plot_theme(themes.ParaViewTheme())
         self.plotter = QtInteractor(parent=self)
+        # Keep default theme background; store it for color dialog
+        self.background_color = tuple(self.plotter.background_color)
+        self.default_background_color = self.background_color
         splitter.addWidget(self.plotter)
 
         splitter.setStretchFactor(0, 1)
@@ -300,6 +325,281 @@ class MeshViewer(QWidget):
 
         main_layout.addWidget(splitter)
         self.setLayout(main_layout)
+
+    def _create_toolbar(self) -> QWidget:
+        """Create the visualization toolbar with view and color controls."""
+        toolbar_widget = QWidget()
+        toolbar_layout = QHBoxLayout(toolbar_widget)
+        toolbar_layout.setContentsMargins(10, 6, 10, 6)
+        toolbar_layout.setSpacing(6)
+        toolbar_widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        toolbar_widget.setMaximumHeight(52)
+
+        # View buttons group
+        view_label = QLabel("View:")
+        toolbar_layout.addWidget(view_label)
+
+        xy_btn = QPushButton("XY (Top)")
+        xy_btn.setToolTip("View from top (XY plane)")
+        xy_btn.clicked.connect(self._view_xy_plane)
+        toolbar_layout.addWidget(xy_btn)
+
+        xz_btn = QPushButton("XZ (Front)")
+        xz_btn.setToolTip("View from front (XZ plane)")
+        xz_btn.clicked.connect(self._view_xz_plane)
+        toolbar_layout.addWidget(xz_btn)
+
+        yz_btn = QPushButton("YZ (Side)")
+        yz_btn.setToolTip("View from side (YZ plane)")
+        yz_btn.clicked.connect(self._view_yz_plane)
+        toolbar_layout.addWidget(yz_btn)
+
+        iso_btn = QPushButton("Isometric")
+        iso_btn.setToolTip("Isometric view")
+        iso_btn.clicked.connect(self._view_isometric)
+        toolbar_layout.addWidget(iso_btn)
+
+        # Separator
+        toolbar_layout.addSpacing(15)
+
+        # Reset and info buttons
+        reset_btn = QPushButton("🔄 Reset")
+        reset_btn.setToolTip("Reset camera to default view")
+        reset_btn.clicked.connect(self._reset_view)
+        toolbar_layout.addWidget(reset_btn)
+
+        info_btn = QPushButton("ℹ️ Info")
+        info_btn.setToolTip("Show mesh information")
+        info_btn.clicked.connect(self._show_mesh_info_dialog)
+        toolbar_layout.addWidget(info_btn)
+
+        color_btn = QPushButton("🎨 Colors")
+        color_btn.setToolTip("Configure visualization colors")
+        color_btn.clicked.connect(self._show_colors_dialog)
+        toolbar_layout.addWidget(color_btn)
+
+        preset_label = QLabel("Preset:")
+        toolbar_layout.addWidget(preset_label)
+
+        preset_combo = QComboBox()
+        preset_combo.addItems(["Default", "Dark", "Blueprint"])
+        preset_combo.currentTextChanged.connect(self._apply_color_preset)
+        preset_combo.setFixedWidth(120)
+        toolbar_layout.addWidget(preset_combo)
+
+        # Add stretch to push buttons to the left
+        toolbar_layout.addStretch()
+
+        return toolbar_widget
+
+    def _show_mesh_info_dialog(self):
+        """Show mesh information in a compact, polished popup dialog."""
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Mesh Information")
+        dialog.setMinimumWidth(380)
+        dialog.setMaximumWidth(420)
+
+        layout = QVBoxLayout(dialog)
+        layout.setContentsMargins(16, 14, 16, 14)
+        layout.setSpacing(10)
+
+        title = QLabel("Mesh Statistics")
+        font = title.font()
+        font.setPointSize(11)
+        font.setBold(True)
+        title.setFont(font)
+        layout.addWidget(title)
+
+        grid = QGridLayout()
+        grid.setHorizontalSpacing(12)
+        grid.setVerticalSpacing(6)
+
+        # Count unique nodes by ID to avoid duplicates
+        unique_node_ids = {node.id for node in self.mesh.nodes}
+        num_nodes = len(unique_node_ids)
+        num_elements = len(self.mesh.elements)
+
+        stats = [
+            ("Total Nodes", num_nodes),
+            ("Total Elements", num_elements),
+            ("Node Sets", len(self.mesh.node_sets_names)),
+            ("Element Sets", len(self.mesh.element_sets_names)),
+        ]
+
+        for row, (label, value) in enumerate(stats):
+            key_lbl = QLabel(label)
+            val_lbl = QLabel(f"{value:,}")
+            key_font = key_lbl.font()
+            key_font.setPointSize(10)
+            key_lbl.setFont(key_font)
+            val_font = val_lbl.font()
+            val_font.setPointSize(10)
+            val_font.setBold(True)
+            val_lbl.setFont(val_font)
+            grid.addWidget(key_lbl, row, 0)
+            grid.addWidget(val_lbl, row, 1)
+
+        layout.addLayout(grid)
+
+        close_btn = QPushButton("Close")
+        close_btn.setFixedWidth(80)
+        close_btn.clicked.connect(dialog.close)
+        layout.addWidget(close_btn, alignment=Qt.AlignRight)
+
+        dialog.setLayout(layout)
+        dialog.exec()
+
+    def _show_colors_dialog(self):
+        """Show color configuration dialog."""
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Color Palette")
+        dialog.setMinimumWidth(360)
+
+        layout = QVBoxLayout(dialog)
+        layout.setContentsMargins(16, 14, 16, 14)
+        layout.setSpacing(10)
+
+        title = QLabel("Customize Viewer Colors")
+        font = title.font()
+        font.setPointSize(11)
+        font.setBold(True)
+        title.setFont(font)
+        layout.addWidget(title)
+
+        color_buttons: dict[str, QPushButton] = {}
+
+        preset_row = QHBoxLayout()
+        preset_label = QLabel("Preset:")
+        preset_combo = QComboBox()
+        preset_combo.addItems(["Default", "Dark", "Blueprint"])
+        preset_combo.setFixedWidth(150)
+        preset_combo.currentTextChanged.connect(
+            lambda name: self._apply_color_preset(name, color_buttons)
+        )
+        preset_row.addWidget(preset_label)
+        preset_row.addWidget(preset_combo)
+        preset_row.addStretch()
+        layout.addLayout(preset_row)
+
+        grid = QGridLayout()
+        grid.setHorizontalSpacing(12)
+        grid.setVerticalSpacing(8)
+
+        def add_color_row(row: int, label: str, attr: str):
+            lbl = QLabel(label)
+            btn = QPushButton()
+            btn.setFixedSize(44, 28)
+            btn.clicked.connect(lambda _, a=attr, b=btn: self._pick_color(a, b))
+            btn.setStyleSheet(self._color_button_style(getattr(self, f"{attr}_color", (1, 1, 1))))
+            color_buttons[attr] = btn
+            grid.addWidget(lbl, row, 0)
+            grid.addWidget(btn, row, 1)
+
+        add_color_row(0, "Background", "background")
+        add_color_row(1, "Mesh", "mesh")
+        add_color_row(2, "Edges", "edge")
+        add_color_row(3, "Points", "point")
+
+        layout.addLayout(grid)
+
+        close_btn = QPushButton("Close")
+        close_btn.setFixedWidth(80)
+        close_btn.clicked.connect(dialog.close)
+        layout.addWidget(close_btn, alignment=Qt.AlignRight)
+
+        dialog.setLayout(layout)
+        dialog.exec()
+
+    def _color_button_style(self, rgb_tuple: tuple[float, float, float]) -> str:
+        r, g, b = (int(rgb_tuple[0] * 255), int(rgb_tuple[1] * 255), int(rgb_tuple[2] * 255))
+        return f"background-color: rgb({r}, {g}, {b}); border: 1px solid #777; border-radius: 4px;"
+
+    def _pick_color(self, color_type: str, button: QPushButton):
+        """Open color picker for the specified color type and apply instantly."""
+        color = QColorDialog.getColor()
+        if not color.isValid():
+            return
+
+        rgb = (color.red() / 255.0, color.green() / 255.0, color.blue() / 255.0)
+
+        if color_type == "background":
+            self.background_color = rgb
+            self.plotter.set_background(rgb)
+        elif color_type == "mesh":
+            self.mesh_color = rgb
+        elif color_type == "edge":
+            self.edge_color = rgb
+        elif color_type == "point":
+            self.point_color = rgb
+
+        button.setStyleSheet(self._color_button_style(rgb))
+        self.update_plot()
+
+    def _apply_color_preset(self, preset_name: str, buttons: dict[str, QPushButton] | None = None):
+        """Apply a named color preset to mesh, edges, points, and background."""
+
+        presets = {
+            "Default": {
+                "background": getattr(self, "default_background_color", self.background_color),
+                "mesh": (0.83, 0.85, 0.90),
+                "edge": (0.2, 0.2, 0.2),
+                "point": (1.0, 0.4, 0.0),
+            },
+            "Dark": {
+                "background": (0.08, 0.09, 0.11),
+                "mesh": (0.76, 0.78, 0.84),
+                "edge": (0.32, 0.34, 0.40),
+                "point": (0.98, 0.54, 0.20),
+            },
+            "Blueprint": {
+                "background": (0.03, 0.08, 0.20),
+                "mesh": (0.72, 0.78, 0.90),
+                "edge": (0.36, 0.50, 0.80),
+                "point": (1.0, 0.75, 0.35),
+            },
+        }
+
+        palette = presets.get(preset_name)
+        if not palette:
+            return
+
+        self.background_color = palette["background"]
+        self.mesh_color = palette["mesh"]
+        self.edge_color = palette["edge"]
+        self.point_color = palette["point"]
+
+        self.plotter.set_background(self.background_color)
+
+        if buttons:
+            for key, btn in buttons.items():
+                btn.setStyleSheet(self._color_button_style(getattr(self, f"{key}_color")))
+
+        self.update_plot()
+
+    def _view_xy_plane(self):
+        """Set camera view to XY plane (top)."""
+        self.plotter.view_xy()
+        self.plotter.render()
+
+    def _view_xz_plane(self):
+        """Set camera view to XZ plane (front)."""
+        self.plotter.view_xz()
+        self.plotter.render()
+
+    def _view_yz_plane(self):
+        """Set camera view to YZ plane (side)."""
+        self.plotter.view_yz()
+        self.plotter.render()
+
+    def _view_isometric(self):
+        """Set camera to isometric view."""
+        self.plotter.view_isometric()
+        self.plotter.render()
+
+    def _reset_view(self):
+        """Reset the camera to default view."""
+        self.plotter.reset_camera()
+        self.plotter.render()
 
     def create_set_table(self):
         """Populate the table with node and element sets from the mesh."""
@@ -442,17 +742,18 @@ class MeshViewer(QWidget):
         vis_mode = self.vis_mode_combo.currentText()
         style = {}
         if vis_mode == "Wireframe":
-            style = {"style": "wireframe"}
+            style = {"style": "wireframe", "color": self.mesh_color}
         elif vis_mode == "Points":
             style = {
                 "style": "points",
                 "render_points_as_spheres": True,
                 "point_size": 10,
+                "color": self.mesh_color,
             }
         elif "Surface" in vis_mode:
-            style = {"style": "surface"}
+            style = {"style": "surface", "color": self.mesh_color}
             if "edges" in vis_mode:
-                style.update({"show_edges": True, "edge_color": "black"})
+                style.update({"show_edges": True, "edge_color": self.edge_color})
 
         # Get selected sets
         node_sets, element_sets = self.get_selected_sets()
@@ -480,6 +781,7 @@ class MeshViewer(QWidget):
                         "style": "points",
                         "point_size": 10,
                         "render_points_as_spheres": True,
+                        "color": self.point_color,
                     },
                 )
 
