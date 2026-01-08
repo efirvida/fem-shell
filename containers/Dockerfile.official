@@ -1,0 +1,310 @@
+# ================================================================================
+# Dockerfile usando distribuciones oficiales de Debian slim
+# + OpenFOAM, preCICE, PETSc/SLEPc desde paquetes/compilación
+# ================================================================================
+# Este Dockerfile instala:
+# - OpenFOAM desde paquetes precompilados oficiales (Debian)
+# - preCICE desde paquetes precompilados oficiales (Debian)
+# - PETSc/SLEPc compilados desde código fuente (rama release)
+# - Adaptador OpenFOAM-preCICE compilado
+# Base ligera: python:3.12-slim (Debian 12 bookworm)
+# ================================================================================
+
+ARG FOAM_VERSION=2506
+ARG PRECICE_VERSION=3.3.0
+ARG DEBIAN_CODENAME=bookworm
+
+# ================== Etapa builder (construcción) ================== #
+FROM python:3.12-slim-bookworm AS builder
+
+ARG FOAM_VERSION
+ARG PRECICE_VERSION
+ARG DEBIAN_FRONTEND=noninteractive
+
+# Paquetes mínimos para compilación
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+        ca-certificates \
+        curl \
+        gnupg \
+        lsb-release \
+        wget \
+        build-essential \
+        git \
+        pkg-config \
+    && rm -rf /var/lib/apt/lists/*
+
+# Detectar codename de Debian actual
+RUN echo "DEBIAN_CODENAME=$(lsb_release -sc)" > /etc/debian_codename
+ENV DEBIAN_CODENAME_FILE=/etc/debian_codename
+
+# Añadir repo de OpenFOAM
+RUN wget -q -O - https://dl.openfoam.com/add-debian-repo.sh | bash
+
+# Instalar OpenFOAM-dev (para compilar el adaptador)
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+        openfoam${FOAM_VERSION}-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+# ================== Etapa PETSc/SLEPc ================== #
+FROM builder AS petsc-builder
+
+ARG DEBIAN_FRONTEND=noninteractive
+
+# Dependencias de compilación para PETSc/SLEPc
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+        bison \
+        cmake \
+        flex \
+        gfortran \
+        libblas-dev \
+        liblapack-dev \
+        libopenmpi-dev \
+        openmpi-bin \
+        python3 \
+        python3-dev \
+        python3-pip \
+    && rm -rf /var/lib/apt/lists/*
+
+# Compilar PETSc desde release
+WORKDIR /tmp/petsc-build
+RUN git clone -b release https://gitlab.com/petsc/petsc.git --depth=1 . && \
+    ./configure \
+        --prefix=/usr/local \
+        --with-shared-libraries=1 \
+        --with-debugging=0 \
+        --with-fortran-bindings=1 \
+        --with-cxx-dialect=C++17 \
+        --with-cc=mpicc \
+        --with-cxx=mpicxx \
+        --with-fc=mpif90 \
+        --download-cmake \
+        --download-fblaslapack \
+        --download-hdf5 \
+        --download-metis \
+        --download-hypre \
+        --download-ptscotch \
+        --download-scalapack \
+        --download-mumps \
+        --download-superlu_dist \
+        --download-fftw \
+        --download-parmetis \
+        COPTFLAGS='-O3' \
+        CXXOPTFLAGS='-O3' \
+        FOPTFLAGS='-O3' && \
+    make PETSC_DIR=/tmp/petsc-build PETSC_ARCH=arch-linux-c-opt all && \
+    make PETSC_DIR=/tmp/petsc-build PETSC_ARCH=arch-linux-c-opt install && \
+    rm -rf /tmp/petsc-build
+
+# Compilar SLEPc desde release
+WORKDIR /tmp/slepc-build
+RUN git clone -b release https://gitlab.com/slepc/slepc.git --depth=1 . && \
+    export PETSC_DIR=/usr/local && \
+    export SLEPC_DIR=/tmp/slepc-build && \
+    ./configure --prefix=/usr/local && \
+    make SLEPC_DIR=/tmp/slepc-build PETSC_DIR=/usr/local && \
+    make SLEPC_DIR=/tmp/slepc-build PETSC_DIR=/usr/local install && \
+    rm -rf /tmp/slepc-build
+
+# ================== Etapa preCICE (con PETSc compilado) ================== #
+FROM petsc-builder AS precice-builder
+
+ARG PRECICE_VERSION
+ARG DEBIAN_FRONTEND=noninteractive
+
+# Dependencias para compilar preCICE (usa PETSc de /usr/local)
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+        cmake \
+        libeigen3-dev \
+        libxml2-dev \
+        libboost-all-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /tmp/precice-build
+RUN python3.12 -m pip install --no-cache-dir --break-system-packages numpy && \
+    git clone --depth=1 --branch v${PRECICE_VERSION} https://github.com/precice/precice.git . && \
+    mkdir build && cd build && \
+    cmake -DCMAKE_INSTALL_PREFIX=/usr/local \
+          -DCMAKE_BUILD_TYPE=Release \
+          -DBUILD_SHARED_LIBS=ON \
+          -DPRECICE_FEATURE_PETSC_MAPPING=ON \
+          -DPETSC_DIR=/usr/local \
+          .. && \
+    make -j"$(nproc)" && \
+    make install && \
+    python3.12 -m pip uninstall -y --break-system-packages numpy && \
+    cd / && rm -rf /tmp/precice-build
+
+# Instalar bindings y herramientas Python 3.12 (usa PETSc/SLEPc/preCICE ya instalados)
+RUN PETSC_DIR=/usr/local SLEPC_DIR=/usr/local \
+    python3.12 -m pip install --no-cache-dir --break-system-packages \
+        mpi4py \
+        numpy \
+        petsc4py \
+        polars \
+        gmsh \
+        pyprecice \
+        precice-cli \
+        slepc4py \
+        trimesh \
+        meshio \
+        matplotlib \
+        pyside6 \
+        pyvista \
+        pyvistaqt \
+        pyyaml \
+        scipy \
+        shapely \
+        h5py \
+        triangle \
+        numpy-stl \
+        networkx \
+        plot3d \
+        nevergrad
+
+# ================== Etapa adapter (OpenFOAM + preCICE) ================== #
+FROM builder AS adapter-builder
+
+ARG FOAM_VERSION
+ARG DEBIAN_FRONTEND=noninteractive
+
+# Traer preCICE (y PETSc) ya compilados
+COPY --from=precice-builder /usr/local /usr/local
+
+# Compilar el adaptador OpenFOAM-preCICE
+WORKDIR /tmp/openfoam-adapter
+RUN git clone --depth=1 https://github.com/efirvida/openfoam-adapter.git . && \
+    /bin/bash -lc "source /usr/lib/openfoam/openfoam${FOAM_VERSION}/etc/bashrc && \
+      export PRECICE_OPENFOAM_TARGET_DIR=\"\$FOAM_LIBBIN\" && \
+      ./Allwmake && \
+      ls -la \"\$FOAM_LIBBIN\"/libprecice*.so"
+
+# ================== Etapa final (runtime slim) ================== #
+FROM python:3.12-slim-bookworm
+
+ARG FOAM_VERSION=2506
+ARG PRECICE_VERSION
+ARG DEBIAN_FRONTEND=noninteractive
+
+# Paquetes runtime mínimos
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates \
+    curl \
+    gnupg \
+    lsb-release \
+    libgfortran5 \
+    libblas3 \
+    liblapack3 \
+    libgomp1 \
+    libopenmpi3 \
+    openmpi-bin \
+    libglu1-mesa \
+    libgl1 \
+    libegl1 \
+    libxrender1 \
+    libxext6 \
+    libxcursor1 \
+    libxft2 \
+    libxinerama1 \
+    libxfixes3 \
+    libxrandr2 \
+    libxi6 \
+    libfontconfig1 \
+    libfreetype6 \
+    libglib2.0-0 \
+    libdbus-1-3 \
+    libstdc++6 \
+    libxkbcommon0 \
+    libxkbcommon-x11-0 \
+    libx11-6 \
+    libxcb-icccm4 \
+    libxcb-image0 \
+    libxcb-keysyms1 \
+    libxcb-shape0 \
+    libxcb-sync1 \
+    libxcb-xfixes0 \
+    libxcb-xinerama0 \
+    libxcb-xkb1 \
+    pkg-config \
+    wget \
+    && rm -rf /var/lib/apt/lists/*
+
+# Compat: some scripts invoke `python`
+RUN ln -sf /usr/bin/python3 /usr/bin/python
+
+# Añadir repo de OpenFOAM y preCICE
+RUN wget -q -O - https://dl.openfoam.com/add-debian-repo.sh | bash
+
+# Instalar OpenFOAM runtime
+RUN for i in 1 2 3; do \
+        apt-get update && \
+        apt-get install -y --no-install-recommends \
+            openfoam${FOAM_VERSION} && \
+        rm -rf /var/lib/apt/lists/* && \
+        break || (echo "Attempt $i failed, retrying..."; sleep 10); \
+    done
+
+# Instalar dependencias runtime de preCICE (Boost/libxml2). Versiones bookworm.
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+        libxml2 \
+        libboost-filesystem1.74.0 \
+        libboost-log1.74.0 \
+        libboost-program-options1.74.0 \
+        libboost-system1.74.0 \
+        libboost-thread1.74.0 \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copiar el adaptador OpenFOAM-preCICE compilado desde adapter-builder
+COPY --from=adapter-builder /usr/lib/openfoam/openfoam${FOAM_VERSION}/platforms /usr/lib/openfoam/openfoam${FOAM_VERSION}/platforms
+
+# Copiar preCICE + PETSc/SLEPc + paquetes Python compilados desde precice-builder
+COPY --from=precice-builder /usr/local /usr/local
+
+# Actualizar caché de linker
+RUN ldconfig
+
+# Copiar e instalar el módulo local fem_shell
+COPY pyproject.toml /opt/fem-shell/pyproject.toml
+COPY src /opt/fem-shell/src
+RUN python -m pip install --no-cache-dir --break-system-packages setuptools wheel cython && \
+    python -m pip install --no-cache-dir --break-system-packages --no-deps --no-build-isolation /opt/fem-shell && \
+    rm -rf /opt/fem-shell
+
+# Configurar variables de entorno para OpenFOAM
+ENV FOAM_INST_DIR=/usr/lib/openfoam
+ENV WM_PROJECT_DIR=/usr/lib/openfoam/openfoam${FOAM_VERSION}
+ENV FOAM_LIBBIN=${WM_PROJECT_DIR}/platforms/linux64GccDPInt32Opt/lib
+ENV PATH=${WM_PROJECT_DIR}/bin:${WM_PROJECT_DIR}/wmake:/usr/local/bin:${PATH}
+ENV LD_LIBRARY_PATH=${FOAM_LIBBIN}:/usr/local/lib
+ENV PETSC_DIR=/usr/local
+ENV SLEPC_DIR=/usr/local
+ENV PYTHONPATH=/usr/local/lib
+ENV FOAM_VERSION=${FOAM_VERSION}
+
+# Compatibilidad con scripts que esperan /opt/OpenFOAM-v${FOAM_VERSION}
+RUN ln -s ${WM_PROJECT_DIR} /opt/OpenFOAM-v${FOAM_VERSION}
+RUN ln -s /usr/bin/openfoam${FOAM_VERSION} /usr/bin/openfoam
+
+# Script de inicialización para OpenFOAM
+RUN echo '#!/bin/bash\n\
+source /usr/lib/openfoam/openfoam${FOAM_VERSION}/etc/bashrc\n\
+export PETSC_DIR=/usr/local\n\
+export SLEPC_DIR=/usr/local\n\
+export PYTHONPATH=/usr/local/lib${PYTHONPATH:+:$PYTHONPATH}\n\
+export LD_LIBRARY_PATH=${FOAM_LIBBIN}:/usr/local/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}\n\
+exec "$@"' > /entrypoint.sh && \
+    chmod +x /entrypoint.sh
+
+# Configurar usuario
+WORKDIR /workspace
+RUN useradd --user-group --create-home --shell /bin/bash foam && \
+    chown -R foam:foam /workspace
+
+USER foam
+
+ENTRYPOINT ["/entrypoint.sh"]
+CMD ["bash"]
