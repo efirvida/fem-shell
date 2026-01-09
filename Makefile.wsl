@@ -138,8 +138,9 @@ $(BUILD_DIR)/.petsc-installed:
 	@echo -e "$(BLUE)▶ Compilando PETSc (instalación completa)...$(NC)"
 	@mkdir -p $(BUILD_DIR)
 	@rm -rf $(BUILD_DIR)/petsc
-	@# Dar permisos de escritura al usuario en /usr/local
-	sudo chown -R $$USER $(INSTALL_PREFIX)
+	@# Crear subdirectorios específicos con permisos de escritura
+	sudo mkdir -p $(INSTALL_PREFIX)/lib $(INSTALL_PREFIX)/include $(INSTALL_PREFIX)/bin $(INSTALL_PREFIX)/share
+	sudo chown -R $$USER $(INSTALL_PREFIX)/lib $(INSTALL_PREFIX)/include $(INSTALL_PREFIX)/bin $(INSTALL_PREFIX)/share
 	cd $(BUILD_DIR) && \
 		git clone -b release https://gitlab.com/petsc/petsc.git --depth=1 && \
 		cd petsc && \
@@ -249,8 +250,9 @@ $(BUILD_DIR)/.python-deps-installed: $(BUILD_DIR)/.petsc-installed $(BUILD_DIR)/
 	@rm -f $@
 	@echo -e "$(BLUE)▶ Instalando paquetes Python...$(NC)"
 	@mkdir -p $(BUILD_DIR)
-	@# Asegurar permisos en /usr/local para gmsh y otros paquetes
-	sudo chown -R $$USER $(INSTALL_PREFIX)
+	@# Asegurar permisos en subdirectorios específicos para gmsh y otros paquetes
+	sudo mkdir -p $(INSTALL_PREFIX)/lib $(INSTALL_PREFIX)/include $(INSTALL_PREFIX)/bin $(INSTALL_PREFIX)/share
+	sudo chown -R $$USER $(INSTALL_PREFIX)/lib $(INSTALL_PREFIX)/include $(INSTALL_PREFIX)/bin $(INSTALL_PREFIX)/share
 	export PETSC_DIR=$(INSTALL_PREFIX) && \
 	export SLEPC_DIR=$(INSTALL_PREFIX) && \
 	pip3 install --break-system-packages --upgrade pip setuptools wheel || true && \
