@@ -35,7 +35,6 @@ elif [[ "$1" == "--help" ]] || [[ "$1" == "-h" ]]; then
     echo "  (none)       Run simulation using YAML config"
     echo "  --validate   Validate configuration file"
     echo "  --preview    Preview configuration without running"
-    echo "  --legacy     Run legacy Python script (solid.py)"
     echo "  --help, -h   Show this help message"
     echo ""
     echo "Configuration: ${CONFIG_FILE}"
@@ -52,10 +51,6 @@ case "${ACTION}" in
     "preview")
         echo "Configuration preview:"
         python -m fem_shell.cli.run_fsi "${CONFIG_FILE}" --preview
-        ;;
-    "legacy")
-        echo "Running legacy Python script..."
-        python solid.py
         ;;
     "run")
         echo "Starting Multi-Flap FSI Solid Solver..."

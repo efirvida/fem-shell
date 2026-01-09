@@ -750,9 +750,21 @@ class FSISimulationConfig:
             if base_path and config_file and not Path(config_file).is_absolute():
                 config_file = str(base_path / config_file)
 
-            # Handle write_data and read_data as lists
-            write_data = coupling_data.get("write_data", ["Displacement"])
-            read_data = coupling_data.get("read_data", ["Force"])
+            # Support both flat structure and nested 'interface' structure
+            # Flat: coupling.coupling_mesh, coupling.write_data, coupling.read_data
+            # Nested: coupling.interface.coupling_mesh, coupling.interface.write_data, etc.
+            interface_data = coupling_data.get("interface", {})
+
+            # Handle write_data and read_data as lists (check interface first, then flat)
+            write_data = interface_data.get("write_data") or coupling_data.get(
+                "write_data", ["Displacement"]
+            )
+            read_data = interface_data.get("read_data") or coupling_data.get(
+                "read_data", ["Force"]
+            )
+            coupling_mesh = interface_data.get("coupling_mesh") or coupling_data.get(
+                "coupling_mesh"
+            )
 
             # Ensure they are lists
             if isinstance(write_data, str):
@@ -764,7 +776,7 @@ class FSISimulationConfig:
                 boundaries=boundaries,
                 participant=coupling_data.get("participant"),
                 config_file=config_file,
-                coupling_mesh=coupling_data.get("coupling_mesh"),
+                coupling_mesh=coupling_mesh,
                 write_data=write_data,
                 read_data=read_data,
                 force_max_cap=coupling_data.get("force_max_cap"),
