@@ -220,7 +220,7 @@ $(BUILD_DIR)/.adapter-installed: $(BUILD_DIR)/.precice-installed
 	@echo -e "$(BLUE)▶ Compilando adaptador OpenFOAM-preCICE...$(NC)"
 	@rm -rf $(BUILD_DIR)/openfoam-adapter
 	cd $(BUILD_DIR) && \
-		git clone --depth=1 https://github.com/precice/openfoam-adapter.git && \
+		git clone --depth=1 https://github.com/efirvida/openfoam-adapter.git && \
 		cd openfoam-adapter && \
 		set +u && \
 		source /usr/lib/openfoam/openfoam$(FOAM_VERSION)/etc/bashrc && \
