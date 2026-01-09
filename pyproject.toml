@@ -8,7 +8,7 @@ authors = [
 dependencies = [
     "gmsh>=4.13.1",
     "matplotlib>=3.10.1",
-  "polars>=0.20.0",
+    "polars[rtcompat]>=1.36.1",
     "meshio>=5.3.5",
     "nevergrad>=1.0.11",
     "numpy>=2.2.5",
@@ -22,6 +22,10 @@ dependencies = [
     "h5py>=3.13.0",
     "triangle>=0",
     "numpy-stl>=0",
+    "trimesh>=4.10.1",
+    "networkx>=3.6.1",
+    "plot3d>=1.7.11",
+    "lxml>=6.0.2",
 ]
 readme = "README.md"
 requires-python = ">= 3.12"
@@ -80,4 +84,8 @@ select = [
   "SIM110", # https://docs.astral.sh/ruff/rules/reimplemented-builtin/
   "SIM101", # use 'isinstance(x, (T1, T2))' instead of two checks.
 ]
+
+[project.scripts]
+fem-shell-fsi = "fem_shell.cli.run_fsi:main"
+
 
