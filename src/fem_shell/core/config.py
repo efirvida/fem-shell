@@ -183,6 +183,7 @@ class MeshGeneratorType(str, Enum):
     SQUARE = "SquareShapeMesh"
     BOX = "BoxSurfaceMesh"
     MULTIFLAP = "MultiFlapMesh"
+    ROTOR = "RotorMesh"
 
 
 # =============================================================================
@@ -244,6 +245,17 @@ class MultiFlapMeshParams:
 
 
 @dataclass
+class RotorMeshParams:
+    """Parameters for RotorMesh generator."""
+
+    yaml_file: str  # Path to blade YAML definition
+    n_blades: int = 3
+    hub_radius: Optional[float] = None  # If None, uses blade definition
+    element_size: float = 0.5
+    n_samples: int = 300
+
+
+@dataclass
 class MeshGeneratorConfig:
     """Configuration for mesh generation."""
 
@@ -256,6 +268,7 @@ class MeshGeneratorConfig:
             MeshGeneratorType.SQUARE.value: SquareMeshParams,
             MeshGeneratorType.BOX.value: BoxMeshParams,
             MeshGeneratorType.MULTIFLAP.value: MultiFlapMeshParams,
+            MeshGeneratorType.ROTOR.value: RotorMeshParams,
         }
         return mapping.get(self.type)
 
@@ -483,85 +496,41 @@ class PreciceInterfaceConfig:
     """preCICE interface configuration."""
 
     coupling_mesh: str
-    write_data: str = "Displacement"
-    read_data: str = "Force"
+    write_data: List[str] = field(default_factory=lambda: ["Displacement"])
+    read_data: List[str] = field(default_factory=lambda: ["Force"])
 
 
 @dataclass
 class CouplingConfig:
     """FSI coupling (preCICE) configuration.
 
-    Can be configured either with an external adapter config file or inline.
+    All preCICE parameters are configured inline - no external adapter file needed.
 
     Examples
     --------
-    External file:
-        coupling:
-          adapter_config: "precice-adapter.yaml"
-          boundaries: ["left", "top", "right"]
-
-    Inline configuration:
-        coupling:
-          participant: "Solid"
-          config_file: "../precice-config.xml"
-          interface:
-            coupling_mesh: "Solid-Mesh"
-            write_data: "Displacement"
-            read_data: "Force"
-          boundaries: ["left", "top", "right"]
+    coupling:
+      participant: "Solid"
+      config_file: "../precice-config.xml"
+      coupling_mesh: "Solid-Mesh"
+      write_data:
+        - "Displacement"
+      read_data:
+        - "Force"
+      boundaries:
+        - "left"
+        - "top"
+        - "right"
     """
 
     boundaries: List[str]
-    # External file mode
-    adapter_config: Optional[str] = None
-    # Inline mode
-    participant: Optional[str] = None
-    config_file: Optional[str] = None
-    interface: Optional[PreciceInterfaceConfig] = None
-
-    def __post_init__(self):
-        # Validate that either adapter_config OR inline config is provided
-        has_external = self.adapter_config is not None
-        has_inline = (
-            self.participant is not None
-            and self.config_file is not None
-            and self.interface is not None
-        )
-
-        if not has_external and not has_inline:
-            raise ValueError(
-                "Coupling config requires either 'adapter_config' (external file) "
-                "or inline configuration (participant, config_file, interface)"
-            )
-
-    @property
-    def is_inline(self) -> bool:
-        """Check if using inline configuration."""
-        return self.adapter_config is None
-
-    def to_adapter_dict(self) -> Dict[str, Any]:
-        """Convert inline config to adapter dictionary format.
-
-        Returns
-        -------
-        dict
-            Dictionary in the format expected by the preCICE adapter Config class.
-        """
-        if not self.is_inline:
-            raise ValueError("Cannot convert external file config to dict")
-
-        if self.interface is None:
-            raise ValueError("Interface configuration is required for inline config")
-
-        return {
-            "participant": self.participant,
-            "config_file": self.config_file,
-            "interface": {
-                "coupling_mesh": self.interface.coupling_mesh,
-                "write_data": self.interface.write_data,
-                "read_data": self.interface.read_data,
-            },
-        }
+    participant: str
+    config_file: str
+    coupling_mesh: str
+    write_data: List[str] = field(default_factory=lambda: ["Displacement"])
+    read_data: List[str] = field(default_factory=lambda: ["Force"])
+    # Force limiting parameters
+    force_max_cap: Optional[float] = None
+    force_ramp_time: Optional[float] = None
 
 
 @dataclass
@@ -776,36 +745,31 @@ class FSISimulationConfig:
         if coupling_data:
             boundaries = coupling_data.get("boundaries", [])
 
-            # Check if using inline configuration or external file
-            if "participant" in coupling_data and "config_file" in coupling_data:
-                # Inline configuration
-                interface_data = coupling_data.get("interface", {})
-                interface_config = PreciceInterfaceConfig(
-                    coupling_mesh=interface_data.get("coupling_mesh"),
-                    write_data=interface_data.get("write_data", "Displacement"),
-                    read_data=interface_data.get("read_data", "Force"),
-                )
+            # Resolve config_file path
+            config_file = coupling_data.get("config_file")
+            if base_path and config_file and not Path(config_file).is_absolute():
+                config_file = str(base_path / config_file)
 
-                # Resolve config_file path
-                config_file = coupling_data.get("config_file")
-                if base_path and config_file and not Path(config_file).is_absolute():
-                    config_file = str(base_path / config_file)
+            # Handle write_data and read_data as lists
+            write_data = coupling_data.get("write_data", ["Displacement"])
+            read_data = coupling_data.get("read_data", ["Force"])
 
-                coupling_config = CouplingConfig(
-                    boundaries=boundaries,
-                    participant=coupling_data.get("participant"),
-                    config_file=config_file,
-                    interface=interface_config,
-                )
-            else:
-                # External file configuration
-                adapter_cfg = coupling_data.get("adapter_config", "precice-adapter.yaml")
-                if base_path and not Path(adapter_cfg).is_absolute():
-                    adapter_cfg = str(base_path / adapter_cfg)
-                coupling_config = CouplingConfig(
-                    boundaries=boundaries,
-                    adapter_config=adapter_cfg,
-                )
+            # Ensure they are lists
+            if isinstance(write_data, str):
+                write_data = [write_data]
+            if isinstance(read_data, str):
+                read_data = [read_data]
+
+            coupling_config = CouplingConfig(
+                boundaries=boundaries,
+                participant=coupling_data.get("participant"),
+                config_file=config_file,
+                coupling_mesh=coupling_data.get("coupling_mesh"),
+                write_data=write_data,
+                read_data=read_data,
+                force_max_cap=coupling_data.get("force_max_cap"),
+                force_ramp_time=coupling_data.get("force_ramp_time"),
+            )
 
         # Parse output configuration
         output_config = None
@@ -905,9 +869,17 @@ class FSISimulationConfig:
 
         if self.coupling:
             result["coupling"] = {
-                "adapter_config": self.coupling.adapter_config,
+                "participant": self.coupling.participant,
+                "config_file": self.coupling.config_file,
+                "coupling_mesh": self.coupling.coupling_mesh,
+                "write_data": self.coupling.write_data,
+                "read_data": self.coupling.read_data,
                 "boundaries": self.coupling.boundaries,
             }
+            if self.coupling.force_max_cap is not None:
+                result["coupling"]["force_max_cap"] = self.coupling.force_max_cap
+            if self.coupling.force_ramp_time is not None:
+                result["coupling"]["force_ramp_time"] = self.coupling.force_ramp_time
 
         if self.output:
             result["output"] = {
@@ -1003,13 +975,8 @@ class FSISimulationConfig:
             return None
 
         # Get the preCICE config file path
-        if self.coupling.is_inline:
-            config_file = self.coupling.config_file
-            participant = self.coupling.participant
-        else:
-            # For external adapter config, we need to read it first
-            # This is a fallback - inline config is preferred
-            return None
+        config_file = self.coupling.config_file
+        participant = self.coupling.participant
 
         if not config_file or not Path(config_file).exists():
             return None

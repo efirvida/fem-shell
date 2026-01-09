@@ -28,7 +28,7 @@ from ..core.config import (
     SolverType,
 )
 from ..core.material import IsotropicMaterial, OrthotropicMaterial
-from ..core.mesh import BoxSurfaceMesh, MeshModel, MultiFlapMesh, SquareShapeMesh
+from ..core.mesh import BoxSurfaceMesh, MeshModel, MultiFlapMesh, RotorMesh, SquareShapeMesh
 from ..elements import ElementFamily as ElemFamily
 
 logger = logging.getLogger(__name__)
@@ -274,6 +274,21 @@ class FSIRunner:
                 quadratic=params.get("quadratic", False),
             ).generate()
 
+        elif gen_type == MeshGeneratorType.ROTOR.value:
+            # Resolve relative path for blade YAML if needed
+            yaml_file = params["yaml_file"]
+            if self.config_path and not Path(yaml_file).is_absolute():
+                # Path relative to config file
+                yaml_file = str(self.config_path.parent / yaml_file)
+
+            mesh = RotorMesh(
+                yaml_file=yaml_file,
+                n_blades=params.get("n_blades", 3),
+                hub_radius=params.get("hub_radius"),
+                element_size=params.get("element_size", 0.5),
+                n_samples=params.get("n_samples", 300),
+            ).generate(renumber="rcm")
+
         else:
             raise ValueError(f"Unknown mesh generator type: {gen_type}")
 
@@ -370,17 +385,20 @@ class FSIRunner:
 
         # Add coupling configuration for FSI
         if self.config.coupling:
-            if self.config.coupling.is_inline:
-                # Pass inline configuration as dictionary
-                model_config["solver"]["adapter_cfg"] = self.config.coupling.to_adapter_dict()
-                # Store base path for resolving relative paths in adapter
-                model_config["base_path"] = str(
-                    self.config_path.parent if self.config_path else self.working_dir
-                )
-            else:
-                # External file mode
-                model_config["solver"]["adapter_cfg"] = self.config.coupling.adapter_config
+            model_config["solver"]["coupling"] = {
+                "participant": self.config.coupling.participant,
+                "config_file": self.config.coupling.config_file,
+                "coupling_mesh": self.config.coupling.coupling_mesh,
+                "write_data": self.config.coupling.write_data,
+                "read_data": self.config.coupling.read_data,
+            }
             model_config["solver"]["coupling_boundaries"] = self.config.coupling.boundaries
+
+            # Add force limiting parameters if specified
+            if self.config.coupling.force_max_cap is not None:
+                model_config["solver"]["force_max_cap"] = self.config.coupling.force_max_cap
+            if self.config.coupling.force_ramp_time is not None:
+                model_config["solver"]["force_ramp_time"] = self.config.coupling.force_ramp_time
 
         # Add output configuration
         if self.config.output:

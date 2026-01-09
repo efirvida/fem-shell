@@ -128,21 +128,26 @@ boundary_conditions:
 # FSI COUPLING (preCICE) - Required for LinearDynamicFSI solver
 #============================================================================
 coupling:
-  # Option 1: External adapter config file
-  # adapter_config: "precice-adapter.yaml"  # Path to preCICE adapter config
+  # preCICE participant configuration
+  participant: "Solid"                    # preCICE participant name
+  config_file: "../precice-config.xml"    # Path to preCICE config (relative to this file)
+  coupling_mesh: "Solid-Mesh"             # Name of coupling mesh in preCICE config
   
-  # Option 2: Inline configuration (recommended - single config file)
-  participant: "Solid"              # preCICE participant name
-  config_file: "../precice-config.xml"  # Path to preCICE config (relative to this file)
-  interface:
-    coupling_mesh: "Solid-Mesh"     # Name of coupling mesh in preCICE config
-    write_data: "Displacement"      # Data to write to preCICE
-    read_data: "Force"              # Data to read from preCICE
+  # Data exchange (can be lists for multiple fields)
+  write_data:
+    - "Displacement"      # Data to write to preCICE
+  read_data:
+    - "Force"             # Data to read from preCICE
   
+  # Coupling boundaries (from mesh node sets)
   boundaries:
-    - "left"    # Coupling boundary names (from mesh node sets)
+    - "left"
     - "top"
     - "right"
+  
+  # Force limiting (optional, for stability)
+  # force_max_cap: 1.0e6       # Maximum force per node [N]
+  # force_ramp_time: 0.01      # Ramp time for force application [s]
 
 #============================================================================
 # OUTPUT & CHECKPOINT CONFIGURATION
@@ -215,6 +220,15 @@ GENERATOR_TEMPLATES = {
       ny_base: 2           # Elements in base height
       quadratic: true
 """,
+    "RotorMesh": """  generator:
+    type: "RotorMesh"
+    params:
+      yaml_file: "reference_turbines/yamls/IEA-15-240-RWT.yaml"  # Path to blade YAML
+      n_blades: 3          # Number of blades in rotor
+      hub_radius: null     # Hub radius [m] (null = use blade definition)
+      element_size: 0.5    # Target element size [m]
+      n_samples: 300       # Samples for airfoil discretization
+""",
 }
 
 
@@ -252,6 +266,10 @@ def list_generators() -> None:
     print("\n3. MultiFlapMesh")
     print("   Multiple flaps on a common base for FSI")
     print("   Node sets: bottom, flaps_left, flaps_right, flaps_top")
+
+    print("\n4. RotorMesh")
+    print("   Wind turbine rotor mesh from blade YAML definition")
+    print("   Node sets: RootNodes_blade_N, allOuterShellNods_blade_N")
 
     print("\nUse --template --generator <name> for example configuration")
 
