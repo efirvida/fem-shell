@@ -41,7 +41,7 @@ BLUE := \033[0;34m
 NC := \033[0m # No Color
 
 # ================== Targets principales ================== #
-.PHONY: all help deps openfoam petsc precice adapter python-deps fem-shell clean check-wsl env-setup
+.PHONY: all help deps openfoam petsc precice adapter python-deps fem-shell clean check-wsl env-setup clean-all clean-all-force verify
 
 all: check-wsl deps openfoam petsc precice adapter python-deps fem-shell env-setup
 	@echo -e "$(GREEN)✓ Instalación completa finalizada$(NC)"
@@ -63,6 +63,9 @@ help:
 	@echo "  make python-deps   - Solo paquetes Python"
 	@echo "  make fem-shell     - Solo fem_shell"
 	@echo "  make clean         - Limpiar archivos temporales"
+	@echo "  make clean-all     - Limpiar instalación completa (excepto APT)"
+	@echo "  make clean-all-force - Limpiar todo sin confirmación"
+	@echo "  make verify        - Verificar instalación"
 	@echo ""
 	@echo -e "$(GREEN)Variables configurables:$(NC)"
 	@echo "  FOAM_VERSION=$(FOAM_VERSION)"
@@ -72,6 +75,7 @@ help:
 	@echo ""
 	@echo -e "$(YELLOW)Ejemplo:$(NC)"
 	@echo "  make all FOAM_VERSION=2406 NPROC=4"
+	@echo "  make clean-all     # Limpiar todo para instalación fresca"
 
 check-wsl:
 	@echo -e "$(BLUE)▶ Verificando entorno WSL...$(NC)"
@@ -315,9 +319,8 @@ env-setup:
 clean:
 	@echo -e "$(BLUE)▶ Limpiando archivos temporales y marcadores...$(NC)"
 	rm -rf $(BUILD_DIR)
-	rm -f /tmp/fem-shell-build/.*-installed 2>/dev/null || true
 	@echo -e "$(GREEN)✓ Limpieza completada$(NC)"
-	@echo -e "$(YELLOW)Ahora puedes ejecutar 'make -f Makefile.wsl all' para recompilar$(NC)"
+	@echo -e "$(YELLOW)Usa 'make clean-all' para una limpieza completa o 'make all' para reinstalar$(NC)"
 
 # Forzar recompilación de componentes específicos
 rebuild-petsc: clean-petsc
@@ -356,16 +359,63 @@ rebuild-all: clean all
 
 clean-all: clean
 	@echo -e "$(BLUE)▶ Limpiando instalación completa...$(NC)"
-	@echo -e "$(YELLOW)⚠ Esto eliminará PETSc, SLEPc y preCICE de $(INSTALL_PREFIX)$(NC)"
+	@echo -e "$(YELLOW)⚠ Esto eliminará TODA la instalación (excepto paquetes APT)$(NC)"
+	@echo -e "$(YELLOW)  - PETSc, SLEPc y preCICE de $(INSTALL_PREFIX)$(NC)"
+	@echo -e "$(YELLOW)  - Adaptador OpenFOAM compilado$(NC)"
+	@echo -e "$(YELLOW)  - Paquetes Python (petsc4py, slepc4py, pyprecice, etc.)$(NC)"
+	@echo -e "$(YELLOW)  - fem_shell y configuración de entorno$(NC)"
 	@read -p "¿Estás seguro? [y/N] " -n 1 -r; \
 	if [[ $$REPLY =~ ^[Yy]$$ ]]; then \
+		echo -e "\n$(BLUE)▶ Eliminando librerías compiladas...$(NC)"; \
 		sudo rm -rf $(INSTALL_PREFIX)/lib/libpetsc* $(INSTALL_PREFIX)/lib/libslepc* $(INSTALL_PREFIX)/lib/libprecice*; \
 		sudo rm -rf $(INSTALL_PREFIX)/include/petsc* $(INSTALL_PREFIX)/include/slepc* $(INSTALL_PREFIX)/include/precice*; \
+		sudo rm -rf $(INSTALL_PREFIX)/share/petsc $(INSTALL_PREFIX)/share/slepc; \
+		sudo rm -rf $(INSTALL_PREFIX)/bin/precice-*; \
+		echo -e "$(BLUE)▶ Eliminando adaptador OpenFOAM...$(NC)"; \
+		if [ -d "/usr/lib/openfoam/openfoam$(FOAM_VERSION)" ]; then \
+			sudo find /usr/lib/openfoam/openfoam$(FOAM_VERSION) -name "*precice*" -delete 2>/dev/null || true; \
+		fi; \
+		echo -e "$(BLUE)▶ Desinstalando paquetes Python...$(NC)"; \
+		pip3 uninstall -y --break-system-packages \
+			petsc4py slepc4py pyprecice precice-cli fem-shell \
+			gmsh trimesh meshio pyvista pyvistaqt \
+			numpy-stl triangle plot3d nevergrad 2>/dev/null || true; \
+		echo -e "$(BLUE)▶ Eliminando configuración de entorno...$(NC)"; \
 		rm -f ~/.fem-shell-env; \
-		echo -e "\n$(GREEN)✓ Limpieza completa$(NC)"; \
+		if grep -q "fem-shell-env" ~/.bashrc 2>/dev/null; then \
+			sed -i '/# Load fem-shell environment/,+4d' ~/.bashrc; \
+		fi; \
+		sudo ldconfig; \
+		echo -e "\n$(GREEN)✓ Limpieza completa finalizada$(NC)"; \
+		echo -e "$(YELLOW)Ahora puedes ejecutar 'make -f Makefile.wsl all' para una instalación fresca$(NC)"; \
 	else \
 		echo -e "\n$(YELLOW)Cancelado$(NC)"; \
 	fi
+
+# Versión no-interactiva para CI/scripts
+clean-all-force: clean
+	@echo -e "$(BLUE)▶ Limpiando instalación completa (forzado)...$(NC)"
+	@echo -e "$(BLUE)▶ Eliminando librerías compiladas...$(NC)"
+	@sudo rm -rf $(INSTALL_PREFIX)/lib/libpetsc* $(INSTALL_PREFIX)/lib/libslepc* $(INSTALL_PREFIX)/lib/libprecice* || true
+	@sudo rm -rf $(INSTALL_PREFIX)/include/petsc* $(INSTALL_PREFIX)/include/slepc* $(INSTALL_PREFIX)/include/precice* || true
+	@sudo rm -rf $(INSTALL_PREFIX)/share/petsc $(INSTALL_PREFIX)/share/slepc || true
+	@sudo rm -rf $(INSTALL_PREFIX)/bin/precice-* || true
+	@echo -e "$(BLUE)▶ Eliminando adaptador OpenFOAM...$(NC)"
+	@if [ -d "/usr/lib/openfoam/openfoam$(FOAM_VERSION)" ]; then \
+		sudo find /usr/lib/openfoam/openfoam$(FOAM_VERSION) -name "*precice*" -delete 2>/dev/null || true; \
+	fi
+	@echo -e "$(BLUE)▶ Desinstalando paquetes Python...$(NC)"
+	@pip3 uninstall -y --break-system-packages \
+		petsc4py slepc4py pyprecice precice-cli fem-shell \
+		gmsh trimesh meshio pyvista pyvistaqt \
+		numpy-stl triangle plot3d nevergrad 2>/dev/null || true
+	@echo -e "$(BLUE)▶ Eliminando configuración de entorno...$(NC)"
+	@rm -f ~/.fem-shell-env || true
+	@if grep -q "fem-shell-env" ~/.bashrc 2>/dev/null; then \
+		sed -i '/# Load fem-shell environment/,+4d' ~/.bashrc; \
+	fi
+	@sudo ldconfig || true
+	@echo -e "$(GREEN)✓ Limpieza completa finalizada$(NC)"
 
 # ================== Verificación ================== #
 .PHONY: verify
