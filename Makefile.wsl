@@ -323,6 +323,9 @@ clean:
 	@echo -e "$(YELLOW)Usa 'make clean-all' para una limpieza completa o 'make all' para reinstalar$(NC)"
 
 # Forzar recompilación de componentes específicos
+rebuild-openfoam: clean-openfoam
+	$(MAKE) -f Makefile.wsl openfoam
+
 rebuild-petsc: clean-petsc
 	$(MAKE) -f Makefile.wsl petsc
 
@@ -336,6 +339,16 @@ rebuild-python: clean-python
 	$(MAKE) -f Makefile.wsl python-deps
 
 # Limpiar componentes individuales
+clean-openfoam:
+	@echo -e "$(BLUE)▶ Desinstalando OpenFOAM...$(NC)"
+	@if dpkg -s openfoam$(FOAM_VERSION)-default >/dev/null 2>&1; then \
+		sudo apt-get remove --purge -y openfoam$(FOAM_VERSION)-default; \
+		sudo rm -f /opt/OpenFOAM-v$(FOAM_VERSION); \
+		echo -e "$(GREEN)✓ OpenFOAM desinstalado$(NC)"; \
+	else \
+		echo -e "$(YELLOW)⚠ OpenFOAM no está instalado$(NC)"; \
+	fi
+
 clean-petsc:
 	@echo -e "$(BLUE)▶ Limpiando PETSc/SLEPc...$(NC)"
 	rm -f $(BUILD_DIR)/.petsc-installed $(BUILD_DIR)/.slepc-installed
