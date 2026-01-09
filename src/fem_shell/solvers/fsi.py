@@ -1,13 +1,9 @@
 import copy
 import logging
-import os
-import sys
-import xml.etree.ElementTree as ET
-from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
+from typing import Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 import precice
-import yaml
 from petsc4py import PETSc
 
 from fem_shell.core.assembler import MeshAssembler
@@ -116,256 +112,6 @@ class ForceClipper:
         }
 
 
-class Config:
-    """
-    Handles reading configuration parameters for the preCICE solver adapter.
-
-    This class reads configuration parameters from a YAML file or dictionary
-    and stores the data in instance attributes. The configuration is then
-    accessible through properties.
-
-    Parameters
-    ----------
-    adapter_config : str, dict, or None
-        Path to the YAML configuration file for the adapter, or a dictionary
-        containing the configuration directly.
-    base_path : str, optional
-        Base path for resolving relative file paths when using dict config.
-    """
-
-    def __init__(
-        self,
-        adapter_config: Optional[Union[str, Dict[str, Any]]] = None,
-        base_path: Optional[str] = None,
-    ):
-        self._config_file: Optional[str] = None
-        self._participant: Optional[str] = None
-        self._coupling_mesh: Optional[str] = None
-        self._read_data: Optional[str] = None
-        self._write_data: Optional[str] = None
-        self._base_path = base_path
-
-        if adapter_config:
-            if isinstance(adapter_config, dict):
-                self.read_dict(adapter_config)
-            else:
-                self.read_yaml(adapter_config)
-
-    def read_dict(self, data: Dict[str, Any]) -> None:
-        """
-        Reads configuration from a dictionary and stores the values.
-
-        Parameters
-        ----------
-        data : dict
-            Configuration dictionary with keys: participant, config_file, interface.
-
-        Raises
-        ------
-        KeyError
-            If a required key is missing in the configuration.
-        """
-        if data is None:
-            raise ValueError("Configuration dictionary is empty or invalid.")
-
-        # Determine base path for resolving relative paths
-        base_path = self._base_path or os.getcwd()
-
-        # Validate required keys and assign values
-        try:
-            config_file = data["config_file"]
-            # Resolve relative paths
-            if not os.path.isabs(config_file):
-                config_file = os.path.join(base_path, config_file)
-            self._config_file = config_file
-
-            self._participant = data["participant"]
-            interface = data["interface"]
-            self._coupling_mesh = interface["coupling_mesh"]
-        except KeyError as e:
-            raise KeyError(f"Missing required configuration key: {e}")
-
-        # Optional keys: assign if present, else remain None
-        self._write_data = interface.get("write_data")
-        self._read_data = interface.get("read_data")
-
-        logging.info("Configuration loaded from dictionary")
-
-    def read_yaml(self, adapter_config_filename: str) -> None:
-        """
-        Reads the YAML configuration file and stores the values in instance attributes.
-
-        Parameters
-        ----------
-        adapter_config_filename : str
-            Path to the YAML configuration file.
-
-        Raises
-        ------
-        FileNotFoundError
-            If the configuration file is not found.
-        ValueError
-            If the configuration file is empty or invalid.
-        KeyError
-            If a required key is missing in the configuration file.
-        """
-        # Construct the absolute path to the configuration file
-        folder = os.path.dirname(
-            os.path.abspath(
-                os.path.join(os.getcwd(), os.path.dirname(sys.argv[0]), adapter_config_filename)
-            )
-        )
-        path = os.path.join(folder, os.path.basename(adapter_config_filename))
-
-        if not os.path.exists(path):
-            raise FileNotFoundError(f"Configuration file not found: {path}")
-
-        with open(path, "r") as file:
-            data = yaml.safe_load(file)
-
-        if data is None:
-            raise ValueError(f"Configuration file {path} is empty or invalid.")
-
-        # Validate required keys and assign values
-        try:
-            self._config_file = os.path.join(folder, data["config_file"])
-            self._participant = data["participant"]
-            interface = data["interface"]
-            self._coupling_mesh = interface["coupling_mesh"]
-        except KeyError as e:
-            raise KeyError(f"Missing required configuration key: {e}")
-
-        # Optional keys: assign if present, else remain None
-        self._write_data = interface.get("write_data")
-        self._read_data = interface.get("read_data")
-
-        logging.info("Configuration loaded successfully from %s", path)
-
-    @property
-    def config_file(self) -> str:
-        """
-        Returns the preCICE configuration file path.
-
-        Returns
-        -------
-        str or None
-            Full path to the preCICE configuration file, or None if not set.
-        """
-        return self._config_file
-
-    @property
-    def participant(self) -> Optional[str]:
-        """
-        Returns the participant name.
-
-        Returns
-        -------
-        str or None
-            Name of the participant, or None if not set.
-        """
-        return self._participant
-
-    @property
-    def mesh_name(self) -> Optional[str]:
-        """
-        Returns the coupling mesh name.
-
-        Returns
-        -------
-        str or None
-            Name of the coupling mesh, or None if not set.
-        """
-        return self._coupling_mesh
-
-    @property
-    def read_data(self) -> Optional[str]:
-        """
-        Returns the name of the variable to be read.
-
-        Returns
-        -------
-        str or None
-            Name of the read data variable, or None if it is not specified.
-        """
-        return self._read_data
-
-    @property
-    def write_data(self) -> Optional[str]:
-        """
-        Returns the name of the variable to be written.
-
-        Returns
-        -------
-        str or None
-            Name of the write data variable, or None if it is not specified.
-        """
-        return self._write_data
-
-    @property
-    def problem_dimension(self) -> str | None:
-        """
-        Reads the XML file and retrieves the 'dimensions' attribute for the specified mesh.
-
-        If the XML file contains unbound prefixes (e.g., "data:") that are not declared,
-        a dummy namespace is injected to allow parsing.
-
-        Parameters
-        ----------
-        xml_file : str
-            Path to the XML file.
-        mesh_name : str
-            Name of the mesh whose 'dimensions' attribute is to be retrieved.
-
-        Returns
-        -------
-        Optional[str]
-            The value of the 'dimensions' attribute if found, otherwise None.
-        """
-        # Read the entire file content
-        with open(self.config_file, "r", encoding="utf-8") as f:
-            xml_string = f.read()
-
-        xml_string = xml_string.replace(":", "_")
-
-        # Parse the modified XML string
-        root = ET.fromstring(xml_string)
-
-        # Search for the mesh element with the given name
-        for mesh in root.findall("mesh"):
-            if mesh.get("name") == self.mesh_name:
-                return int(mesh.get("dimensions"))
-
-        return None
-
-    def __repr__(self) -> str:
-        """
-        Official string representation of the object for debugging.
-
-        Returns
-        -------
-        str
-            String showing all configuration attributes.
-        """
-        return f'<Config config_file_name="{self._config_file!r}">'
-
-    def __str__(self) -> str:
-        """
-        User-friendly string representation of the object.
-
-        Returns
-        -------
-        str
-            String summarizing the main configuration details.
-        """
-        return (
-            f"Config for participant '{self._participant}'\n"
-            f"  Configuration file: {self._config_file}\n"
-            f"  Coupling mesh: {self._coupling_mesh}\n"
-            f"  Read data: {self._read_data}\n"
-            f"  Write data: {self._write_data}"
-        )
-
-
 class SolverState:
     def __init__(self, states: Tuple[PETSc.Vec, PETSc.Vec, PETSc.Vec, float]):
         """Almacena estados (vectores PETSc) para checkpointing eficiente."""
@@ -389,37 +135,41 @@ class SolverState:
 
 
 class Adapter:
-    """This adapter class provides an interface to the preCICE v3 coupling library for setting up a
-    coupling case with FEniCSx as a participant in 2D and 3D problems.
+    """preCICE adapter for FSI coupling with structural solvers.
 
-    The coupling is achieved using the FunctionSpace degrees of freedom (DOFs) on the interface.
-    Data interchange between participants (read/write) is performed by accessing the values on
-    the interface DOFs. This approach allows us to leverage the full range of FEniCSx functionalities
-    while ensuring seamless communication with other participants in the coupling process.
+    This adapter class provides an interface to the preCICE coupling library
+    for setting up FSI simulations. All configuration is passed directly as
+    parameters - no external configuration file is needed.
 
+    Parameters
+    ----------
+    participant : str
+        Name of this participant in the preCICE configuration.
+    config_file : str
+        Path to the preCICE configuration XML file.
+    coupling_mesh : str
+        Name of the coupling mesh in preCICE.
+    write_data : list of str
+        Names of data fields to write to preCICE.
+    read_data : list of str
+        Names of data fields to read from preCICE.
     """
 
     def __init__(
         self,
-        adapter_config: Union[str, Dict[str, Any]] = "precice-adapter-config.yaml",
-        base_path: Optional[str] = None,
+        participant: str,
+        config_file: str,
+        coupling_mesh: str,
+        write_data: List[str],
+        read_data: List[str],
     ):
-        """Constructor of Adapter class.
+        self._participant = participant
+        self._config_file = config_file
+        self._coupling_mesh = coupling_mesh
+        self._write_data = write_data if isinstance(write_data, list) else [write_data]
+        self._read_data = read_data if isinstance(read_data, list) else [read_data]
 
-        Parameters
-        ----------
-        adapter_config : Union[str, Dict[str, Any]]
-            Either a path to the YAML adapter configuration file, or a dictionary
-            containing the configuration directly (inline config).
-        base_path : Optional[str]
-            Base path for resolving relative paths in config_file. Only used when
-            adapter_config is a dictionary. If None, current working directory is used.
-        """
-        self._config = Config(adapter_config, base_path=base_path)
-
-        self._interface = precice.Participant(
-            self._config.participant, self._config.config_file, 0, 1
-        )
+        self._interface = precice.Participant(participant, config_file, 0, 1)
 
         # coupling mesh related quantities
         self._solver_vertices = None
@@ -431,68 +181,88 @@ class Adapter:
         # Necessary bools for enforcing proper control flow / warnings to user
         self._first_advance_done = False
 
-    def read_data(self):
+    def read_data(self, data_name: Optional[str] = None) -> np.ndarray:
         """Read data from preCICE.
 
-        Incoming data is a ndarray where the shape of the array depends on the dimensions of the problem.
-        For scalar problems, this will be a 1D array (vector), while for vector problems,
-        it will be an Mx2 array (in 2D) or an Mx3 array (in 3D), where M is the number of interface nodes.
+        Parameters
+        ----------
+        data_name : str, optional
+            Name of the data field to read. If None, reads the first field
+            in read_data list.
 
         Returns
         -------
         np.ndarray
-            The incoming data containing nodal data ordered according to _fenicsx_vertices
+            The incoming data containing nodal data.
         """
-        mesh_name = self._config.mesh_name
-        data_name = self._config.read_data
+        if data_name is None:
+            data_name = self._read_data[0]
 
         read_data = self._interface.read_data(
-            mesh_name, data_name, self._precice_vertex_ids, self.dt
+            self._coupling_mesh, data_name, self._precice_vertex_ids, self.dt
         )
         return copy.deepcopy(read_data.astype(PETSc.ScalarType))
 
-    def write_data(self, write_function) -> None:
-        """Writes data to preCICE. Depending on the dimensions of the simulation.
-        For scalar problems, this will be a 1D array (vector), while for vector problems,
-        it will be an Mx2 array (in 2D) or an Mx3 array (in 3D), where M is the number of interface nodes.
+    def read_all_data(self) -> Dict[str, np.ndarray]:
+        """Read all configured data fields from preCICE.
 
+        Returns
+        -------
+        dict
+            Dictionary mapping data names to their values.
+        """
+        return {name: self.read_data(name) for name in self._read_data}
+
+    def write_data(self, write_function, data_name: Optional[str] = None) -> None:
+        """Write data to preCICE.
 
         Parameters
         ----------
-        write_function : dolfinx.fem.Function
-            A FEniCSx function consisting of the data which this participant will write to preCICE
-            in every time step.
+        write_function : array-like
+            Data to write, indexed by interface DOFs.
+        data_name : str, optional
+            Name of the data field to write. If None, writes to the first
+            field in write_data list.
         """
-        mesh_name = self._config.mesh_name
-        write_data_name = self._config.write_data
+        if data_name is None:
+            data_name = self._write_data[0]
+
         write_data = write_function[self.interface_dofs]
         self._interface.write_data(
-            mesh_name,
-            write_data_name,
+            self._coupling_mesh,
+            data_name,
             self._precice_vertex_ids,
             write_data,
         )
 
-    def initialize(
-        self, domain: MeshAssembler, coupling_boundaries: Sequence[str], fixed_dofs: Tuple[int]
-    ) -> float:
-        """Initializes the coupling and sets up the mesh where coupling happens in preCICE.
+    def write_all_data(self, data_dict: Dict[str, np.ndarray]) -> None:
+        """Write multiple data fields to preCICE.
 
         Parameters
         ----------
-        coupling_subdomain : List
-            Indices of entities representing the coupling interface normally face sets tags.
-        read_function_space : dolfinx.fem.FunctionSpace
-            Function space on which the read function lives. If not provided then the adapter assumes that this
-            participant is a write-only participant.
-        write_object : dolfinx.fem.Function
-            FEniCSx function related to the quantity to be written
-            by FEniCSx during each coupling iteration. If not provided then the adapter assumes that this participant is
-            a read-only participant.
+        data_dict : dict
+            Dictionary mapping data names to their values.
+        """
+        for name, data in data_dict.items():
+            self.write_data(data, name)
+
+    def initialize(
+        self, domain: MeshAssembler, coupling_boundaries: Sequence[str], fixed_dofs: Tuple[int]
+    ) -> float:
+        """Initialize the coupling and set up the mesh in preCICE.
+
+        Parameters
+        ----------
+        domain : MeshAssembler
+            The mesh assembler containing the FEM mesh.
+        coupling_boundaries : list of str
+            Names of node sets representing the coupling interface.
+        fixed_dofs : tuple
+            Indices of fixed degrees of freedom.
 
         Returns
         -------
-        dt : float
+        float
             Recommended time step value from preCICE.
         """
         self._domain = domain
@@ -507,7 +277,7 @@ class Adapter:
         self._interface_dofs = np.array([self._domain._node_dofs_map[n] for n in nodes])
 
         self._precice_vertex_ids = self._interface.set_mesh_vertices(
-            self._config.mesh_name, self._interface_coords
+            self._coupling_mesh, self._interface_coords
         )
         np.savetxt(
             "interface_coords.csv",
@@ -517,30 +287,31 @@ class Adapter:
         )
 
         if self._interface.requires_initial_data():
-            self._interface.write_data(
-                self._config.mesh_name,
-                self._config.write_data,
-                self._precice_vertex_ids,
-                np.zeros(self.interface_dofs.shape),
-            )
+            # Write initial zero data for all write fields
+            for data_name in self._write_data:
+                self._interface.write_data(
+                    self._coupling_mesh,
+                    data_name,
+                    self._precice_vertex_ids,
+                    np.zeros(self.interface_dofs.shape),
+                )
         self._interface.initialize()
         return self._interface.get_max_time_step_size()
 
     def store_checkpoint(self, states: Sequence) -> None:
-        """Defines an object of class SolverState which stores the current states of the variable and the time stamp."""
+        """Store current solver state for checkpointing."""
         if self._first_advance_done:
             assert self.is_time_window_complete
         logging.debug("Store checkpoint")
         self._checkpoint = SolverState(states)
 
     def retrieve_checkpoint(self) -> List:
-        """
-        Resets the FEniCSx participant state to the state of the stored checkpoint.
+        """Retrieve stored checkpoint state.
 
         Returns
         -------
-        tuple
-            The stored checkpoint state (u, v, a, t).
+        list
+            The stored checkpoint state.
         """
         assert not self.is_time_window_complete
         logging.debug("Restore solver state")
@@ -548,110 +319,77 @@ class Adapter:
             return self._checkpoint.get_state()
 
     def advance(self, dt: float) -> float:
-        """Advances coupling in preCICE.
+        """Advance coupling in preCICE.
 
         Parameters
         ----------
-        dt : double
+        dt : float
             Length of timestep used by the solver.
-
-        Notes
-        -----
-        Refer advance() in https://github.com/precice/python-bindings/blob/develop/precice.pyx
 
         Returns
         -------
-        max_dt : double
-            Maximum length of timestep to be computed by solver.
+        float
+            Maximum length of timestep for next iteration.
         """
         self._first_advance_done = True
         max_dt = self._interface.advance(dt)
         return max_dt
 
     def finalize(self) -> None:
-        """
-        Finalizes the coupling via preCICE and the adapter. To be called at the end of the simulation.
-
-        Notes
-        -----
-        Refer finalize() in https://github.com/precice/python-bindings/blob/develop/precice.pyx
-        """
+        """Finalize the coupling via preCICE."""
         self._interface.finalize()
 
     @property
     def is_coupling_ongoing(self) -> bool:
-        """
-        Checks if the coupled simulation is still ongoing.
-
-        Notes
-        -----
-        Refer is_coupling_ongoing() in https://github.com/precice/python-bindings/blob/develop/precice.pyx
-
-        Returns
-        -------
-        tag : bool
-            True if coupling is still going on and False if coupling has finished.
-        """
+        """Check if the coupled simulation is still ongoing."""
         return self._interface.is_coupling_ongoing()
 
     @property
     def is_time_window_complete(self) -> bool:
-        """Tag to check if implicit iteration has converged.
-
-        Notes:
-        -----
-        Refer is_time_window_complete() in https://github.com/precice/python-bindings/blob/develop/precice.pyx
-
-        Returns:
-        -------
-        tag : bool
-            True if implicit coupling in the time window has converged and False if not converged yet.
-        """
+        """Check if implicit iteration has converged."""
         return self._interface.is_time_window_complete()
 
     @property
     def requires_reading_checkpoint(self) -> bool:
-        """Checks if reading a checkpoint is required.
-
-        Returns:
-        -------
-        bool
-            True if reading a checkpoint is required, False otherwise.
-        """
+        """Check if reading a checkpoint is required."""
         return self._interface.requires_reading_checkpoint()
 
     @property
     def requires_writing_checkpoint(self) -> bool:
-        """Checks if writing a checkpoint is required.
-
-        Returns:
-        -------
-        bool
-            True if writing a checkpoint is required, False otherwise.
-        """
+        """Check if writing a checkpoint is required."""
         return self._interface.requires_writing_checkpoint()
 
     @property
     def interface_dofs(self):
-        """Returns the interface degrees of freedom."""
+        """Return the interface degrees of freedom."""
         if self._interface_dofs.shape[0] > 3:
             return self._interface_dofs[:, :3].astype(PETSc.IntType)
         return self._interface_dofs.astype(PETSc.IntType)
 
     @property
     def interface_coordinates(self):
-        """Returns the interface coordinates."""
+        """Return the interface coordinates."""
         return self._interface_coords
 
     @property
     def precice(self):
-        """Returns the preCICE interface object."""
+        """Return the preCICE interface object."""
         return self._interface
 
     @property
     def dt(self):
-        """Returns the maximum time step size allowed by preCICE."""
+        """Return the maximum time step size allowed by preCICE."""
         return self._interface.get_max_time_step_size()
+
+    @property
+    def read_data_names(self) -> List[str]:
+        """Return list of read data field names."""
+        return self._read_data
+
+    @property
+    def write_data_names(self) -> List[str]:
+        """Return list of write data field names."""
+        return self._write_data
 
 
 class LinearDynamicFSISolver(LinearDynamicSolver):
@@ -663,9 +401,17 @@ class LinearDynamicFSISolver(LinearDynamicSolver):
 
     def __init__(self, mesh: MeshModel, fem_model_properties: Dict):
         super().__init__(mesh, fem_model_properties)
-        adapter_cfg = fem_model_properties["solver"]["adapter_cfg"]
-        base_path = fem_model_properties.get("base_path")
-        self.precice_participant = Adapter(adapter_cfg, base_path=base_path)
+
+        # Extract coupling configuration
+        coupling_cfg = fem_model_properties["solver"]["coupling"]
+
+        self.precice_participant = Adapter(
+            participant=coupling_cfg["participant"],
+            config_file=coupling_cfg["config_file"],
+            coupling_mesh=coupling_cfg["coupling_mesh"],
+            write_data=coupling_cfg["write_data"],
+            read_data=coupling_cfg["read_data"],
+        )
         self._prepared = False
 
     def _setup_solver(self):
