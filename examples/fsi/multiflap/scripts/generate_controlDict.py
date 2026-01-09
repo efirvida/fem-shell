@@ -13,7 +13,7 @@ from pathlib import Path
 def load_config():
     """Load configuration from case_config.json"""
     # Navigate from fluid/system to case root
-    config_path = Path(__file__).parent.parent.parent / "case_config.json"
+    config_path = Path(__file__).parent.parent / "case_config.json"
     with config_path.open() as f:
         return json.load(f)
 
@@ -103,7 +103,7 @@ def main():
     config = load_config()
     content = generate_control_dict(config)
 
-    output_path = Path(__file__).parent / "controlDict"
+    output_path = Path(__file__).parent.parent / "fluid/system/controlDict"
     with output_path.open("w") as f:
         f.write(content)
 

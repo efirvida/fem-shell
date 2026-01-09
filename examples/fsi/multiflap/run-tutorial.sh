@@ -55,7 +55,7 @@ echo "✔ [CLEANUP] Previous runs cleaned successfully" | tee -a "$SOLID_LOG" "$
 # Generate configuration files from case_config.json
 echo ""
 echo "⚙️  [CONFIG] Generating configuration files from case_config.json..."
-python3 generate_all.py || {
+python3 scripts/generate_all.py || {
     echo "✖ ERROR: Failed to generate configuration files" | tee -a "$SOLID_LOG" "$FLUID_LOG"
     exit 1
 }

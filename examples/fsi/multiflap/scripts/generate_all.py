@@ -2,10 +2,12 @@
 """
 Generate all configuration files from case_config.json
 
-This script runs all generators to create:
+This script runs all generators from the scripts/ directory to create:
 - fluid/system/blockMeshDict
 - fluid/system/controlDict
+- fluid/system/preciceDict
 - precice-config.xml
+- solid/solid_config.yaml
 
 Run this after modifying case_config.json to update all dependent files.
 """
@@ -32,17 +34,18 @@ def run_generator(script_path, name):
 
 
 def main():
-    case_root = Path(__file__).parent
+    case_root = Path(__file__).parent.parent  # scripts -> case_root
 
     print("=" * 60)
     print("Generating all configuration files from case_config.json")
     print("=" * 60)
 
     generators = [
-        (case_root / "fluid/system/generate_blockMeshDict.py", "blockMeshDict generator"),
-        (case_root / "fluid/system/generate_controlDict.py", "controlDict generator"),
-        (case_root / "fluid/system/generate_preciceDict.py", "preciceDict generator"),
-        (case_root / "generate_precice_config.py", "precice-config.xml generator"),
+        (case_root / "scripts/generate_blockMeshDict.py", "blockMeshDict generator"),
+        (case_root / "scripts/generate_controlDict.py", "controlDict generator"),
+        (case_root / "scripts/generate_preciceDict.py", "preciceDict generator"),
+        (case_root / "scripts/generate_precice_config.py", "precice-config.xml generator"),
+        (case_root / "scripts/generate_solid_config.py", "solid_config.yaml generator"),
     ]
 
     success = True

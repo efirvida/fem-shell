@@ -11,14 +11,14 @@ from pathlib import Path
 
 def main():
     base = Path(__file__).parent
-    case_root = base.parent.parent  # fluid/system -> fluid -> case_root
+    case_root = base.parent  # scripts -> case_root
 
     # Try to read from shared config first, fallback to local
     config_path = case_root / "case_config.json"
     if not config_path.exists():
         config_path = base / "blockMeshParams.json"
 
-    out_path = base / "blockMeshDict"
+    out_path = case_root / "fluid/system/blockMeshDict"
 
     with config_path.open() as f:
         p = json.load(f)
