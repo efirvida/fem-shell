@@ -207,9 +207,7 @@ $(BUILD_DIR)/.precice-installed: $(BUILD_DIR)/.petsc-installed
 		export PKG_CONFIG_PATH=$(INSTALL_PREFIX)/lib/pkgconfig:$${PKG_CONFIG_PATH:-} && \
 		cmake -DCMAKE_INSTALL_PREFIX=$(INSTALL_PREFIX) \
 			  -DCMAKE_BUILD_TYPE=Release \
-			  -DBUILD_SHARED_LIBS=ON \
 			  -DPRECICE_FEATURE_PETSC_MAPPING=ON \
-			  -DPETSC_DIR=$(INSTALL_PREFIX) \
 			  .. && \
 		make -j$(NPROC) && \
 		sudo make install
@@ -256,7 +254,7 @@ $(BUILD_DIR)/.python-deps-installed: $(BUILD_DIR)/.petsc-installed $(BUILD_DIR)/
 	export PETSC_DIR=$(INSTALL_PREFIX) && \
 	export SLEPC_DIR=$(INSTALL_PREFIX) && \
 	pip3 install --break-system-packages --upgrade pip setuptools wheel || true && \
-	pip3 install --break-system-packages --ignore-installed \
+	pip3 install --break-system-packages \
 		mpi4py \
 		numpy \
 		petsc4py \
