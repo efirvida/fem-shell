@@ -87,83 +87,54 @@ check-wsl:
 	fi
 
 # ================== Dependencias del sistema ================== #
+DEPS_PACKAGES := ca-certificates curl gnupg lsb-release wget build-essential git pkg-config \
+	bison cmake flex gfortran libblas-dev liblapack-dev libopenmpi-dev openmpi-bin \
+	python3 python3-dev python3-pip python3-venv libeigen3-dev libxml2-dev libboost-all-dev \
+	libgfortran5 libgomp1 libglu1-mesa libgl1 libegl1 libxrender1 libxext6 libxcursor1 \
+	libxft2 libxinerama1 libxfixes3 libxrandr2 libxi6 libfontconfig1 libfreetype6 \
+	libglib2.0-0 libdbus-1-3 libxkbcommon0 libxkbcommon-x11-0 libx11-6 libxcb-icccm4 \
+	libxcb-image0 libxcb-keysyms1 libxcb-shape0 libxcb-sync1 libxcb-xfixes0 libxcb-xinerama0 libxcb-xkb1
+
 deps:
-	@echo -e "$(BLUE)▶ Instalando dependencias del sistema...$(NC)"
-	sudo apt-get update
-	sudo apt-get install -y --no-install-recommends \
-		ca-certificates \
-		curl \
-		gnupg \
-		lsb-release \
-		wget \
-		build-essential \
-		git \
-		pkg-config \
-		bison \
-		cmake \
-		flex \
-		gfortran \
-		libblas-dev \
-		liblapack-dev \
-		libopenmpi-dev \
-		openmpi-bin \
-		python3 \
-		python3-dev \
-		python3-pip \
-		python3-venv \
-		libeigen3-dev \
-		libxml2-dev \
-		libboost-all-dev \
-		libgfortran5 \
-		libgomp1 \
-		libglu1-mesa \
-		libgl1 \
-		libegl1 \
-		libxrender1 \
-		libxext6 \
-		libxcursor1 \
-		libxft2 \
-		libxinerama1 \
-		libxfixes3 \
-		libxrandr2 \
-		libxi6 \
-		libfontconfig1 \
-		libfreetype6 \
-		libglib2.0-0 \
-		libdbus-1-3 \
-		libxkbcommon0 \
-		libxkbcommon-x11-0 \
-		libx11-6 \
-		libxcb-icccm4 \
-		libxcb-image0 \
-		libxcb-keysyms1 \
-		libxcb-shape0 \
-		libxcb-sync1 \
-		libxcb-xfixes0 \
-		libxcb-xinerama0 \
-		libxcb-xkb1
-	@echo -e "$(GREEN)✓ Dependencias del sistema instaladas$(NC)"
+	@echo -e "$(BLUE)▶ Verificando dependencias del sistema...$(NC)"
+	@MISSING=""; \
+	for pkg in $(DEPS_PACKAGES); do \
+		if ! dpkg -s $$pkg >/dev/null 2>&1; then \
+			MISSING="$$MISSING $$pkg"; \
+		fi; \
+	done; \
+	if [ -n "$$MISSING" ]; then \
+		echo -e "$(YELLOW)Instalando paquetes faltantes:$$MISSING$(NC)"; \
+		sudo apt-get update; \
+		sudo apt-get install -y --no-install-recommends $$MISSING; \
+	else \
+		echo -e "$(GREEN)✓ Todas las dependencias ya están instaladas$(NC)"; \
+	fi
 
 # ================== OpenFOAM ================== #
 openfoam:
-	@echo -e "$(BLUE)▶ Instalando OpenFOAM $(FOAM_VERSION)...$(NC)"
-	@# Añadir repositorio de OpenFOAM
-	curl -s https://dl.openfoam.com/add-debian-repo.sh | sudo bash
-	@# Instalar OpenFOAM
-	sudo apt-get update
-	sudo apt-get install -y --no-install-recommends openfoam$(FOAM_VERSION)-dev
-	@# Crear enlace simbólico de compatibilidad
-	sudo ln -sf /usr/lib/openfoam/openfoam$(FOAM_VERSION) /opt/OpenFOAM-v$(FOAM_VERSION) 2>/dev/null || true
-	@echo -e "$(GREEN)✓ OpenFOAM $(FOAM_VERSION) instalado$(NC)"
+	@if dpkg -s openfoam$(FOAM_VERSION)-default >/dev/null 2>&1; then \
+		echo -e "$(GREEN)✓ OpenFOAM $(FOAM_VERSION) ya está instalado$(NC)"; \
+	else \
+		echo -e "$(BLUE)▶ Instalando OpenFOAM $(FOAM_VERSION)...$(NC)"; \
+		curl -s https://dl.openfoam.com/add-debian-repo.sh | sudo bash; \
+		sudo apt-get update; \
+		sudo apt-get install -y --no-install-recommends openfoam$(FOAM_VERSION)-default; \
+		sudo ln -sf /usr/lib/openfoam/openfoam$(FOAM_VERSION) /opt/OpenFOAM-v$(FOAM_VERSION) 2>/dev/null || true; \
+		echo -e "$(GREEN)✓ OpenFOAM $(FOAM_VERSION) instalado$(NC)"; \
+	fi
 
 # ================== PETSc/SLEPc ================== #
 petsc: $(BUILD_DIR)/.petsc-installed $(BUILD_DIR)/.slepc-installed
 	@echo -e "$(GREEN)✓ PETSc/SLEPc instalados$(NC)"
 
 $(BUILD_DIR)/.petsc-installed:
-	@echo -e "$(BLUE)▶ Compilando PETSc...$(NC)"
+	@rm -f $@
+	@echo -e "$(BLUE)▶ Compilando PETSc (instalación completa)...$(NC)"
 	@mkdir -p $(BUILD_DIR)
 	@rm -rf $(BUILD_DIR)/petsc
+	@# Dar permisos de escritura al usuario en /usr/local
+	sudo chown -R $$USER $(INSTALL_PREFIX)
 	cd $(BUILD_DIR) && \
 		git clone -b release https://gitlab.com/petsc/petsc.git --depth=1 && \
 		cd petsc && \
@@ -176,7 +147,6 @@ $(BUILD_DIR)/.petsc-installed:
 			--with-cc=mpicc \
 			--with-cxx=mpicxx \
 			--with-fc=mpif90 \
-			--download-cmake \
 			--download-fblaslapack \
 			--download-hdf5 \
 			--download-metis \
@@ -191,11 +161,13 @@ $(BUILD_DIR)/.petsc-installed:
 			CXXOPTFLAGS='-O3' \
 			FOPTFLAGS='-O3' && \
 		make PETSC_DIR=$(BUILD_DIR)/petsc PETSC_ARCH=arch-linux-c-opt all -j$(NPROC) && \
-		sudo make PETSC_DIR=$(BUILD_DIR)/petsc PETSC_ARCH=arch-linux-c-opt install
+		make PETSC_DIR=$(BUILD_DIR)/petsc PETSC_ARCH=arch-linux-c-opt install
+	sudo ldconfig
 	@touch $@
 	@echo -e "$(GREEN)✓ PETSc compilado e instalado$(NC)"
 
 $(BUILD_DIR)/.slepc-installed: $(BUILD_DIR)/.petsc-installed
+	@rm -f $@
 	@echo -e "$(BLUE)▶ Compilando SLEPc...$(NC)"
 	@rm -rf $(BUILD_DIR)/slepc
 	cd $(BUILD_DIR) && \
@@ -205,7 +177,8 @@ $(BUILD_DIR)/.slepc-installed: $(BUILD_DIR)/.petsc-installed
 		export SLEPC_DIR=$(BUILD_DIR)/slepc && \
 		./configure --prefix=$(INSTALL_PREFIX) && \
 		make SLEPC_DIR=$(BUILD_DIR)/slepc PETSC_DIR=$(INSTALL_PREFIX) -j$(NPROC) && \
-		sudo make SLEPC_DIR=$(BUILD_DIR)/slepc PETSC_DIR=$(INSTALL_PREFIX) install
+		make SLEPC_DIR=$(BUILD_DIR)/slepc PETSC_DIR=$(INSTALL_PREFIX) install
+	sudo ldconfig
 	@touch $@
 	@echo -e "$(GREEN)✓ SLEPc compilado e instalado$(NC)"
 
@@ -214,12 +187,18 @@ precice: $(BUILD_DIR)/.precice-installed
 	@echo -e "$(GREEN)✓ preCICE instalado$(NC)"
 
 $(BUILD_DIR)/.precice-installed: $(BUILD_DIR)/.petsc-installed
+	@rm -f $@
+	@# Instalar numpy primero (requerido para pyprecice)
+	pip3 install --break-system-packages numpy
 	@echo -e "$(BLUE)▶ Compilando preCICE $(PRECICE_VERSION)...$(NC)"
-	@rm -rf $(BUILD_DIR)/precice
+	@rm -rf $(BUILD_DIR)/precice-$(PRECICE_VERSION)
 	cd $(BUILD_DIR) && \
-		git clone --depth=1 --branch v$(PRECICE_VERSION) https://github.com/precice/precice.git && \
-		cd precice && \
+		wget -q https://github.com/precice/precice/archive/v$(PRECICE_VERSION).tar.gz && \
+		tar -xzf v$(PRECICE_VERSION).tar.gz && \
+		rm -f v$(PRECICE_VERSION).tar.gz && \
+		cd precice-$(PRECICE_VERSION) && \
 		mkdir -p build && cd build && \
+		export PKG_CONFIG_PATH=$(INSTALL_PREFIX)/lib/pkgconfig:$${PKG_CONFIG_PATH:-} && \
 		cmake -DCMAKE_INSTALL_PREFIX=$(INSTALL_PREFIX) \
 			  -DCMAKE_BUILD_TYPE=Release \
 			  -DBUILD_SHARED_LIBS=ON \
@@ -228,6 +207,7 @@ $(BUILD_DIR)/.precice-installed: $(BUILD_DIR)/.petsc-installed
 			  .. && \
 		make -j$(NPROC) && \
 		sudo make install
+	sudo ldconfig
 	@touch $@
 	@echo -e "$(GREEN)✓ preCICE $(PRECICE_VERSION) compilado e instalado$(NC)"
 
@@ -236,12 +216,15 @@ adapter: $(BUILD_DIR)/.adapter-installed
 	@echo -e "$(GREEN)✓ Adaptador OpenFOAM-preCICE instalado$(NC)"
 
 $(BUILD_DIR)/.adapter-installed: $(BUILD_DIR)/.precice-installed
+	@rm -f $@
 	@echo -e "$(BLUE)▶ Compilando adaptador OpenFOAM-preCICE...$(NC)"
 	@rm -rf $(BUILD_DIR)/openfoam-adapter
 	cd $(BUILD_DIR) && \
 		git clone --depth=1 https://github.com/precice/openfoam-adapter.git && \
 		cd openfoam-adapter && \
+		set +u && \
 		source /usr/lib/openfoam/openfoam$(FOAM_VERSION)/etc/bashrc && \
+		set -u && \
 		export LD_LIBRARY_PATH=$(INSTALL_PREFIX)/lib:$$LD_LIBRARY_PATH && \
 		export PRECICE_OPENFOAM_TARGET_DIR="$$FOAM_LIBBIN" && \
 		./Allwmake && \
@@ -254,6 +237,7 @@ python-deps: $(BUILD_DIR)/.python-deps-installed
 	@echo -e "$(GREEN)✓ Paquetes Python instalados$(NC)"
 
 $(BUILD_DIR)/.python-deps-installed: $(BUILD_DIR)/.petsc-installed $(BUILD_DIR)/.slepc-installed $(BUILD_DIR)/.precice-installed
+	@rm -f $@
 	@echo -e "$(BLUE)▶ Instalando paquetes Python...$(NC)"
 	@mkdir -p $(BUILD_DIR)
 	export PETSC_DIR=$(INSTALL_PREFIX) && \
@@ -298,20 +282,13 @@ env-setup:
 	@echo -e "$(BLUE)▶ Configurando variables de entorno...$(NC)"
 	@# Crear archivo de configuración
 	@echo '# ========== fem-shell Environment Setup ==========' > ~/.fem-shell-env
-	@echo 'export FOAM_VERSION=$(FOAM_VERSION)' >> ~/.fem-shell-env
-	@echo 'export FOAM_INST_DIR=/usr/lib/openfoam' >> ~/.fem-shell-env
-	@echo 'export WM_PROJECT_DIR=/usr/lib/openfoam/openfoam$(FOAM_VERSION)' >> ~/.fem-shell-env
-	@echo 'export FOAM_LIBBIN=$${WM_PROJECT_DIR}/platforms/linux64GccDPInt32Opt/lib' >> ~/.fem-shell-env
 	@echo 'export PETSC_DIR=$(INSTALL_PREFIX)' >> ~/.fem-shell-env
 	@echo 'export SLEPC_DIR=$(INSTALL_PREFIX)' >> ~/.fem-shell-env
-	@echo 'export PATH=$${WM_PROJECT_DIR}/bin:$${WM_PROJECT_DIR}/wmake:$(INSTALL_PREFIX)/bin:$$PATH' >> ~/.fem-shell-env
-	@echo 'export LD_LIBRARY_PATH=$${FOAM_LIBBIN}:$(INSTALL_PREFIX)/lib:$$LD_LIBRARY_PATH' >> ~/.fem-shell-env
-	@echo 'export PYTHONPATH=$(INSTALL_PREFIX)/lib:$$PYTHONPATH' >> ~/.fem-shell-env
+	@echo 'export LD_LIBRARY_PATH=$(INSTALL_PREFIX)/lib:$$LD_LIBRARY_PATH' >> ~/.fem-shell-env
 	@echo '' >> ~/.fem-shell-env
-	@echo '# Función para cargar OpenFOAM' >> ~/.fem-shell-env
-	@echo 'foam() {' >> ~/.fem-shell-env
-	@echo '    source /usr/lib/openfoam/openfoam$(FOAM_VERSION)/etc/bashrc' >> ~/.fem-shell-env
-	@echo '}' >> ~/.fem-shell-env
+	@echo '# Alias para cargar OpenFOAM (paquete oficial)' >> ~/.fem-shell-env
+	@echo '# Uso: foam (inicia subshell con entorno OpenFOAM)' >> ~/.fem-shell-env
+	@echo 'alias foam="/usr/bin/openfoam$(FOAM_VERSION)"' >> ~/.fem-shell-env
 	@echo '# =================================================' >> ~/.fem-shell-env
 	@# Añadir al .bashrc si no existe
 	@if ! grep -q "fem-shell-env" ~/.bashrc 2>/dev/null; then \
@@ -329,9 +306,46 @@ env-setup:
 
 # ================== Limpieza ================== #
 clean:
-	@echo -e "$(BLUE)▶ Limpiando archivos temporales...$(NC)"
+	@echo -e "$(BLUE)▶ Limpiando archivos temporales y marcadores...$(NC)"
 	rm -rf $(BUILD_DIR)
+	rm -f /tmp/fem-shell-build/.*-installed 2>/dev/null || true
 	@echo -e "$(GREEN)✓ Limpieza completada$(NC)"
+	@echo -e "$(YELLOW)Ahora puedes ejecutar 'make -f Makefile.wsl all' para recompilar$(NC)"
+
+# Forzar recompilación de componentes específicos
+rebuild-petsc: clean-petsc
+	$(MAKE) -f Makefile.wsl petsc
+
+rebuild-precice: clean-precice
+	$(MAKE) -f Makefile.wsl precice
+
+rebuild-adapter: clean-adapter
+	$(MAKE) -f Makefile.wsl adapter
+
+rebuild-python: clean-python
+	$(MAKE) -f Makefile.wsl python-deps
+
+# Limpiar componentes individuales
+clean-petsc:
+	@echo -e "$(BLUE)▶ Limpiando PETSc/SLEPc...$(NC)"
+	rm -f $(BUILD_DIR)/.petsc-installed $(BUILD_DIR)/.slepc-installed
+	rm -rf $(BUILD_DIR)/petsc $(BUILD_DIR)/slepc
+
+clean-precice:
+	@echo -e "$(BLUE)▶ Limpiando preCICE...$(NC)"
+	rm -f $(BUILD_DIR)/.precice-installed
+	rm -rf $(BUILD_DIR)/precice $(BUILD_DIR)/precice-*
+
+clean-adapter:
+	@echo -e "$(BLUE)▶ Limpiando adaptador...$(NC)"
+	rm -f $(BUILD_DIR)/.adapter-installed
+	rm -rf $(BUILD_DIR)/openfoam-adapter
+
+clean-python:
+	@echo -e "$(BLUE)▶ Limpiando marcador Python...$(NC)"
+	rm -f $(BUILD_DIR)/.python-deps-installed
+
+rebuild-all: clean all
 
 clean-all: clean
 	@echo -e "$(BLUE)▶ Limpiando instalación completa...$(NC)"
