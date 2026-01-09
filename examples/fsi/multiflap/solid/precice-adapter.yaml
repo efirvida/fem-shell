@@ -1,6 +1,0 @@
-participant: "Solid"
-config_file: "../precice-config.xml"
-interface:
-  coupling_mesh: "Solid-Mesh"
-  write_data: "Displacement"
-  read_data: "Force"
