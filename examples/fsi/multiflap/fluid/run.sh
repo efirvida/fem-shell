@@ -7,7 +7,7 @@ if [ -d "0.orig" ]; then
 fi
 
 # Generate parametric blockMeshDict for multiple flaps
-python3 system/generate_blockMeshDict.py || { echo "Failed to generate blockMeshDict"; exit 1; }
+python3 ../scripts/generate_blockMeshDict.py || { echo "Failed to generate blockMeshDict"; exit 1; }
 
 blockMesh      > log.blockMesh
 decomposePar   > log.decomposePar
