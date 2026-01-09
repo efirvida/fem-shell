@@ -1,0 +1,56 @@
+FoamFile
+{
+    version     2.0;
+    format      ascii;
+    class       dictionary;
+    object      fvSchemes;
+}
+
+ddtSchemes
+{
+    default         backward;  // Second-order implicit time scheme (more accurate than Euler)
+}
+
+gradSchemes
+{
+    default         Gauss linear;
+    grad(p)         Gauss linear;
+    grad(U)         cellLimited Gauss linear 1;  // Limited for stability with high aspect ratio
+}
+
+divSchemes
+{
+    default         none;
+    
+    // Convection scheme - linearUpwind is good balance of accuracy and stability
+    // For high Re flows with aspect ratio ~51
+    div(phi,U)      Gauss linearUpwind grad(U);
+    
+    // Alternative: more stable but more diffusive
+    // div(phi,U)      Gauss limitedLinearV 1;
+    
+    // Turbulent stress term
+    div((nuEff*dev2(T(grad(U))))) Gauss linear;
+}
+
+laplacianSchemes
+{
+    // For orthogonal mesh (non-orth = 0), use "corrected" or "orthogonal"
+    default         Gauss linear corrected;
+}
+
+interpolationSchemes
+{
+    default         linear;
+}
+
+snGradSchemes
+{
+    // For orthogonal mesh, "corrected" is fine
+    default         corrected;
+}
+
+wallDist
+{
+    method          meshWave;
+}

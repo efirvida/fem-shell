@@ -1,0 +1,124 @@
+FoamFile
+{
+    version     2.0;
+    format      ascii;
+    class       dictionary;
+    object      fvSolution;
+}
+
+solvers
+{
+    p
+    {
+        solver          GAMG;
+        smoother        DICGaussSeidel;
+        tolerance       1e-06;
+        relTol          0.01;
+        nPreSweeps      0;
+        nPostSweeps     2;
+        cacheAgglomeration true;
+        agglomerator    faceAreaPair;
+        nCellsInCoarsestLevel 100;
+        mergeLevels     1;
+    }
+
+    pFinal
+    {
+        $p;
+        relTol          0;
+        tolerance       1e-07;
+    }
+
+    pcorr
+    {
+        $p;
+        tolerance       1e-04;
+        relTol          0.01;
+    }
+
+    pcorrFinal
+    {
+        $pcorr;
+        relTol          0;
+    }
+
+    Phi
+    {
+        $p;
+    }
+
+    U
+    {
+        solver          PBiCGStab;
+        preconditioner  DILU;
+        tolerance       1e-08;
+        relTol          0.01;
+        minIter         1;
+    }
+
+    UFinal
+    {
+        $U;
+        relTol          0;
+        tolerance       1e-08;
+    }
+
+    cellDisplacement
+    {
+        solver          GAMG;
+        smoother        GaussSeidel;
+        tolerance       1e-08;
+        relTol          0.001;
+    }
+
+    cellDisplacementFinal
+    {
+        $cellDisplacement;
+        relTol          0;
+    }
+}
+
+PIMPLE
+{
+    nOuterCorrectors         1;      // Outer loops for pressure-velocity coupling
+    nCorrectors              2;      // Inner pressure correctors
+    nNonOrthogonalCorrectors 0; // Mesh is orthogonal (checkMesh: max non-orth = 0)
+    
+    consistent          true;   // Use consistent formulation (faster)
+    correctPhi          true;   // Correct flux after mesh motion
+    momentumPredictor   true;   // Use momentum predictor
+    
+    // Residual control for outer iterations
+    residualControl
+    {
+        U
+        {
+            tolerance   1e-05;
+            relTol      0.01;
+        }
+        p
+        {
+            tolerance   1e-04;
+            relTol      0.01;
+        }
+    }
+}
+
+potentialFlow
+{
+    nNonOrthogonalCorrectors 5;
+}
+
+relaxationFactors
+{
+    fields
+    {
+        p               0.3;
+        pFinal          1;
+    }
+    equations
+    {
+        U               0.7;
+        UFinal          1;
+    }
+}

@@ -1,0 +1,51 @@
+{
+  "simulation": {
+    "total_time": 120,
+    "time_step": 0.001,
+    "write_interval": 0.1,
+    "start_from": "latestTime"
+  },
+  "domain": {
+    "inlet_distance": 5.0,
+    "outlet_distance": 5.0,
+    "domain_height": 5.0
+  },
+  "flaps": {
+    "number": 5,
+    "width": 0.1,
+    "height": 1.0,
+    "x_spacing": 2.0
+  },
+  "fluid_mesh": {
+    "z_thickness": 0.5,
+    "inlet_nx": 50,
+    "outlet_nx": 50,
+    "gap_nx": 50,
+    "flap_nx": 3,
+    "first_cell_height": 0.01,
+    "expansion_ratio": 1.05,
+    "grading": {
+      "inlet_x_grade": 0.1,
+      "outlet_x_grade": 10.0
+    }
+  },
+  "solid": {
+    "material": {
+      "E": 4000000,
+      "nu": 0.3,
+      "rho": 3000
+    },
+    "mesh": {
+      "nx": 4,
+      "ny": 26,
+      "quadratic": true,
+      "base_height": 0.05,
+      "ny_base": 2,
+      "nx_base_segment": 10
+    },
+    "adapter_cfg": "precice-adapter.yaml",
+    "output_folder": "results",
+    "save_deformed_mesh": true,
+    "deformed_mesh_scale": 1.0
+  }
+}
