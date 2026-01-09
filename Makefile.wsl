@@ -220,16 +220,20 @@ $(BUILD_DIR)/.adapter-installed: $(BUILD_DIR)/.precice-installed
 	@rm -f $@
 	@echo -e "$(BLUE)▶ Compilando adaptador OpenFOAM-preCICE...$(NC)"
 	@rm -rf $(BUILD_DIR)/openfoam-adapter
+	@# Dar permisos de escritura al directorio de OpenFOAM
+	sudo chown -R $$USER /usr/lib/openfoam/openfoam$(FOAM_VERSION)/platforms
 	cd $(BUILD_DIR) && \
 		git clone --depth=1 https://github.com/efirvida/openfoam-adapter.git && \
 		cd openfoam-adapter && \
 		set +u && \
 		source /usr/lib/openfoam/openfoam$(FOAM_VERSION)/etc/bashrc && \
 		set -u && \
-		export LD_LIBRARY_PATH=$(INSTALL_PREFIX)/lib:$$LD_LIBRARY_PATH && \
+		export PKG_CONFIG_PATH=$(INSTALL_PREFIX)/lib/pkgconfig:$${PKG_CONFIG_PATH:-} && \
+		export LD_LIBRARY_PATH=$(INSTALL_PREFIX)/lib:$${LD_LIBRARY_PATH:-} && \
 		export PRECICE_OPENFOAM_TARGET_DIR="$$FOAM_LIBBIN" && \
-		./Allwmake && \
-		ls -la "$$FOAM_LIBBIN"/libprecice*.so
+		./Allwmake -j$(NPROC) && \
+		ls -la "$$FOAM_LIBBIN"/libprecice*.so && \
+		test -f "$$FOAM_LIBBIN"/libpreciceAdapterFunctionObject.so
 	@touch $@
 	@echo -e "$(GREEN)✓ Adaptador OpenFOAM-preCICE compilado e instalado$(NC)"
 
