@@ -3,7 +3,7 @@
 #           FSI TUTORIAL: PERPENDICULAR FLAP
 # ==============================================
 
-. /opt/OpenFOAM-v2406/etc/bashrc
+. /usr/lib/openfoam/openfoam2506/etc/bashrc 
 
 # Configuration
 SOLID_DIR="solid"

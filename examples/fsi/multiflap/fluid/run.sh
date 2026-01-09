@@ -9,9 +9,9 @@ fi
 # Generate parametric blockMeshDict for multiple flaps
 python3 system/generate_blockMeshDict.py || { echo "Failed to generate blockMeshDict"; exit 1; }
 
-openfoam blockMesh      > log.blockMesh
-openfoam decomposePar   > log.decomposePar
-openfoam mpirun -np 6 pimpleFoam -parallel     > log.pimpleFoam 
+blockMesh      > log.blockMesh
+decomposePar   > log.decomposePar
+mpirun -np 3 pimpleFoam -parallel     > log.pimpleFoam 
 touch case.foam
 
 ./clean_empty_results.sh --force .
