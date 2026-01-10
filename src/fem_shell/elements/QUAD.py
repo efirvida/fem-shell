@@ -164,9 +164,8 @@ class QUAD(PlaneElement):
             _, det_J, _ = self._compute_jacobian(xi, eta)
             K += (B.T @ self.C @ B) * det_J * w
 
-        # Ensure symmetry and handle rigid modes
-        K = 0.5 * (K + K.T)  # Symmetrization
-        K += 1e-10 * np.eye(self.dofs_count)  # Stabilization
+        # Ensure symmetry (numerical precision)
+        K = 0.5 * (K + K.T)
 
         return K
 
@@ -228,6 +227,10 @@ class QUAD(PlaneElement):
     def _compute_jacobian(self, xi: float, eta: float) -> Tuple[np.ndarray, float, np.ndarray]:
         """Compute Jacobian matrix components
 
+        The Jacobian matrix maps derivatives from natural to physical coordinates:
+        J = | ∂x/∂ξ  ∂y/∂ξ  |
+            | ∂x/∂η  ∂y/∂η  |
+
         Parameters
         ----------
         xi, eta : float
@@ -244,9 +247,10 @@ class QUAD(PlaneElement):
         """
         dN_dxi, dN_deta = self.shape_function_derivatives(xi, eta)
 
+        # J[i,j] = ∂x_j/∂ξ_i where ξ_0=xi, ξ_1=eta and x_0=x, x_1=y
         J = np.array([
-            [dN_dxi @ self.node_coords[:, 0], dN_deta @ self.node_coords[:, 0]],
-            [dN_dxi @ self.node_coords[:, 1], dN_deta @ self.node_coords[:, 1]],
+            [dN_dxi @ self.node_coords[:, 0], dN_dxi @ self.node_coords[:, 1]],
+            [dN_deta @ self.node_coords[:, 0], dN_deta @ self.node_coords[:, 1]],
         ])
 
         det_J = np.linalg.det(J)
@@ -355,27 +359,38 @@ class QUAD8(QUAD):
         ])
 
     def shape_function_derivatives(self, xi: float, eta: float) -> Tuple[np.ndarray, np.ndarray]:
-        """Analytical derivatives of shape functions"""
+        """Analytical derivatives of shape functions
+
+        Derivatives computed from:
+        N0 = 0.25(1-ξ)(1-η)(-1-ξ-η) = 0.25(1-ξ)(1-η)(-ξ-η-1)
+        N1 = 0.25(1+ξ)(1-η)(-1+ξ-η) = 0.25(1+ξ)(1-η)(ξ-η-1)
+        N2 = 0.25(1+ξ)(1+η)(-1+ξ+η) = 0.25(1+ξ)(1+η)(ξ+η-1)
+        N3 = 0.25(1-ξ)(1+η)(-1-ξ+η) = 0.25(1-ξ)(1+η)(-ξ+η-1)
+        N4 = 0.5(1-ξ²)(1-η)
+        N5 = 0.5(1+ξ)(1-η²)
+        N6 = 0.5(1-ξ²)(1+η)
+        N7 = 0.5(1-ξ)(1-η²)
+        """
         dN_dxi = np.array([
-            0.25 * (eta * (2 * xi + eta) + (1 - eta) * (xi + eta)),  # N0
-            0.25 * (eta * (2 * xi - eta) + (1 - eta) * (xi - eta)),  # N1
-            0.25 * (eta * (2 * xi + eta) + (1 + eta) * (xi + eta)),  # N2
-            0.25 * (eta * (2 * xi - eta) + (1 + eta) * (xi - eta)),  # N3
-            -xi * (1 - eta),  # N4
-            0.5 * (1 - eta**2),  # N5
-            -xi * (1 + eta),  # N6
-            -0.5 * (1 - eta**2),  # N7
+            0.25 * (1 - eta) * (2 * xi + eta),      # dN0/dxi
+            0.25 * (1 - eta) * (2 * xi - eta),      # dN1/dxi
+            0.25 * (1 + eta) * (2 * xi + eta),      # dN2/dxi
+            0.25 * (1 + eta) * (2 * xi - eta),      # dN3/dxi
+            -xi * (1 - eta),                         # dN4/dxi
+            0.5 * (1 - eta**2),                      # dN5/dxi
+            -xi * (1 + eta),                         # dN6/dxi
+            -0.5 * (1 - eta**2),                     # dN7/dxi
         ])
 
         dN_deta = np.array([
-            0.25 * (xi * (xi + 2 * eta) + (1 - xi) * (xi + eta)),  # N0
-            0.25 * (-xi * (xi - 2 * eta) + (1 + xi) * (-xi + eta)),  # N1
-            0.25 * (xi * (xi + 2 * eta) + (1 + xi) * (xi + eta)),  # N2
-            0.25 * (-xi * (xi - 2 * eta) + (1 - xi) * (-xi + eta)),  # N3
-            -0.5 * (1 - xi**2),  # N4
-            -(1 + xi) * eta,  # N5
-            0.5 * (1 - xi**2),  # N6
-            -(1 - xi) * eta,  # N7
+            0.25 * (1 - xi) * (2 * eta + xi),       # dN0/deta
+            0.25 * (1 + xi) * (2 * eta - xi),       # dN1/deta
+            0.25 * (1 + xi) * (2 * eta + xi),       # dN2/deta
+            0.25 * (1 - xi) * (2 * eta - xi),       # dN3/deta
+            -0.5 * (1 - xi**2),                      # dN4/deta
+            -(1 + xi) * eta,                         # dN5/deta
+            0.5 * (1 - xi**2),                       # dN6/deta
+            -(1 - xi) * eta,                         # dN7/deta
         ])
 
         return dN_dxi, dN_deta
