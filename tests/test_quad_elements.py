@@ -37,12 +37,15 @@ def check_stiffness_matrix(K, expected_size, tol=1e-6):
 
     # Check eigenvalues (rigid body modes and positive definiteness)
     eigvals = np.linalg.eigvalsh(K)
-    zero_eigvals = np.sum(np.abs(eigvals) < 1e-4)  # Count rigid body modes
-    assert zero_eigvals == 3, f"Expected 3 rigid modes, found {zero_eigvals}"
+    max_eigval = np.max(np.abs(eigvals))
+    # Use relative tolerance for detecting zero eigenvalues
+    zero_threshold = max_eigval * 1e-10 if max_eigval > 0 else 1e-10
+    zero_eigvals = np.sum(np.abs(eigvals) < zero_threshold)  # Count rigid body modes
+    assert zero_eigvals == 3, f"Expected 3 rigid modes, found {zero_eigvals}. Eigenvalues: {eigvals[:5]}"
 
     # Verify positive semi-definiteness (excluding rigid modes)
     non_zero_eigvals = eigvals[zero_eigvals:]
-    assert np.all(non_zero_eigvals > -tol), (
+    assert np.all(non_zero_eigvals > -zero_threshold), (
         f"Negative eigenvalues found: {non_zero_eigvals[non_zero_eigvals < 0]}"
     )
 
@@ -329,12 +332,19 @@ def test_rigid_body_modes(element_setup):
     translation_y = np.array([0, 1] * len(coords))
     rotation = np.array([(-y, x) for x, y in coords]).flatten()
 
+    # Use relative tolerance based on matrix norm
+    K_norm = np.linalg.norm(K, ord='fro')
+    rel_tol = 1e-10  # Relative tolerance
+
     # Check each mode produces zero strain energy
     for i, mode in enumerate([translation_x, translation_y, rotation]):
         residual = K @ mode
         max_error = np.max(np.abs(residual))
-        assert max_error < 1e-8, (
-            f"Rigid mode {i} failed. Max error: {max_error}\nResidual: {residual}"
+        # Use relative error check
+        rel_error = max_error / K_norm if K_norm > 0 else max_error
+        assert rel_error < rel_tol, (
+            f"Rigid mode {i} failed. Relative error: {rel_error}\n"
+            f"Max absolute error: {max_error}, K_norm: {K_norm}"
         )
 
 
