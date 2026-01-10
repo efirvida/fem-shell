@@ -23,10 +23,14 @@ from fem_shell.elements.elements import ShellElement
 
 class MITC4(ShellElement):
     """
-    MITC4 quadrilateral shell element class.
+    MITC4+ quadrilateral shell element class with geometric nonlinear capability.
 
     This element formulation uses mixed interpolation of tensorial components to
-    avoid shear locking. Each node has 6 DOFs (3 translations + 3 rotations).
+    avoid shear locking, and assumed membrane strain interpolation to avoid
+    membrane locking (MITC4+ formulation). Supports both linear and geometric
+    nonlinear analysis (large displacements/rotations).
+
+    Each node has 6 DOFs (3 translations + 3 rotations).
 
     Parameters
     ----------
@@ -42,6 +46,11 @@ class MITC4(ShellElement):
         Stiffness modification factor in x-direction, by default 1.0
     ky_mod : float, optional
         Stiffness modification factor in y-direction, by default 1.0
+    shear_correction_factor : float, optional
+        Shear correction factor for transverse shear stiffness
+    nonlinear : bool, optional
+        Enable geometric nonlinear analysis (Total Lagrangian formulation).
+        Default is False (linear analysis).
 
     Attributes
     ----------
@@ -53,14 +62,20 @@ class MITC4(ShellElement):
         Element nodal coordinates [4x3]
     thickness : float
         Element thickness
+    nonlinear : bool
+        Whether geometric nonlinearity is enabled
 
     Notes
     -----
     **Formulation Assumptions**:
 
-    - **Linear Elasticity**: This element assumes linear elastic material behavior
-      and small strain kinematics. Large displacement/rotation (geometric
-      nonlinearity) is NOT supported by this element formulation.
+    - **Linear Elasticity**: Material behavior is linear elastic. Geometric
+      nonlinearity (large displacements/rotations) is supported when 
+      ``nonlinear=True``.
+
+    - **Total Lagrangian (TL) Formulation**: For nonlinear analysis, all quantities
+      are referred to the initial (undeformed) configuration. The Green-Lagrange
+      strain tensor and Second Piola-Kirchhoff stress are used.
 
     - **Reissner-Mindlin Theory**: Suitable for thin to moderately thick shells.
       Includes transverse shear deformation effects.
@@ -68,8 +83,24 @@ class MITC4(ShellElement):
     - **Shear Locking Free**: Mixed interpolation of transverse shear strains
       prevents spurious shear locking in thin shell limit.
 
-    The element formulation follows the MITC4 procedure described in:
+    - **Membrane Locking Free**: MITC4+ assumed strain interpolation prevents
+      membrane locking in curved shells and distorted meshes.
 
+    **Nonlinear Analysis Methods**:
+    
+    - ``update_configuration(u)``: Update nodal positions with displacements
+    - ``compute_tangent_stiffness()``: Get tangent stiffness K_T = K_0 + K_L + K_σ
+    - ``compute_internal_forces()``: Get internal force vector f_int
+    - ``compute_green_lagrange_strain()``: Get Green-Lagrange strain tensor
+
+    The element formulation follows the MITC4+ procedure described in:
+
+    - Ko, Y., Lee, P.S., and Bathe, K.J. (2016). "A new MITC4+ shell element."
+      Computers & Structures, 182, 404-418.
+    
+    - Ko, Y., Lee, P.S., and Bathe, K.J. (2017). "The MITC4+ shell element in
+      geometric nonlinear analysis." Computers & Structures, 185, 1-14.
+    
     - Bathe, K.J., and Dvorkin, E.N. (1985). "A four-node plate bending element
       based on Mindlin/Reissner plate theory and a mixed interpolation."
     """
@@ -85,6 +116,7 @@ class MITC4(ShellElement):
         kx_mod: float = 1.0,
         ky_mod: float = 1.0,
         shear_correction_factor: Optional[float] = None,
+        nonlinear: bool = False,
     ):
         super().__init__(
             "MITC4",
@@ -98,6 +130,13 @@ class MITC4(ShellElement):
         self.element_type = "MITC4"
         self.kx_mod = kx_mod
         self.ky_mod = ky_mod
+        self.nonlinear = nonlinear
+        
+        # Store initial (reference) configuration and current configuration
+        # For Total Lagrangian formulation, reference is always the initial config
+        self._initial_coords = np.array(node_coords, dtype=float).copy()
+        self._current_coords = np.array(node_coords, dtype=float).copy()
+        self._current_displacements = np.zeros(24)  # Current nodal displacements
 
         # Shear correction factor priority:
         # 1. Element constructor parameter (highest)
@@ -124,6 +163,220 @@ class MITC4(ShellElement):
         # Pre-populate N cache during initialization for Gauss points
         for r, s in self._gauss_points:
             self._N_cache[(r, s)] = self._compute_N(r, s)
+
+        # Setup membrane tying points for MITC+ interpolation
+        # Tying points for ε_xx: 4 points along edges parallel to η-direction
+        self._tying_points_eps_xx = [
+            (-1.0, -gp),  # Point 1: left edge, bottom
+            (-1.0, +gp),  # Point 2: left edge, top
+            (+1.0, -gp),  # Point 3: right edge, bottom
+            (+1.0, +gp),  # Point 4: right edge, top
+        ]
+
+        # Tying points for ε_yy: 4 points along edges parallel to ξ-direction
+        self._tying_points_eps_yy = [
+            (-gp, -1.0),  # Point 1: bottom edge, left
+            (+gp, -1.0),  # Point 2: bottom edge, right
+            (-gp, +1.0),  # Point 3: top edge, left
+            (+gp, +1.0),  # Point 4: top edge, right
+        ]
+
+        # Tying points for γ_xy: 5 points (center + 4 corners)
+        self._tying_points_gamma_xy = [
+            (0.0, 0.0),  # Point 0: center (uses bubble function)
+            (-1.0, -1.0),  # Point 1: corner 1
+            (+1.0, -1.0),  # Point 2: corner 2
+            (+1.0, +1.0),  # Point 3: corner 3
+            (-1.0, +1.0),  # Point 4: corner 4
+        ]
+
+        # Cache for tying point evaluations
+        self._eps_rr_cache = {}
+        self._eps_ss_cache = {}
+        self._eps_rs_cache = {}
+        
+        # Cache for covariant base vectors
+        self._covariant_cache = {}
+
+    def _compute_covariant_base_vectors(self, r: float, s: float) -> Tuple[np.ndarray, np.ndarray]:
+        """
+        Compute covariant base vectors g_r and g_s at parametric point (r, s).
+        
+        According to Ko, Lee & Bathe (2016) "A new MITC4+ shell element", the covariant
+        base vectors are defined as:
+            g_r = ∂x/∂r = Σ (∂Ni/∂r) * xi
+            g_s = ∂x/∂s = Σ (∂Ni/∂s) * xi
+        
+        where xi are the nodal coordinates in the local coordinate system.
+        
+        Parameters
+        ----------
+        r : float
+            Parametric coordinate in ξ-direction [-1, 1]
+        s : float
+            Parametric coordinate in η-direction [-1, 1]
+            
+        Returns
+        -------
+        Tuple[np.ndarray, np.ndarray]
+            g_r : (2,) covariant base vector in r-direction (local x,y components)
+            g_s : (2,) covariant base vector in s-direction (local x,y components)
+            
+        Notes
+        -----
+        For a 2D membrane element in local coordinates, the base vectors are 2D.
+        The z-component is zero for flat elements.
+        """
+        if (r, s) in self._covariant_cache:
+            return self._covariant_cache[(r, s)]
+        
+        x1, y1, x2, y2, x3, y3, x4, y4 = self._local_coordinates
+        
+        # Shape function derivatives with respect to natural coordinates (r, s)
+        # dN/dr = [∂N1/∂r, ∂N2/∂r, ∂N3/∂r, ∂N4/∂r]
+        # dN/ds = [∂N1/∂s, ∂N2/∂s, ∂N3/∂s, ∂N4/∂s]
+        dN_dr = 0.25 * np.array([-(1 - s), (1 - s), (1 + s), -(1 + s)])
+        dN_ds = 0.25 * np.array([-(1 - r), -(1 + r), (1 + r), (1 - r)])
+        
+        x_coords = np.array([x1, x2, x3, x4])
+        y_coords = np.array([y1, y2, y3, y4])
+        
+        # Covariant base vectors: g_r = ∂x/∂r, g_s = ∂x/∂s
+        g_r = np.array([np.dot(dN_dr, x_coords), np.dot(dN_dr, y_coords)])
+        g_s = np.array([np.dot(dN_ds, x_coords), np.dot(dN_ds, y_coords)])
+        
+        self._covariant_cache[(r, s)] = (g_r, g_s)
+        return g_r, g_s
+
+    def _compute_metric_tensor(self, r: float, s: float) -> np.ndarray:
+        """
+        Compute the covariant metric tensor g_ij at parametric point (r, s).
+        
+        The metric tensor components are:
+            g_rr = g_r · g_r
+            g_ss = g_s · g_s
+            g_rs = g_r · g_s
+            
+        Parameters
+        ----------
+        r : float
+            Parametric coordinate in ξ-direction [-1, 1]
+        s : float
+            Parametric coordinate in η-direction [-1, 1]
+            
+        Returns
+        -------
+        np.ndarray
+            (2, 2) covariant metric tensor [[g_rr, g_rs], [g_rs, g_ss]]
+        """
+        g_r, g_s = self._compute_covariant_base_vectors(r, s)
+        
+        g_rr = np.dot(g_r, g_r)
+        g_ss = np.dot(g_s, g_s)
+        g_rs = np.dot(g_r, g_s)
+        
+        return np.array([[g_rr, g_rs], [g_rs, g_ss]])
+
+    def _evaluate_B_m_covariant(self, r: float, s: float) -> np.ndarray:
+        """
+        Evaluate membrane strain-displacement matrix in covariant coordinates.
+        
+        According to Ko, Lee & Bathe (2016), the covariant membrane strains are:
+            e_rr = ∂u/∂r · g_r  (strain in r-direction)
+            e_ss = ∂u/∂s · g_s  (strain in s-direction)  
+            e_rs = 0.5 * (∂u/∂r · g_s + ∂u/∂s · g_r)  (shear strain)
+            
+        where g_r and g_s are the covariant base vectors.
+        
+        Parameters
+        ----------
+        r : float
+            Parametric coordinate in ξ-direction [-1, 1]
+        s : float
+            Parametric coordinate in η-direction [-1, 1]
+            
+        Returns
+        -------
+        np.ndarray
+            (3, 8) covariant strain-displacement matrix [e_rr, e_ss, 2*e_rs]^T
+            relating covariant strains to membrane DOFs [u1,v1,u2,v2,u3,v3,u4,v4]
+        """
+        g_r, g_s = self._compute_covariant_base_vectors(r, s)
+        
+        # Shape function derivatives with respect to natural coordinates
+        dN_dr = 0.25 * np.array([-(1 - s), (1 - s), (1 + s), -(1 + s)])
+        dN_ds = 0.25 * np.array([-(1 - r), -(1 + r), (1 + r), (1 - r)])
+        
+        # Build covariant B matrix (3 x 8)
+        # DOF order: [u1, v1, u2, v2, u3, v3, u4, v4]
+        B_cov = np.zeros((3, 8))
+        
+        for i in range(4):
+            # e_rr = ∂u/∂r · g_r = (∂N/∂r * u) * g_r[0] + (∂N/∂r * v) * g_r[1]
+            B_cov[0, 2*i] = dN_dr[i] * g_r[0]      # u contribution to e_rr
+            B_cov[0, 2*i + 1] = dN_dr[i] * g_r[1]  # v contribution to e_rr
+            
+            # e_ss = ∂u/∂s · g_s
+            B_cov[1, 2*i] = dN_ds[i] * g_s[0]      # u contribution to e_ss
+            B_cov[1, 2*i + 1] = dN_ds[i] * g_s[1]  # v contribution to e_ss
+            
+            # 2*e_rs = ∂u/∂r · g_s + ∂u/∂s · g_r
+            B_cov[2, 2*i] = dN_dr[i] * g_s[0] + dN_ds[i] * g_r[0]
+            B_cov[2, 2*i + 1] = dN_dr[i] * g_s[1] + dN_ds[i] * g_r[1]
+        
+        return B_cov
+
+    def _covariant_to_cartesian_strain_transform(self, r: float, s: float) -> np.ndarray:
+        """
+        Compute transformation matrix from covariant to Cartesian strains.
+        
+        According to Ko, Lee & Bathe (2016), the transformation from covariant 
+        strains (e_rr, e_ss, 2*e_rs) to Cartesian strains (ε_xx, ε_yy, γ_xy) 
+        involves the Jacobian matrix.
+        
+        The Cartesian strains are related to covariant strains by:
+            [ε_xx]     [T]   [e_rr  ]
+            [ε_yy]  =       [e_ss  ]
+            [γ_xy]          [2*e_rs]
+            
+        where T is the strain transformation matrix based on the inverse Jacobian.
+        
+        Parameters
+        ----------
+        r : float
+            Parametric coordinate in ξ-direction [-1, 1]
+        s : float
+            Parametric coordinate in η-direction [-1, 1]
+            
+        Returns
+        -------
+        np.ndarray
+            (3, 3) transformation matrix from covariant to Cartesian strains
+        """
+        J, detJ = self.J(r, s)
+        
+        # Inverse Jacobian: maps from natural to local Cartesian
+        # J = [∂x/∂r  ∂y/∂r]    J_inv = [∂r/∂x  ∂s/∂x]
+        #     [∂x/∂s  ∂y/∂s]            [∂r/∂y  ∂s/∂y]
+        J_inv = np.linalg.inv(J)
+        
+        # Components of inverse Jacobian
+        dr_dx = J_inv[0, 0]
+        ds_dx = J_inv[1, 0]
+        dr_dy = J_inv[0, 1]
+        ds_dy = J_inv[1, 1]
+        
+        # Strain transformation matrix
+        # ε_xx = e_rr * (∂r/∂x)² + e_ss * (∂s/∂x)² + 2*e_rs * (∂r/∂x)(∂s/∂x)
+        # ε_yy = e_rr * (∂r/∂y)² + e_ss * (∂s/∂y)² + 2*e_rs * (∂r/∂y)(∂s/∂y)
+        # γ_xy = 2*e_rr*(∂r/∂x)(∂r/∂y) + 2*e_ss*(∂s/∂x)(∂s/∂y) + 2*e_rs*((∂r/∂x)(∂s/∂y) + (∂s/∂x)(∂r/∂y))
+        T = np.array([
+            [dr_dx**2, ds_dx**2, dr_dx * ds_dx],
+            [dr_dy**2, ds_dy**2, dr_dy * ds_dy],
+            [2*dr_dx*dr_dy, 2*ds_dx*ds_dy, dr_dx*ds_dy + ds_dx*dr_dy]
+        ])
+        
+        return T
 
     def _get_dH(self, r: float, s: float) -> np.ndarray:
         """
@@ -489,27 +742,12 @@ class MITC4(ShellElement):
             -gamma_rz * cos_beta + gamma_sz * cos_alpha,
         ))
 
-    def B_m(self, r, s):
+    def _evaluate_B_m_at_point(self, r: float, s: float) -> np.ndarray:
         """
-        Compute membrane strain-displacement matrix.
-
-        Parameters
-        ----------
-        r : float
-            Parametric coordinate in first direction [-1, 1]
-        s : float
-            Parametric coordinate in second direction [-1, 1]
-
-        Returns
-        -------
-        np.ndarray
-            3x8 membrane strain-displacement matrix
-
-        Notes
-        -----
-        The matrix relates membrane strains to nodal displacements:
-        ε_membrane = B_m @ u_elem
-        where u_elem contains membrane DOFs [u1, v1, u2, v2, u3, v3, u4, v4]
+        Evaluate standard (non-interpolated) membrane B matrix at a single point.
+        
+        This method is kept for backward compatibility but is not used in
+        the MITC4+ formulation. Use _evaluate_B_m_covariant instead.
         """
         J_val, _ = self.J(r, s)
         dH = np.linalg.solve(
@@ -521,6 +759,288 @@ class MITC4(ShellElement):
             [0, dH[1, 0], 0, dH[1, 1], 0, dH[1, 2], 0, dH[1, 3]],
             [dH[1, 0], dH[0, 0], dH[1, 1], dH[0, 1], dH[1, 2], dH[0, 2], dH[1, 3], dH[0, 3]],
         ])
+
+    def _get_eps_rr_at_tying_points(self) -> List[np.ndarray]:
+        """
+        Evaluate covariant strain e_rr at tying points for MITC4+.
+        
+        According to Ko, Lee & Bathe (2016), e_rr is sampled at 4 points
+        on the edges r = ±1, at s = ±1/√3.
+        
+        Returns
+        -------
+        List[np.ndarray]
+            List of 4 B-matrix rows (each 8,) for e_rr at each tying point
+        """
+        eps_rr_list = []
+        for r_t, s_t in self._tying_points_eps_xx:  # r = ±1, s = ±g
+            B_cov = self._evaluate_B_m_covariant(r_t, s_t)
+            eps_rr_list.append(B_cov[0, :])  # First row is e_rr
+        return eps_rr_list
+
+    def _get_eps_ss_at_tying_points(self) -> List[np.ndarray]:
+        """
+        Evaluate covariant strain e_ss at tying points for MITC4+.
+        
+        According to Ko, Lee & Bathe (2016), e_ss is sampled at 4 points
+        on the edges s = ±1, at r = ±1/√3.
+        
+        Returns
+        -------
+        List[np.ndarray]
+            List of 4 B-matrix rows (each 8,) for e_ss at each tying point
+        """
+        eps_ss_list = []
+        for r_t, s_t in self._tying_points_eps_yy:  # r = ±g, s = ±1
+            B_cov = self._evaluate_B_m_covariant(r_t, s_t)
+            eps_ss_list.append(B_cov[1, :])  # Second row is e_ss
+        return eps_ss_list
+
+    def _get_eps_rs_at_tying_points(self) -> List[np.ndarray]:
+        """
+        Evaluate covariant shear strain 2*e_rs at tying points for MITC4+.
+        
+        According to Ko, Lee & Bathe (2016), e_rs is sampled at 5 points:
+        center (0,0) and 4 corners (±1, ±1).
+        
+        Returns
+        -------
+        List[np.ndarray]
+            List of 5 B-matrix rows (each 8,) for 2*e_rs at each tying point
+        """
+        eps_rs_list = []
+        for r_t, s_t in self._tying_points_gamma_xy:  # center + corners
+            B_cov = self._evaluate_B_m_covariant(r_t, s_t)
+            eps_rs_list.append(B_cov[2, :])  # Third row is 2*e_rs
+        return eps_rs_list
+
+    # Legacy methods for backward compatibility
+    def _get_eps_xx_at_tying_points(self) -> List[np.ndarray]:
+        """Legacy method - now uses covariant formulation."""
+        return self._get_eps_rr_at_tying_points()
+
+    def _get_eps_yy_at_tying_points(self) -> List[np.ndarray]:
+        """Legacy method - now uses covariant formulation."""
+        return self._get_eps_ss_at_tying_points()
+
+    def _get_gamma_xy_at_tying_points(self) -> List[np.ndarray]:
+        """Legacy method - now uses covariant formulation."""
+        return self._get_eps_rs_at_tying_points()
+
+    def _interpolate_eps_rr(self, r: float, s: float, eps_rr_tied: List[np.ndarray]) -> np.ndarray:
+        """
+        Interpolate covariant strain e_rr using MITC4+ assumed strain field.
+        
+        According to Ko, Lee & Bathe (2016) Eq. (39), the assumed e_rr field is:
+        
+        ẽ_rr(r,s) = (1-r)/2 * [(g-s)/(2g) * e_rr^A + (g+s)/(2g) * e_rr^B]
+                  + (1+r)/2 * [(g-s)/(2g) * e_rr^C + (g+s)/(2g) * e_rr^D]
+        
+        where g = 1/√3 and A,B,C,D are tying points at (r,s) = (-1,-g), (-1,g), (1,-g), (1,g).
+        
+        Parameters
+        ----------
+        r : float
+            Parametric coordinate in ξ-direction [-1, 1]
+        s : float
+            Parametric coordinate in η-direction [-1, 1]
+        eps_rr_tied : List[np.ndarray]
+            Covariant strain rows at the 4 tying points
+            
+        Returns
+        -------
+        np.ndarray
+            Interpolated B-matrix row (8,) for e_rr at (r, s)
+        """
+        gp = 1 / np.sqrt(3)
+        
+        # Interpolation weights in s-direction (linear between ±g)
+        ws_minus = (gp - s) / (2 * gp)
+        ws_plus = (s + gp) / (2 * gp)
+
+        # Interpolation weights in r-direction (linear between ±1)
+        wr_minus = (1 - r) / 2.0
+        wr_plus = (1 + r) / 2.0
+
+        # Bilinear interpolation: Points 0:(-1,-g), 1:(-1,g), 2:(1,-g), 3:(1,g)
+        val_left = ws_minus * eps_rr_tied[0] + ws_plus * eps_rr_tied[1]
+        val_right = ws_minus * eps_rr_tied[2] + ws_plus * eps_rr_tied[3]
+
+        return wr_minus * val_left + wr_plus * val_right
+
+    def _interpolate_eps_ss(self, r: float, s: float, eps_ss_tied: List[np.ndarray]) -> np.ndarray:
+        """
+        Interpolate covariant strain e_ss using MITC4+ assumed strain field.
+        
+        According to Ko, Lee & Bathe (2016) Eq. (40), the assumed e_ss field is:
+        
+        ẽ_ss(r,s) = (1-s)/2 * [(g-r)/(2g) * e_ss^E + (g+r)/(2g) * e_ss^F]
+                  + (1+s)/2 * [(g-r)/(2g) * e_ss^G + (g+r)/(2g) * e_ss^H]
+        
+        where g = 1/√3 and E,F,G,H are tying points at (r,s) = (-g,-1), (g,-1), (-g,1), (g,1).
+        
+        Parameters
+        ----------
+        r : float
+            Parametric coordinate in ξ-direction [-1, 1]
+        s : float
+            Parametric coordinate in η-direction [-1, 1]
+        eps_ss_tied : List[np.ndarray]
+            Covariant strain rows at the 4 tying points
+            
+        Returns
+        -------
+        np.ndarray
+            Interpolated B-matrix row (8,) for e_ss at (r, s)
+        """
+        gp = 1 / np.sqrt(3)
+        
+        # Interpolation weights in r-direction (linear between ±g)
+        wr_minus = (gp - r) / (2 * gp)
+        wr_plus = (r + gp) / (2 * gp)
+
+        # Interpolation weights in s-direction (linear between ±1)
+        ws_minus = (1 - s) / 2.0
+        ws_plus = (1 + s) / 2.0
+
+        # Bilinear interpolation: Points 0:(-g,-1), 1:(g,-1), 2:(-g,1), 3:(g,1)
+        val_bottom = wr_minus * eps_ss_tied[0] + wr_plus * eps_ss_tied[1]
+        val_top = wr_minus * eps_ss_tied[2] + wr_plus * eps_ss_tied[3]
+
+        return ws_minus * val_bottom + ws_plus * val_top
+
+    def _interpolate_eps_rs(
+        self, r: float, s: float, eps_rs_tied: List[np.ndarray]
+    ) -> np.ndarray:
+        """
+        Interpolate covariant shear strain 2*e_rs using MITC4+ bubble function.
+        
+        According to Ko, Lee & Bathe (2016) Eq. (41), the assumed 2*e_rs field is:
+        
+        2*ẽ_rs(r,s) = Σ h̄_i * (2*e_rs)^(c_i) + h̄_0 * (2*e_rs)^(c_0)
+        
+        where:
+        - h̄_0 = (1-r²)(1-s²) is the bubble function (maximum at center, zero at edges)
+        - h̄_i = h_i - (1/4)*h̄_0 are modified bilinear functions for corners
+        - h_i are standard bilinear shape functions
+        - c_0 is center point (0,0), c_i are corner points (±1, ±1)
+        
+        This can be rewritten as:
+        2*ẽ_rs = Σ h_i * (2*e_rs)^(c_i) + h̄_0 * [(2*e_rs)^(c_0) - (1/4)Σ(2*e_rs)^(c_i)]
+        
+        Parameters
+        ----------
+        r : float
+            Parametric coordinate in ξ-direction [-1, 1]
+        s : float
+            Parametric coordinate in η-direction [-1, 1]
+        eps_rs_tied : List[np.ndarray]
+            Covariant shear strain rows at the 5 tying points (center + 4 corners)
+            
+        Returns
+        -------
+        np.ndarray
+            Interpolated B-matrix row (8,) for 2*e_rs at (r, s)
+        """
+        # Bubble function: h̄_0 = (1-r²)(1-s²)
+        # Vanishes on all edges, maximum value 1 at center
+        h_bubble = (1 - r**2) * (1 - s**2)
+
+        # Standard bilinear shape functions for corners
+        h1 = 0.25 * (1 - r) * (1 - s)  # corner (-1, -1)
+        h2 = 0.25 * (1 + r) * (1 - s)  # corner (+1, -1)
+        h3 = 0.25 * (1 + r) * (1 + s)  # corner (+1, +1)
+        h4 = 0.25 * (1 - r) * (1 + s)  # corner (-1, +1)
+
+        # Bilinear interpolation of corner values
+        eps_rs_bilinear = (
+            h1 * eps_rs_tied[1]  # corner 1: (-1, -1)
+            + h2 * eps_rs_tied[2]  # corner 2: (+1, -1)
+            + h3 * eps_rs_tied[3]  # corner 3: (+1, +1)
+            + h4 * eps_rs_tied[4]  # corner 4: (-1, +1)
+        )
+        
+        # Center value and bilinear average at center (h_i = 0.25 at center)
+        eps_rs_center = eps_rs_tied[0]  # center (0, 0)
+        eps_rs_bilinear_center = 0.25 * (
+            eps_rs_tied[1] + eps_rs_tied[2] + eps_rs_tied[3] + eps_rs_tied[4]
+        )
+        
+        # Final MITC4+ interpolation with bubble enrichment
+        return eps_rs_bilinear + h_bubble * (eps_rs_center - eps_rs_bilinear_center)
+
+    # Legacy aliases for backward compatibility
+    def _interpolate_eps_xx(self, r: float, s: float, eps_xx_tied: List[np.ndarray]) -> np.ndarray:
+        """Legacy method - now uses covariant formulation."""
+        return self._interpolate_eps_rr(r, s, eps_xx_tied)
+
+    def _interpolate_eps_yy(self, r: float, s: float, eps_yy_tied: List[np.ndarray]) -> np.ndarray:
+        """Legacy method - now uses covariant formulation."""
+        return self._interpolate_eps_ss(r, s, eps_yy_tied)
+
+    def _interpolate_gamma_xy(
+        self, r: float, s: float, gamma_xy_tied: List[np.ndarray]
+    ) -> np.ndarray:
+        """Legacy method - now uses covariant formulation."""
+        return self._interpolate_eps_rs(r, s, gamma_xy_tied)
+
+    def B_m(self, r: float, s: float) -> np.ndarray:
+        """
+        Compute MITC4+ membrane strain-displacement matrix with assumed strain interpolation.
+
+        This implements the full MITC4+ formulation from Ko, Lee & Bathe (2016)
+        "A new MITC4+ shell element" using covariant strain interpolation and
+        proper coordinate transformation.
+        
+        The procedure is:
+        1. Evaluate covariant strains (e_rr, e_ss, 2*e_rs) at strategic tying points
+        2. Interpolate covariant strains to evaluation point using assumed strain fields
+        3. Transform interpolated covariant strains to Cartesian strains (ε_xx, ε_yy, γ_xy)
+
+        This eliminates membrane locking that occurs in curved shells and distorted meshes.
+
+        Parameters
+        ----------
+        r : float
+            Parametric coordinate in ξ-direction [-1, 1]
+        s : float
+            Parametric coordinate in η-direction [-1, 1]
+
+        Returns
+        -------
+        np.ndarray
+            3x8 MITC4+ membrane strain-displacement matrix in Cartesian coordinates
+            
+        References
+        ----------
+        Ko, Y., Lee, P.S., and Bathe, K.J. (2016). "A new MITC4+ shell element."
+        Computers & Structures, 182, 404-418.
+        """
+        # Step 1: Evaluate covariant strains at tying points
+        eps_rr_tied = self._get_eps_rr_at_tying_points()
+        eps_ss_tied = self._get_eps_ss_at_tying_points()
+        eps_rs_tied = self._get_eps_rs_at_tying_points()
+
+        # Step 2: Interpolate covariant strains to evaluation point (r, s)
+        eps_rr_interp = self._interpolate_eps_rr(r, s, eps_rr_tied)
+        eps_ss_interp = self._interpolate_eps_ss(r, s, eps_ss_tied)
+        eps_rs_interp = self._interpolate_eps_rs(r, s, eps_rs_tied)
+
+        # Assemble interpolated covariant B matrix (3x8)
+        B_covariant = np.array([
+            eps_rr_interp,
+            eps_ss_interp,
+            eps_rs_interp,  # This is 2*e_rs
+        ])
+        
+        # Step 3: Transform from covariant to Cartesian strains
+        T = self._covariant_to_cartesian_strain_transform(r, s)
+        
+        # B_cartesian = T @ B_covariant
+        # This gives [ε_xx, ε_yy, γ_xy]^T = T @ [e_rr, e_ss, 2*e_rs]^T
+        B_cartesian = T @ B_covariant
+
+        return B_cartesian
 
     def Cb(self) -> np.ndarray:
         """
@@ -1425,352 +1945,621 @@ class MITC4(ShellElement):
 
         return np.array([sigma_xx, sigma_yy, sigma_xy])
 
+    # =========================================================================
+    # GEOMETRIC NONLINEAR ANALYSIS METHODS
+    # Following Ko, Lee & Bathe (2017) "The MITC4+ shell element in geometric
+    # nonlinear analysis" - Total Lagrangian formulation
+    # =========================================================================
 
-class MITC4Plus(MITC4):
-    """
-    Enhanced MITC4+ quadrilateral shell element with membrane locking prevention.
-
-    This element extends MITC4 by adding assumed membrane strain interpolation (MITC method)
-    to the membrane components, in addition to the shear interpolation. This eliminates
-    membrane locking that occurs in curved shells and distorted meshes while maintaining
-    the same API as MITC4.
-
-    The MITC4+ formulation uses strategic tying points for:
-    - ε_xx: 4 points along edges parallel to η-direction
-    - ε_yy: 4 points along edges parallel to ξ-direction
-    - γ_xy: center point + 4 corner points (5 total)
-
-    This provides ~10-100× error reduction for curved shell problems compared to MITC4.
-
-    Parameters
-    ----------
-    node_coords : np.ndarray
-        Array of nodal coordinates in global system [4x3]
-    node_ids : Tuple[int, int, int, int]
-        Global node IDs for element connectivity
-    material : Material
-        Material properties object
-    thickness : float
-        Shell thickness
-    kx_mod : float, optional
-        Stiffness modification factor in x-direction, by default 1.0
-    ky_mod : float, optional
-        Stiffness modification factor in y-direction, by default 1.0
-
-    References
-    ----------
-    - Kim, P.S., and Bathe, K.J. (2009). "A 4-node 3D-shell element to model shell surface
-      tractions and incompressible behavior." Computers & Structures, 87(19-20), 1332-1342.
-    - Bathe, K.J., and Dvorkin, E.N. (1985). "A four-node plate bending element based on
-      Mindlin/Reissner plate theory and a mixed interpolation."
-
-    Notes
-    -----
-    MITC4Plus shares the same API with MITC4: properties K, M and method body_load() are
-    inherited directly, only the B_m() method is overridden to implement MITC interpolation.
-    """
-
-    def __init__(
-        self,
-        node_coords: np.ndarray,
-        node_ids: Tuple[int, int, int, int],
-        material: Material,
-        thickness: float,
-        kx_mod: float = 1.0,
-        ky_mod: float = 1.0,
-        shear_correction_factor: Optional[float] = None,
-    ):
-        super().__init__(
-            node_coords=node_coords,
-            node_ids=node_ids,
-            material=material,
-            thickness=thickness,
-            kx_mod=kx_mod,
-            ky_mod=ky_mod,
-            shear_correction_factor=shear_correction_factor,
-        )
-
-        # Set element name to distinguish from MITC4
-        self.element_type = "MITC4Plus"
-
-        # Setup membrane tying points for MITC+ interpolation
-        gp = 1 / np.sqrt(3)  # Standard Gauss point coordinate: 1/√3
-
-        # Tying points for ε_xx: 4 points along edges parallel to η-direction
-        # Located at edges ξ = ±1, interpolated in η-direction at ±1/√3
-        self._tying_points_eps_xx = [
-            (-1.0, -gp),  # Point 1: left edge, bottom
-            (-1.0, +gp),  # Point 2: left edge, top
-            (+1.0, -gp),  # Point 3: right edge, bottom
-            (+1.0, +gp),  # Point 4: right edge, top
-        ]
-
-        # Tying points for ε_yy: 4 points along edges parallel to ξ-direction
-        # Located at edges η = ±1, interpolated in ξ-direction at ±1/√3
-        self._tying_points_eps_yy = [
-            (-gp, -1.0),  # Point 1: bottom edge, left
-            (+gp, -1.0),  # Point 2: bottom edge, right
-            (-gp, +1.0),  # Point 3: top edge, left
-            (+gp, +1.0),  # Point 4: top edge, right
-        ]
-
-        # Tying points for γ_xy: 5 points (center + 4 corners)
-        # Center point uses bubble function for better accuracy
-        self._tying_points_gamma_xy = [
-            (0.0, 0.0),  # Point 0: center (uses bubble function)
-            (-1.0, -1.0),  # Point 1: corner 1
-            (+1.0, -1.0),  # Point 2: corner 2
-            (+1.0, +1.0),  # Point 3: corner 3
-            (-1.0, +1.0),  # Point 4: corner 4
-        ]
-
-        # Cache for tying point evaluations (optional, for performance)
-        self._eps_xx_cache = {}
-        self._eps_yy_cache = {}
-        self._gamma_xy_cache = {}
-
-    def _evaluate_B_m_at_point(self, r: float, s: float) -> np.ndarray:
+    def update_configuration(self, displacements: np.ndarray) -> None:
         """
-        Evaluate standard (non-interpolated) membrane B matrix at a single point.
-
-        This is used internally to evaluate at tying points.
-
+        Update element configuration with new nodal displacements.
+        
+        This method updates the current nodal positions based on displacement
+        increments. Used in nonlinear analysis to track the deformed configuration.
+        
         Parameters
         ----------
-        r : float
-            Parametric coordinate
-        s : float
-            Parametric coordinate
-
-        Returns
-        -------
-        np.ndarray
-            3x8 membrane strain-displacement matrix
+        displacements : np.ndarray
+            Nodal displacement vector (24,) in global coordinates.
+            Order: [u1,v1,w1,θx1,θy1,θz1, u2,v2,w2,θx2,θy2,θz2, ...]
+            
+        Notes
+        -----
+        For Total Lagrangian formulation, the reference configuration remains
+        the initial undeformed state. The current coordinates are computed as:
+        
+            x_current = x_initial + u
+            
+        The local coordinate system and cached values are NOT updated here
+        since TL formulation uses the initial configuration for all derivatives.
+        
+        For Updated Lagrangian (UL) formulation, you would need to recompute
+        the local coordinates and clear all caches after each update.
         """
-        J_val, _ = self.J(r, s)
-        dH = np.linalg.solve(
-            J_val,
-            1 / 4 * np.array([[s + 1, -s - 1, s - 1, -s + 1], [r + 1, -r + 1, r - 1, -r - 1]]),
-        )
-        return np.array([
-            [dH[0, 0], 0, dH[0, 1], 0, dH[0, 2], 0, dH[0, 3], 0],
-            [0, dH[1, 0], 0, dH[1, 1], 0, dH[1, 2], 0, dH[1, 3]],
-            [dH[1, 0], dH[0, 0], dH[1, 1], dH[0, 1], dH[1, 2], dH[0, 2], dH[1, 3], dH[0, 3]],
-        ])
+        if len(displacements) != 24:
+            raise ValueError(f"Expected 24 DOFs, got {len(displacements)}")
+        
+        self._current_displacements = np.array(displacements, dtype=float)
+        
+        # Extract translational DOFs and update current coordinates
+        for i in range(4):
+            u = displacements[6*i]      # x-displacement
+            v = displacements[6*i + 1]  # y-displacement
+            w = displacements[6*i + 2]  # z-displacement
+            self._current_coords[i] = self._initial_coords[i] + np.array([u, v, w])
 
-    def _get_eps_xx_at_tying_points(self) -> List[np.ndarray]:
+    def reset_configuration(self) -> None:
         """
-        Evaluate ε_xx = ∂u/∂x at 4 tying points along edges.
-
-        Returns
-        -------
-        List[np.ndarray]
-            4 vectors (1D arrays) of length 8 containing ε_xx B-matrix rows at each tying point
+        Reset element to initial (undeformed) configuration.
+        
+        Clears all displacement history and restores initial coordinates.
         """
-        eps_xx_list = []
-        for r_t, s_t in self._tying_points_eps_xx:
-            B_full = self._evaluate_B_m_at_point(r_t, s_t)
-            eps_xx_list.append(B_full[0, :])  # Extract ε_xx row (first row)
-        return eps_xx_list
+        self._current_coords = self._initial_coords.copy()
+        self._current_displacements = np.zeros(24)
 
-    def _get_eps_yy_at_tying_points(self) -> List[np.ndarray]:
+    def get_displacement_gradient(self, r: float, s: float) -> np.ndarray:
         """
-        Evaluate ε_yy = ∂v/∂y at 4 tying points along edges.
-
-        Returns
-        -------
-        List[np.ndarray]
-            4 vectors (1D arrays) of length 8 containing ε_yy B-matrix rows at each tying point
-        """
-        eps_yy_list = []
-        for r_t, s_t in self._tying_points_eps_yy:
-            B_full = self._evaluate_B_m_at_point(r_t, s_t)
-            eps_yy_list.append(B_full[1, :])  # Extract ε_yy row (second row)
-        return eps_yy_list
-
-    def _get_gamma_xy_at_tying_points(self) -> List[np.ndarray]:
-        """
-        Evaluate γ_xy = ∂u/∂y + ∂v/∂x at 5 tying points (center + corners).
-
-        Returns
-        -------
-        List[np.ndarray]
-            5 vectors (1D arrays) of length 8 containing γ_xy B-matrix rows at each tying point
-        """
-        gamma_xy_list = []
-        for r_t, s_t in self._tying_points_gamma_xy:
-            B_full = self._evaluate_B_m_at_point(r_t, s_t)
-            gamma_xy_list.append(B_full[2, :])  # Extract γ_xy row (third row)
-        return gamma_xy_list
-
-    def _interpolate_eps_xx(self, r: float, s: float, eps_xx_tied: List[np.ndarray]) -> np.ndarray:
-        """
-        Interpolate ε_xx from 4 tying points using piecewise linear interpolation in η-direction.
-
-        The 4 tying points are arranged as:
-        (-1, -gp)  (-1, +gp)  |  (1, -gp)  (1, +gp)
-
-        For a point (r, s):
-        - If r < 0: interpolate between (-1, -gp) and (-1, +gp)
-        - If r ≥ 0: interpolate between (1, -gp) and (1, +gp)
-        - Interpolation weight in η-direction: w_minus = (gp - s)/(2*gp), w_plus = (s + gp)/(2*gp)
-
-        Parameters
-        ----------
-        r : float
-            Parametric coordinate
-        s : float
-            Parametric coordinate
-        eps_xx_tied : List[np.ndarray]
-            List of 4 ε_xx row vectors at tying points
-
-        Returns
-        -------
-        np.ndarray
-            Interpolated ε_xx row vector (length 8)
-        """
-        gp = 1 / np.sqrt(3)
-
-        # Compute interpolation weights in η-direction
-        w_minus = (gp - s) / (2 * gp)  # Weight for -gp point
-        w_plus = (s + gp) / (2 * gp)  # Weight for +gp point
-
-        if r < 0:
-            # Left edge: interpolate between eps_xx_tied[0] and eps_xx_tied[1]
-            return w_minus * eps_xx_tied[0] + w_plus * eps_xx_tied[1]
-        else:
-            # Right edge: interpolate between eps_xx_tied[2] and eps_xx_tied[3]
-            return w_minus * eps_xx_tied[2] + w_plus * eps_xx_tied[3]
-
-    def _interpolate_eps_yy(self, r: float, s: float, eps_yy_tied: List[np.ndarray]) -> np.ndarray:
-        """
-        Interpolate ε_yy from 4 tying points using piecewise linear interpolation in ξ-direction.
-
-        The 4 tying points are arranged as:
-        (-gp, -1)  (gp, -1)   |   (-gp, 1)  (gp, 1)
-
-        For a point (r, s):
-        - If s < 0: interpolate between (-gp, -1) and (gp, -1)
-        - If s ≥ 0: interpolate between (-gp, 1) and (gp, 1)
-        - Interpolation weight in ξ-direction: w_minus = (gp - r)/(2*gp), w_plus = (r + gp)/(2*gp)
-
-        Parameters
-        ----------
-        r : float
-            Parametric coordinate
-        s : float
-            Parametric coordinate
-        eps_yy_tied : List[np.ndarray]
-            List of 4 ε_yy row vectors at tying points
-
-        Returns
-        -------
-        np.ndarray
-            Interpolated ε_yy row vector (length 8)
-        """
-        gp = 1 / np.sqrt(3)
-
-        # Compute interpolation weights in ξ-direction
-        w_minus = (gp - r) / (2 * gp)  # Weight for -gp point
-        w_plus = (r + gp) / (2 * gp)  # Weight for +gp point
-
-        if s < 0:
-            # Bottom edge: interpolate between eps_yy_tied[0] and eps_yy_tied[1]
-            return w_minus * eps_yy_tied[0] + w_plus * eps_yy_tied[1]
-        else:
-            # Top edge: interpolate between eps_yy_tied[2] and eps_yy_tied[3]
-            return w_minus * eps_yy_tied[2] + w_plus * eps_yy_tied[3]
-
-    def _interpolate_gamma_xy(
-        self, r: float, s: float, gamma_xy_tied: List[np.ndarray]
-    ) -> np.ndarray:
-        """
-        Interpolate γ_xy from 5 tying points using bilinear + bubble function interpolation.
-
-        The 5 tying points are:
-        - Point 0: center (0, 0) with bubble function N_bubble = 1 - r² - s²
-        - Points 1-4: corners with standard bilinear shape functions
-
-        This provides better accuracy near the center and ensures correct values at corners.
-
-        Parameters
-        ----------
-        r : float
-            Parametric coordinate
-        s : float
-            Parametric coordinate
-        gamma_xy_tied : List[np.ndarray]
-            List of 5 γ_xy row vectors at tying points
-
-        Returns
-        -------
-        np.ndarray
-            Interpolated γ_xy row vector (length 8)
-        """
-        # Bubble function (non-zero at center, zero at edges)
-        N_bubble = 1.0 - r**2 - s**2
-
-        # Standard bilinear shape functions at corners
-        N1 = 0.25 * (1 - r) * (1 - s)
-        N2 = 0.25 * (1 + r) * (1 - s)
-        N3 = 0.25 * (1 + r) * (1 + s)
-        N4 = 0.25 * (1 - r) * (1 + s)
-
-        # Weighted interpolation: center contribution + corner contributions
-        return (
-            N_bubble * gamma_xy_tied[0]
-            + N1 * gamma_xy_tied[1]
-            + N2 * gamma_xy_tied[2]
-            + N3 * gamma_xy_tied[3]
-            + N4 * gamma_xy_tied[4]
-        )
-
-    def B_m(self, r: float, s: float) -> np.ndarray:
-        """
-        Compute MITC4+ membrane strain-displacement matrix with assumed strain interpolation.
-
-        This method overrides MITC4.B_m() to implement MITC4+ interpolation of membrane strains.
-        The method:
-        1. Evaluates membrane strains (ε_xx, ε_yy, γ_xy) at strategic tying points
-        2. Interpolates these strains to the evaluation point (r, s)
-        3. Returns the interpolated 3x8 B matrix
-
-        This eliminates membrane locking that occurs in curved shells and distorted meshes.
-
+        Compute displacement gradient tensor F - I at parametric point (r, s).
+        
+        The displacement gradient H = ∂u/∂X relates incremental displacements
+        to the reference configuration. For TL formulation:
+        
+            H_ij = ∂u_i/∂X_j
+            
+        The deformation gradient is F = I + H.
+        
         Parameters
         ----------
         r : float
             Parametric coordinate in ξ-direction [-1, 1]
         s : float
             Parametric coordinate in η-direction [-1, 1]
-
+            
         Returns
         -------
         np.ndarray
-            3x8 MITC4+ membrane strain-displacement matrix
+            (3, 3) displacement gradient tensor H = ∂u/∂X
         """
-        # Evaluate membrane strains at all tying points
-        eps_xx_tied = self._get_eps_xx_at_tying_points()
-        eps_yy_tied = self._get_eps_yy_at_tying_points()
-        gamma_xy_tied = self._get_gamma_xy_at_tying_points()
+        # Shape function derivatives w.r.t. local Cartesian coordinates
+        dH = self._get_dH(r, s)  # 2x4: [dN/dx; dN/dy]
+        
+        # Extract translational displacements
+        u_nodes = np.zeros((4, 3))
+        for i in range(4):
+            u_nodes[i, 0] = self._current_displacements[6*i]      # u
+            u_nodes[i, 1] = self._current_displacements[6*i + 1]  # v
+            u_nodes[i, 2] = self._current_displacements[6*i + 2]  # w
+        
+        # Compute displacement gradient (in-plane components)
+        # H[i,j] = Σ_k (dN_k/dX_j) * u_k_i
+        H = np.zeros((3, 3))
+        
+        # ∂u/∂x, ∂v/∂x, ∂w/∂x
+        H[0, 0] = np.dot(dH[0, :], u_nodes[:, 0])  # ∂u/∂x
+        H[1, 0] = np.dot(dH[0, :], u_nodes[:, 1])  # ∂v/∂x
+        H[2, 0] = np.dot(dH[0, :], u_nodes[:, 2])  # ∂w/∂x
+        
+        # ∂u/∂y, ∂v/∂y, ∂w/∂y
+        H[0, 1] = np.dot(dH[1, :], u_nodes[:, 0])  # ∂u/∂y
+        H[1, 1] = np.dot(dH[1, :], u_nodes[:, 1])  # ∂v/∂y
+        H[2, 1] = np.dot(dH[1, :], u_nodes[:, 2])  # ∂w/∂y
+        
+        # For shell elements, z-derivatives are handled through thickness integration
+        # H[:, 2] remains zero for membrane behavior
+        
+        return H
 
-        # Interpolate from tying points to evaluation point (r, s)
-        eps_xx_interp = self._interpolate_eps_xx(r, s, eps_xx_tied)
-        eps_yy_interp = self._interpolate_eps_yy(r, s, eps_yy_tied)
-        gamma_xy_interp = self._interpolate_gamma_xy(r, s, gamma_xy_tied)
+    def compute_green_lagrange_strain(
+        self, r: float = 0.0, s: float = 0.0
+    ) -> np.ndarray:
+        """
+        Compute Green-Lagrange strain tensor at a parametric point.
+        
+        The Green-Lagrange strain tensor E is defined as:
+        
+            E = 0.5 * (F^T F - I) = 0.5 * (H + H^T + H^T H)
+            
+        where F = I + H is the deformation gradient.
+        
+        This strain measure is work-conjugate to the Second Piola-Kirchhoff
+        stress and is valid for large displacements and rotations.
+        
+        Parameters
+        ----------
+        r : float, optional
+            Parametric coordinate in ξ-direction, default 0 (center)
+        s : float, optional
+            Parametric coordinate in η-direction, default 0 (center)
+            
+        Returns
+        -------
+        np.ndarray
+            (3, 3) Green-Lagrange strain tensor E
+            
+        Notes
+        -----
+        The strain tensor has the form:
+            [E_xx  E_xy  E_xz]
+            [E_xy  E_yy  E_yz]
+            [E_xz  E_yz  E_zz]
+            
+        For membrane behavior of shells, E_xz, E_yz, E_zz are typically small.
+        """
+        H = self.get_displacement_gradient(r, s)
+        
+        # Green-Lagrange strain: E = 0.5 * (H + H^T + H^T @ H)
+        E = 0.5 * (H + H.T + H.T @ H)
+        
+        return E
 
-        # Assemble interpolated 3x8 B matrix
+    def compute_green_lagrange_strain_voigt(
+        self, r: float = 0.0, s: float = 0.0
+    ) -> np.ndarray:
+        """
+        Compute Green-Lagrange strain in Voigt notation.
+        
+        Parameters
+        ----------
+        r : float, optional
+            Parametric coordinate in ξ-direction, default 0 (center)
+        s : float, optional
+            Parametric coordinate in η-direction, default 0 (center)
+            
+        Returns
+        -------
+        np.ndarray
+            (6,) strain vector [E_xx, E_yy, E_zz, 2*E_xy, 2*E_yz, 2*E_xz]
+            
+        Notes
+        -----
+        Engineering shear strains (γ = 2E) are used in Voigt notation.
+        """
+        E = self.compute_green_lagrange_strain(r, s)
+        
         return np.array([
-            eps_xx_interp,
-            eps_yy_interp,
-            gamma_xy_interp,
+            E[0, 0],          # E_xx
+            E[1, 1],          # E_yy
+            E[2, 2],          # E_zz
+            2 * E[0, 1],      # γ_xy = 2*E_xy
+            2 * E[1, 2],      # γ_yz = 2*E_yz
+            2 * E[0, 2],      # γ_xz = 2*E_xz
         ])
 
-    # Inherited from MITC4:
-    # - @property K: uses self.k_m() (which now calls MITC4Plus.B_m()) + self.k_b()
-    # - @property M: unchanged, computed the same way
-    # - body_load(): unchanged, uses same integration
-    # - compute_geometric_stiffness(): inherited from MITC4
-    # - compute_membrane_stress_from_displacement(): inherited from MITC4
-    # - compute_centrifugal_prestress(): inherited from MITC4
-    # The API is 100% compatible with MITC4
+    def _compute_B_L(self, r: float, s: float) -> np.ndarray:
+        """
+        Compute the linear part of the strain-displacement matrix for TL formulation.
+        
+        This is the standard B matrix evaluated at the current configuration,
+        relating infinitesimal strain increments to displacement increments:
+        
+            δε = B_L · δu
+            
+        Parameters
+        ----------
+        r : float
+            Parametric coordinate in ξ-direction [-1, 1]
+        s : float
+            Parametric coordinate in η-direction [-1, 1]
+            
+        Returns
+        -------
+        np.ndarray
+            (6, 24) linear strain-displacement matrix
+        """
+        dH = self._get_dH(r, s)  # 2x4: [dN/dx; dN/dy]
+        
+        # Build B_L matrix (6 strain components x 24 DOFs)
+        # Strain order: [ε_xx, ε_yy, ε_zz, γ_xy, γ_yz, γ_xz]
+        B_L = np.zeros((6, 24))
+        
+        for i in range(4):
+            col = 6 * i  # Starting column for node i
+            dNi_dx = dH[0, i]
+            dNi_dy = dH[1, i]
+            
+            # ε_xx = ∂u/∂x
+            B_L[0, col] = dNi_dx
+            
+            # ε_yy = ∂v/∂y
+            B_L[1, col + 1] = dNi_dy
+            
+            # ε_zz = 0 for membrane (would include ∂w/∂z for 3D)
+            # B_L[2, :] = 0
+            
+            # γ_xy = ∂u/∂y + ∂v/∂x
+            B_L[3, col] = dNi_dy      # ∂u/∂y
+            B_L[3, col + 1] = dNi_dx  # ∂v/∂x
+            
+            # γ_yz = ∂v/∂z + ∂w/∂y (shell: includes rotation contributions)
+            # γ_xz = ∂u/∂z + ∂w/∂x (shell: includes rotation contributions)
+            # These are handled by B_gamma for shell elements
+        
+        return B_L
+
+    def _compute_B_NL(self, r: float, s: float) -> np.ndarray:
+        """
+        Compute the nonlinear part of the strain-displacement matrix.
+        
+        The nonlinear B matrix captures the quadratic terms in the 
+        Green-Lagrange strain tensor. It depends on the current displacement
+        state through the displacement gradient H.
+        
+        For the Green-Lagrange strain:
+            E = ε_linear + ε_nonlinear
+            ε_nonlinear = 0.5 * H^T @ H
+            
+        The variation gives:
+            δE = B_L · δu + B_NL(u) · δu
+            
+        Parameters
+        ----------
+        r : float
+            Parametric coordinate in ξ-direction [-1, 1]
+        s : float
+            Parametric coordinate in η-direction [-1, 1]
+            
+        Returns
+        -------
+        np.ndarray
+            (6, 24) nonlinear strain-displacement matrix
+            
+        Notes
+        -----
+        B_NL depends on the current displacement state and must be
+        recomputed after each configuration update.
+        """
+        dH_shape = self._get_dH(r, s)  # 2x4: [dN/dx; dN/dy]
+        H = self.get_displacement_gradient(r, s)  # 3x3 displacement gradient
+        
+        # Build B_NL matrix
+        # The nonlinear strain terms involve products of displacement gradients
+        B_NL = np.zeros((6, 24))
+        
+        for i in range(4):
+            col = 6 * i
+            dNi_dx = dH_shape[0, i]
+            dNi_dy = dH_shape[1, i]
+            
+            # E_xx nonlinear: 0.5 * [(∂u/∂x)² + (∂v/∂x)² + (∂w/∂x)²]
+            # δE_xx = (∂u/∂x)·δ(∂u/∂x) + (∂v/∂x)·δ(∂v/∂x) + (∂w/∂x)·δ(∂w/∂x)
+            B_NL[0, col] = H[0, 0] * dNi_dx      # (∂u/∂x) * dNi/dx
+            B_NL[0, col + 1] = H[1, 0] * dNi_dx  # (∂v/∂x) * dNi/dx
+            B_NL[0, col + 2] = H[2, 0] * dNi_dx  # (∂w/∂x) * dNi/dx
+            
+            # E_yy nonlinear: 0.5 * [(∂u/∂y)² + (∂v/∂y)² + (∂w/∂y)²]
+            B_NL[1, col] = H[0, 1] * dNi_dy      # (∂u/∂y) * dNi/dy
+            B_NL[1, col + 1] = H[1, 1] * dNi_dy  # (∂v/∂y) * dNi/dy
+            B_NL[1, col + 2] = H[2, 1] * dNi_dy  # (∂w/∂y) * dNi/dy
+            
+            # E_zz nonlinear: 0 for membrane
+            
+            # 2*E_xy nonlinear: (∂u/∂x)(∂u/∂y) + (∂v/∂x)(∂v/∂y) + (∂w/∂x)(∂w/∂y)
+            B_NL[3, col] = H[0, 0] * dNi_dy + H[0, 1] * dNi_dx
+            B_NL[3, col + 1] = H[1, 0] * dNi_dy + H[1, 1] * dNi_dx
+            B_NL[3, col + 2] = H[2, 0] * dNi_dy + H[2, 1] * dNi_dx
+        
+        return B_NL
+
+    def _compute_G_matrix(self, r: float, s: float) -> np.ndarray:
+        """
+        Compute the G matrix for geometric stiffness in nonlinear analysis.
+        
+        The G matrix relates displacement gradient variations to nodal DOF
+        variations. Used in the geometric stiffness computation:
+        
+            K_σ = ∫ G^T · S̃ · G dA
+            
+        where S̃ is the stress matrix in appropriate form.
+        
+        Parameters
+        ----------
+        r : float
+            Parametric coordinate in ξ-direction [-1, 1]
+        s : float
+            Parametric coordinate in η-direction [-1, 1]
+            
+        Returns
+        -------
+        np.ndarray
+            (4, 24) G matrix for geometric stiffness
+        """
+        dH = self._get_dH(r, s)  # 2x4
+        
+        # G matrix structure: relates [∂u/∂x, ∂u/∂y, ∂v/∂x, ∂v/∂y, ...] to DOFs
+        # For membrane: 4 gradient components (du/dx, du/dy, dv/dx, dv/dy)
+        # Extended for shell to include w gradients
+        G = np.zeros((6, 24))  # [∂u/∂x, ∂u/∂y, ∂v/∂x, ∂v/∂y, ∂w/∂x, ∂w/∂y]
+        
+        for i in range(4):
+            col = 6 * i
+            dNi_dx = dH[0, i]
+            dNi_dy = dH[1, i]
+            
+            # ∂u/∂x, ∂u/∂y
+            G[0, col] = dNi_dx
+            G[1, col] = dNi_dy
+            
+            # ∂v/∂x, ∂v/∂y
+            G[2, col + 1] = dNi_dx
+            G[3, col + 1] = dNi_dy
+            
+            # ∂w/∂x, ∂w/∂y
+            G[4, col + 2] = dNi_dx
+            G[5, col + 2] = dNi_dy
+        
+        return G
+
+    def compute_tangent_stiffness(
+        self,
+        sigma: Optional[np.ndarray] = None,
+        transform_to_global: bool = True,
+    ) -> np.ndarray:
+        """
+        Compute tangent stiffness matrix for nonlinear analysis.
+        
+        The tangent stiffness matrix is:
+        
+            K_T = K_0 + K_L + K_σ
+            
+        where:
+        - K_0: Initial (linear) stiffness matrix
+        - K_L: Large displacement stiffness (from nonlinear strain terms)
+        - K_σ: Geometric (stress) stiffness matrix
+        
+        Parameters
+        ----------
+        sigma : np.ndarray, optional
+            Current stress state for geometric stiffness. If None, computed
+            from current displacements. Shape (3,) for membrane stress
+            [σ_xx, σ_yy, σ_xy] or (2, 2) tensor.
+        transform_to_global : bool, optional
+            Transform result to global coordinates. Default True.
+            
+        Returns
+        -------
+        np.ndarray
+            (24, 24) tangent stiffness matrix
+            
+        Notes
+        -----
+        For linear analysis (self.nonlinear = False), this returns just K_0.
+        
+        The tangent stiffness is used in Newton-Raphson iteration:
+            K_T · Δu = f_ext - f_int
+        """
+        # Get linear stiffness (always needed)
+        K_0 = self.k_m() + self.k_b()
+        
+        if not self.nonlinear:
+            if transform_to_global:
+                T = self.T()
+                return T.T @ K_0 @ T
+            return K_0
+        
+        # Compute stress if not provided
+        if sigma is None:
+            # Transform displacements to local coordinates
+            T = self.T()
+            u_local = T @ self._current_displacements
+            sigma = self.compute_membrane_stress_from_displacement(u_local)
+        
+        # Large displacement stiffness K_L
+        K_L = np.zeros((24, 24))
+        
+        # Get constitutive matrices
+        Cm = self.Cm()  # 3x3 membrane
+        
+        for r, s in self._gauss_points:
+            _, detJ = self.J(r, s)
+            
+            # Nonlinear B matrix contribution
+            B_NL = self._compute_B_NL(r, s)
+            B_L = self._compute_B_L(r, s)
+            
+            # Extract membrane parts (first 4 components: xx, yy, zz, xy)
+            B_m_L = B_L[[0, 1, 3], :][:, [0, 1, 6, 7, 12, 13, 18, 19]]
+            B_m_NL = B_NL[[0, 1, 3], :][:, [0, 1, 6, 7, 12, 13, 18, 19]]
+            
+            # K_L contribution (cross terms between linear and nonlinear B)
+            # This captures the coupling between linear and nonlinear strain
+            k_L_local = (B_m_L.T @ Cm @ B_m_NL + B_m_NL.T @ Cm @ B_m_L) * detJ * self.thickness
+            
+            # Map back to full 24x24
+            mem_dofs = np.array([0, 1, 6, 7, 12, 13, 18, 19])
+            K_L[np.ix_(mem_dofs, mem_dofs)] += k_L_local
+        
+        # Geometric stiffness K_σ
+        K_sigma = self.compute_geometric_stiffness(sigma, transform_to_global=False)
+        
+        # Total tangent stiffness
+        K_T = K_0 + K_L + K_sigma
+        
+        # Force symmetry
+        K_T = 0.5 * (K_T + K_T.T)
+        
+        if transform_to_global:
+            T = self.T()
+            K_T = T.T @ K_T @ T
+        
+        return K_T
+
+    def compute_internal_forces(
+        self,
+        transform_to_global: bool = True,
+    ) -> np.ndarray:
+        """
+        Compute internal force vector for nonlinear analysis.
+        
+        The internal force vector represents the element's resistance to
+        the current deformation state:
+        
+            f_int = ∫ B^T · σ dV
+            
+        For equilibrium in nonlinear analysis:
+            f_ext = f_int
+            
+        Or in incremental form (Newton-Raphson):
+            K_T · Δu = f_ext - f_int
+            
+        Parameters
+        ----------
+        transform_to_global : bool, optional
+            Transform result to global coordinates. Default True.
+            
+        Returns
+        -------
+        np.ndarray
+            (24,) internal force vector
+            
+        Notes
+        -----
+        For Total Lagrangian formulation, we use Second Piola-Kirchhoff
+        stress S and Green-Lagrange strain E. The internal force is:
+        
+            f_int = ∫ (B_L + B_NL)^T · S dA · h
+            
+        where S is computed from E using the constitutive relation S = C : E.
+        """
+        # Transform displacements to local coordinates
+        T = self.T()
+        u_local = T @ self._current_displacements
+        
+        f_int = np.zeros(24)
+        
+        # Get constitutive matrices
+        Cm = self.Cm()  # 3x3 membrane
+        Cb = self.Cb()  # 3x3 bending
+        Cs = self.Cs()  # 2x2 shear
+        
+        for r, s in self._gauss_points:
+            _, detJ = self.J(r, s)
+            
+            # Membrane contribution
+            B_m = self.B_m(r, s)  # 3x8 MITC4+ interpolated
+            
+            # Extract membrane displacements
+            mem_dofs = np.array([0, 1, 6, 7, 12, 13, 18, 19])
+            u_mem = u_local[mem_dofs]
+            
+            # Green-Lagrange strain (membrane part)
+            E_GL = self.compute_green_lagrange_strain(r, s)
+            E_membrane = np.array([E_GL[0, 0], E_GL[1, 1], 2*E_GL[0, 1]])
+            
+            # Second Piola-Kirchhoff stress (for linear elastic material)
+            S_membrane = Cm @ E_membrane
+            
+            # Internal force contribution from membrane
+            if self.nonlinear:
+                # Use combined B matrix for nonlinear analysis
+                B_L = self._compute_B_L(r, s)
+                B_NL = self._compute_B_NL(r, s)
+                B_total = B_L[[0, 1, 3], :] + B_NL[[0, 1, 3], :]
+                
+                # Map to membrane DOFs
+                B_mem_total = np.zeros((3, 8))
+                for i, dof in enumerate(mem_dofs):
+                    col_24 = dof
+                    B_mem_total[:, i] = B_total[:, col_24]
+                
+                f_mem = B_mem_total.T @ S_membrane * detJ * self.thickness
+            else:
+                # Linear analysis - use standard B_m
+                f_mem = B_m.T @ S_membrane * detJ * self.thickness
+            
+            f_int[mem_dofs] += f_mem
+            
+            # Bending contribution
+            B_kappa = self.B_kappa(r, s)  # 3x12
+            bend_dofs = np.array([2, 3, 4, 8, 9, 10, 14, 15, 16, 20, 21, 22])
+            u_bend = u_local[bend_dofs]
+            
+            kappa = B_kappa @ u_bend
+            M = Cb @ kappa  # Bending moments
+            f_bend = B_kappa.T @ M * detJ
+            f_int[bend_dofs] += f_bend
+            
+            # Shear contribution
+            B_gamma = self.B_gamma(r, s)  # 2x12
+            gamma = B_gamma @ u_bend
+            Q = Cs @ gamma  # Shear forces
+            f_shear = B_gamma.T @ Q * detJ
+            f_int[bend_dofs] += f_shear
+        
+        if transform_to_global:
+            f_int = T.T @ f_int
+        
+        return f_int
+
+    def compute_residual(
+        self,
+        f_ext: np.ndarray,
+        transform_to_global: bool = True,
+    ) -> np.ndarray:
+        """
+        Compute residual force vector for Newton-Raphson iteration.
+        
+        The residual is the out-of-balance force:
+        
+            R = f_ext - f_int
+            
+        Convergence is achieved when ||R|| < tolerance.
+        
+        Parameters
+        ----------
+        f_ext : np.ndarray
+            (24,) external force vector in global coordinates
+        transform_to_global : bool, optional
+            Whether internal forces are in global coordinates. Default True.
+            
+        Returns
+        -------
+        np.ndarray
+            (24,) residual force vector
+        """
+        f_int = self.compute_internal_forces(transform_to_global=transform_to_global)
+        return f_ext - f_int
+
+    def compute_strain_energy(self) -> float:
+        """
+        Compute total strain energy stored in the element.
+        
+        For linear elastic material with Green-Lagrange strain:
+        
+            U = 0.5 * ∫ S : E dV = 0.5 * ∫ E^T C E dV
+            
+        Returns
+        -------
+        float
+            Total strain energy (Joules)
+        """
+        # Transform displacements to local coordinates
+        T = self.T()
+        u_local = T @ self._current_displacements
+        
+        U = 0.0
+        Cm = self.Cm()
+        Cb = self.Cb()
+        Cs = self.Cs()
+        
+        for r, s in self._gauss_points:
+            _, detJ = self.J(r, s)
+            
+            # Membrane strain energy
+            E_GL = self.compute_green_lagrange_strain(r, s)
+            E_mem = np.array([E_GL[0, 0], E_GL[1, 1], 2*E_GL[0, 1]])
+            U += 0.5 * E_mem @ Cm @ E_mem * detJ * self.thickness
+            
+            # Bending strain energy
+            B_kappa = self.B_kappa(r, s)
+            bend_dofs = np.array([2, 3, 4, 8, 9, 10, 14, 15, 16, 20, 21, 22])
+            u_bend = u_local[bend_dofs]
+            kappa = B_kappa @ u_bend
+            U += 0.5 * kappa @ Cb @ kappa * detJ
+            
+            # Shear strain energy
+            B_gamma = self.B_gamma(r, s)
+            gamma = B_gamma @ u_bend
+            U += 0.5 * gamma @ Cs @ gamma * detJ
+        
+        return U
