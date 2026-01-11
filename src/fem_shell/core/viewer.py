@@ -441,6 +441,48 @@ class MeshViewer(QWidget):
 
         layout.addLayout(grid)
 
+        # Bounding Box Section
+        coords = self.mesh.coords_array
+        if coords.size > 0:
+            layout.addSpacing(10)
+            bbox_title = QLabel("Bounding Box")
+            bbox_title.setFont(font)
+            layout.addWidget(bbox_title)
+
+            bbox_grid = QGridLayout()
+            bbox_grid.setHorizontalSpacing(12)
+            bbox_grid.setVerticalSpacing(4)
+
+            min_c = coords.min(axis=0)
+            max_c = coords.max(axis=0)
+            dims = max_c - min_c
+
+            bbox_data = [
+                ("X Range", f"[{min_c[0]:.4f}, {max_c[0]:.4f}]", f"Δ={dims[0]:.4f}"),
+                ("Y Range", f"[{min_c[1]:.4f}, {max_c[1]:.4f}]", f"Δ={dims[1]:.4f}"),
+                ("Z Range", f"[{min_c[2]:.4f}, {max_c[2]:.4f}]", f"Δ={dims[2]:.4f}"),
+            ]
+
+            for row, (label, range_str, dim_str) in enumerate(bbox_data):
+                l_lbl = QLabel(label)
+                r_lbl = QLabel(range_str)
+                d_lbl = QLabel(dim_str)
+                
+                for lbl in [l_lbl, r_lbl, d_lbl]:
+                    f = lbl.font()
+                    f.setPointSize(9)
+                    if lbl is d_lbl:
+                        f.setBold(True)
+                    lbl.setFont(f)
+                
+                r_lbl.setStyleSheet("color: #555;")
+                
+                bbox_grid.addWidget(l_lbl, row, 0)
+                bbox_grid.addWidget(r_lbl, row, 1)
+                bbox_grid.addWidget(d_lbl, row, 2)
+
+            layout.addLayout(bbox_grid)
+
         close_btn = QPushButton("Close")
         close_btn.setFixedWidth(80)
         close_btn.clicked.connect(dialog.close)
