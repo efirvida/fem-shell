@@ -32,6 +32,7 @@ from fem_shell.core.mesh import (  # Entities; Model; Generators; I/O
     SquareShapeMesh,
     load_hdf5,
     load_mesh,
+    load_meshio,
     load_pickle,
     write_ccx_mesh,
     write_gmsh_mesh,
@@ -40,6 +41,7 @@ from fem_shell.core.mesh import (  # Entities; Model; Generators; I/O
     write_meshio,
     write_pickle,
     write_plot3d,
+    selectors,
 )
 
 __all__ = [
@@ -68,8 +70,10 @@ __all__ = [
     "write_pickle",
     # Readers
     "load_mesh",
+    "load_meshio",
     "load_hdf5",
     "load_pickle",
+    "selectors",
 ]
 
 

@@ -4,7 +4,7 @@ Mesh I/O subpackage.
 This package provides functions for reading and writing meshes in various formats.
 """
 
-from fem_shell.core.mesh.io.readers import load_hdf5, load_mesh, load_pickle
+from fem_shell.core.mesh.io.readers import load_hdf5, load_mesh, load_meshio, load_pickle
 from fem_shell.core.mesh.io.writers import (
     write_ccx_mesh,
     write_gmsh_mesh,
@@ -26,6 +26,7 @@ __all__ = [
     "write_pickle",
     # Readers
     "load_mesh",
+    "load_meshio",
     "load_hdf5",
     "load_pickle",
 ]

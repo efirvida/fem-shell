@@ -17,7 +17,16 @@ if TYPE_CHECKING:
 from fem_shell.core.mesh.entities import ElementSet, ElementType, MeshElement, Node, NodeSet
 
 
-def load_mesh(filepath: str, format: str = "auto") -> "MeshModel":
+MESHIO_TYPE_MAP = {
+    "triangle": ElementType.triangle,
+    "triangle6": ElementType.triangle6,
+    "quad": ElementType.quad,
+    "quad8": ElementType.quad8,
+    "quad9": ElementType.quad9,
+}
+
+
+def load_mesh(filepath: str, format: str = "auto", nodesets: Optional[List[dict]] = None) -> "MeshModel":
     """
     Load a mesh from disk.
 
@@ -27,6 +36,10 @@ def load_mesh(filepath: str, format: str = "auto") -> "MeshModel":
         Path to the mesh file.
     format : str, optional
         File format: "auto", "hdf5", or "pickle". Default is "auto".
+    nodesets : list of dict, optional
+        List of NodeSet definitions to apply after loading.
+        Each dict should have: 'name', 'type', and keyword arguments
+        for the selector.
 
     Returns
     -------
@@ -53,19 +66,70 @@ def load_mesh(filepath: str, format: str = "auto") -> "MeshModel":
             format = "hdf5"
         elif ext in (".pkl", ".pickle"):
             format = "pickle"
+        elif ext in (".stl", ".obj", ".vtk", ".vtu", ".msh", ".off", ".ply"):
+            format = "meshio"
         else:
-            raise ValueError(
-                f"Cannot determine format from extension '{ext}'. "
-                "Use .h5/.hdf5 for HDF5 or .pkl/.pickle for pickle, "
-                "or specify format explicitly."
-            )
+            # Fallback to meshio for other extensions if it might be a mesh file
+            format = "meshio"
 
     if format == "hdf5":
-        return load_hdf5(filepath)
+        mesh = load_hdf5(filepath)
     elif format == "pickle":
-        return load_pickle(filepath)
+        mesh = load_pickle(filepath)
+    elif format == "meshio":
+        mesh = load_meshio(filepath)
     else:
-        raise ValueError(f"Unknown format '{format}'. Use 'hdf5' or 'pickle'.")
+        raise ValueError(f"Unknown format '{format}'. Use 'hdf5', 'pickle', or 'meshio'.")
+
+    # Apply on-the-fly nodesets if provided
+    if nodesets:
+        for ns_def in nodesets:
+            name = ns_def.pop("name")
+            ctype = ns_def.pop("type")
+            mesh.create_node_set_by_geometry(name, ctype, **ns_def)
+
+    return mesh
+
+
+def load_meshio(filepath: str) -> "MeshModel":
+    """
+    Load a mesh using meshio library.
+
+    This is useful for formats like STL, OBJ, VTK, etc.
+    Note that this only loads geometric connectivity, not metadata.
+    """
+    import meshio
+
+    # Import here to avoid circular imports
+    from fem_shell.core.mesh.model import MeshModel
+
+    mio = meshio.read(filepath)
+
+    # Reconstruct nodes
+    nodes = []
+    for coords in mio.points:
+        nodes.append(Node(coords))
+
+    node_lookup = {i: n for i, n in enumerate(nodes)}
+
+    # Reconstruct elements
+    elements = []
+    for cell_block in mio.cells:
+        cell_type = cell_block.type
+        if cell_type not in MESHIO_TYPE_MAP:
+            print(f"Warning: Skipping unsupported element type '{cell_type}'")
+            continue
+
+        element_type = MESHIO_TYPE_MAP[cell_type]
+        for connectivity in cell_block.data:
+            elem_nodes = [node_lookup[int(nid)] for nid in connectivity]
+            elements.append(MeshElement(elem_nodes, element_type))
+
+    # Create mesh
+    mesh = MeshModel(nodes=nodes, elements=elements)
+
+    print(f"Mesh loaded from {filepath} (meshio format)")
+    return mesh
 
 
 def load_hdf5(filepath) -> "MeshModel":

@@ -15,6 +15,7 @@ import numpy as np
 from fem_shell.core.mesh.entities import ElementSet, MeshElement, Node, NodeSet
 from fem_shell.core.mesh.io import load_mesh, write_hdf5, write_mesh, write_pickle
 from fem_shell.core.viewer import plot_mesh
+from fem_shell.core.mesh import selectors
 
 
 class MeshModel:
@@ -363,6 +364,48 @@ class MeshModel:
         if element_set.name in self.element_sets:
             raise ValueError(f"ElementSet '{element_set.name}' already exists.")
         self.element_sets[element_set.name] = element_set
+
+    def create_node_set_by_geometry(
+        self, name: str, criteria_type: str, **kwargs
+    ) -> NodeSet:
+        """
+        Create a NodeSet based on geometric criteria.
+
+        Parameters
+        ----------
+        name : str
+            Name of the new node set.
+        criteria_type : str
+            Type of selection: 'coordinate', 'box', 'distance', 'direction'.
+        **kwargs
+            Arguments passed to the corresponding selector function in
+            fem_shell.core.mesh.selectors.
+
+        Returns
+        -------
+        NodeSet
+            The created node set (also added to the mesh).
+        """
+        selector_map = {
+            "coordinate": selectors.select_by_coordinate,
+            "box": selectors.select_by_box,
+            "distance": selectors.select_by_distance,
+            "direction": selectors.select_by_direction,
+        }
+
+        if criteria_type not in selector_map:
+            raise ValueError(
+                f"Unknown criteria type '{criteria_type}'. "
+                f"Available: {list(selector_map.keys())}"
+            )
+
+        selector_func = selector_map[criteria_type]
+        node_ids = selector_func(self, **kwargs)
+        
+        node_objs = {self.get_node_by_id(nid) for nid in node_ids}
+        nset = NodeSet(name, node_objs)
+        self.add_node_set(nset)
+        return nset
 
     def get_node_by_id(self, node_id: int) -> Node:
         """Retrieve a node by its ID."""
