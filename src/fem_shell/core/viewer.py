@@ -3,6 +3,7 @@ import pyvista as pv
 from PySide6.QtCore import Qt, Slot
 from PySide6.QtWidgets import (
     QApplication,
+    QCheckBox,
     QColorDialog,
     QComboBox,
     QDialog,
@@ -283,6 +284,12 @@ class MeshViewer(QWidget):
         self.vis_mode_combo.setToolTip("Select mesh visualization style")
         self.vis_mode_combo.currentIndexChanged.connect(self.update_plot)
         control_layout.addWidget(self.vis_mode_combo)
+
+        # Base mesh visibility toggle
+        self.show_base_mesh_chk = QCheckBox("Show Base Mesh")
+        self.show_base_mesh_chk.setChecked(True)
+        self.show_base_mesh_chk.stateChanged.connect(self.update_plot)
+        control_layout.addWidget(self.show_base_mesh_chk)
 
         # Sets group box
         self.sets_group = QGroupBox("Sets (Nodes and Elements)")
@@ -800,37 +807,55 @@ class MeshViewer(QWidget):
         # Get selected sets
         node_sets, element_sets = self.get_selected_sets()
 
-        # Process elements
-        if element_sets:
-            for s in element_sets:
-                element_set = self.mesh.get_element_set(s)
+        # Qualitative color palette for sets (Tab10)
+        set_colors = [
+            "#1f77b4", "#ff7f0e", "#2ca02c", "#d62728", "#9467bd",
+            "#8c564b", "#e377c2", "#7f7f7f", "#bcbd22", "#17becf"
+        ]
+        color_idx = 0
 
-            if grid := self._create_element_grid(selected_elements=element_set.elements):
-                self.plotter.add_mesh(grid, name="elements", **style)
+        # Base mesh visibility logic
+        show_base = self.show_base_mesh_chk.isChecked()
+        
+        # Determine if we should show the full mesh as the primary model
+        # (if no element sets are selected OR if explicitly requested)
+        if show_base:
+            if grid := self._create_element_grid():
+                # If there are selected element sets, make the base mesh slightly transparent
+                # to emphasize the sets
+                base_opacity = 0.3 if element_sets else 1.0
+                self.plotter.add_mesh(grid, name="full_mesh", opacity=base_opacity, **style)
+
+        # Process element sets
+        if element_sets:
+            for s_name in element_sets:
+                element_set = self.mesh.get_element_set(s_name)
+                color = set_colors[color_idx % len(set_colors)]
+                color_idx += 1
+                
+                if grid := self._create_element_grid(selected_elements=element_set.elements):
+                    set_style = style.copy()
+                    set_style["color"] = color
+                    self.plotter.add_mesh(grid, name=f"element_set_{s_name}", **set_style)
 
         # Process nodes
         if node_sets:
-            node_ids = set()
-            for s in node_sets:
-                node_set = self.mesh.get_node_set(s)
-                node_ids.update(node_set.node_ids)
-
-            if points := self._create_node_points(node_ids):
-                self.plotter.add_points(
-                    points,
-                    name="nodes",
-                    **{
-                        "style": "points",
-                        "point_size": 10,
-                        "render_points_as_spheres": True,
-                        "color": self.point_color,
-                    },
-                )
-
-        # Show full mesh if no selections
-        if not element_sets and not node_sets:
-            if grid := self._create_element_grid():
-                self.plotter.add_mesh(grid, name="surface", **style)
+            for s_name in node_sets:
+                node_set = self.mesh.get_node_set(s_name)
+                color = set_colors[color_idx % len(set_colors)]
+                color_idx += 1
+                
+                if points := self._create_node_points(node_set.node_ids):
+                    self.plotter.add_points(
+                        points,
+                        name=f"node_set_{s_name}",
+                        **{
+                            "style": "points",
+                            "point_size": 12,
+                            "render_points_as_spheres": True,
+                            "color": color,
+                        },
+                    )
 
         self._configure_view()
         self.plotter.render()
