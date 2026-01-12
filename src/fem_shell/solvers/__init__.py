@@ -1,6 +1,6 @@
 from .linear import LinearDynamicSolver, LinearStaticSolver
 from .modal import ModalSolver
-from .stress_recovery import StrainResult, StressLocation, StressRecovery, StressResult, StressType
+from fem_shell.postprocess.stress_recovery import StrainResult, StressLocation, StressRecovery, StressResult, StressType
 
 try:
     from .fsi import LinearDynamicFSISolver

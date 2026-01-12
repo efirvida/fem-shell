@@ -164,8 +164,6 @@ class LinearStaticSolver(Solver):
         F_red.destroy()
         u_red.destroy()
 
-        u_red = np.linalg.solve(self.A, self.b)
-        self.u = bc_manager.expand_solution(u_red)
         return self.u
 
     def _residual_monitor(self, ksp, iteration, residual):
