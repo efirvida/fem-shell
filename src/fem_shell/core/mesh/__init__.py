@@ -47,8 +47,12 @@ from fem_shell.core.mesh.entities import (
 from fem_shell.core.mesh.generators import (
     BladeMesh,
     BoxSurfaceMesh,
+    CylindricalSurfaceMesh,
+    HyperbolicParaboloidMesh,
     MultiFlapMesh,
+    RaaschHookMesh,
     RotorMesh,
+    SphericalSurfaceMesh,
     SquareShapeMesh,
 )
 
@@ -69,6 +73,9 @@ from fem_shell.core.mesh.io import (
 # Main mesh model
 from fem_shell.core.mesh.model import MeshModel
 
+# Selection utilities
+from fem_shell.core.mesh import selectors
+
 __all__ = [
     # Entities
     "Node",
@@ -85,6 +92,10 @@ __all__ = [
     "MultiFlapMesh",
     "BladeMesh",
     "RotorMesh",
+    "CylindricalSurfaceMesh",
+    "HyperbolicParaboloidMesh",
+    "RaaschHookMesh",
+    "SphericalSurfaceMesh",
     # Writers
     "write_mesh",
     "write_meshio",
@@ -97,4 +108,6 @@ __all__ = [
     "load_mesh",
     "load_hdf5",
     "load_pickle",
+    # Utilities
+    "selectors",
 ]

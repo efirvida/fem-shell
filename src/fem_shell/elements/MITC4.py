@@ -200,14 +200,15 @@ class MITC4(ShellElement):
 
     def _compute_covariant_base_vectors(self, r: float, s: float) -> Tuple[np.ndarray, np.ndarray]:
         """
-        Compute covariant base vectors g_r and g_s at parametric point (r, s).
+        Compute covariant base vectors g_r and g_s at parametric point (r, s) in 3D.
         
         According to Ko, Lee & Bathe (2016) "A new MITC4+ shell element", the covariant
         base vectors are defined as:
-            g_r = ∂x/∂r = Σ (∂Ni/∂r) * xi
-            g_s = ∂x/∂s = Σ (∂Ni/∂s) * xi
+            g_r = ∂X/∂r = Σ (∂Ni/∂r) * Xi  (in global 3D coordinates)
+            g_s = ∂X/∂s = Σ (∂Ni/∂s) * Xi  (in global 3D coordinates)
         
-        where xi are the nodal coordinates in the local coordinate system.
+        For curved surfaces, these vectors must be computed in 3D global space
+        to capture the curvature information.
         
         Parameters
         ----------
@@ -219,31 +220,27 @@ class MITC4(ShellElement):
         Returns
         -------
         Tuple[np.ndarray, np.ndarray]
-            g_r : (2,) covariant base vector in r-direction (local x,y components)
-            g_s : (2,) covariant base vector in s-direction (local x,y components)
-            
-        Notes
-        -----
-        For a 2D membrane element in local coordinates, the base vectors are 2D.
-        The z-component is zero for flat elements.
+            g_r : (3,) covariant base vector in r-direction (global X,Y,Z components)
+            g_s : (3,) covariant base vector in s-direction (global X,Y,Z components)
         """
         if (r, s) in self._covariant_cache:
             return self._covariant_cache[(r, s)]
         
-        x1, y1, x2, y2, x3, y3, x4, y4 = self._local_coordinates
+        # Use GLOBAL 3D coordinates, not local 2D
+        nodes = np.asarray(self.node_coords)  # shape: (4, 3)
         
         # Shape function derivatives with respect to natural coordinates (r, s)
-        # dN/dr = [∂N1/∂r, ∂N2/∂r, ∂N3/∂r, ∂N4/∂r]
-        # dN/ds = [∂N1/∂s, ∂N2/∂s, ∂N3/∂s, ∂N4/∂s]
         dN_dr = 0.25 * np.array([-(1 - s), (1 - s), (1 + s), -(1 + s)])
         dN_ds = 0.25 * np.array([-(1 - r), -(1 + r), (1 + r), (1 - r)])
         
-        x_coords = np.array([x1, x2, x3, x4])
-        y_coords = np.array([y1, y2, y3, y4])
-        
-        # Covariant base vectors: g_r = ∂x/∂r, g_s = ∂x/∂s
-        g_r = np.array([np.dot(dN_dr, x_coords), np.dot(dN_dr, y_coords)])
-        g_s = np.array([np.dot(dN_ds, x_coords), np.dot(dN_ds, y_coords)])
+        # Covariant base vectors in 3D global space
+        # g_r = ∂X/∂r = Σ (∂Ni/∂r) * Xi
+        # g_s = ∂X/∂s = Σ (∂Ni/∂s) * Xi
+        g_r = np.zeros(3)
+        g_s = np.zeros(3)
+        for i in range(4):
+            g_r += dN_dr[i] * nodes[i]
+            g_s += dN_ds[i] * nodes[i]
         
         self._covariant_cache[(r, s)] = (g_r, g_s)
         return g_r, g_s
@@ -279,14 +276,18 @@ class MITC4(ShellElement):
 
     def _evaluate_B_m_covariant(self, r: float, s: float) -> np.ndarray:
         """
-        Evaluate membrane strain-displacement matrix in covariant coordinates.
+        Evaluate membrane strain-displacement matrix in covariant coordinates (3D).
         
         According to Ko, Lee & Bathe (2016), the covariant membrane strains are:
             e_rr = ∂u/∂r · g_r  (strain in r-direction)
             e_ss = ∂u/∂s · g_s  (strain in s-direction)  
             e_rs = 0.5 * (∂u/∂r · g_s + ∂u/∂s · g_r)  (shear strain)
             
-        where g_r and g_s are the covariant base vectors.
+        where g_r and g_s are the 3D covariant base vectors and u = (U, V, W) is 
+        the 3D displacement vector in global coordinates.
+        
+        For curved surfaces, the covariant strains depend on the out-of-plane
+        displacement W as well as in-plane displacements U, V.
         
         Parameters
         ----------
@@ -298,8 +299,9 @@ class MITC4(ShellElement):
         Returns
         -------
         np.ndarray
-            (3, 8) covariant strain-displacement matrix [e_rr, e_ss, 2*e_rs]^T
-            relating covariant strains to membrane DOFs [u1,v1,u2,v2,u3,v3,u4,v4]
+            (3, 12) covariant strain-displacement matrix [e_rr, e_ss, 2*e_rs]^T
+            relating covariant strains to membrane DOFs [U1,V1,W1, U2,V2,W2, U3,V3,W3, U4,V4,W4]
+            where U,V,W are global displacements.
         """
         g_r, g_s = self._compute_covariant_base_vectors(r, s)
         
@@ -307,22 +309,22 @@ class MITC4(ShellElement):
         dN_dr = 0.25 * np.array([-(1 - s), (1 - s), (1 + s), -(1 + s)])
         dN_ds = 0.25 * np.array([-(1 - r), -(1 + r), (1 + r), (1 - r)])
         
-        # Build covariant B matrix (3 x 8)
-        # DOF order: [u1, v1, u2, v2, u3, v3, u4, v4]
-        B_cov = np.zeros((3, 8))
+        # Build covariant B matrix (3 x 12)
+        # DOF order: [U1, V1, W1, U2, V2, W2, U3, V3, W3, U4, V4, W4] (global 3D)
+        B_cov = np.zeros((3, 12))
         
         for i in range(4):
-            # e_rr = ∂u/∂r · g_r = (∂N/∂r * u) * g_r[0] + (∂N/∂r * v) * g_r[1]
-            B_cov[0, 2*i] = dN_dr[i] * g_r[0]      # u contribution to e_rr
-            B_cov[0, 2*i + 1] = dN_dr[i] * g_r[1]  # v contribution to e_rr
-            
-            # e_ss = ∂u/∂s · g_s
-            B_cov[1, 2*i] = dN_ds[i] * g_s[0]      # u contribution to e_ss
-            B_cov[1, 2*i + 1] = dN_ds[i] * g_s[1]  # v contribution to e_ss
-            
-            # 2*e_rs = ∂u/∂r · g_s + ∂u/∂s · g_r
-            B_cov[2, 2*i] = dN_dr[i] * g_s[0] + dN_ds[i] * g_r[0]
-            B_cov[2, 2*i + 1] = dN_dr[i] * g_s[1] + dN_ds[i] * g_r[1]
+            # e_rr = ∂u/∂r · g_r = Σ_j (∂N/∂r * u_j) * g_r[j]
+            # For each displacement component (X=0, Y=1, Z=2)
+            for j in range(3):  # j = 0(X), 1(Y), 2(Z)
+                # e_rr contribution from u_j
+                B_cov[0, 3*i + j] = dN_dr[i] * g_r[j]
+                
+                # e_ss contribution from u_j  
+                B_cov[1, 3*i + j] = dN_ds[i] * g_s[j]
+                
+                # 2*e_rs contribution from u_j
+                B_cov[2, 3*i + j] = dN_dr[i] * g_s[j] + dN_ds[i] * g_r[j]
         
         return B_cov
 
@@ -330,16 +332,22 @@ class MITC4(ShellElement):
         """
         Compute transformation matrix from covariant to Cartesian strains.
         
-        According to Ko, Lee & Bathe (2016), the transformation from covariant 
-        strains (e_rr, e_ss, 2*e_rs) to Cartesian strains (ε_xx, ε_yy, γ_xy) 
-        involves the Jacobian matrix.
+        The covariant membrane strains (e_rr, e_ss, 2*e_rs) are related to 
+        Cartesian strains (ε_xx, ε_yy, γ_xy) through the Jacobian.
         
-        The Cartesian strains are related to covariant strains by:
-            [ε_xx]     [T]   [e_rr  ]
-            [ε_yy]  =       [e_ss  ]
-            [γ_xy]          [2*e_rs]
+        The forward transform (Cartesian → Covariant) is:
+            [e_rr  ]   [T_fwd]   [ε_xx]
+            [e_ss  ] =         * [ε_yy]
+            [2*e_rs]             [γ_xy]
             
-        where T is the strain transformation matrix based on the inverse Jacobian.
+        where T_fwd uses Jacobian components (∂x/∂r, ∂y/∂r, etc.)
+        
+        The inverse transform (Covariant → Cartesian) is:
+            [ε_xx]   [T_inv]   [e_rr  ]
+            [ε_yy] =         * [e_ss  ]
+            [γ_xy]             [2*e_rs]
+            
+        where T_inv = inverse(T_fwd)
         
         Parameters
         ----------
@@ -355,28 +363,25 @@ class MITC4(ShellElement):
         """
         J, detJ = self.J(r, s)
         
-        # Inverse Jacobian: maps from natural to local Cartesian
-        # J = [∂x/∂r  ∂y/∂r]    J_inv = [∂r/∂x  ∂s/∂x]
-        #     [∂x/∂s  ∂y/∂s]            [∂r/∂y  ∂s/∂y]
-        J_inv = np.linalg.inv(J)
+        # Jacobian components: J = [∂x/∂r  ∂y/∂r]
+        #                          [∂x/∂s  ∂y/∂s]
+        dx_dr, dy_dr = J[0, 0], J[0, 1]
+        dx_ds, dy_ds = J[1, 0], J[1, 1]
         
-        # Components of inverse Jacobian
-        dr_dx = J_inv[0, 0]
-        ds_dx = J_inv[1, 0]
-        dr_dy = J_inv[0, 1]
-        ds_dy = J_inv[1, 1]
-        
-        # Strain transformation matrix
-        # ε_xx = e_rr * (∂r/∂x)² + e_ss * (∂s/∂x)² + 2*e_rs * (∂r/∂x)(∂s/∂x)
-        # ε_yy = e_rr * (∂r/∂y)² + e_ss * (∂s/∂y)² + 2*e_rs * (∂r/∂y)(∂s/∂y)
-        # γ_xy = 2*e_rr*(∂r/∂x)(∂r/∂y) + 2*e_ss*(∂s/∂x)(∂s/∂y) + 2*e_rs*((∂r/∂x)(∂s/∂y) + (∂s/∂x)(∂r/∂y))
-        T = np.array([
-            [dr_dx**2, ds_dx**2, dr_dx * ds_dx],
-            [dr_dy**2, ds_dy**2, dr_dy * ds_dy],
-            [2*dr_dx*dr_dy, 2*ds_dx*ds_dy, dr_dx*ds_dy + ds_dx*dr_dy]
+        # Forward transformation matrix (Cartesian → Covariant)
+        # e_rr = (∂x/∂r)² * ε_xx + (∂y/∂r)² * ε_yy + (∂x/∂r)(∂y/∂r) * γ_xy
+        # e_ss = (∂x/∂s)² * ε_xx + (∂y/∂s)² * ε_yy + (∂x/∂s)(∂y/∂s) * γ_xy
+        # 2*e_rs = 2(∂x/∂r)(∂x/∂s) * ε_xx + 2(∂y/∂r)(∂y/∂s) * ε_yy + ...
+        T_fwd = np.array([
+            [dx_dr**2, dy_dr**2, dx_dr * dy_dr],
+            [dx_ds**2, dy_ds**2, dx_ds * dy_ds],
+            [2*dx_dr*dx_ds, 2*dy_dr*dy_ds, dx_dr*dy_ds + dy_dr*dx_ds]
         ])
         
-        return T
+        # Inverse transformation (Covariant → Cartesian)
+        T_inv = np.linalg.inv(T_fwd)
+        
+        return T_inv
 
     def _get_dH(self, r: float, s: float) -> np.ndarray:
         """
@@ -392,7 +397,8 @@ class MITC4(ShellElement):
         Returns
         -------
         np.ndarray
-            2x4 matrix of shape function derivatives
+            2x4 matrix of shape function derivatives [[dN1/dx, dN2/dx, dN3/dx, dN4/dx],
+                                                       [dN1/dy, dN2/dy, dN3/dy, dN4/dy]]
 
         Notes
         -----
@@ -401,10 +407,14 @@ class MITC4(ShellElement):
         """
         if (r, s) not in self._dH_cache:
             J_val, _ = self.J(r, s)
-            dH = np.linalg.solve(
-                J_val,
-                1 / 4 * np.array([[1 + s, -1 - s, -1 + s, 1 - s], [1 + r, 1 - r, -1 + r, -1 - r]]),
-            )
+            # Shape function derivatives in parametric coordinates
+            # dN/dr = [dN1/dr, dN2/dr, dN3/dr, dN4/dr]
+            # dN/ds = [dN1/ds, dN2/ds, dN3/ds, dN4/ds]
+            dN_dr = 0.25 * np.array([-(1 - s), (1 - s), (1 + s), -(1 + s)])
+            dN_ds = 0.25 * np.array([-(1 - r), -(1 + r), (1 + r), (1 - r)])
+            dN_drs = np.array([dN_dr, dN_ds])
+            # Transform to Cartesian: [dN/dx; dN/dy] = J^(-1) @ [dN/dr; dN/ds]
+            dH = np.linalg.solve(J_val, dN_drs)
             self._dH_cache[(r, s)] = dH
         return self._dH_cache[(r, s)]
 
@@ -581,6 +591,10 @@ class MITC4(ShellElement):
         """
         Calculate Jacobian matrix at parametric coordinates (r,s).
 
+        The Jacobian transforms from parametric (r,s) to local Cartesian (x,y) coordinates:
+            J = [∂x/∂r  ∂y/∂r]
+                [∂x/∂s  ∂y/∂s]
+
         Parameters
         ----------
         r : float
@@ -595,15 +609,23 @@ class MITC4(ShellElement):
         """
         if (r, s) not in self._J_cache:
             x1, y1, x2, y2, x3, y3, x4, y4 = self._local_coordinates
-            J = 0.25 * np.array([
-                [
-                    x1 * (s + 1) - x2 * (s + 1) + x3 * (s - 1) - x4 * (s - 1),
-                    y1 * (s + 1) - y2 * (s + 1) + y3 * (s - 1) - y4 * (s - 1),
-                ],
-                [
-                    x1 * (r + 1) - x2 * (r - 1) + x3 * (r - 1) - x4 * (r + 1),
-                    y1 * (r + 1) - y2 * (r - 1) + y3 * (r - 1) - y4 * (r + 1),
-                ],
+            
+            # Shape function derivatives
+            # N1 = 0.25(1-r)(1-s), dN1/dr = -0.25(1-s), dN1/ds = -0.25(1-r)
+            # N2 = 0.25(1+r)(1-s), dN2/dr = +0.25(1-s), dN2/ds = -0.25(1+r)
+            # N3 = 0.25(1+r)(1+s), dN3/dr = +0.25(1+s), dN3/ds = +0.25(1+r)
+            # N4 = 0.25(1-r)(1+s), dN4/dr = -0.25(1+s), dN4/ds = +0.25(1-r)
+            dN_dr = 0.25 * np.array([-(1 - s), (1 - s), (1 + s), -(1 + s)])
+            dN_ds = 0.25 * np.array([-(1 - r), -(1 + r), (1 + r), (1 - r)])
+            
+            x_coords = np.array([x1, x2, x3, x4])
+            y_coords = np.array([y1, y2, y3, y4])
+            
+            # J[0,0] = ∂x/∂r, J[0,1] = ∂y/∂r
+            # J[1,0] = ∂x/∂s, J[1,1] = ∂y/∂s
+            J = np.array([
+                [np.dot(dN_dr, x_coords), np.dot(dN_dr, y_coords)],
+                [np.dot(dN_ds, x_coords), np.dot(dN_ds, y_coords)],
             ])
             detJ = np.linalg.det(J)
             self._J_cache[(r, s)] = (J, detJ)
@@ -989,15 +1011,16 @@ class MITC4(ShellElement):
         Compute MITC4+ membrane strain-displacement matrix with assumed strain interpolation.
 
         This implements the full MITC4+ formulation from Ko, Lee & Bathe (2016)
-        "A new MITC4+ shell element" using covariant strain interpolation and
-        proper coordinate transformation.
+        "A new MITC4+ shell element" using covariant strain interpolation in 3D.
         
         The procedure is:
         1. Evaluate covariant strains (e_rr, e_ss, 2*e_rs) at strategic tying points
         2. Interpolate covariant strains to evaluation point using assumed strain fields
-        3. Transform interpolated covariant strains to Cartesian strains (ε_xx, ε_yy, γ_xy)
+        3. Apply metric tensor normalization for physical strains
 
         This eliminates membrane locking that occurs in curved shells and distorted meshes.
+        For curved surfaces, all three displacement components (u,v,w) contribute to
+        membrane strains, captured by the 3D covariant base vectors.
 
         Parameters
         ----------
@@ -1009,7 +1032,8 @@ class MITC4(ShellElement):
         Returns
         -------
         np.ndarray
-            3x8 MITC4+ membrane strain-displacement matrix in Cartesian coordinates
+            3x12 MITC4+ membrane strain-displacement matrix in covariant coordinates
+            Relates [e_rr, e_ss, 2*e_rs] to [U1,V1,W1, U2,V2,W2, U3,V3,W3, U4,V4,W4]
             
         References
         ----------
@@ -1026,21 +1050,14 @@ class MITC4(ShellElement):
         eps_ss_interp = self._interpolate_eps_ss(r, s, eps_ss_tied)
         eps_rs_interp = self._interpolate_eps_rs(r, s, eps_rs_tied)
 
-        # Assemble interpolated covariant B matrix (3x8)
+        # Assemble interpolated covariant B matrix (3 x 12)
         B_covariant = np.array([
             eps_rr_interp,
             eps_ss_interp,
             eps_rs_interp,  # This is 2*e_rs
         ])
         
-        # Step 3: Transform from covariant to Cartesian strains
-        T = self._covariant_to_cartesian_strain_transform(r, s)
-        
-        # B_cartesian = T @ B_covariant
-        # This gives [ε_xx, ε_yy, γ_xy]^T = T @ [e_rr, e_ss, 2*e_rs]^T
-        B_cartesian = T @ B_covariant
-
-        return B_cartesian
+        return B_covariant
 
     def Cb(self) -> np.ndarray:
         """
@@ -1329,25 +1346,104 @@ class MITC4(ShellElement):
         - n_arr : np.ndarray
             Column indices in expanded 24x24 matrix
         - i_arr : np.ndarray
-            Row indices in local 8x8 matrix
+            Row indices in local 12x12 matrix
         - j_arr : np.ndarray
-            Column indices in local 8x8 matrix
+            Column indices in local 12x12 matrix
 
         Notes
         -----
-        Maps local membrane DOFs (translations u,v) to global DOF positions:
-        Nodes 1-4 translation DOFs at positions [0,1,6,7,12,13,18,19]
+        Maps local membrane DOFs (translations u,v,w) to global DOF positions:
+        Nodes 1-4 translation DOFs at positions [0,1,2,6,7,8,12,13,14,18,19,20]
+        
+        For 3D covariant membrane formulation, all three translations contribute
+        to membrane strains on curved surfaces.
         """
-        global_dofs = np.array([0, 1, 6, 7, 12, 13, 18, 19], dtype=int)
+        # All translation DOFs (u,v,w for each of 4 nodes)
+        global_dofs = np.array([0, 1, 2, 6, 7, 8, 12, 13, 14, 18, 19, 20], dtype=int)
 
         # Create meshgrid for local indices
-        i_arr, j_arr = np.meshgrid(np.arange(8), np.arange(8), indexing="ij")
+        i_arr, j_arr = np.meshgrid(np.arange(12), np.arange(12), indexing="ij")
 
         # Create expanded indices using broadcasting
-        m_arr = np.broadcast_to(global_dofs[:, None], (8, 8))
-        n_arr = np.broadcast_to(global_dofs, (8, 8))
+        m_arr = np.broadcast_to(global_dofs[:, None], (12, 12))
+        n_arr = np.broadcast_to(global_dofs, (12, 12))
 
         return m_arr, n_arr, i_arr, j_arr
+
+    def _Cm_covariant(self, r: float, s: float) -> np.ndarray:
+        """
+        Compute membrane constitutive matrix for covariant strains.
+        
+        The covariant strains are defined as:
+            e_rr = g_r · u_,r = g_rr * ε_xx  (for aligned coordinates)
+            e_ss = g_s · u_,s = g_ss * ε_yy
+            2*e_rs = g_r · u_,s + g_s · u_,r
+            
+        where g_rr = |g_r|² is the metric tensor component.
+        
+        For energy consistency:
+            U = ∫ ε^T C_cart ε dA = ∫ e^T C_cov e √det(g) dr ds
+            
+        If e = G @ ε (where G = diag(g_rr, g_ss, sqrt(g_rr*g_ss))), then:
+            U = ∫ (G @ ε)^T C_cov (G @ ε) √det(g) dr ds
+              = ∫ ε^T (G^T C_cov G) ε √det(g) dr ds
+              
+        For this to equal ∫ ε^T C_cart ε dA:
+            G^T C_cov G = C_cart
+            C_cov = G^{-T} C_cart G^{-1}
+            C_cov = G^{-1} C_cart G^{-1}  (G is diagonal, so G^T = G)
+            
+        Parameters
+        ----------
+        r : float
+            Parametric coordinate
+        s : float
+            Parametric coordinate
+            
+        Returns
+        -------
+        np.ndarray
+            3x3 constitutive matrix for covariant strains
+        """
+        # Get metric tensor
+        g = self._compute_metric_tensor(r, s)
+        g_rr, g_ss, g_rs = g[0, 0], g[1, 1], g[0, 1]
+        
+        # Cartesian constitutive matrix
+        C_cart = self.Cm()
+        
+        # G^{-1} = diag(1/g_rr, 1/g_ss, 1/sqrt(g_rr*g_ss))
+        G_inv = np.diag([1.0/g_rr, 1.0/g_ss, 1.0/np.sqrt(g_rr * g_ss)])
+        
+        # C_cov = G^{-1} C_cart G^{-1}
+        C_cov = G_inv @ C_cart @ G_inv
+        
+        return C_cov
+
+    def _area_jacobian(self, r: float, s: float) -> float:
+        """
+        Compute the area Jacobian (element of area) for integration.
+        
+        For a surface in 3D, the area element is:
+            dA = ||g_r × g_s|| dr ds = sqrt(det(g)) dr ds
+            
+        where g is the metric tensor.
+        
+        Parameters
+        ----------
+        r : float
+            Parametric coordinate
+        s : float
+            Parametric coordinate
+            
+        Returns
+        -------
+        float
+            Area Jacobian sqrt(det(g))
+        """
+        g = self._compute_metric_tensor(r, s)
+        det_g = g[0, 0] * g[1, 1] - g[0, 1]**2
+        return np.sqrt(det_g)
 
     def k_m(self):
         """
@@ -1362,22 +1458,21 @@ class MITC4(ShellElement):
         -----
         Construction process:
         1. Numerical integration with 2x2 Gauss points
-        2. Uses membrane strain-displacement matrix B_m
-        3. Applies membrane constitutive matrix Cm
-        4. Uses index mapping from index_k_m() for DOF expansion
+        2. Uses covariant membrane strain-displacement matrix B_m (3x12)
+        3. Applies covariant constitutive matrix Cm_cov
+        4. Uses area Jacobian for proper integration on curved surfaces
+        5. Uses index mapping from index_k_m() for DOF expansion to 24x24
         """
-        # Compute the material matrix (assumed constant over the element)
-        Cm_val = self.Cm()
-
         # Accumulate the integrated stiffness contributions at each Gauss point
         contributions = []
         for r, s in self._gauss_points:
-            B = self.B_m(r, s)
-            _, detJ = self.J(r, s)
-            contributions.append(B.T @ Cm_val @ B * detJ)
+            B = self.B_m(r, s)  # 3x12 covariant B matrix
+            C_cov = self._Cm_covariant(r, s)  # 3x3 covariant constitutive
+            detJ_area = self._area_jacobian(r, s)  # Area Jacobian
+            contributions.append(B.T @ C_cov @ B * detJ_area)
 
         # Sum the contributions and multiply by the thickness
-        k_local = self.thickness * np.sum(contributions, axis=0)
+        k_local = self.thickness * np.sum(contributions, axis=0)  # 12x12
 
         # Expand the stiffness matrix using precomputed index arrays
         m_arr, n_arr, i_arr, j_arr = self.index_k_m()

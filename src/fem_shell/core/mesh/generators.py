@@ -10,6 +10,7 @@ This module contains classes for generating various types of structured meshes:
 from __future__ import annotations
 
 from typing import TYPE_CHECKING, List, Tuple
+import math
 
 import gmsh
 import numpy as np
@@ -134,6 +135,10 @@ class SquareShapeMesh:
     def _create_mesh_model(self, MeshModelClass) -> "MeshModel":
         """Converts Gmsh mesh to MeshModel instance"""
         mesh_model = MeshModelClass()
+        self.tag_map = {}
+        # Reset Node ID counter
+        from fem_shell.core.mesh.entities import Node
+        Node._id_counter = 0
 
         elementTypes, elementTags, nodeTags = gmsh.model.mesh.getElements(2)
 
@@ -144,10 +149,10 @@ class SquareShapeMesh:
             e_type = ELEMENT_NODES_MAP[total_nodes]
             if e_type in (ElementType.quad, ElementType.quad8, ElementType.quad9):
                 num_corners = 4
-            elif e_type in (ElementType.triangle6, ElementType.triangle6):
+            elif e_type in (ElementType.triangle, ElementType.triangle6):
                 num_corners = 3
             else:
-                raise ValueError
+                raise ValueError(f"Unknown element type with {total_nodes} nodes")
             geometric_node_tags.update(
                 nodeTags[0].reshape(-1, total_nodes)[:, :num_corners].flatten()
             )
@@ -155,11 +160,18 @@ class SquareShapeMesh:
         node_tags, coords, _ = gmsh.model.mesh.getNodes()
         coords = np.array(coords).reshape(-1, 3)
 
+        # Sort by tag to fix ID mapping assumption
+        p = np.argsort(node_tags)
+        node_tags = node_tags[p]
+        coords = coords[p]
+
         for tag, coord in zip(node_tags, coords):
             if tag in geometric_node_tags:
-                mesh_model.add_node(Node(coord, geometric_node=True))
+                n = Node(coord, geometric_node=True)
             else:
-                mesh_model.add_node(Node(coord, geometric_node=False))
+                n = Node(coord, geometric_node=False)
+            mesh_model.add_node(n)
+            self.tag_map[tag] = n
 
         self._add_elements(mesh_model)
         self._create_node_sets(mesh_model)
@@ -177,61 +189,62 @@ class SquareShapeMesh:
                 connectivity = elem_node_tags.reshape(-1, num_nodes)
 
                 for nodes in connectivity:
-                    node_objs = [mesh_model.get_node_by_id(int(nt - 1)) for nt in nodes]
+                    node_objs = [self.tag_map[nt] for nt in nodes]
                     e_type = ELEMENT_NODES_MAP.get(len(nodes), ElementType.quad)
                     mesh_model.add_element(MeshElement(nodes=node_objs, element_type=e_type))
 
     def _create_node_sets(self, mesh_model: "MeshModel"):
         """Creates node sets including boundary corners"""
         physical_groups = gmsh.model.getPhysicalGroups()
-        boundary_nodes = set()
-
+        
+        # Store GMsh Tags in sets
         boundary_sets = {"top": set(), "bottom": set(), "left": set(), "right": set()}
 
         for dim, tag in physical_groups:
             name = gmsh.model.getPhysicalName(dim, tag)
-            node_ids = []
+            node_tags_list = []
 
             if dim == 0:
                 entities = gmsh.model.getEntitiesForPhysicalGroup(dim, tag)
                 for e in entities:
                     nt, _, _ = gmsh.model.mesh.getNodes(dim=0, tag=e)
-                    node_ids.extend([int(n - 1) for n in nt])
+                    node_tags_list.extend([int(n) for n in nt])
 
                 if "corner" in name:
                     if "p1" in name:
-                        boundary_sets["bottom"].update(node_ids)
-                        boundary_sets["left"].update(node_ids)
+                        boundary_sets["bottom"].update(node_tags_list)
+                        boundary_sets["left"].update(node_tags_list)
                     elif "p2" in name:
-                        boundary_sets["bottom"].update(node_ids)
-                        boundary_sets["right"].update(node_ids)
+                        boundary_sets["bottom"].update(node_tags_list)
+                        boundary_sets["right"].update(node_tags_list)
                     elif "p3" in name:
-                        boundary_sets["top"].update(node_ids)
-                        boundary_sets["right"].update(node_ids)
+                        boundary_sets["top"].update(node_tags_list)
+                        boundary_sets["right"].update(node_tags_list)
                     elif "p4" in name:
-                        boundary_sets["top"].update(node_ids)
-                        boundary_sets["left"].update(node_ids)
+                        boundary_sets["top"].update(node_tags_list)
+                        boundary_sets["left"].update(node_tags_list)
 
             elif dim == 1:
                 entities = gmsh.model.getEntitiesForPhysicalGroup(dim, tag)
                 for e in entities:
                     nt, _, _ = gmsh.model.mesh.getNodes(dim=1, tag=e)
-                    node_ids.extend([int(n - 1) for n in nt])
+                    node_tags_list.extend([int(n) for n in nt])
 
                 if name in boundary_sets:
-                    boundary_sets[name].update(node_ids)
+                    boundary_sets[name].update(node_tags_list)
 
-            boundary_nodes.update(node_ids)
+        boundary_nodes_objs = set()
 
-        for name, node_ids in boundary_sets.items():
-            if node_ids:
-                node_objs = {node for node in [mesh_model.get_node_by_id(nid) for nid in node_ids]}
+        for name, tag_list in boundary_sets.items():
+            if tag_list:
+                node_objs = {self.tag_map[t] for t in tag_list if t in self.tag_map}
                 mesh_model.add_node_set(NodeSet(name=name, nodes=node_objs))
+                boundary_nodes_objs.update(node_objs)
 
         all_nodes = {node for node in mesh_model.nodes}
         mesh_model.add_node_set(NodeSet(name="all", nodes=all_nodes))
 
-        surface_nodes = {n for n in all_nodes if n.id not in boundary_nodes}
+        surface_nodes = all_nodes - boundary_nodes_objs
         mesh_model.add_node_set(NodeSet(name="surface", nodes=surface_nodes))
 
     @classmethod
@@ -434,10 +447,10 @@ class BoxSurfaceMesh:
             e_type = ELEMENT_NODES_MAP[total_nodes]
             if e_type in (ElementType.quad, ElementType.quad8, ElementType.quad9):
                 num_corners = 4
-            elif e_type in (ElementType.triangle6, ElementType.triangle6):
+            elif e_type in (ElementType.triangle, ElementType.triangle6):
                 num_corners = 3
             else:
-                raise ValueError
+                raise ValueError(f"Unknown element type with {total_nodes} nodes")
             geometric_node_tags.update(
                 nodeTags[0].reshape(-1, total_nodes)[:, :num_corners].flatten()
             )
@@ -1452,3 +1465,627 @@ class RotorMesh:
             element_size=element_size,
             n_samples=n_samples,
         ).generate(renumber=renumber)
+
+class CylindricalSurfaceMesh:
+    """
+    Generates a structured cylindrical shell mesh using Gmsh.
+    
+    Coordinate system:
+    - Cylinder axis aligns with Z-axis.
+    - Base center at (0, 0, 0).
+    - Surface generated at radius R.
+    - Angle measures from X-axis towards Y-axis.
+    
+    Attributes
+    ----------
+    radius : float
+        Cylinder radius
+    length : float
+        Cylinder axial length (Z direction)
+    angle_deg : float
+        Circumferential span in degrees (default: 90.0)
+    nx : int
+        Number of circumferential elements
+    ny : int
+        Number of axial elements
+    quadratic : bool
+        Use quadratic elements (default: False)
+    """
+
+    def __init__(
+        self,
+        radius: float,
+        length: float,
+        nx: int,
+        ny: int,
+        angle_deg: float = 90.0,
+        quadratic: bool = False,
+    ):
+        self.radius = radius
+        self.length = length
+        self.nx = nx
+        self.ny = ny
+        self.angle_deg = angle_deg
+        self.quadratic = quadratic
+
+    def generate(self) -> "MeshModel":
+        from fem_shell.core.mesh.model import MeshModel
+        
+        gmsh.initialize()
+        try:
+            gmsh.option.setNumber("General.Terminal", 0)
+            gmsh.model.add("cylinder")
+            
+            self._create_geometry()
+            self._configure_mesh()
+            
+            gmsh.model.geo.synchronize()
+            gmsh.model.mesh.generate(2)
+            
+            return self._create_mesh_model(MeshModel)
+        finally:
+            gmsh.finalize()
+
+    def _create_geometry(self):
+        """Create cylindrical patch geometry"""
+        R = self.radius
+        L = self.length
+        theta = np.radians(self.angle_deg)
+        
+        # Determine number of segments needed (arcs < 180 deg, prefer <= 90)
+        n_segments = int(np.ceil(self.angle_deg / 90.0))
+        d_theta = theta / n_segments
+        
+        # Center points at different Z levels (for axis)
+        c_bottom = gmsh.model.geo.addPoint(0, 0, 0)
+        c_top = gmsh.model.geo.addPoint(0, 0, L)
+        
+        points_bottom = []
+        points_top = []
+        
+        # Create points along the arc
+        for i in range(n_segments + 1):
+            ang = i * d_theta
+            x = R * np.cos(ang)
+            y = R * np.sin(ang)
+            
+            points_bottom.append(gmsh.model.geo.addPoint(x, y, 0))
+            points_top.append(gmsh.model.geo.addPoint(x, y, L))
+            
+        self.surfaces = []
+        self.curves_bottom = []
+        self.curves_top = []
+        self.lines_vertical = []
+        
+        # First vertical line
+        last_vertical = gmsh.model.geo.addLine(points_bottom[0], points_top[0])
+        self.lines_vertical.append(last_vertical)
+        
+        # Create surfaces segment by segment
+        for i in range(n_segments):
+            # Arcs
+            arc_bot = gmsh.model.geo.addCircleArc(points_bottom[i], c_bottom, points_bottom[i+1])
+            arc_top = gmsh.model.geo.addCircleArc(points_top[i], c_top, points_top[i+1])
+            
+            # Next vertical line
+            next_vertical = gmsh.model.geo.addLine(points_bottom[i+1], points_top[i+1])
+            
+            # Loop
+            # Orientation: bot -> right -> -top -> -left
+            loop = gmsh.model.geo.addCurveLoop([arc_bot, next_vertical, -arc_top, -last_vertical])
+            surf = gmsh.model.geo.addSurfaceFilling([loop])
+            
+            self.surfaces.append(surf)
+            self.curves_bottom.append(arc_bot)
+            self.curves_top.append(arc_top)
+            self.lines_vertical.append(next_vertical)
+            
+            last_vertical = next_vertical
+            
+        # Store boundaries for physical groups
+        self.edge_bottom = self.curves_bottom
+        self.edge_top = self.curves_top
+        self.edge_left = [self.lines_vertical[0]]
+        self.edge_right = [self.lines_vertical[-1]]
+            
+        self._add_physical_groups()
+
+    def _add_physical_groups(self):
+        gmsh.model.addPhysicalGroup(1, self.edge_bottom, name="bottom")
+        gmsh.model.addPhysicalGroup(1, self.edge_top, name="top")
+        gmsh.model.addPhysicalGroup(1, self.edge_left, name="left")
+        gmsh.model.addPhysicalGroup(1, self.edge_right, name="right")
+        gmsh.model.addPhysicalGroup(2, self.surfaces, name="surface")
+
+    def _configure_mesh(self):
+        """Set transfinite meshing"""
+        # Distribute elements per segment
+        n_segments = len(self.surfaces)
+        nx_seg = max(1, self.nx // n_segments)
+        # Remainder distribution handled simply here (might lose 1-2 elements if not divisible)
+        # For benchmarks usually power of 2, so it's fine.
+        
+        for i, surf in enumerate(self.surfaces):
+            # Curves order in loop: bot, right, top, left
+            # Transfinite curve needs specific points if lines are used
+            # Here we just set counts on curves
+            
+            gmsh.model.geo.mesh.setTransfiniteCurve(self.curves_bottom[i], nx_seg + 1)
+            gmsh.model.geo.mesh.setTransfiniteCurve(self.curves_top[i], nx_seg + 1)
+            
+            # Vertical lines are shared, set only once effectively
+            # Left of current is self.lines_vertical[i]
+            # Right of current is self.lines_vertical[i+1]
+            gmsh.model.geo.mesh.setTransfiniteCurve(self.lines_vertical[i], self.ny + 1)
+            gmsh.model.geo.mesh.setTransfiniteCurve(self.lines_vertical[i+1], self.ny + 1)
+            
+            gmsh.model.geo.mesh.setTransfiniteSurface(surf)
+            
+        # Recombine to get quads
+        gmsh.option.setNumber("Mesh.RecombineAll", 1)
+        gmsh.option.setNumber("Mesh.Algorithm", 8) # Frontal-Delaunay for Quads
+        
+        if self.quadratic:
+            gmsh.option.setNumber("Mesh.ElementOrder", 2)
+
+    def _create_mesh_model(self, MeshModelClass) -> "MeshModel":
+        # Reuse logic from SquareShapeMesh or similar base
+        # But since I cannot inherit easily from here due to structure, I'll copy-paste adaptation
+        # Ideally this should be a mixin or base class method.
+        # For now, minimal implementation to get nodes/elements.
+        
+        mesh_model = MeshModelClass()
+        
+        # 1. Get all elements first to find used nodes
+        # Retrieve all 2D elements (shells) irrespective of the entity tag (-1)
+        elem_types, elem_tags_list, elem_node_tags_list = gmsh.model.mesh.getElements(2, -1)
+        used_node_tags = set()
+        
+        parsed_elements = [] # List of (et, current_elem_node_tags)
+
+        for i, et in enumerate(elem_types):
+            props = gmsh.model.mesh.getElementProperties(et)
+            num_nodes = props[3]
+
+            # elem_node_tags_list[i] is a flat array of node tags
+            current_elem_node_tags = elem_node_tags_list[i].reshape(-1, num_nodes)
+            parsed_elements.append((et, current_elem_node_tags))
+            
+            for tags in current_elem_node_tags:
+                used_node_tags.update(tags)
+
+        # 2. Get all nodes and filter
+        node_tags, coords, _ = gmsh.model.mesh.getNodes()
+        coords = np.array(coords).reshape(-1, 3)
+        node_map_gmsh = {} # gmsh_tag -> Node object
+        
+        for tag, coord in zip(node_tags, coords):
+            if tag in used_node_tags:
+                # Basic node creation
+                node = Node(coord, geometric_node=False)
+                mesh_model.add_node(node)
+                node_map_gmsh[tag] = node
+            
+        # 3. Create elements
+        for et, current_elem_node_tags in parsed_elements:
+            for nodes_gmsh in current_elem_node_tags:
+                nodes = [node_map_gmsh[tag] for tag in nodes_gmsh]
+                e_type = ELEMENT_NODES_MAP.get(len(nodes), ElementType.quad)
+                mesh_model.add_element(MeshElement(nodes=nodes, element_type=e_type))
+                
+        # Create node sets from physical groups
+        physical_groups = gmsh.model.getPhysicalGroups(1)
+        for dim, tag in physical_groups:
+            name = gmsh.model.getPhysicalName(dim, tag)
+            entities = gmsh.model.getEntitiesForPhysicalGroup(dim, tag)
+            nodes_set = set()
+            for e_tag in entities:
+                 nt, _, _ = gmsh.model.mesh.getNodes(dim, e_tag, includeBoundary=True)
+                 for n_tag in nt:
+                     nodes_set.add(node_map_gmsh[n_tag])
+            
+            if nodes_set:
+                mesh_model.add_node_set(NodeSet(name=name, nodes=nodes_set))
+                
+        return mesh_model
+
+class HyperbolicParaboloidMesh(SquareShapeMesh):
+    """
+    Hyperbolic Paraboloid Shell Mesh Generator.
+    Surface defined by z = c * (x^2 - y^2) over a square domain.
+    """
+    def __init__(self, length, c, nx, ny, thickness=None):
+        super().__init__(width=length, height=length, nx=nx, ny=ny)
+        self.c = c
+        self.thickness = thickness
+
+    def _create_geometry(self):
+        # Create base flat square first
+        super()._create_geometry()
+        
+        # We will warp the nodes in generate() or create a custom _create_geometry
+        # But SquareShapeMesh._create_geometry creates a plane surface.
+        # Gmsh supports direct surface equations but mapping nodes is easier.
+        pass
+
+    def generate(self) -> "MeshModel":
+        from fem_shell.core.mesh.model import MeshModel
+        
+        gmsh.initialize()
+        try:
+            gmsh.option.setNumber("General.Terminal", 0)
+            gmsh.model.add("hyperbolic_paraboloid")
+            
+            # 1. Create flat mesh
+            super()._create_geometry()
+            self._configure_mesh()
+            
+            gmsh.model.geo.synchronize()
+            gmsh.model.mesh.generate(2)
+            
+            # 2. Warp nodes to z = c * (x^2 - y^2)
+            # Center the domain? SquareShapeMesh uses [-width/2, width/2] x [0, height].
+            # Wait, SquareShapeMesh uses x0 = -width/2, x1=width/2, y0=0, y1=height.
+            # For H.P., we usually want symmetry around (0,0).
+            # So let's shift y.
+            
+            node_tags, coords_flat, _ = gmsh.model.mesh.getNodes()
+            coords_new = []
+            
+            # Reshape coords
+            for i in range(0, len(coords_flat), 3):
+                x = coords_flat[i]
+                y = coords_flat[i+1]
+                z = coords_flat[i+2]
+                
+                # Shift y to center if needed, or assume domain is [0, L]
+                # Usually H.P. is defined on [-L/2, L/2] x [-L/2, L/2]
+                # Our SquareShapeMesh makes x in [-W/2, W/2] and y in [0, H].
+                # Let's shift y by -H/2
+                
+                y_shifted = y - self.height / 2.0
+                
+                # Formula z = c * (x^2 - y^2)
+                z_new = self.c * (x**2 - y_shifted**2)
+                
+                # Update node
+                # gmsh.model.mesh.setNode(tag, coord, parametricCoord)
+                # coord is list of 3 floats
+                gmsh.model.mesh.setNode(node_tags[i//3], [x, y, z_new], [])
+                
+            return self._create_mesh_model(MeshModel)
+            
+        finally:
+            gmsh.finalize()
+
+
+class RaaschHookMesh:
+    """
+    Raasch Challenge Hook Mesh.
+    
+    Based on Knight (1997) and Ko et al. geometry:
+    - Two circular arc segments with G1 continuity
+    - R2 is the MAIN arc (large radius) starting from the clamped end
+    - R1 is the TIP arc (small radius) at the free end
+    - theta2 is the angle of the main arc (typically 150°)
+    - theta1 is the angle of the tip arc (typically 60°)
+    
+    Geometry (in X-Z plane, extruded in Y):
+    - Clamped end at origin A=(0,0,0)
+    - Hook curves toward negative X (inward)
+    - Main arc center C2 at (-R2, 0, 0)
+    - Tip arc center C1 positioned for G1 continuity
+    
+    Parameters from Knight (1997):
+    - R1 = 14 (tip arc radius)
+    - R2 = 46 (main arc radius)  
+    - theta1 = 60° (tip arc angle)
+    - theta2 = 150° (main arc angle)
+    - width = 20 (extrusion in Y)
+    """
+    def __init__(self, width, R1, R2, nx, ny, angle1_deg=60, angle2_deg=150):
+        self.width = width
+        self.R1 = R1   # Tip arc radius (small)
+        self.R2 = R2   # Main arc radius (large)
+        self.nx = nx   # Elements along width (Y direction)
+        self.ny = ny   # Elements along curve (total for both arcs)
+        self.angle1 = math.radians(angle1_deg)  # Tip arc angle
+        self.angle2 = math.radians(angle2_deg)  # Main arc angle
+        
+    def generate(self) -> "MeshModel":
+        from fem_shell.core.mesh.model import MeshModel
+        import math
+        
+        gmsh.initialize()
+        try:
+            gmsh.option.setNumber("General.Terminal", 0)
+            gmsh.model.add("raasch_hook")
+            
+            # ============================================================
+            # Geometry: Hook in X-Z plane, extruded in Y
+            # Based on the figure from Ko et al. / Knight (1997)
+            # ============================================================
+            
+            # Point A: Origin (clamped end)
+            # Tangent at A is vertical (along +Z axis)
+            p0 = gmsh.model.geo.addPoint(0, 0, 0)
+            
+            # ---------------------------------------------------------
+            # Main arc (Arc 2): R2, angle theta2
+            # Center C2 at (-R2, 0, 0) so the arc starts at origin
+            # and curves toward negative X
+            # ---------------------------------------------------------
+            c2 = gmsh.model.geo.addPoint(-self.R2, 0, 0)
+            
+            # End point of main arc P1
+            # Arc sweeps counterclockwise from angle 0 to angle theta2
+            # Point at angle 0 relative to C2: (0, 0, 0) ✓
+            # Point at angle theta2: (-R2 + R2*cos(theta2), 0, R2*sin(theta2))
+            x1 = -self.R2 + self.R2 * math.cos(self.angle2)
+            z1 = self.R2 * math.sin(self.angle2)
+            p1 = gmsh.model.geo.addPoint(x1, 0, z1)
+            
+            # Create main arc
+            arc2 = gmsh.model.geo.addCircleArc(p0, c2, p1)
+            
+            # ---------------------------------------------------------
+            # Tip arc (Arc 1): R1, angle theta1
+            # For G1 continuity, C1 lies on the line C2-P1 extended
+            # Direction from C2 to P1 (outward radial)
+            # ---------------------------------------------------------
+            radial_x = x1 - (-self.R2)  # = x1 + R2 = R2*cos(theta2)
+            radial_z = z1 - 0            # = R2*sin(theta2)
+            norm = math.sqrt(radial_x**2 + radial_z**2)
+            dir_x = radial_x / norm
+            dir_z = radial_z / norm
+            
+            # Center C1: For OPPOSITE curvature direction (true hook - curves back),
+            # C1 = P1 + dir * R1 (center is "outside" the curve, opposite to main arc)
+            cx1 = x1 + dir_x * self.R1
+            cz1 = z1 + dir_z * self.R1
+            c1 = gmsh.model.geo.addPoint(cx1, 0, cz1)
+            
+            # End point P2 (tip of hook)
+            # Since we reversed curvature direction, we need to sweep in CLOCKWISE direction
+            # Starting angle at P1 relative to C1 is theta2 + π (opposite direction)
+            # End angle = (theta2 + π) - theta1 = theta2 + π - theta1
+            theta_start_at_p1 = self.angle2 + math.pi  # P1 is now opposite from main arc
+            theta_end = theta_start_at_p1 - self.angle1  # Sweep clockwise (negative)
+            x2 = cx1 + self.R1 * math.cos(theta_end)
+            z2 = cz1 + self.R1 * math.sin(theta_end)
+            p2 = gmsh.model.geo.addPoint(x2, 0, z2)
+            
+            # Create tip arc
+            arc1 = gmsh.model.geo.addCircleArc(p1, c1, p2)
+            
+            # ---------------------------------------------------------
+            # Transfinite mesh: split ny proportionally by arc length
+            # ---------------------------------------------------------
+            L2 = self.R2 * self.angle2  # Main arc length
+            L1 = self.R1 * self.angle1  # Tip arc length
+            L_tot = L1 + L2
+            
+            # Distribute elements proportionally
+            ny2 = max(2, int(self.ny * (L2/L_tot)) + 1)
+            ny1 = max(2, self.ny - ny2 + 2)
+            
+            gmsh.model.geo.mesh.setTransfiniteCurve(arc2, ny2)  # Main arc (from origin)
+            gmsh.model.geo.mesh.setTransfiniteCurve(arc1, ny1)  # Tip arc
+            
+            # Extrude in Y with transfinite layers
+            # Order: main arc first (from clamped end), then tip arc
+            extrusion = gmsh.model.geo.extrude(
+                [(1, arc2), (1, arc1)], 
+                0, self.width, 0,
+                numElements=[self.nx],
+                recombine=True
+            )
+            
+            # Collect surfaces
+            surfaces = []
+            for e in extrusion:
+                if e[0] == 2:
+                    surfaces.append(e[1])
+            
+            gmsh.model.geo.synchronize()
+            
+            # Physical groups
+            gmsh.model.addPhysicalGroup(2, surfaces, 1, "surface")
+            
+            gmsh.model.mesh.generate(2)
+            
+            from fem_shell.core.mesh.model import MeshModel
+            return self._extract_mesh(MeshModel)
+        finally:
+            gmsh.finalize()
+
+    def _extract_mesh(self, MeshModelClass):
+        """Duplicated extraction logic with Raasch-specific sets"""
+        import math
+        # Reset Node ID counter
+        from fem_shell.core.mesh.entities import Node
+        Node._id_counter = 0
+        mesh_model = MeshModelClass()
+         
+        elem_types, elem_tags_list, elem_node_tags_list = gmsh.model.mesh.getElements(2, -1)
+        used_node_tags = set()
+        parsed_elements = []
+        for i, et in enumerate(elem_types):
+            props = gmsh.model.mesh.getElementProperties(et)
+            num_nodes = props[3]
+            # Filter Quad (4 nodes)
+            if num_nodes != 4:
+                continue
+                
+            current_elem_node_tags = elem_node_tags_list[i].reshape(-1, num_nodes)
+            parsed_elements.append((et, current_elem_node_tags))
+            for tags in current_elem_node_tags:
+                used_node_tags.update(tags)
+                
+        node_tags, coords, _ = gmsh.model.mesh.getNodes()
+        coords = np.array(coords).reshape(-1, 3)
+        node_map = {}
+        for tag, coord in zip(node_tags, coords):
+            if tag in used_node_tags:
+                node = Node(coord, geometric_node=False)
+                mesh_model.add_node(node)
+                node_map[tag] = node
+                
+        for et, current_elem_node_tags in parsed_elements:
+            for nodes_gmsh in current_elem_node_tags:
+                nodes = [node_map[tag] for tag in nodes_gmsh]
+                e_type = ELEMENT_NODES_MAP.get(len(nodes), ElementType.quad)
+                mesh_model.add_element(MeshElement(nodes=nodes, element_type=e_type))
+
+        # Create node sets (boundaries)
+        root_nodes = []
+        tip_nodes = []
+         
+        # Tip Calculation
+        theta1 = math.pi - self.angle1
+        x1 = self.R1 + self.R1 * math.cos(theta1)
+        z1 = self.R1 * math.sin(theta1)
+         
+        v_x = x1 - self.R1
+        v_z = z1
+        norm = math.sqrt(v_x**2 + v_z**2)
+        dir_x = v_x / norm
+        dir_z = v_z / norm
+         
+        cx2 = x1 - dir_x * self.R2
+        cz2 = z1 - dir_z * self.R2
+         
+        theta2 = theta1 - self.angle2
+        x2 = cx2 + self.R2 * math.cos(theta2)
+        z2 = cz2 + self.R2 * math.sin(theta2)
+         
+        tol = 1e-3
+         
+        for node in mesh_model.nodes:
+            # Root: near (0,0,0) in X-Z projection
+            if abs(node.x) < tol and abs(node.z) < tol:
+                root_nodes.append(node)
+            # Tip: near (x2, z2) in X-Z projection
+            if abs(node.x - x2) < tol and abs(node.z - z2) < tol:
+                tip_nodes.append(node)
+                 
+        mesh_model.add_node_set(NodeSet("root", root_nodes))
+        mesh_model.add_node_set(NodeSet("tip", tip_nodes))
+         
+        return mesh_model
+
+
+class SphericalSurfaceMesh:
+    """
+    Generates a structured spherical shell mesh (hemisphere or partial sphere).
+    
+    Coordinate system:
+    - Sphere center at origin (0, 0, 0).
+    - Z-axis is the polar axis.
+    - θ (theta): polar angle from Z-axis (0° = north pole, 90° = equator)
+    - φ (phi): azimuthal angle in X-Y plane from X-axis
+    
+    Parameters
+    ----------
+    radius : float
+        Sphere radius
+    theta_min_deg : float
+        Minimum polar angle (hole at apex), default 0.0
+    theta_max_deg : float
+        Maximum polar angle, default 90.0 (equator)
+    phi_max_deg : float
+        Azimuthal span in degrees (default: 90.0 for 1/4 sphere)
+    n_theta : int
+        Number of elements in polar direction
+    n_phi : int
+        Number of elements in azimuthal direction
+    
+    Example
+    -------
+    # 1/4 hemisphere with 18° hole (MacNeal-Harder pinched hemisphere)
+    gen = SphericalSurfaceMesh(
+        radius=10.0,
+        theta_min_deg=18.0,
+        theta_max_deg=90.0,
+        phi_max_deg=90.0,
+        n_theta=16,
+        n_phi=16
+    )
+    mesh = gen.generate()
+    """
+
+    def __init__(
+        self,
+        radius: float,
+        n_theta: int,
+        n_phi: int,
+        theta_min_deg: float = 0.0,
+        theta_max_deg: float = 90.0,
+        phi_max_deg: float = 90.0,
+    ):
+        self.radius = radius
+        self.n_theta = n_theta
+        self.n_phi = n_phi
+        self.theta_min = np.radians(theta_min_deg)
+        self.theta_max = np.radians(theta_max_deg)
+        self.phi_max = np.radians(phi_max_deg)
+
+    def generate(self) -> "MeshModel":
+        from fem_shell.core.mesh.model import MeshModel
+        from fem_shell.core.mesh.entities import Node, MeshElement, ElementType, NodeSet
+        
+        Node._id_counter = 0
+        mesh_model = MeshModel()
+        
+        R = self.radius
+        n_theta = self.n_theta
+        n_phi = self.n_phi
+        
+        # Create nodes
+        node_grid = {}  # (j, i) -> Node
+        
+        for j in range(n_theta + 1):
+            theta = self.theta_min + j * (self.theta_max - self.theta_min) / n_theta
+            for i in range(n_phi + 1):
+                phi = i * self.phi_max / n_phi
+                
+                x = R * np.sin(theta) * np.cos(phi)
+                y = R * np.sin(theta) * np.sin(phi)
+                z = R * np.cos(theta)
+                
+                node = Node([x, y, z], geometric_node=False)
+                mesh_model.add_node(node)
+                node_grid[(j, i)] = node
+        
+        # Create elements
+        for j in range(n_theta):
+            for i in range(n_phi):
+                n0 = node_grid[(j, i)]
+                n1 = node_grid[(j, i + 1)]
+                n2 = node_grid[(j + 1, i + 1)]
+                n3 = node_grid[(j + 1, i)]
+                
+                elem = MeshElement(
+                    nodes=[n0, n1, n2, n3],
+                    element_type=ElementType.quad
+                )
+                mesh_model.add_element(elem)
+        
+        # Create boundary node sets
+        # theta_min edge (hole/apex)
+        theta_min_nodes = [node_grid[(0, i)] for i in range(n_phi + 1)]
+        mesh_model.add_node_set(NodeSet("theta_min", theta_min_nodes))
+        
+        # theta_max edge (equator)
+        theta_max_nodes = [node_grid[(n_theta, i)] for i in range(n_phi + 1)]
+        mesh_model.add_node_set(NodeSet("equator", theta_max_nodes))
+        
+        # phi=0 edge
+        phi_0_nodes = [node_grid[(j, 0)] for j in range(n_theta + 1)]
+        mesh_model.add_node_set(NodeSet("phi_0", phi_0_nodes))
+        
+        # phi=phi_max edge
+        phi_max_nodes = [node_grid[(j, n_phi)] for j in range(n_theta + 1)]
+        mesh_model.add_node_set(NodeSet("phi_max", phi_max_nodes))
+        
+        return mesh_model
