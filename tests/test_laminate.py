@@ -49,15 +49,16 @@ from fem_shell.elements.MITC4_composite import MITC4Composite
 # Fixtures - Common test materials and configurations
 # =============================================================================
 
+
 @pytest.fixture
 def carbon_epoxy_material():
     """Standard Carbon/Epoxy T300/5208 material."""
     return OrthotropicMaterial(
         name="Carbon/Epoxy T300/5208",
-        E=(181e9, 10.3e9, 10.3e9),      # E1, E2, E3 [Pa]
-        G=(7.17e9, 3.78e9, 7.17e9),     # G12, G23, G13 [Pa]
-        nu=(0.28, 0.28, 0.28),          # nu12, nu23, nu31
-        rho=1600,                        # kg/m³
+        E=(181e9, 10.3e9, 10.3e9),  # E1, E2, E3 [Pa]
+        G=(7.17e9, 3.78e9, 7.17e9),  # G12, G23, G13 [Pa]
+        nu=(0.28, 0.28, 0.28),  # nu12, nu23, nu31
+        rho=1600,  # kg/m³
     )
 
 
@@ -77,12 +78,12 @@ def glass_epoxy_material():
 def carbon_epoxy_strength():
     """Strength properties for Carbon/Epoxy T300/5208."""
     return StrengthProperties(
-        Xt=1500e6,   # Fiber tensile strength [Pa]
-        Xc=1500e6,   # Fiber compressive strength [Pa]
-        Yt=40e6,     # Matrix tensile strength [Pa]
-        Yc=246e6,    # Matrix compressive strength [Pa]
-        S12=68e6,    # In-plane shear strength [Pa]
-        S23=34e6,    # Transverse shear strength [Pa]
+        Xt=1500e6,  # Fiber tensile strength [Pa]
+        Xc=1500e6,  # Fiber compressive strength [Pa]
+        Yt=40e6,  # Matrix tensile strength [Pa]
+        Yc=246e6,  # Matrix compressive strength [Pa]
+        S12=68e6,  # In-plane shear strength [Pa]
+        S23=34e6,  # Transverse shear strength [Pa]
     )
 
 
@@ -95,17 +96,20 @@ def ply_thickness():
 @pytest.fixture
 def square_element_coords():
     """Coordinates for a 1m x 1m square element."""
-    return np.array([
-        [0.0, 0.0, 0.0],
-        [1.0, 0.0, 0.0],
-        [1.0, 1.0, 0.0],
-        [0.0, 1.0, 0.0],
-    ])
+    return np.array(
+        [
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [1.0, 1.0, 0.0],
+            [0.0, 1.0, 0.0],
+        ]
+    )
 
 
 # =============================================================================
 # Tests for Reduced Stiffness Matrix Q
 # =============================================================================
+
 
 class TestReducedStiffnessQ:
     """Tests for the reduced stiffness matrix computation."""
@@ -147,6 +151,7 @@ class TestReducedStiffnessQ:
 # =============================================================================
 # Tests for Transformed Stiffness Matrix Qbar
 # =============================================================================
+
 
 class TestTransformedStiffnessQbar:
     """Tests for the transformed stiffness matrix Qbar."""
@@ -205,6 +210,7 @@ class TestTransformedStiffnessQbar:
 # Tests for Transverse Shear Stiffness
 # =============================================================================
 
+
 class TestTransverseShearCbar:
     """Tests for transformed transverse shear stiffness."""
 
@@ -228,6 +234,7 @@ class TestTransverseShearCbar:
 # Tests for Ply Class
 # =============================================================================
 
+
 class TestPly:
     """Tests for Ply dataclass."""
 
@@ -250,6 +257,7 @@ class TestPly:
 # =============================================================================
 # Tests for Laminate Class
 # =============================================================================
+
 
 class TestLaminate:
     """Tests for Laminate class and ABD matrix computation."""
@@ -328,9 +336,7 @@ class TestLaminate:
     def test_quasi_isotropic_A11_A22_equal(self, carbon_epoxy_material, ply_thickness):
         """For quasi-isotropic laminate, A11 ≈ A22."""
         angles = quasi_isotropic_layup(1)  # [0/45/-45/90/90/-45/45/0]
-        laminate = create_laminate_from_angles(
-            carbon_epoxy_material, ply_thickness, angles
-        )
+        laminate = create_laminate_from_angles(carbon_epoxy_material, ply_thickness, angles)
 
         A = laminate.A
         assert np.isclose(A[0, 0], A[1, 1], rtol=0.01), "A11 should equal A22"
@@ -340,9 +346,7 @@ class TestLaminate:
     def test_ABD_positive_definite(self, carbon_epoxy_material, ply_thickness):
         """A and D matrices should be positive definite."""
         angles = [0, 45, -45, 90, 90, -45, 45, 0]
-        laminate = create_laminate_from_angles(
-            carbon_epoxy_material, ply_thickness, angles
-        )
+        laminate = create_laminate_from_angles(carbon_epoxy_material, ply_thickness, angles)
 
         # Check A matrix
         eigvals_A = np.linalg.eigvalsh(laminate.A)
@@ -368,6 +372,7 @@ class TestLaminate:
 # Tests for Stress/Strain Transformation Matrices
 # =============================================================================
 
+
 class TestTransformationMatrices:
     """Tests for stress and strain transformation matrices."""
 
@@ -391,6 +396,7 @@ class TestTransformationMatrices:
 # =============================================================================
 # Tests for Failure Criteria
 # =============================================================================
+
 
 class TestTsaiWuCriterion:
     """Tests for Tsai-Wu failure criterion."""
@@ -500,15 +506,14 @@ class TestMaxStressCriterion:
 # Tests for MITC4Composite Element
 # =============================================================================
 
+
 class TestMITC4CompositeElement:
     """Tests for the MITC4Composite shell element."""
 
     def test_element_creation(self, carbon_epoxy_material, ply_thickness, square_element_coords):
         """Test basic element creation."""
         angles = [0, 90, 90, 0]
-        laminate = create_laminate_from_angles(
-            carbon_epoxy_material, ply_thickness, angles
-        )
+        laminate = create_laminate_from_angles(carbon_epoxy_material, ply_thickness, angles)
 
         element = MITC4Composite(
             node_coords=square_element_coords,
@@ -520,12 +525,12 @@ class TestMITC4CompositeElement:
         assert element.laminate == laminate
         assert not element.has_coupling  # Symmetric laminate
 
-    def test_stiffness_matrix_symmetric(self, carbon_epoxy_material, ply_thickness, square_element_coords):
+    def test_stiffness_matrix_symmetric(
+        self, carbon_epoxy_material, ply_thickness, square_element_coords
+    ):
         """Element stiffness matrix should be symmetric."""
         angles = [0, 45, -45, 90, 90, -45, 45, 0]
-        laminate = create_laminate_from_angles(
-            carbon_epoxy_material, ply_thickness, angles
-        )
+        laminate = create_laminate_from_angles(carbon_epoxy_material, ply_thickness, angles)
 
         element = MITC4Composite(
             node_coords=square_element_coords,
@@ -536,12 +541,12 @@ class TestMITC4CompositeElement:
         K = element.K()
         assert np.allclose(K, K.T), "Stiffness matrix should be symmetric"
 
-    def test_stiffness_matrix_positive_semidefinite(self, carbon_epoxy_material, ply_thickness, square_element_coords):
+    def test_stiffness_matrix_positive_semidefinite(
+        self, carbon_epoxy_material, ply_thickness, square_element_coords
+    ):
         """Element stiffness matrix should be positive semi-definite."""
         angles = [0, 90, 90, 0]
-        laminate = create_laminate_from_angles(
-            carbon_epoxy_material, ply_thickness, angles
-        )
+        laminate = create_laminate_from_angles(carbon_epoxy_material, ply_thickness, angles)
 
         element = MITC4Composite(
             node_coords=square_element_coords,
@@ -551,17 +556,17 @@ class TestMITC4CompositeElement:
 
         K = element.K()
         eigenvalues = np.linalg.eigvalsh(K)
-        
+
         # Allow small negative values due to numerical precision
         assert np.all(eigenvalues >= -1e-10 * np.max(np.abs(eigenvalues)))
 
-    def test_stiffness_with_coupling(self, carbon_epoxy_material, ply_thickness, square_element_coords):
+    def test_stiffness_with_coupling(
+        self, carbon_epoxy_material, ply_thickness, square_element_coords
+    ):
         """Test stiffness matrix for asymmetric laminate with coupling."""
         # Asymmetric: [0/90] - should have B != 0
         angles = [0, 90]
-        laminate = create_laminate_from_angles(
-            carbon_epoxy_material, ply_thickness, angles
-        )
+        laminate = create_laminate_from_angles(carbon_epoxy_material, ply_thickness, angles)
 
         element = MITC4Composite(
             node_coords=square_element_coords,
@@ -574,12 +579,12 @@ class TestMITC4CompositeElement:
         K = element.K()
         assert np.allclose(K, K.T), "K should still be symmetric"
 
-    def test_constitutive_matrices(self, carbon_epoxy_material, ply_thickness, square_element_coords):
+    def test_constitutive_matrices(
+        self, carbon_epoxy_material, ply_thickness, square_element_coords
+    ):
         """Test that constitutive matrices are returned correctly."""
         angles = [0, 45, -45, 90]
-        laminate = create_laminate_from_angles(
-            carbon_epoxy_material, ply_thickness, angles
-        )
+        laminate = create_laminate_from_angles(carbon_epoxy_material, ply_thickness, angles)
 
         element = MITC4Composite(
             node_coords=square_element_coords,
@@ -604,9 +609,7 @@ class TestMITC4CompositeElement:
     def test_mass_matrix(self, carbon_epoxy_material, ply_thickness, square_element_coords):
         """Test element mass matrix computation."""
         angles = [0, 90, 90, 0]
-        laminate = create_laminate_from_angles(
-            carbon_epoxy_material, ply_thickness, angles
-        )
+        laminate = create_laminate_from_angles(carbon_epoxy_material, ply_thickness, angles)
 
         element = MITC4Composite(
             node_coords=square_element_coords,
@@ -627,9 +630,7 @@ class TestMITC4CompositeElement:
     def test_midplane_strains(self, carbon_epoxy_material, ply_thickness, square_element_coords):
         """Test mid-plane strain computation."""
         angles = [0, 90, 90, 0]
-        laminate = create_laminate_from_angles(
-            carbon_epoxy_material, ply_thickness, angles
-        )
+        laminate = create_laminate_from_angles(carbon_epoxy_material, ply_thickness, angles)
 
         element = MITC4Composite(
             node_coords=square_element_coords,
@@ -639,7 +640,7 @@ class TestMITC4CompositeElement:
 
         # Create a simple displacement (pure stretch in x)
         u_local = np.zeros(24)
-        u_local[0] = 0.0   # u1
+        u_local[0] = 0.0  # u1
         u_local[6] = 0.001  # u2 (1mm)
         u_local[12] = 0.001  # u3
         u_local[18] = 0.0  # u4
@@ -656,9 +657,7 @@ class TestMITC4CompositeElement:
     def test_ply_stresses(self, carbon_epoxy_material, ply_thickness, square_element_coords):
         """Test ply-level stress computation."""
         angles = [0, 45, -45, 90]
-        laminate = create_laminate_from_angles(
-            carbon_epoxy_material, ply_thickness, angles
-        )
+        laminate = create_laminate_from_angles(carbon_epoxy_material, ply_thickness, angles)
 
         element = MITC4Composite(
             node_coords=square_element_coords,
@@ -677,18 +676,16 @@ class TestMITC4CompositeElement:
 
         # Check stress structure
         for stress_data in stresses:
-            assert 'ply_index' in stress_data
-            assert 'sigma_laminate' in stress_data
-            assert 'sigma_ply' in stress_data
-            assert stress_data['sigma_laminate'].shape == (3,)
-            assert stress_data['sigma_ply'].shape == (3,)
+            assert "ply_index" in stress_data
+            assert "sigma_laminate" in stress_data
+            assert "sigma_ply" in stress_data
+            assert stress_data["sigma_laminate"].shape == (3,)
+            assert stress_data["sigma_ply"].shape == (3,)
 
     def test_stress_resultants(self, carbon_epoxy_material, ply_thickness, square_element_coords):
         """Test stress resultants computation."""
         angles = [0, 90, 90, 0]
-        laminate = create_laminate_from_angles(
-            carbon_epoxy_material, ply_thickness, angles
-        )
+        laminate = create_laminate_from_angles(carbon_epoxy_material, ply_thickness, angles)
 
         element = MITC4Composite(
             node_coords=square_element_coords,
@@ -712,8 +709,9 @@ class TestMITC4CompositeElement:
 class TestMITC4CompositeFailure:
     """Tests for failure analysis with MITC4Composite."""
 
-    def test_failure_evaluation(self, carbon_epoxy_material, carbon_epoxy_strength, 
-                                ply_thickness, square_element_coords):
+    def test_failure_evaluation(
+        self, carbon_epoxy_material, carbon_epoxy_strength, ply_thickness, square_element_coords
+    ):
         """Test failure criterion evaluation."""
         plies = [
             Ply(carbon_epoxy_material, ply_thickness, angle, carbon_epoxy_strength)
@@ -735,12 +733,13 @@ class TestMITC4CompositeFailure:
 
         assert len(results) == 4
         for res in results:
-            assert 'failure_index' in res
-            assert 'failed' in res
-            assert 'mode' in res
+            assert "failure_index" in res
+            assert "failed" in res
+            assert "mode" in res
 
-    def test_critical_ply_identification(self, carbon_epoxy_material, carbon_epoxy_strength,
-                                         ply_thickness, square_element_coords):
+    def test_critical_ply_identification(
+        self, carbon_epoxy_material, carbon_epoxy_strength, ply_thickness, square_element_coords
+    ):
         """Test finding the most critical ply."""
         plies = [
             Ply(carbon_epoxy_material, ply_thickness, angle, carbon_epoxy_strength)
@@ -760,16 +759,20 @@ class TestMITC4CompositeFailure:
 
         critical = element.get_critical_ply(u_local, criterion="tsai-wu")
 
-        assert 'ply_index' in critical
-        assert 'failure_index' in critical
-        assert critical['failure_index'] == max(
-            element.evaluate_failure(u_local)
-        , key=lambda x: x['failure_index'])['failure_index']
+        assert "ply_index" in critical
+        assert "failure_index" in critical
+        assert (
+            critical["failure_index"]
+            == max(element.evaluate_failure(u_local), key=lambda x: x["failure_index"])[
+                "failure_index"
+            ]
+        )
 
 
 # =============================================================================
 # Benchmark Tests - Comparison with Analytical Solutions
 # =============================================================================
+
 
 class TestLaminateBenchmarks:
     """Benchmark tests comparing with analytical solutions."""
@@ -777,9 +780,7 @@ class TestLaminateBenchmarks:
     def test_unidirectional_A_matrix(self, carbon_epoxy_material, ply_thickness):
         """Test A matrix for unidirectional [0]4 laminate."""
         angles = [0, 0, 0, 0]
-        laminate = create_laminate_from_angles(
-            carbon_epoxy_material, ply_thickness, angles
-        )
+        laminate = create_laminate_from_angles(carbon_epoxy_material, ply_thickness, angles)
 
         h = laminate.total_thickness
         Q = compute_Q(carbon_epoxy_material)
@@ -792,9 +793,7 @@ class TestLaminateBenchmarks:
     def test_unidirectional_D_matrix(self, carbon_epoxy_material, ply_thickness):
         """Test D matrix for unidirectional [0]4 laminate."""
         angles = [0, 0, 0, 0]
-        laminate = create_laminate_from_angles(
-            carbon_epoxy_material, ply_thickness, angles
-        )
+        laminate = create_laminate_from_angles(carbon_epoxy_material, ply_thickness, angles)
 
         h = laminate.total_thickness
         Q = compute_Q(carbon_epoxy_material)
@@ -807,16 +806,14 @@ class TestLaminateBenchmarks:
     def test_cross_ply_A_matrix_symmetry(self, carbon_epoxy_material, ply_thickness):
         """Test A11 and A22 relationship for cross-ply [0/90]ns."""
         angles = cross_ply_layup(4)  # [0/90/90/0]
-        laminate = create_laminate_from_angles(
-            carbon_epoxy_material, ply_thickness, angles
-        )
+        laminate = create_laminate_from_angles(carbon_epoxy_material, ply_thickness, angles)
 
         Q = compute_Q(carbon_epoxy_material)
 
         # For [0/90]s: A11 = A22 = (Q11 + Q22) * h/2
         h = laminate.total_thickness
         A11_expected = (Q[0, 0] + Q[1, 1]) * h / 2
-        
+
         # Due to thickness distribution, there's a small difference
         # but A11 should be close to A22
         assert np.isclose(laminate.A[0, 0], laminate.A[1, 1], rtol=0.01)
@@ -824,9 +821,7 @@ class TestLaminateBenchmarks:
     def test_laminate_consistency(self, carbon_epoxy_material, ply_thickness):
         """Test that equivalent properties are consistent with ABD."""
         angles = quasi_isotropic_layup(1)
-        laminate = create_laminate_from_angles(
-            carbon_epoxy_material, ply_thickness, angles
-        )
+        laminate = create_laminate_from_angles(carbon_epoxy_material, ply_thickness, angles)
 
         equiv = laminate.get_equivalent_properties()
         h = laminate.total_thickness
@@ -836,18 +831,20 @@ class TestLaminateBenchmarks:
         a = np.linalg.inv(laminate.A)
         Ex_check = 1 / (h * a[0, 0])
 
-        assert np.isclose(equiv['Ex_membrane'], Ex_check, rtol=1e-10)
+        assert np.isclose(equiv["Ex_membrane"], Ex_check, rtol=1e-10)
 
 
 # =============================================================================
 # Integration Tests
 # =============================================================================
 
+
 class TestIntegration:
     """Integration tests combining multiple components."""
 
-    def test_full_workflow(self, carbon_epoxy_material, carbon_epoxy_strength,
-                          ply_thickness, square_element_coords):
+    def test_full_workflow(
+        self, carbon_epoxy_material, carbon_epoxy_strength, ply_thickness, square_element_coords
+    ):
         """Test complete workflow from laminate definition to failure analysis."""
         # 1. Define laminate
         plies = [
@@ -881,35 +878,29 @@ class TestIntegration:
 
         # 7. Evaluate failure
         failure_results = element.evaluate_failure(u, criterion="tsai-wu")
-        
+
         # 8. Find critical ply
         critical = element.get_critical_ply(u)
-        
+
         # All plies should be safe for small deformation
-        assert all(not res['failed'] for res in failure_results)
+        assert all(not res["failed"] for res in failure_results)
 
     def test_layup_pattern_helpers(self, carbon_epoxy_material, ply_thickness):
         """Test that layup helper functions create valid laminates."""
         # Quasi-isotropic
         qi_angles = quasi_isotropic_layup(1)
-        qi_lam = create_laminate_from_angles(
-            carbon_epoxy_material, ply_thickness, qi_angles
-        )
+        qi_lam = create_laminate_from_angles(carbon_epoxy_material, ply_thickness, qi_angles)
         assert qi_lam.is_symmetric
         assert qi_lam.is_balanced
 
         # Cross-ply
         cp_angles = cross_ply_layup(8)
-        cp_lam = create_laminate_from_angles(
-            carbon_epoxy_material, ply_thickness, cp_angles
-        )
+        cp_lam = create_laminate_from_angles(carbon_epoxy_material, ply_thickness, cp_angles)
         assert cp_lam.is_symmetric
 
         # Angle-ply
         ap_angles = angle_ply_layup(45, 8)
-        ap_lam = create_laminate_from_angles(
-            carbon_epoxy_material, ply_thickness, ap_angles
-        )
+        ap_lam = create_laminate_from_angles(carbon_epoxy_material, ply_thickness, ap_angles)
         assert ap_lam.is_symmetric
         assert ap_lam.is_balanced
 

@@ -41,7 +41,9 @@ def check_stiffness_matrix(K, expected_size, tol=1e-6):
     # Use relative tolerance for detecting zero eigenvalues
     zero_threshold = max_eigval * 1e-10 if max_eigval > 0 else 1e-10
     zero_eigvals = np.sum(np.abs(eigvals) < zero_threshold)  # Count rigid body modes
-    assert zero_eigvals == 3, f"Expected 3 rigid modes, found {zero_eigvals}. Eigenvalues: {eigvals[:5]}"
+    assert zero_eigvals == 3, (
+        f"Expected 3 rigid modes, found {zero_eigvals}. Eigenvalues: {eigvals[:5]}"
+    )
 
     # Verify positive semi-definiteness (excluding rigid modes)
     non_zero_eigvals = eigvals[zero_eigvals:]
@@ -83,16 +85,18 @@ def quad8_nodes():
         |           |
         0 --- 4 --- 1
     """
-    return np.array([
-        [-1, -1],
-        [1, -1],
-        [1, 1],
-        [-1, 1],  # Corner nodes
-        [0, -1],
-        [1, 0],
-        [0, 1],
-        [-1, 0],  # Mid-side nodes
-    ])
+    return np.array(
+        [
+            [-1, -1],
+            [1, -1],
+            [1, 1],
+            [-1, 1],  # Corner nodes
+            [0, -1],
+            [1, 0],
+            [0, 1],
+            [-1, 0],  # Mid-side nodes
+        ]
+    )
 
 
 @pytest.fixture
@@ -107,17 +111,19 @@ def quad9_nodes():
         |           |
         0 --- 4 --- 1
     """
-    return np.array([
-        [-1, -1],
-        [1, -1],
-        [1, 1],
-        [-1, 1],  # Corner nodes
-        [0, -1],
-        [1, 0],
-        [0, 1],
-        [-1, 0],  # Mid-side nodes
-        [0, 0],  # Center node
-    ])
+    return np.array(
+        [
+            [-1, -1],
+            [1, -1],
+            [1, 1],
+            [-1, 1],  # Corner nodes
+            [0, -1],
+            [1, 0],
+            [0, 1],
+            [-1, 0],  # Mid-side nodes
+            [0, 0],  # Center node
+        ]
+    )
 
 
 # Element test configurations
@@ -277,17 +283,19 @@ def test_distorted_jacobian(element_type, sample_material, quad9_nodes):
     """Test Jacobian remains positive for distorted elements."""
     if element_type == "QUAD9":
         # Create a deliberately distorted element
-        distorted_nodes = np.array([
-            [0, 0],
-            [2, 0.1],
-            [2.1, 2],
-            [0, 1.9],  # Corners
-            [1, 0],
-            [2, 1],
-            [1, 2],
-            [0, 1],  # Midsides
-            [1, 1],  # Center
-        ])
+        distorted_nodes = np.array(
+            [
+                [0, 0],
+                [2, 0.1],
+                [2.1, 2],
+                [0, 1.9],  # Corners
+                [1, 0],
+                [2, 1],
+                [1, 2],
+                [0, 1],  # Midsides
+                [1, 1],  # Center
+            ]
+        )
 
         elem = QUAD9(distorted_nodes, range(9), sample_material)
 
@@ -333,7 +341,7 @@ def test_rigid_body_modes(element_setup):
     rotation = np.array([(-y, x) for x, y in coords]).flatten()
 
     # Use relative tolerance based on matrix norm
-    K_norm = np.linalg.norm(K, ord='fro')
+    K_norm = np.linalg.norm(K, ord="fro")
     rel_tol = 1e-10  # Relative tolerance
 
     # Check each mode produces zero strain energy
