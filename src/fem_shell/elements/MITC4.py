@@ -212,12 +212,27 @@ class MITC4(ShellElement):
         # Center tying point (new in MITC4+)
         self._tying_point_center = (0.0, 0.0)
 
+        # Tying points for membrane assumed strain field (Ko et al. 2017)
+        # e_rr sampled at A(0,+1) and B(0,-1), interpolated linearly in eta
+        # e_ss sampled at C(+1,0) and D(-1,0), interpolated linearly in xi
+        # e_rs sampled ONLY at E(0,0) - this removes the bilinear locking term!
+        self._membrane_tying_points = {
+            "A": (0.0, 1.0),   # for e_rr
+            "B": (0.0, -1.0),  # for e_rr
+            "C": (1.0, 0.0),   # for e_ss
+            "D": (-1.0, 0.0),  # for e_ss
+            "E": (0.0, 0.0),   # for e_rs (center only!)
+        }
+
         # Precompute bubble function contributions at Gauss points
         self._bubble_cache = {}
         for xi, eta in self._gauss_points:
             Nb = self._bubble_function(xi, eta)
             dNb_dxi, dNb_deta = self._bubble_derivatives(xi, eta)
             self._bubble_cache[(xi, eta)] = (Nb, dNb_dxi, dNb_deta)
+
+        # Precompute membrane B matrices at tying points for efficiency
+        self._precompute_membrane_tying_matrices()
 
     # =========================================================================
     # SHAPE FUNCTIONS
@@ -346,6 +361,211 @@ class MITC4(ShellElement):
         d2Nb_deta2 = -2.0 * (1.0 - xi * xi)
         d2Nb_dxideta = 4.0 * xi * eta
         return d2Nb_dxi2, d2Nb_deta2, d2Nb_dxideta
+
+    # =========================================================================
+    # MITC4+ ASSUMED MEMBRANE STRAIN INTERPOLATION
+    # =========================================================================
+
+    def _precompute_membrane_tying_matrices(self) -> None:
+        """
+        Precompute membrane strain B-matrix components at tying points.
+
+        For MITC4+ assumed membrane strain interpolation (Ko, Lee & Bathe 2017):
+        - e_rr is sampled at points A(0,+1) and B(0,-1)
+        - e_ss is sampled at points C(+1,0) and D(-1,0)
+        - e_rs is sampled ONLY at center E(0,0) to remove bilinear locking term
+        """
+        # Store covariant basis vectors and metric coefficients at tying points
+        self._membrane_tying_data = {}
+
+        for name, (xi, eta) in self._membrane_tying_points.items():
+            # Get Jacobian and its inverse at this tying point
+            J_mat, detJ = self.J(xi, eta)
+            J_inv = np.linalg.inv(J_mat)
+
+            # Get shape function derivatives in natural coordinates
+            dN_dxi, dN_deta = self._shape_function_derivatives(xi, eta)
+
+            # Get shape function derivatives in Cartesian coordinates
+            dH = self._get_dH(xi, eta)
+
+            # Covariant basis vectors g_r = ∂x/∂r, g_s = ∂x/∂s
+            # In 2D local coordinates: g_r = [dx/dxi, dy/dxi], g_s = [dx/deta, dy/deta]
+            g_r = J_mat[0, :]  # [dx/dxi, dy/dxi]
+            g_s = J_mat[1, :]  # [dx/deta, dy/deta]
+
+            self._membrane_tying_data[name] = {
+                'xi': xi,
+                'eta': eta,
+                'J': J_mat,
+                'J_inv': J_inv,
+                'detJ': detJ,
+                'dN_dxi': dN_dxi,
+                'dN_deta': dN_deta,
+                'dH': dH,
+                'g_r': g_r,
+                'g_s': g_s,
+            }
+
+    def _compute_covariant_membrane_strain_B(
+        self, xi: float, eta: float, component: str
+    ) -> np.ndarray:
+        """
+        Compute the covariant membrane strain-displacement relation for a specific component.
+
+        The covariant membrane strains are:
+        - e_rr = g_r · (∂u/∂r) = ∂u/∂ξ · g_r
+        - e_ss = g_s · (∂u/∂s) = ∂u/∂η · g_s
+        - e_rs = 0.5 * (g_r · ∂u/∂s + g_s · ∂u/∂r)
+
+        Parameters
+        ----------
+        xi, eta : float
+            Parametric coordinates of tying point
+        component : str
+            Strain component: 'rr', 'ss', or 'rs'
+
+        Returns
+        -------
+        np.ndarray
+            1×24 row vector relating this strain component to nodal DOFs
+        """
+        J_mat, detJ = self.J(xi, eta)
+        dN_dxi, dN_deta = self._shape_function_derivatives(xi, eta)
+
+        # Covariant basis vectors
+        g_r = J_mat[0, :]  # [dx/dxi, dy/dxi]
+        g_s = J_mat[1, :]  # [dx/deta, dy/deta]
+
+        B_row = np.zeros(24)
+
+        for i in range(4):
+            u_idx = 6 * i      # u displacement
+            v_idx = 6 * i + 1  # v displacement
+
+            if component == 'rr':
+                # e_rr = g_r · (∂u/∂ξ) = g_rx * ∂u/∂ξ + g_ry * ∂v/∂ξ
+                B_row[u_idx] = g_r[0] * dN_dxi[i]
+                B_row[v_idx] = g_r[1] * dN_dxi[i]
+
+            elif component == 'ss':
+                # e_ss = g_s · (∂u/∂η) = g_sx * ∂u/∂η + g_sy * ∂v/∂η
+                B_row[u_idx] = g_s[0] * dN_deta[i]
+                B_row[v_idx] = g_s[1] * dN_deta[i]
+
+            elif component == 'rs':
+                # e_rs = 0.5 * (g_r · ∂u/∂η + g_s · ∂u/∂ξ)
+                # = 0.5 * (g_rx * ∂u/∂η + g_ry * ∂v/∂η + g_sx * ∂u/∂ξ + g_sy * ∂v/∂ξ)
+                B_row[u_idx] = 0.5 * (g_r[0] * dN_deta[i] + g_s[0] * dN_dxi[i])
+                B_row[v_idx] = 0.5 * (g_r[1] * dN_deta[i] + g_s[1] * dN_dxi[i])
+
+        return B_row
+
+    def _covariant_to_cartesian_strain_transform(self, xi: float, eta: float) -> np.ndarray:
+        """
+        Compute transformation matrix from covariant to Cartesian strains.
+
+        The transformation relates covariant strains [e_rr, e_ss, 2*e_rs] to
+        Cartesian strains [e_xx, e_yy, gamma_xy] via:
+
+        [e_xx  ]   [T11  T12  T13] [e_rr  ]
+        [e_yy  ] = [T21  T22  T23] [e_ss  ]
+        [gamma_xy] [T31  T32  T33] [2*e_rs]
+
+        where the transformation depends on the Jacobian inverse.
+
+        Parameters
+        ----------
+        xi, eta : float
+            Parametric coordinates
+
+        Returns
+        -------
+        np.ndarray
+            3×3 strain transformation matrix
+        """
+        J_mat, detJ = self.J(xi, eta)
+        J_inv = np.linalg.inv(J_mat)
+
+        # J_inv = [[∂ξ/∂x, ∂ξ/∂y], [∂η/∂x, ∂η/∂y]]
+        dxi_dx = J_inv[0, 0]
+        dxi_dy = J_inv[0, 1]
+        deta_dx = J_inv[1, 0]
+        deta_dy = J_inv[1, 1]
+
+        # Strain transformation matrix
+        # e_xx = e_rr * (∂ξ/∂x)² + e_ss * (∂η/∂x)² + 2*e_rs * (∂ξ/∂x)(∂η/∂x)
+        # e_yy = e_rr * (∂ξ/∂y)² + e_ss * (∂η/∂y)² + 2*e_rs * (∂ξ/∂y)(∂η/∂y)
+        # gamma_xy = 2*e_rr*(∂ξ/∂x)(∂ξ/∂y) + 2*e_ss*(∂η/∂x)(∂η/∂y) + 2*e_rs*((∂ξ/∂x)(∂η/∂y)+(∂ξ/∂y)(∂η/∂x))
+
+        T = np.array([
+            [dxi_dx**2,           deta_dx**2,           dxi_dx * deta_dx],
+            [dxi_dy**2,           deta_dy**2,           dxi_dy * deta_dy],
+            [2*dxi_dx*dxi_dy,     2*deta_dx*deta_dy,    dxi_dx*deta_dy + dxi_dy*deta_dx]
+        ])
+
+        return T
+
+    def B_m_MITC4_plus(self, xi: float, eta: float) -> np.ndarray:
+        """
+        MITC4+ membrane strain-displacement matrix with assumed strain interpolation (3×24).
+
+        This implements the assumed membrane strain field from Ko, Lee & Bathe (2017).
+        The key innovation is that the in-plane shear strain e_rs is sampled ONLY at the
+        element center, which removes the bilinear term that causes membrane locking.
+
+        Assumed strain interpolation:
+        - ẽ_rr(r,s) = (1+s)/2 * e_rr^A + (1-s)/2 * e_rr^B  (linear in eta)
+        - ẽ_ss(r,s) = (1+r)/2 * e_ss^C + (1-r)/2 * e_ss^D  (linear in xi)
+        - ẽ_rs(r,s) = e_rs^E  (constant - bilinear term removed!)
+
+        Tying points:
+        - A: (0, +1), B: (0, -1) for e_rr
+        - C: (+1, 0), D: (-1, 0) for e_ss
+        - E: (0, 0) for e_rs (center only)
+
+        Parameters
+        ----------
+        xi, eta : float
+            Parametric coordinates
+
+        Returns
+        -------
+        np.ndarray
+            3×24 membrane B matrix in local Cartesian coordinates
+        """
+        # Get covariant strain B-matrices at tying points
+        tp = self._membrane_tying_points
+
+        # e_rr at points A and B
+        B_rr_A = self._compute_covariant_membrane_strain_B(tp["A"][0], tp["A"][1], 'rr')
+        B_rr_B = self._compute_covariant_membrane_strain_B(tp["B"][0], tp["B"][1], 'rr')
+
+        # e_ss at points C and D
+        B_ss_C = self._compute_covariant_membrane_strain_B(tp["C"][0], tp["C"][1], 'ss')
+        B_ss_D = self._compute_covariant_membrane_strain_B(tp["D"][0], tp["D"][1], 'ss')
+
+        # e_rs at center point E only (this removes bilinear locking term!)
+        B_rs_E = self._compute_covariant_membrane_strain_B(tp["E"][0], tp["E"][1], 'rs')
+
+        # Interpolate covariant strains to current point (xi, eta)
+        # ẽ_rr = (1+eta)/2 * e_rr^A + (1-eta)/2 * e_rr^B
+        B_rr_interp = 0.5 * (1.0 + eta) * B_rr_A + 0.5 * (1.0 - eta) * B_rr_B
+
+        # ẽ_ss = (1+xi)/2 * e_ss^C + (1-xi)/2 * e_ss^D
+        B_ss_interp = 0.5 * (1.0 + xi) * B_ss_C + 0.5 * (1.0 - xi) * B_ss_D
+
+        # ẽ_rs = e_rs^E (constant - no bilinear term!)
+        B_rs_interp = B_rs_E
+
+        # Stack covariant strain rows: [e_rr, e_ss, 2*e_rs]
+        B_covariant = np.vstack([B_rr_interp, B_ss_interp, 2.0 * B_rs_interp])
+
+        # Transform from covariant to Cartesian strains
+        T = self._covariant_to_cartesian_strain_transform(xi, eta)
+        B_cartesian = T @ B_covariant
+
+        return B_cartesian
 
     # =========================================================================
     # LOCAL COORDINATE SYSTEM
@@ -997,8 +1217,6 @@ class MITC4(ShellElement):
             - Bs_nodal: 2×24 matrix for nodal DOFs
             - Bs_bubble: 2×2 matrix for internal bubble DOFs [α1, α2]
         """
-        xl = self._local_coordinates
-
         # Get standard MITC4 shear matrix first
         Bs_nodal = self.B_gamma_MITC4(xi, eta)
 
@@ -1007,15 +1225,7 @@ class MITC4(ShellElement):
         # γxz_bubble = Nb * α2  (α2 couples to γxz via θy contribution)
         # γyz_bubble = -Nb * α1  (α1 couples to γyz via θx contribution)
 
-        J_mat, detJ = self.J(xi, eta)
-        J_inv = np.linalg.inv(J_mat)
-
         Nb = self._bubble_function(xi, eta)
-        dNb_dxi, dNb_deta = self._bubble_derivatives(xi, eta)
-
-        # Transform bubble derivatives to physical coordinates
-        dNb_dx = J_inv[0, 0] * dNb_dxi + J_inv[0, 1] * dNb_deta
-        dNb_dy = J_inv[1, 0] * dNb_dxi + J_inv[1, 1] * dNb_deta
 
         # Build bubble contribution matrix (2×2)
         # [γxz]   [0    Nb  ] [α1]
@@ -1116,6 +1326,9 @@ class MITC4(ShellElement):
         """
         Membrane stiffness matrix (24×24).
 
+        For MITC4+ (use_mitc4_plus=True), uses assumed strain interpolation
+        to prevent membrane locking as described in Ko, Lee & Bathe (2017).
+
         Returns
         -------
         np.ndarray
@@ -1126,7 +1339,11 @@ class MITC4(ShellElement):
 
         for (xi, eta), w in zip(self._gauss_points, self._gauss_weights):
             _, detJ = self.J(xi, eta)
-            Bm = self.B_m(xi, eta)
+            # Use MITC4+ assumed strain membrane B-matrix if enabled
+            if self.use_mitc4_plus:
+                Bm = self.B_m_MITC4_plus(xi, eta)
+            else:
+                Bm = self.B_m(xi, eta)
             Km += w * detJ * Bm.T @ Cm @ Bm
 
         return Km
