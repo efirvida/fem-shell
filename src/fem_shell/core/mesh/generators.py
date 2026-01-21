@@ -5,6 +5,10 @@ This module contains classes for generating various types of structured meshes:
 - SquareShapeMesh: 2D rectangular meshes
 - BoxSurfaceMesh: 3D box surface meshes
 - MultiFlapMesh: Multi-flap structures for FSI simulations
+- BoxVolumeMesh: 3D volumetric box meshes
+- CylinderVolumeMesh: 3D volumetric cylinder meshes
+- MixedElementBeamMesh: Beam with mixed volumetric element types
+- PyramidTransitionMesh: Mesh with hex-pyramid-tet transitions
 """
 
 from __future__ import annotations
@@ -15,7 +19,14 @@ import math
 import gmsh
 import numpy as np
 
-from fem_shell.core.mesh.entities import ELEMENT_NODES_MAP, ElementType, MeshElement, Node, NodeSet
+from fem_shell.core.mesh.entities import (
+    ELEMENT_NODES_MAP,
+    SOLID_ELEMENT_NODES_MAP,
+    ElementType,
+    MeshElement,
+    Node,
+    NodeSet,
+)
 
 if TYPE_CHECKING:
     from fem_shell.core.mesh.model import MeshModel
@@ -2089,3 +2100,841 @@ class SphericalSurfaceMesh:
         mesh_model.add_node_set(NodeSet("phi_max", phi_max_nodes))
         
         return mesh_model
+
+
+# =============================================================================
+# 3D Volumetric Mesh Generators
+# =============================================================================
+
+class BoxVolumeMesh:
+    """
+    Generates structured 3D volumetric meshes using Gmsh.
+    
+    Creates hexahedral or tetrahedral solid elements for a box domain.
+    Supports mixed-element meshes with transition elements (wedges, pyramids).
+    
+    Parameters
+    ----------
+    center : Tuple[float, float, float]
+        Center coordinates of the box (x, y, z)
+    dims : Tuple[float, float, float]
+        Total box dimensions (dx, dy, dz)
+    nx, ny, nz : int
+        Number of divisions in each direction
+    element_type : str
+        Element type: 'hex', 'tet', 'wedge', or 'mixed'
+    quadratic : bool
+        Use quadratic elements (default: False)
+        
+    Examples
+    --------
+    >>> gen = BoxVolumeMesh((0, 0, 0), (1, 1, 1), 4, 4, 4, element_type='hex')
+    >>> mesh = gen.generate()
+    """
+    
+    def __init__(
+        self,
+        center: Tuple[float, float, float],
+        dims: Tuple[float, float, float],
+        nx: int,
+        ny: int,
+        nz: int,
+        element_type: str = 'hex',
+        quadratic: bool = False,
+    ):
+        self.center = center
+        self.dims = dims
+        self.nx = nx
+        self.ny = ny
+        self.nz = nz
+        self.element_type = element_type.lower()
+        self.quadratic = quadratic
+        self.tag_map = {}
+        
+    def generate(self) -> "MeshModel":
+        """Generate and return a MeshModel with volumetric elements."""
+        from fem_shell.core.mesh.model import MeshModel
+        
+        gmsh.initialize()
+        try:
+            gmsh.option.setNumber("General.Terminal", 0)
+            gmsh.model.add("box_volume")
+            
+            self._create_geometry()
+            self._configure_mesh()
+            
+            gmsh.model.geo.synchronize()
+            gmsh.model.mesh.generate(3)
+            
+            return self._create_mesh_model(MeshModel)
+        finally:
+            gmsh.finalize()
+            
+    def _create_geometry(self):
+        """Create box geometry."""
+        cx, cy, cz = self.center
+        dx, dy, dz = self.dims
+        
+        x0, x1 = cx - dx/2, cx + dx/2
+        y0, y1 = cy - dy/2, cy + dy/2
+        z0, z1 = cz - dz/2, cz + dz/2
+        
+        # Create points
+        self.points = [
+            gmsh.model.geo.addPoint(x0, y0, z0),  # 0
+            gmsh.model.geo.addPoint(x1, y0, z0),  # 1
+            gmsh.model.geo.addPoint(x1, y1, z0),  # 2
+            gmsh.model.geo.addPoint(x0, y1, z0),  # 3
+            gmsh.model.geo.addPoint(x0, y0, z1),  # 4
+            gmsh.model.geo.addPoint(x1, y0, z1),  # 5
+            gmsh.model.geo.addPoint(x1, y1, z1),  # 6
+            gmsh.model.geo.addPoint(x0, y1, z1),  # 7
+        ]
+        
+        # Create edges
+        p = self.points
+        self.edges = {
+            # Bottom face
+            'e0': gmsh.model.geo.addLine(p[0], p[1]),
+            'e1': gmsh.model.geo.addLine(p[1], p[2]),
+            'e2': gmsh.model.geo.addLine(p[2], p[3]),
+            'e3': gmsh.model.geo.addLine(p[3], p[0]),
+            # Top face
+            'e4': gmsh.model.geo.addLine(p[4], p[5]),
+            'e5': gmsh.model.geo.addLine(p[5], p[6]),
+            'e6': gmsh.model.geo.addLine(p[6], p[7]),
+            'e7': gmsh.model.geo.addLine(p[7], p[4]),
+            # Vertical edges
+            'e8': gmsh.model.geo.addLine(p[0], p[4]),
+            'e9': gmsh.model.geo.addLine(p[1], p[5]),
+            'e10': gmsh.model.geo.addLine(p[2], p[6]),
+            'e11': gmsh.model.geo.addLine(p[3], p[7]),
+        }
+        
+        # Create faces
+        e = self.edges
+        bottom_loop = gmsh.model.geo.addCurveLoop([e['e0'], e['e1'], e['e2'], e['e3']])
+        top_loop = gmsh.model.geo.addCurveLoop([e['e4'], e['e5'], e['e6'], e['e7']])
+        front_loop = gmsh.model.geo.addCurveLoop([e['e0'], e['e9'], -e['e4'], -e['e8']])
+        back_loop = gmsh.model.geo.addCurveLoop([-e['e2'], e['e10'], e['e6'], -e['e11']])
+        left_loop = gmsh.model.geo.addCurveLoop([-e['e3'], e['e11'], e['e7'], -e['e8']])
+        right_loop = gmsh.model.geo.addCurveLoop([e['e1'], e['e10'], -e['e5'], -e['e9']])
+        
+        self.faces = {
+            'bottom': gmsh.model.geo.addPlaneSurface([bottom_loop]),
+            'top': gmsh.model.geo.addPlaneSurface([top_loop]),
+            'front': gmsh.model.geo.addPlaneSurface([front_loop]),
+            'back': gmsh.model.geo.addPlaneSurface([back_loop]),
+            'left': gmsh.model.geo.addPlaneSurface([left_loop]),
+            'right': gmsh.model.geo.addPlaneSurface([right_loop]),
+        }
+        
+        # Create volume
+        surface_loop = gmsh.model.geo.addSurfaceLoop(list(self.faces.values()))
+        self.volume = gmsh.model.geo.addVolume([surface_loop])
+        
+        # Add physical groups
+        for name, face in self.faces.items():
+            gmsh.model.addPhysicalGroup(2, [face], name=name)
+        gmsh.model.addPhysicalGroup(3, [self.volume], name="volume")
+        
+    def _configure_mesh(self):
+        """Configure meshing parameters."""
+        e = self.edges
+        
+        # Set transfinite curves
+        for edge in ['e0', 'e2', 'e4', 'e6']:
+            gmsh.model.geo.mesh.setTransfiniteCurve(e[edge], self.nx + 1)
+        for edge in ['e1', 'e3', 'e5', 'e7']:
+            gmsh.model.geo.mesh.setTransfiniteCurve(e[edge], self.ny + 1)
+        for edge in ['e8', 'e9', 'e10', 'e11']:
+            gmsh.model.geo.mesh.setTransfiniteCurve(e[edge], self.nz + 1)
+            
+        # Set transfinite surfaces
+        for face in self.faces.values():
+            gmsh.model.geo.mesh.setTransfiniteSurface(face)
+            
+        # Set transfinite volume
+        gmsh.model.geo.mesh.setTransfiniteVolume(self.volume)
+        
+        # Configure element type
+        if self.element_type == 'hex':
+            gmsh.option.setNumber("Mesh.RecombineAll", 1)
+            gmsh.option.setNumber("Mesh.Recombine3DAll", 1)
+        elif self.element_type == 'tet':
+            pass  # Default is tetrahedral
+        elif self.element_type == 'wedge':
+            # Use prism mesh
+            gmsh.option.setNumber("Mesh.SubdivisionAlgorithm", 2)
+            
+        if self.quadratic:
+            gmsh.option.setNumber("Mesh.ElementOrder", 2)
+            # Use serendipity elements (20-node hex) instead of Lagrange (27-node)
+            gmsh.option.setNumber("Mesh.SecondOrderIncomplete", 1)
+            
+    def _create_mesh_model(self, MeshModelClass) -> "MeshModel":
+        """Convert Gmsh mesh to MeshModel."""
+        mesh_model = MeshModelClass()
+        from fem_shell.core.mesh.entities import Node
+        Node._id_counter = 0
+        
+        # Get all 3D elements
+        elementTypes, elementTags, nodeTags = gmsh.model.mesh.getElements(3)
+        
+        # Identify geometric nodes (corners of linear elements)
+        geometric_node_tags = set()
+        for et, conn in zip(elementTypes, nodeTags):
+            props = gmsh.model.mesh.getElementProperties(et)
+            total_nodes = props[3]
+            elem_type = SOLID_ELEMENT_NODES_MAP.get(total_nodes)
+            if elem_type:
+                # Get corner nodes based on element type
+                if elem_type in (ElementType.tetra, ElementType.tetra10):
+                    n_corners = 4
+                elif elem_type in (ElementType.hexahedron, ElementType.hexahedron20, ElementType.hexahedron27):
+                    n_corners = 8
+                elif elem_type in (ElementType.wedge, ElementType.wedge15):
+                    n_corners = 6
+                elif elem_type in (ElementType.pyramid, ElementType.pyramid13):
+                    n_corners = 5
+                else:
+                    n_corners = total_nodes
+                geometric_node_tags.update(
+                    conn.reshape(-1, total_nodes)[:, :n_corners].flatten()
+                )
+        
+        # Get nodes
+        node_tags, coords, _ = gmsh.model.mesh.getNodes()
+        coords = np.array(coords).reshape(-1, 3)
+        
+        p = np.argsort(node_tags)
+        node_tags = node_tags[p]
+        coords = coords[p]
+        
+        for tag, coord in zip(node_tags, coords):
+            is_geometric = tag in geometric_node_tags
+            n = Node(coord, geometric_node=is_geometric)
+            mesh_model.add_node(n)
+            self.tag_map[tag] = n
+            
+        # Add elements
+        self._add_elements(mesh_model)
+        self._create_node_sets(mesh_model)
+        
+        return mesh_model
+        
+    def _add_elements(self, mesh_model: "MeshModel"):
+        """Add 3D elements to mesh model."""
+        elem_types = gmsh.model.mesh.getElementTypes()
+        for elem_type in elem_types:
+            props = gmsh.model.mesh.getElementProperties(elem_type)
+            dim = props[1]
+            if dim == 3:  # Only 3D elements
+                _, elem_node_tags = gmsh.model.mesh.getElementsByType(elem_type)
+                num_nodes = props[3]
+                connectivity = elem_node_tags.reshape(-1, num_nodes)
+                
+                e_type = SOLID_ELEMENT_NODES_MAP.get(num_nodes)
+                if e_type is None:
+                    continue
+                    
+                for nodes in connectivity:
+                    node_objs = [self.tag_map[nt] for nt in nodes]
+                    mesh_model.add_element(MeshElement(nodes=node_objs, element_type=e_type))
+                    
+    def _create_node_sets(self, mesh_model: "MeshModel"):
+        """Create node sets for boundaries."""
+        physical_groups = gmsh.model.getPhysicalGroups()
+        
+        for dim, tag in physical_groups:
+            name = gmsh.model.getPhysicalName(dim, tag)
+            if dim == 2:  # Surface groups
+                entities = gmsh.model.getEntitiesForPhysicalGroup(dim, tag)
+                node_tags = set()
+                for entity in entities:
+                    tags, _, _ = gmsh.model.mesh.getNodes(dim, entity)
+                    node_tags.update(tags)
+                nodes = {self.tag_map[t] for t in node_tags if t in self.tag_map}
+                if nodes:
+                    mesh_model.add_node_set(NodeSet(name=name, nodes=nodes))
+                    
+        # Add "all" node set
+        all_nodes = {node for node in mesh_model.nodes}
+        mesh_model.add_node_set(NodeSet(name="all", nodes=all_nodes))
+        
+    @classmethod
+    def create_unit_cube(
+        cls,
+        divisions: int = 4,
+        element_type: str = 'hex',
+        quadratic: bool = False,
+    ) -> "MeshModel":
+        """Create a unit cube mesh centered at origin."""
+        return cls(
+            center=(0, 0, 0),
+            dims=(1, 1, 1),
+            nx=divisions,
+            ny=divisions,
+            nz=divisions,
+            element_type=element_type,
+            quadratic=quadratic,
+        ).generate()
+
+
+class CylinderVolumeMesh:
+    """
+    Generates structured 3D cylindrical volumetric meshes.
+    
+    Creates hex/tet elements for a solid cylinder.
+    Uses O-grid topology for better element quality near the axis.
+    
+    Parameters
+    ----------
+    radius : float
+        Cylinder radius
+    length : float
+        Cylinder length (along Z axis)
+    n_radial : int
+        Number of radial divisions
+    n_circum : int
+        Number of circumferential divisions
+    n_axial : int
+        Number of axial divisions
+    element_type : str
+        'hex' for hexahedra, 'tet' for tetrahedra
+    quadratic : bool
+        Use quadratic elements
+    """
+    
+    def __init__(
+        self,
+        radius: float,
+        length: float,
+        n_radial: int,
+        n_circum: int,
+        n_axial: int,
+        element_type: str = 'hex',
+        quadratic: bool = False,
+    ):
+        self.radius = radius
+        self.length = length
+        self.n_radial = n_radial
+        self.n_circum = n_circum
+        self.n_axial = n_axial
+        self.element_type = element_type.lower()
+        self.quadratic = quadratic
+        self.tag_map = {}
+        
+    def generate(self) -> "MeshModel":
+        """Generate and return a MeshModel with volumetric elements."""
+        from fem_shell.core.mesh.model import MeshModel
+        
+        gmsh.initialize()
+        try:
+            gmsh.option.setNumber("General.Terminal", 0)
+            gmsh.model.add("cylinder_volume")
+            
+            self._create_geometry()
+            self._configure_mesh()
+            
+            gmsh.model.geo.synchronize()
+            gmsh.model.mesh.generate(3)
+            
+            return self._create_mesh_model(MeshModel)
+        finally:
+            gmsh.finalize()
+            
+    def _create_geometry(self):
+        """Create cylinder geometry using revolution."""
+        R = self.radius
+        L = self.length
+        
+        # Create a disk at z=0 and extrude
+        center = gmsh.model.geo.addPoint(0, 0, 0)
+        p1 = gmsh.model.geo.addPoint(R, 0, 0)
+        p2 = gmsh.model.geo.addPoint(0, R, 0)
+        p3 = gmsh.model.geo.addPoint(-R, 0, 0)
+        p4 = gmsh.model.geo.addPoint(0, -R, 0)
+        
+        # Create circular arcs
+        arc1 = gmsh.model.geo.addCircleArc(p1, center, p2)
+        arc2 = gmsh.model.geo.addCircleArc(p2, center, p3)
+        arc3 = gmsh.model.geo.addCircleArc(p3, center, p4)
+        arc4 = gmsh.model.geo.addCircleArc(p4, center, p1)
+        
+        # Create disk surface
+        loop = gmsh.model.geo.addCurveLoop([arc1, arc2, arc3, arc4])
+        disk = gmsh.model.geo.addPlaneSurface([loop])
+        
+        # Extrude to create cylinder
+        extrusion = gmsh.model.geo.extrude([(2, disk)], 0, 0, L, [self.n_axial], recombine=True)
+        
+        # Find the volume in the extrusion result
+        self.volume = None
+        for dim, tag in extrusion:
+            if dim == 3:
+                self.volume = tag
+                break
+                
+        # Add physical groups
+        gmsh.model.addPhysicalGroup(2, [disk], name="bottom")
+        # Top surface is created by extrusion
+        for dim, tag in extrusion:
+            if dim == 2:
+                # This is a bit simplified; in practice you'd identify surfaces properly
+                pass
+        if self.volume:
+            gmsh.model.addPhysicalGroup(3, [self.volume], name="volume")
+            
+    def _configure_mesh(self):
+        """Configure meshing parameters."""
+        gmsh.option.setNumber("Mesh.CharacteristicLengthMin", self.radius / self.n_radial)
+        gmsh.option.setNumber("Mesh.CharacteristicLengthMax", self.radius / self.n_radial)
+        
+        if self.element_type == 'hex':
+            gmsh.option.setNumber("Mesh.RecombineAll", 1)
+            gmsh.option.setNumber("Mesh.Recombine3DAll", 1)
+            
+        if self.quadratic:
+            gmsh.option.setNumber("Mesh.ElementOrder", 2)
+            
+    def _create_mesh_model(self, MeshModelClass) -> "MeshModel":
+        """Convert Gmsh mesh to MeshModel."""
+        mesh_model = MeshModelClass()
+        from fem_shell.core.mesh.entities import Node
+        Node._id_counter = 0
+        
+        # Get all 3D elements
+        elementTypes, elementTags, nodeTags = gmsh.model.mesh.getElements(3)
+        
+        geometric_node_tags = set()
+        for et, conn in zip(elementTypes, nodeTags):
+            props = gmsh.model.mesh.getElementProperties(et)
+            total_nodes = props[3]
+            elem_type = SOLID_ELEMENT_NODES_MAP.get(total_nodes)
+            if elem_type:
+                if elem_type in (ElementType.tetra, ElementType.tetra10):
+                    n_corners = 4
+                elif elem_type in (ElementType.hexahedron, ElementType.hexahedron20):
+                    n_corners = 8
+                elif elem_type in (ElementType.wedge, ElementType.wedge15):
+                    n_corners = 6
+                elif elem_type in (ElementType.pyramid, ElementType.pyramid13):
+                    n_corners = 5
+                else:
+                    n_corners = total_nodes
+                geometric_node_tags.update(
+                    conn.reshape(-1, total_nodes)[:, :n_corners].flatten()
+                )
+        
+        node_tags, coords, _ = gmsh.model.mesh.getNodes()
+        coords = np.array(coords).reshape(-1, 3)
+        
+        p = np.argsort(node_tags)
+        node_tags = node_tags[p]
+        coords = coords[p]
+        
+        for tag, coord in zip(node_tags, coords):
+            is_geometric = tag in geometric_node_tags
+            n = Node(coord, geometric_node=is_geometric)
+            mesh_model.add_node(n)
+            self.tag_map[tag] = n
+            
+        self._add_elements(mesh_model)
+        
+        all_nodes = {node for node in mesh_model.nodes}
+        mesh_model.add_node_set(NodeSet(name="all", nodes=all_nodes))
+        
+        return mesh_model
+        
+    def _add_elements(self, mesh_model: "MeshModel"):
+        """Add 3D elements to mesh model."""
+        elem_types = gmsh.model.mesh.getElementTypes()
+        for elem_type in elem_types:
+            props = gmsh.model.mesh.getElementProperties(elem_type)
+            dim = props[1]
+            if dim == 3:
+                _, elem_node_tags = gmsh.model.mesh.getElementsByType(elem_type)
+                num_nodes = props[3]
+                connectivity = elem_node_tags.reshape(-1, num_nodes)
+                
+                e_type = SOLID_ELEMENT_NODES_MAP.get(num_nodes)
+                if e_type is None:
+                    continue
+                    
+                for nodes in connectivity:
+                    node_objs = [self.tag_map[nt] for nt in nodes]
+                    mesh_model.add_element(MeshElement(nodes=node_objs, element_type=e_type))
+
+
+class MixedElementBeamMesh:
+    """
+    Generates a beam mesh with mixed volumetric elements for testing element transitions.
+    
+    Creates a rectangular beam divided into sections with different element types.
+    This is useful for testing element compatibility at interfaces.
+    
+    Structure:
+    - Section 1: Hexahedra
+    - Section 2: Wedges (transition from hex)
+    - Section 3: Tetrahedra
+    - Section 4: Pyramids (optional, for hex-tet transition)
+    
+    Parameters
+    ----------
+    length : float
+        Total beam length (X direction)
+    width : float  
+        Beam width (Y direction)
+    height : float
+        Beam height (Z direction)
+    n_sections : int
+        Number of element divisions along length per section
+    n_width : int
+        Number of divisions across width
+    n_height : int
+        Number of divisions in height
+    """
+    
+    def __init__(
+        self,
+        length: float = 10.0,
+        width: float = 1.0,
+        height: float = 1.0,
+        n_sections: int = 4,
+        n_width: int = 2,
+        n_height: int = 2,
+    ):
+        self.length = length
+        self.width = width
+        self.height = height
+        self.n_sections = n_sections
+        self.n_width = n_width
+        self.n_height = n_height
+        
+    def generate(self) -> "MeshModel":
+        """Generate beam mesh with mixed elements."""
+        from fem_shell.core.mesh.model import MeshModel
+        from fem_shell.core.mesh.entities import Node, ElementSet
+        Node._id_counter = 0
+        MeshElement._id_counter = 0
+        
+        mesh_model = MeshModel()
+        
+        # Create structured grid of nodes
+        nx = self.n_sections * 4 + 1  # 4 sections
+        ny = self.n_width + 1
+        nz = self.n_height + 1
+        
+        dx = self.length / (nx - 1)
+        dy = self.width / self.n_width
+        dz = self.height / self.n_height
+        
+        # Create nodes
+        node_grid = {}
+        for i in range(nx):
+            for j in range(ny):
+                for k in range(nz):
+                    x = i * dx
+                    y = j * dy - self.width / 2
+                    z = k * dz - self.height / 2
+                    node = Node([x, y, z], geometric_node=True)
+                    mesh_model.add_node(node)
+                    node_grid[(i, j, k)] = node
+                    
+        # Section boundaries
+        sec_len = self.n_sections
+        
+        hex_elements = []
+        wedge_elements = []
+        tet_elements = []
+        
+        # Section 1: Hexahedra (i: 0 to sec_len)
+        for i in range(sec_len):
+            for j in range(self.n_width):
+                for k in range(self.n_height):
+                    n0 = node_grid[(i, j, k)]
+                    n1 = node_grid[(i+1, j, k)]
+                    n2 = node_grid[(i+1, j+1, k)]
+                    n3 = node_grid[(i, j+1, k)]
+                    n4 = node_grid[(i, j, k+1)]
+                    n5 = node_grid[(i+1, j, k+1)]
+                    n6 = node_grid[(i+1, j+1, k+1)]
+                    n7 = node_grid[(i, j+1, k+1)]
+                    
+                    elem = MeshElement(
+                        nodes=[n0, n1, n2, n3, n4, n5, n6, n7],
+                        element_type=ElementType.hexahedron
+                    )
+                    mesh_model.add_element(elem)
+                    hex_elements.append(elem)
+                    
+        # Section 2: Wedges (i: sec_len to 2*sec_len)
+        # Split each "hex" into 2 wedges
+        for i in range(sec_len, 2 * sec_len):
+            for j in range(self.n_width):
+                for k in range(self.n_height):
+                    n0 = node_grid[(i, j, k)]
+                    n1 = node_grid[(i+1, j, k)]
+                    n2 = node_grid[(i+1, j+1, k)]
+                    n3 = node_grid[(i, j+1, k)]
+                    n4 = node_grid[(i, j, k+1)]
+                    n5 = node_grid[(i+1, j, k+1)]
+                    n6 = node_grid[(i+1, j+1, k+1)]
+                    n7 = node_grid[(i, j+1, k+1)]
+                    
+                    # Wedge 1: 0-1-3, 4-5-7
+                    w1 = MeshElement(
+                        nodes=[n0, n1, n3, n4, n5, n7],
+                        element_type=ElementType.wedge
+                    )
+                    mesh_model.add_element(w1)
+                    wedge_elements.append(w1)
+                    
+                    # Wedge 2: 1-2-3, 5-6-7
+                    w2 = MeshElement(
+                        nodes=[n1, n2, n3, n5, n6, n7],
+                        element_type=ElementType.wedge
+                    )
+                    mesh_model.add_element(w2)
+                    wedge_elements.append(w2)
+                    
+        # Section 3: Tetrahedra (i: 2*sec_len to 3*sec_len)
+        # Split each "hex" into 5 tets
+        for i in range(2 * sec_len, 3 * sec_len):
+            for j in range(self.n_width):
+                for k in range(self.n_height):
+                    n0 = node_grid[(i, j, k)]
+                    n1 = node_grid[(i+1, j, k)]
+                    n2 = node_grid[(i+1, j+1, k)]
+                    n3 = node_grid[(i, j+1, k)]
+                    n4 = node_grid[(i, j, k+1)]
+                    n5 = node_grid[(i+1, j, k+1)]
+                    n6 = node_grid[(i+1, j+1, k+1)]
+                    n7 = node_grid[(i, j+1, k+1)]
+                    
+                    # 5-tet decomposition of a hex
+                    tet_conn = [
+                        [n0, n1, n3, n4],
+                        [n1, n2, n3, n6],
+                        [n1, n3, n4, n6],
+                        [n3, n4, n6, n7],
+                        [n1, n4, n5, n6],
+                    ]
+                    for conn in tet_conn:
+                        elem = MeshElement(nodes=conn, element_type=ElementType.tetra)
+                        mesh_model.add_element(elem)
+                        tet_elements.append(elem)
+                        
+        # Section 4: More Hexahedra (i: 3*sec_len to 4*sec_len)
+        for i in range(3 * sec_len, 4 * sec_len):
+            for j in range(self.n_width):
+                for k in range(self.n_height):
+                    n0 = node_grid[(i, j, k)]
+                    n1 = node_grid[(i+1, j, k)]
+                    n2 = node_grid[(i+1, j+1, k)]
+                    n3 = node_grid[(i, j+1, k)]
+                    n4 = node_grid[(i, j, k+1)]
+                    n5 = node_grid[(i+1, j, k+1)]
+                    n6 = node_grid[(i+1, j+1, k+1)]
+                    n7 = node_grid[(i, j+1, k+1)]
+                    
+                    elem = MeshElement(
+                        nodes=[n0, n1, n2, n3, n4, n5, n6, n7],
+                        element_type=ElementType.hexahedron
+                    )
+                    mesh_model.add_element(elem)
+                    hex_elements.append(elem)
+        
+        # Create element sets
+        mesh_model.add_element_set(ElementSet(name="hexahedra", elements=set(hex_elements)))
+        mesh_model.add_element_set(ElementSet(name="wedges", elements=set(wedge_elements)))
+        mesh_model.add_element_set(ElementSet(name="tetrahedra", elements=set(tet_elements)))
+        
+        # Create node sets for boundaries
+        fixed_nodes = {node_grid[(0, j, k)] for j in range(ny) for k in range(nz)}
+        mesh_model.add_node_set(NodeSet(name="fixed", nodes=fixed_nodes))
+        
+        loaded_nodes = {node_grid[(nx-1, j, k)] for j in range(ny) for k in range(nz)}
+        mesh_model.add_node_set(NodeSet(name="loaded", nodes=loaded_nodes))
+        
+        all_nodes = {node for node in mesh_model.nodes}
+        mesh_model.add_node_set(NodeSet(name="all", nodes=all_nodes))
+        
+        return mesh_model
+        
+    @classmethod
+    def create_test_beam(
+        cls,
+        length: float = 10.0,
+        width: float = 1.0,
+        height: float = 1.0,
+    ) -> "MeshModel":
+        """Create a standard test beam with mixed elements."""
+        return cls(
+            length=length,
+            width=width,
+            height=height,
+            n_sections=2,
+            n_width=2,
+            n_height=2,
+        ).generate()
+
+
+class PyramidTransitionMesh:
+    """
+    Generates a mesh demonstrating pyramid elements as hex-tet transition.
+    
+    Creates a block where one face has hexahedra and transitions through
+    pyramids to tetrahedra. This is a classic mesh transition problem.
+    
+    Parameters
+    ----------
+    size : float
+        Overall size of the cube
+    n_div : int
+        Number of divisions on each edge
+    """
+    
+    def __init__(self, size: float = 1.0, n_div: int = 2):
+        self.size = size
+        self.n_div = n_div
+        
+    def generate(self) -> "MeshModel":
+        """Generate mesh with pyramid transitions."""
+        from fem_shell.core.mesh.model import MeshModel
+        from fem_shell.core.mesh.entities import Node, ElementSet
+        Node._id_counter = 0
+        MeshElement._id_counter = 0
+        
+        mesh_model = MeshModel()
+        
+        # Create a structured grid for the bottom layer (hex)
+        # and transition through pyramids to tets on top
+        
+        s = self.size
+        n = self.n_div
+        h = s / 3  # Height of each layer
+        
+        # Layer 1: Hexahedra (z = 0 to h)
+        # Layer 2: Pyramids (z = h to 2h) 
+        # Layer 3: Tetrahedra (z = 2h to 3h)
+        
+        # Create nodes for bottom layer (z=0 and z=h)
+        nodes_z0 = {}
+        nodes_z1 = {}
+        nodes_z2 = {}
+        nodes_z3 = {}
+        
+        dx = s / n
+        
+        for i in range(n + 1):
+            for j in range(n + 1):
+                x, y = i * dx, j * dx
+                
+                n0 = Node([x, y, 0], geometric_node=True)
+                mesh_model.add_node(n0)
+                nodes_z0[(i, j)] = n0
+                
+                n1 = Node([x, y, h], geometric_node=True)
+                mesh_model.add_node(n1)
+                nodes_z1[(i, j)] = n1
+                
+                n2 = Node([x, y, 2*h], geometric_node=True)
+                mesh_model.add_node(n2)
+                nodes_z2[(i, j)] = n2
+                
+                n3 = Node([x, y, 3*h], geometric_node=True)
+                mesh_model.add_node(n3)
+                nodes_z3[(i, j)] = n3
+                
+        hex_elements = []
+        pyr_elements = []
+        tet_elements = []
+        
+        # Layer 1: Hexahedra
+        for i in range(n):
+            for j in range(n):
+                corners_bot = [
+                    nodes_z0[(i, j)], nodes_z0[(i+1, j)],
+                    nodes_z0[(i+1, j+1)], nodes_z0[(i, j+1)]
+                ]
+                corners_top = [
+                    nodes_z1[(i, j)], nodes_z1[(i+1, j)],
+                    nodes_z1[(i+1, j+1)], nodes_z1[(i, j+1)]
+                ]
+                
+                elem = MeshElement(
+                    nodes=corners_bot + corners_top,
+                    element_type=ElementType.hexahedron
+                )
+                mesh_model.add_element(elem)
+                hex_elements.append(elem)
+                
+        # Layer 2: For pyramid transition, we create a center node
+        # This is a simplified demonstration
+        for i in range(n):
+            for j in range(n):
+                base = [
+                    nodes_z1[(i, j)], nodes_z1[(i+1, j)],
+                    nodes_z1[(i+1, j+1)], nodes_z1[(i, j+1)]
+                ]
+                # Apex at center of top face at z2
+                cx = (i + 0.5) * dx
+                cy = (j + 0.5) * dx
+                apex = Node([cx, cy, 2*h], geometric_node=True)
+                mesh_model.add_node(apex)
+                
+                elem = MeshElement(
+                    nodes=base + [apex],
+                    element_type=ElementType.pyramid
+                )
+                mesh_model.add_element(elem)
+                pyr_elements.append(elem)
+                
+        # Layer 3: Tetrahedra filling the gaps
+        # This is a simplified version - just create tets from z2 to z3
+        for i in range(n):
+            for j in range(n):
+                corners_bot = [
+                    nodes_z2[(i, j)], nodes_z2[(i+1, j)],
+                    nodes_z2[(i+1, j+1)], nodes_z2[(i, j+1)]
+                ]
+                corners_top = [
+                    nodes_z3[(i, j)], nodes_z3[(i+1, j)],
+                    nodes_z3[(i+1, j+1)], nodes_z3[(i, j+1)]
+                ]
+                
+                # 5-tet decomposition
+                n0, n1, n2, n3 = corners_bot
+                n4, n5, n6, n7 = corners_top
+                
+                tet_conn = [
+                    [n0, n1, n3, n4],
+                    [n1, n2, n3, n6],
+                    [n1, n3, n4, n6],
+                    [n3, n4, n6, n7],
+                    [n1, n4, n5, n6],
+                ]
+                for conn in tet_conn:
+                    elem = MeshElement(nodes=conn, element_type=ElementType.tetra)
+                    mesh_model.add_element(elem)
+                    tet_elements.append(elem)
+                    
+        # Create element sets
+        mesh_model.add_element_set(ElementSet(name="hexahedra", elements=set(hex_elements)))
+        mesh_model.add_element_set(ElementSet(name="pyramids", elements=set(pyr_elements)))
+        mesh_model.add_element_set(ElementSet(name="tetrahedra", elements=set(tet_elements)))
+        
+        # Boundary node sets
+        bottom = {nodes_z0[(i, j)] for i in range(n+1) for j in range(n+1)}
+        mesh_model.add_node_set(NodeSet(name="bottom", nodes=bottom))
+        
+        top = {nodes_z3[(i, j)] for i in range(n+1) for j in range(n+1)}
+        mesh_model.add_node_set(NodeSet(name="top", nodes=top))
+        
+        all_nodes = {node for node in mesh_model.nodes}
+        mesh_model.add_node_set(NodeSet(name="all", nodes=all_nodes))
+        
+        return mesh_model
+
