@@ -7,13 +7,13 @@ src_path = Path(__file__).resolve().parents[2] / "src"
 if src_path.exists():
     sys.path.append(str(src_path))
 
-from fem_shell.core.mesh import load_mesh
+from fem_shell.core.mesh import load_mesh, detect_open_boundaries, volumetric_remesh
 
 def main():
     # Define the path to the OBJ file
     # Path relative to the script location: ../Geometries/propeller/propellerTip.obj
     # Absolute path provided by user: /home/efirvida/fem-shell/examples/Geometries/propeller/propellerTip.obj
-    obj_path = Path(__file__).resolve().parents[1] / "Geometries" / "propeller" / "propellerTip.obj"
+    obj_path = Path(__file__).resolve().parents[1] / "propeller"/"Geometries" / "propeller" / "propellerTip.obj"
     
     if not obj_path.exists():
         print(f"Error: File not found at {obj_path}")
@@ -36,9 +36,48 @@ def main():
             mode="outside",
         )
         
-        print("\nMesh Information:")
+        print("\nMesh Information (Surface):")
         print(f"  Nodes:    {mesh.node_count:,}")
         print(f"  Elements: {mesh.elements_count:,}")
+        
+        # Detect open boundaries
+        print("\nDetecting open boundaries...")
+        has_open_boundaries = detect_open_boundaries(mesh)
+        
+        if has_open_boundaries:
+            print("  ⚠ Open boundaries detected!")
+            print("  The surface mesh is not closed.")
+        else:
+            print("  ✓ Surface mesh is closed.")
+        
+        # Convert to volumetric mesh (will auto-close boundaries if needed)
+        print("\nConverting to volumetric mesh...")
+        print("  Note: This may take several minutes for large meshes...")
+        try:
+            # Use a smaller target edge length to increase mesh density
+            volumetric_mesh = volumetric_remesh(
+                mesh, 
+                target_edge_length=0.0022,  # Adjust this value to control mesh density
+                auto_close_boundaries=True
+            )
+            
+            print("\nVolumetric Mesh Information:")
+            print(f"  Nodes:    {volumetric_mesh.node_count:,}")
+            print(f"  Elements: {volumetric_mesh.elements_count:,}")
+            
+            # Save the result
+            output_path = Path(__file__).resolve().parents[2] / "output" / "propeller_volumetric.vtu"
+            output_path.parent.mkdir(exist_ok=True)
+            print(f"\nSaving volumetric mesh to: {output_path}")
+            volumetric_mesh.write_mesh(str(output_path))
+            
+            # Use the volumetric mesh for visualization
+            mesh = volumetric_mesh
+        except Exception as vol_err:
+            print(f"\n  Error during volumetric remeshing: {vol_err}")
+            print("  Using original surface mesh instead.")
+            import traceback
+            traceback.print_exc()
         
         # Visualize the mesh
         print("\nOpening mesh viewer...")
