@@ -3,13 +3,14 @@ from typing import Dict, Iterable, List, Literal, Sequence, Tuple, Union
 
 import numpy as np
 
-from fem_shell.core.material import Material
+from fem_shell.core.material import MaterialType as Material
 from fem_shell.core.mesh import MeshElement
 
 
 class ElementFamily(IntEnum):
     SHELL = 2
     PLANE = 3
+    SOLID = 4
 
 
 class FemElement:
@@ -41,6 +42,8 @@ class FemElement:
         if self.element_family == ElementFamily.PLANE:
             return 2
         elif self.element_family == ElementFamily.SHELL:
+            return 3
+        elif self.element_family == ElementFamily.SOLID:
             return 3
         return 2
 
@@ -103,8 +106,8 @@ class ElementFactory:
     Factory for creating finite element instances based on mesh and configuration.
     
     The factory automatically selects the appropriate element type based on:
-    - Element family (SHELL or PLANE)
-    - Number of nodes (3 for triangular, 4 for quadrilateral)
+    - Element family (SHELL, PLANE, or SOLID)
+    - Number of nodes (3 for triangular, 4 for quadrilateral, etc.)
     - Material type (isotropic Material or Laminate for composites)
     - Analysis type (linear or nonlinear)
     
@@ -123,6 +126,13 @@ class ElementFactory:
     ...     element_family=ElementFamily.SHELL,
     ...     mesh_element=mesh_elem,
     ...     laminate=laminate  # MITC4Composite or MITC3Composite used
+    ... )
+    
+    >>> # Solid element (3D volumetric)
+    >>> elem = ElementFactory.get_element(
+    ...     element_family=ElementFamily.SOLID,
+    ...     mesh_element=mesh_elem,
+    ...     material=material  # Isotropic or Orthotropic
     ... )
     
     >>> # Nonlinear analysis
@@ -145,7 +155,7 @@ class ElementFactory:
         Parameters
         ----------
         element_family : ElementFamily
-            The element family (SHELL or PLANE)
+            The element family (SHELL, PLANE, or SOLID)
         mesh_element : MeshElement
             The mesh element containing node coordinates and IDs
         **kwargs : dict
@@ -169,6 +179,12 @@ class ElementFactory:
             - material : Material
                 Material properties
                 
+            For solid elements:
+            - material : Material
+                Isotropic or Orthotropic material properties
+            - orientation : np.ndarray, optional
+                3×3 rotation matrix for orthotropic material orientation
+                
         Returns
         -------
         FemElement or False
@@ -187,6 +203,16 @@ class ElementFactory:
         - 8 nodes: QUAD8
         - 9 nodes: QUAD9
         
+        **Solid Elements (by node count):**
+        - 4 nodes: TETRA4
+        - 5 nodes: PYRAMID5
+        - 6 nodes: WEDGE6
+        - 8 nodes: HEXA8
+        - 10 nodes: TETRA10
+        - 13 nodes: PYRAMID13
+        - 15 nodes: WEDGE15
+        - 20 nodes: HEXA20
+        
         The composite variant is automatically selected when `laminate` 
         parameter is provided instead of `material` + `thickness`.
         """
@@ -195,6 +221,9 @@ class ElementFactory:
         from .MITC4 import MITC4
         from .MITC4_composite import MITC4Composite
         from .QUAD import QUAD4, QUAD8, QUAD9
+        from .SOLID import (
+            HEXA8, HEXA20, PYRAMID5, PYRAMID13, TETRA4, TETRA10, WEDGE6, WEDGE15
+        )
         
         # Check if this is a composite element (laminate provided)
         laminate = kwargs.pop('laminate', None)
@@ -206,6 +235,18 @@ class ElementFactory:
         
         # Plane element map
         PLANE_ELEMENT_MAP = {4: QUAD4, 8: QUAD8, 9: QUAD9}
+        
+        # Solid element map
+        SOLID_ELEMENT_MAP = {
+            4: TETRA4,
+            5: PYRAMID5,
+            6: WEDGE6,
+            8: HEXA8,
+            10: TETRA10,
+            13: PYRAMID13,
+            15: WEDGE15,
+            20: HEXA20,
+        }
 
         node_ids = mesh_element.node_ids
         node_coords = mesh_element.node_coords
@@ -233,6 +274,14 @@ class ElementFactory:
                     
             elif element_family == ElementFamily.PLANE:
                 element_class = PLANE_ELEMENT_MAP[node_count]
+                return element_class(
+                    node_coords=node_coords,
+                    node_ids=node_ids,
+                    **kwargs
+                )
+                
+            elif element_family == ElementFamily.SOLID:
+                element_class = SOLID_ELEMENT_MAP[node_count]
                 return element_class(
                     node_coords=node_coords,
                     node_ids=node_ids,
