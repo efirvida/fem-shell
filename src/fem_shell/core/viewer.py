@@ -25,18 +25,76 @@ from PySide6.QtWidgets import (
 )
 from pyvista import themes
 from pyvista.core.celltype import CellType
+from fem_shell.core.mesh.entities import ElementType
 from pyvistaqt import QtInteractor
 
 __all__ = ["plot_mesh", "plot_results"]
 
 
+# Mapping from node count to VTK cell type
+# Supports both 2D surface elements and 3D volumetric elements
 ELEMENTS_NODES_TO_VTK = {
+    # 2D Surface elements
     3: CellType.TRIANGLE,
-    4: CellType.QUAD,
+    4: CellType.QUAD,  # Default for 4 nodes (use SOLID_ELEMENTS_NODES_TO_VTK for tetra)
     6: CellType.QUADRATIC_TRIANGLE,
     8: CellType.QUADRATIC_QUAD,
     9: CellType.LAGRANGE_QUADRILATERAL,
 }
+
+# Mapping for 3D volumetric elements (use when element family is SOLID)
+SOLID_ELEMENTS_NODES_TO_VTK = {
+    4: CellType.TETRA,
+    5: CellType.PYRAMID,
+    6: CellType.WEDGE,
+    8: CellType.HEXAHEDRON,
+    10: CellType.QUADRATIC_TETRA,
+    13: CellType.QUADRATIC_PYRAMID,
+    15: CellType.QUADRATIC_WEDGE,
+    20: CellType.QUADRATIC_HEXAHEDRON,
+    27: CellType.TRIQUADRATIC_HEXAHEDRON,
+}
+
+# Conversion from Gmsh node ordering to VTK ordering per element type.
+# For common linear elements, Gmsh and VTK often align. Define explicitly
+# so we can adjust in the future if needed or for quadratic elements.
+GMESH_TO_VTK_ORDER = {
+    ElementType.tetra: [0, 1, 2, 3],
+    ElementType.hexahedron: [0, 1, 2, 3, 4, 5, 6, 7],
+    ElementType.wedge: [0, 1, 2, 3, 4, 5],  # prism
+    ElementType.pyramid: [0, 1, 2, 3, 4],
+    ElementType.triangle: [0, 1, 2],
+    ElementType.quad: [0, 1, 2, 3],
+    # Quadratic elements (placeholders; update if needed)
+    ElementType.tetra10: list(range(10)),
+    ElementType.hexahedron20: list(range(20)),
+    ElementType.hexahedron27: list(range(27)),
+    ElementType.wedge15: list(range(15)),
+    ElementType.pyramid13: list(range(13)),
+    ElementType.triangle6: list(range(6)),
+    ElementType.quad8: list(range(8)),
+    ElementType.quad9: list(range(9)),
+}
+
+def _to_vtk_order(element) -> list[int]:
+    """Convert an element's node IDs from Gmsh order to VTK order.
+
+    Parameters
+    ----------
+    element : MeshElement
+        Element with `node_ids` and `element_type`.
+
+    Returns
+    -------
+    list[int]
+        Node IDs reordered for VTK expectations.
+    """
+    order = GMESH_TO_VTK_ORDER.get(element.element_type)
+    node_ids = list(element.node_ids)
+    if order is None or len(order) != len(node_ids):
+        return node_ids
+    # Reindex according to mapping
+    return [node_ids[i] for i in order]
 
 import matplotlib.pyplot as plt
 
@@ -448,6 +506,32 @@ class MeshViewer(QWidget):
 
         layout.addLayout(grid)
 
+        # Element Types Section
+        if num_elements > 0:
+            from collections import Counter
+            type_counts = Counter([el.element_type.name for el in self.mesh.elements])
+
+            layout.addSpacing(10)
+            types_title = QLabel("Element Types")
+            types_title.setFont(font)
+            layout.addWidget(types_title)
+
+            types_grid = QGridLayout()
+            types_grid.setHorizontalSpacing(12)
+            types_grid.setVerticalSpacing(4)
+
+            row = 0
+            for tname, count in sorted(type_counts.items()):
+                t_lbl = QLabel(tname)
+                c_lbl = QLabel(f"{count:,}")
+                tf = t_lbl.font(); tf.setPointSize(9); t_lbl.setFont(tf)
+                cf = c_lbl.font(); cf.setPointSize(9); cf.setBold(True); c_lbl.setFont(cf)
+                types_grid.addWidget(t_lbl, row, 0)
+                types_grid.addWidget(c_lbl, row, 1)
+                row += 1
+
+            layout.addLayout(types_grid)
+
         # Bounding Box Section
         coords = self.mesh.coords_array
         if coords.size > 0:
@@ -740,8 +824,33 @@ class MeshViewer(QWidget):
         visible_elements = selected_elements or self.mesh.elements
         for element in visible_elements:
             if element:
-                cells.append([len(element.node_ids)] + list(element.node_ids))
-                cell_types.append(ELEMENTS_NODES_TO_VTK[len(element.node_ids)])
+                # Determine VTK cell type using explicit element type
+                et = element.element_type
+                n = len(element.node_ids)
+                # Choose appropriate family mapping
+                if et in (
+                    ElementType.tetra,
+                    ElementType.tetra10,
+                    ElementType.hexahedron,
+                    ElementType.hexahedron20,
+                    ElementType.hexahedron27,
+                    ElementType.wedge,
+                    ElementType.wedge15,
+                    ElementType.pyramid,
+                    ElementType.pyramid13,
+                ):
+                    vtk_type = SOLID_ELEMENTS_NODES_TO_VTK.get(n)
+                else:
+                    vtk_type = ELEMENTS_NODES_TO_VTK.get(n)
+
+                if vtk_type is None:
+                    # Skip unknown elements gracefully
+                    continue
+
+                # Reorder nodes to VTK convention
+                vtk_node_ids = _to_vtk_order(element)
+                cells.append([n] + vtk_node_ids)
+                cell_types.append(vtk_type)
         return (
             pv.UnstructuredGrid(
                 np.hstack(cells).astype(np.int32),

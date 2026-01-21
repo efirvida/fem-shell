@@ -29,19 +29,41 @@ from fem_shell.core.mesh.entities import ElementType
 # ============================================================================
 
 ELEMENTS_TO_CALCULIX = {
+    # 2D Shell elements
     "triangle": "S3",
     "triangle6": "S6",
     "quad": "S4",
     "quad8": "S8R",
     "quad9": "S9",
+    # 3D Solid elements
+    "tetra": "C3D4",
+    "tetra10": "C3D10",
+    "hexahedron": "C3D8",
+    "hexahedron20": "C3D20",
+    "hexahedron27": "C3D27",
+    "wedge": "C3D6",
+    "wedge15": "C3D15",
+    "pyramid": "C3D5",
+    "pyramid13": "C3D13",
 }
 
 ELEMENT_TYPE_TO_GMSH = {
-    ElementType.triangle: 2,  # 3-node triangle
-    ElementType.triangle6: 9,  # 6-node second order triangle
-    ElementType.quad: 3,  # 4-node quadrangle
-    ElementType.quad8: 16,  # 8-node second order quadrangle
-    ElementType.quad9: 10,  # 9-node second order quadrangle
+    # 2D Surface elements
+    ElementType.triangle: 2,      # 3-node triangle
+    ElementType.triangle6: 9,     # 6-node second order triangle
+    ElementType.quad: 3,          # 4-node quadrangle
+    ElementType.quad8: 16,        # 8-node second order quadrangle
+    ElementType.quad9: 10,        # 9-node second order quadrangle
+    # 3D Volumetric elements
+    ElementType.tetra: 4,         # 4-node tetrahedron
+    ElementType.tetra10: 11,      # 10-node second order tetrahedron
+    ElementType.hexahedron: 5,    # 8-node hexahedron
+    ElementType.hexahedron20: 17, # 20-node second order hexahedron
+    ElementType.hexahedron27: 12, # 27-node second order hexahedron
+    ElementType.wedge: 6,         # 6-node prism/wedge
+    ElementType.wedge15: 18,      # 15-node second order prism
+    ElementType.pyramid: 7,       # 5-node pyramid
+    ElementType.pyramid13: 19,    # 13-node second order pyramid
 }
 
 
