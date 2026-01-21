@@ -76,6 +76,14 @@ from fem_shell.core.mesh.model import MeshModel
 # Selection utilities
 from fem_shell.core.mesh import selectors
 
+# Utility functions
+from fem_shell.core.mesh.utils import (
+    detect_open_boundaries,
+    close_open_boundaries,
+    volumetric_remesh,
+    boolean_union_meshes,
+)
+
 __all__ = [
     # Entities
     "Node",
@@ -110,4 +118,8 @@ __all__ = [
     "load_pickle",
     # Utilities
     "selectors",
+    "detect_open_boundaries",
+    "close_open_boundaries",
+    "volumetric_remesh",
+    "boolean_union_meshes",
 ]
