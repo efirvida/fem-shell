@@ -52,6 +52,10 @@ class MeshAssembler:
         Uses mesh.node_id_to_index mapping to ensure DOF indices are consecutive
         starting from 0, regardless of the original node IDs in the mesh.
         This is critical for merged meshes where node IDs may not be consecutive.
+        
+        Supports mixed-element meshes where elements may have different numbers
+        of nodes (e.g., pyramid + tetrahedron meshes). In this case, stores
+        lists instead of uniform numpy arrays.
         """
         elements = self.mesh.elements
         if not elements:
@@ -60,6 +64,7 @@ class MeshAssembler:
         dofs_list = []
         ke_list = []
         me_list = []
+        dof_sizes = set()  # Track if we have variable-size elements
 
         # Get the node ID to index mapping from the mesh
         node_id_to_index = self.mesh.node_id_to_index
@@ -85,6 +90,7 @@ class MeshAssembler:
                 [dof for node_id in fem_element.node_ids for dof in remapped_dof_indices[node_id]],
                 dtype=np.int64,
             )
+            dof_sizes.add(len(dofs))
 
             self._element_map[element.id] = fem_element
             dofs_list.append(dofs)
@@ -95,9 +101,26 @@ class MeshAssembler:
                 self.dofs_per_node = fem_element.dofs_per_node
                 self.spatial_dim = fem_element.spatial_dimmension
 
-        self._dofs_array = np.array(dofs_list, dtype=np.int64)
-        self._ke_array = np.array(ke_list, dtype=np.float64)
-        self._me_array = np.array(me_list, dtype=np.float64)
+        # Check if all elements have the same DOF count (uniform mesh)
+        self._is_mixed_mesh = len(dof_sizes) > 1
+        
+        if self._is_mixed_mesh:
+            # Mixed mesh: store as lists (variable-size arrays not supported by numpy)
+            self._dofs_list = dofs_list
+            self._ke_list = ke_list
+            self._me_list = me_list
+            self._dofs_array = None
+            self._ke_array = None
+            self._me_array = None
+        else:
+            # Uniform mesh: store as numpy arrays for efficiency
+            self._dofs_array = np.array(dofs_list, dtype=np.int64)
+            self._ke_array = np.array(ke_list, dtype=np.float64)
+            self._me_array = np.array(me_list, dtype=np.float64)
+            self._dofs_list = None
+            self._ke_list = None
+            self._me_list = None
+            
         self.dofs_count = self.mesh.node_count * self.dofs_per_node
 
     def _compute_sparsity_pattern(self):
@@ -108,9 +131,14 @@ class MeshAssembler:
         -----
         Determines the number of non-zeros per matrix row using element
         connectivity information. Critical for PETSc matrix performance.
+        Supports both uniform and mixed-element meshes.
         """
         nnz = [set() for _ in range(self.dofs_count)]
-        for elem_dofs in self._dofs_array:
+        
+        # Get the appropriate DOF data (list for mixed, array for uniform)
+        dofs_data = self._dofs_list if self._is_mixed_mesh else self._dofs_array
+        
+        for elem_dofs in dofs_data:
             for dof_i in elem_dofs:
                 nnz[dof_i].update(dof_j for dof_j in elem_dofs)
 
@@ -155,16 +183,25 @@ class MeshAssembler:
         -----
         Performs parallel assembly using local element contributions.
         Matrix entries are accumulated using ADD_VALUES mode.
+        Supports both uniform and mixed-element meshes.
         """
         K = self._create_petsc_matrix()
         K.setOption(PETSc.Mat.Option.NEW_NONZERO_ALLOCATION_ERR, False)
 
-        for e in range(self._dofs_array.shape[0]):
-            dofs = self._dofs_array[e].astype(PETSc.IntType)
-            ke = self._ke_array[e].flatten(order="C")  # Row-major flattening
+        if self._is_mixed_mesh:
+            # Mixed mesh: use lists
+            for dofs, ke in zip(self._dofs_list, self._ke_list):
+                dofs_int = dofs.astype(PETSc.IntType)
+                ke_flat = ke.flatten(order="C")
+                K.setValuesLocal(dofs_int, dofs_int, ke_flat, addv=PETSc.InsertMode.ADD_VALUES)
+        else:
+            # Uniform mesh: use arrays (more efficient)
+            for e in range(self._dofs_array.shape[0]):
+                dofs = self._dofs_array[e].astype(PETSc.IntType)
+                ke = self._ke_array[e].flatten(order="C")  # Row-major flattening
 
-            # Use block insertion for better performance
-            K.setValuesLocal(dofs, dofs, ke, addv=PETSc.InsertMode.ADD_VALUES)
+                # Use block insertion for better performance
+                K.setValuesLocal(dofs, dofs, ke, addv=PETSc.InsertMode.ADD_VALUES)
 
         K.assemble()
         return K
@@ -177,15 +214,27 @@ class MeshAssembler:
         -------
         PETSc.Mat
             Distributed sparse mass matrix
+            
+        Notes
+        -----
+        Supports both uniform and mixed-element meshes.
         """
         M = self._create_petsc_matrix()
         M.setOption(PETSc.Mat.Option.NEW_NONZERO_ALLOCATION_ERR, False)
 
-        for e in range(self._dofs_array.shape[0]):
-            dofs = self._dofs_array[e].astype(PETSc.IntType)
-            me = self._me_array[e].flatten(order="C")
+        if self._is_mixed_mesh:
+            # Mixed mesh: use lists
+            for dofs, me in zip(self._dofs_list, self._me_list):
+                dofs_int = dofs.astype(PETSc.IntType)
+                me_flat = me.flatten(order="C")
+                M.setValuesLocal(dofs_int, dofs_int, me_flat, addv=PETSc.InsertMode.ADD_VALUES)
+        else:
+            # Uniform mesh: use arrays
+            for e in range(self._dofs_array.shape[0]):
+                dofs = self._dofs_array[e].astype(PETSc.IntType)
+                me = self._me_array[e].flatten(order="C")
 
-            M.setValuesLocal(dofs, dofs, me, addv=PETSc.InsertMode.ADD_VALUES)
+                M.setValuesLocal(dofs, dofs, me, addv=PETSc.InsertMode.ADD_VALUES)
 
         M.assemble()
         return M
@@ -207,23 +256,33 @@ class MeshAssembler:
         Notes
         -----
         Supports both nodal and distributed loading conditions.
+        Supports both uniform and mixed-element meshes.
         """
         f = PETSc.Vec().create(self.comm)
         f.setSizes(self.dofs_count)
         f.setUp()
         f.zeroEntries()
 
+        # Compute element load vectors
         fe_list = [
             self._element_map[eid].body_load(load_condition.value) for eid in self._element_map
         ]
-        fe_array = np.array(fe_list, dtype=PETSc.ScalarType)
 
-        for e in range(fe_array.shape[0]):
-            dofs = self._dofs_array[e].astype(PETSc.IntType)
-            fe = fe_array[e]
+        if self._is_mixed_mesh:
+            # Mixed mesh: iterate directly over lists
+            for dofs, fe in zip(self._dofs_list, fe_list):
+                dofs_int = dofs.astype(PETSc.IntType)
+                f.setValuesLocal(dofs_int, fe, addv=PETSc.InsertMode.ADD_VALUES)
+        else:
+            # Uniform mesh: use arrays
+            fe_array = np.array(fe_list, dtype=PETSc.ScalarType)
 
-            # Use local-to-global mapping if using mesh partitioning
-            f.setValuesLocal(dofs, fe, addv=PETSc.InsertMode.ADD_VALUES)
+            for e in range(fe_array.shape[0]):
+                dofs = self._dofs_array[e].astype(PETSc.IntType)
+                fe = fe_array[e]
+
+                # Use local-to-global mapping if using mesh partitioning
+                f.setValuesLocal(dofs, fe, addv=PETSc.InsertMode.ADD_VALUES)
 
         f.assemble()
         return f
