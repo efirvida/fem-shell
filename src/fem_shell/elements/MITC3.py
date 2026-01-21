@@ -24,11 +24,11 @@ References
   Computers & Structures, 146, 91-104.
 """
 
-from typing import List, Optional, Tuple, Dict
+from typing import Optional, Tuple
 
 import numpy as np
 
-from fem_shell.core.material import Material, OrthotropicMaterial, IsotropicMaterial
+from fem_shell.core.material import Material, OrthotropicMaterial
 from fem_shell.elements.elements import ShellElement
 
 
@@ -97,6 +97,8 @@ class MITC3(ShellElement):
     where d = 10⁻⁴ is a small parameter to reduce in-plane twisting stiffness.
     """
 
+    vector_form = {"U": ("Ux", "Uy", "Uz"), "θ": ("θx", "θy", "θz")}
+
     def __init__(
         self,
         node_coords: np.ndarray,
@@ -113,10 +115,10 @@ class MITC3(ShellElement):
             material=material,
             dofs_per_node=6,
             thickness=thickness,
+            nonlinear=nonlinear,
         )
 
         self.element_type = "MITC3"
-        self.nonlinear = nonlinear
 
         # Initial local coordinate system
         self._initial_coords = np.array(node_coords, dtype=float).copy()
@@ -290,11 +292,21 @@ class MITC3(ShellElement):
 
         # Enriched derivatives
         df_dr = np.array(
-            [dh_dr[0] - df4_dr / 3.0, dh_dr[1] - df4_dr / 3.0, dh_dr[2] - df4_dr / 3.0, df4_dr]
+            [
+                dh_dr[0] - df4_dr / 3.0,
+                dh_dr[1] - df4_dr / 3.0,
+                dh_dr[2] - df4_dr / 3.0,
+                df4_dr,
+            ]
         )
 
         df_ds = np.array(
-            [dh_ds[0] - df4_ds / 3.0, dh_ds[1] - df4_ds / 3.0, dh_ds[2] - df4_ds / 3.0, df4_ds]
+            [
+                dh_ds[0] - df4_ds / 3.0,
+                dh_ds[1] - df4_ds / 3.0,
+                dh_ds[2] - df4_ds / 3.0,
+                df4_ds,
+            ]
         )
 
         return df_dr, df_ds
@@ -901,9 +913,15 @@ class MITC3(ShellElement):
         # For simplicity in the API, we keep B_gamma as 2x18 and handle bubble condensation in K and f_int.
 
         # Tying points evaluation
-        B_ert_A, B_est_A = self._evaluate_covariant_shear_at_point(*self._tying_points_constant["A"])
-        B_ert_B, B_est_B = self._evaluate_covariant_shear_at_point(*self._tying_points_constant["B"])
-        B_ert_C, B_est_C = self._evaluate_covariant_shear_at_point(*self._tying_points_constant["C"])
+        B_ert_A, B_est_A = self._evaluate_covariant_shear_at_point(
+            *self._tying_points_constant["A"]
+        )
+        B_ert_B, B_est_B = self._evaluate_covariant_shear_at_point(
+            *self._tying_points_constant["B"]
+        )
+        B_ert_C, B_est_C = self._evaluate_covariant_shear_at_point(
+            *self._tying_points_constant["C"]
+        )
 
         B_ert_D, B_est_D = self._evaluate_covariant_shear_at_point(*self._tying_points_linear["D"])
         B_ert_E, B_est_E = self._evaluate_covariant_shear_at_point(*self._tying_points_linear["E"])
@@ -956,7 +974,8 @@ class MITC3(ShellElement):
         # Add drilling stiffness to stabilize the rotation about the normal (local z).
         # We use an integrated formulation: K_drill = integral( B_drill.T * k_stab * B_drill ) dA
         # This respects rigid body rotation unlike grounded springs.
-        k_drill_stab = self.material.E * self.thickness * 1e-3
+        # Tuned to alpha=0.15 consistent with MITC4 fix for Ko 2017 benchmarks
+        k_drill_stab = self.material.E * (self.thickness ** 2) * 0.15
         for (r, s), w in zip(self._gauss_points, self._gauss_weights):
             B_drill = self._compute_B_drill(r, s)
             # Use only the 5-th row which corresponds to d_theta_z
@@ -1697,11 +1716,7 @@ class MITC3(ShellElement):
             # K_L = integral( (BL^T @ C @ BNL + BNL^T @ C @ BL + BNL^T @ C @ BNL) dA )
             # The last term is needed for full TL consistency
             K_L += (
-                (
-                    B_m_L.T @ Cm_raw @ B_m_NL
-                    + B_m_NL.T @ Cm_raw @ B_m_L
-                    + B_m_NL.T @ Cm_raw @ B_m_NL
-                )
+                (B_m_L.T @ Cm_raw @ B_m_NL + B_m_NL.T @ Cm_raw @ B_m_L + B_m_NL.T @ Cm_raw @ B_m_NL)
                 * w
                 * area
                 * self.thickness
@@ -1727,17 +1742,17 @@ class MITC3(ShellElement):
         """
         T = self.T()
         u_local = T @ self._current_displacements
-        
+
         f_int = np.zeros(18)
-        
+
         # Consistent integration for all components
         E_mat = self.material.E
         nu = self.material.nu
         factor = E_mat / (1 - nu**2)
         Cm_raw = factor * np.array([[1, nu, 0], [nu, 1, 0], [0, 0, (1 - nu) / 2]])
-        
+
         area = self.area()
-        
+
         # Bending and Shear (statically condensed bubble)
         # In linear range, f = K_cond @ u
         # For non-linear, we should integrate B^T @ sigma
@@ -1752,11 +1767,11 @@ class MITC3(ShellElement):
                 # Voigt: [Exx, Eyy, 2Exy]
                 eps_m = np.array([E_GL[0, 0], E_GL[1, 1], 2 * E_GL[0, 1]])
                 sigma_m = Cm_raw @ eps_m
-                
+
                 B_L = self._compute_B_L(r, s)
                 B_NL = self._compute_B_NL(r, s)
                 B_total = B_L[[0, 1, 3], :] + B_NL[[0, 1, 3], :]
-                
+
                 f_int += B_total.T @ sigma_m * w * area * self.thickness
             else:
                 Bm = self.B_m(r, s)
@@ -1766,7 +1781,7 @@ class MITC3(ShellElement):
 
         if transform_to_global:
             f_int = T.T @ f_int
-            
+
         return f_int
 
     def compute_residual(
