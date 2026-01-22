@@ -126,6 +126,7 @@ class AsyncCheckpointWriter:
             u_full = task["u_full"]
             v_full = task.get("v_full")
             a_full = task.get("a_full")
+            extra_fields = task.get("extra_fields")
             checkpoint_dir = task["checkpoint_dir"]
 
             # Guardar estado para restart (NPZ)
@@ -140,7 +141,7 @@ class AsyncCheckpointWriter:
 
             # Escribir VTU para visualización (con malla deformada)
             vtu_path = os.path.join(checkpoint_dir, "fields.vtu")
-            self._write_vtu(vtu_path, u_full, v_full, a_full)
+            self._write_vtu(vtu_path, u_full, v_full, a_full, extra_fields)
 
             # Guardar malla deformada en HDF5
             if self.save_deformed_mesh:
@@ -153,10 +154,12 @@ class AsyncCheckpointWriter:
 
             # Registrar para PVD
             with self._lock:
-                self._written_times.append((
-                    t,
-                    os.path.join(f"{t:.{self.time_precision}g}", "fields.vtu"),
-                ))
+                self._written_times.append(
+                    (
+                        t,
+                        os.path.join(f"{t:.{self.time_precision}g}", "fields.vtu"),
+                    )
+                )
                 # Update PVD incrementally so it's always up-to-date even if simulation is cancelled
                 self._update_pvd_incremental()
 
@@ -182,6 +185,7 @@ class AsyncCheckpointWriter:
         checkpoint_dir: str,
         v_full: Optional[np.ndarray] = None,
         a_full: Optional[np.ndarray] = None,
+        extra_fields: Optional[Dict[str, np.ndarray]] = None,
     ) -> None:
         """
         Encola una tarea de escritura de checkpoint.
@@ -206,12 +210,17 @@ class AsyncCheckpointWriter:
             Vector de velocidad completo.
         a_full : np.ndarray, optional
             Vector de aceleración completo.
+        extra_fields : Dict[str, np.ndarray], optional
+            Campos adicionales vectoriales o escalares para escribir en VTU.
         """
         # Copiar arrays para evitar que se modifiquen durante la escritura
         task = {
             "t": float(t),
             "time_step": int(time_step),
             "dt": float(dt),
+            "extra_fields": {k: v.copy() for k, v in extra_fields.items()}
+            if extra_fields
+            else None,
             "state": {k: v.copy() if isinstance(v, np.ndarray) else v for k, v in state.items()},
             "u_full": u_full.copy(),
             "v_full": v_full.copy() if v_full is not None else None,
@@ -299,6 +308,7 @@ class AsyncCheckpointWriter:
         u_full: np.ndarray,
         v_full: Optional[np.ndarray] = None,
         a_full: Optional[np.ndarray] = None,
+        extra_fields: Optional[Dict[str, np.ndarray]] = None,
     ) -> None:
         """Write VTU file with solution fields using deformed coordinates."""
         # Get vector components from vector_form
@@ -344,7 +354,19 @@ class AsyncCheckpointWriter:
                 A = np.hstack([A, np.zeros((A.shape[0], 3 - A.shape[1]))])
             point_data["Acceleration"] = A[:, :3]
             point_data["Acceleration_magnitude"] = np.linalg.norm(A[:, :3], axis=1)
-
+        # Add extra fields if provided
+        if extra_fields:
+            for name, data in extra_fields.items():
+                if data.ndim == 1:
+                    point_data[name] = data
+                else:
+                    # Assume vector data
+                    vec_data = data
+                    if vec_data.shape[1] == 2:
+                        vec_data = np.hstack([vec_data, np.zeros((vec_data.shape[0], 1))])
+                    elif vec_data.shape[1] > 3:
+                        vec_data = vec_data[:, :3]
+                    point_data[name] = vec_data
         # Build cell connectivity
         cells_dict: Dict[str, List] = {}
         for element in self.mesh_obj.element_map.values():
@@ -533,11 +555,11 @@ class CheckpointManager:
         # This ensures we write at 0.1, 0.2, 0.3, ... not 0.001, 0.101, 0.201, ...
         n_intervals = t / self.write_interval
         n_intervals_rounded = round(n_intervals)
-        
+
         # Use relative tolerance that grows with time magnitude
         # For t=27.0, write_interval=0.1: tolerance = max(1e-6, 27.0 * 1e-9) = 2.7e-8
         tolerance = max(1e-6, abs(t) * 1e-9)
-        
+
         is_multiple = abs(n_intervals - n_intervals_rounded) < tolerance
 
         return is_multiple
@@ -551,6 +573,7 @@ class CheckpointManager:
         u_full: np.ndarray,
         v_full: Optional[np.ndarray] = None,
         a_full: Optional[np.ndarray] = None,
+        extra_fields: Optional[Dict[str, np.ndarray]] = None,
     ) -> str:
         """
         Write checkpoint to disk.
@@ -578,6 +601,8 @@ class CheckpointManager:
             Full velocity vector for VTU export.
         a_full : np.ndarray, optional
             Full acceleration vector for VTU export.
+        extra_fields : Dict[str, np.ndarray], optional
+            Campos adicionales vectoriales o escalares para escribir en VTU.
 
         Returns
         -------
@@ -601,6 +626,7 @@ class CheckpointManager:
                 checkpoint_dir=checkpoint_dir,
                 v_full=v_full,
                 a_full=a_full,
+                extra_fields=extra_fields,
             )
         else:
             # Synchronous writing (original behavior)
@@ -616,7 +642,7 @@ class CheckpointManager:
 
             # Write VTU for visualization (with deformed coordinates)
             vtu_path = os.path.join(checkpoint_dir, "fields.vtu")
-            self._write_vtu(vtu_path, u_full, v_full, a_full)
+            self._write_vtu(vtu_path, u_full, v_full, a_full, extra_fields)
 
             # Save deformed mesh in HDF5
             if self.save_deformed_mesh:
@@ -786,6 +812,7 @@ class CheckpointManager:
         u_full: np.ndarray,
         v_full: Optional[np.ndarray] = None,
         a_full: Optional[np.ndarray] = None,
+        extra_fields: Optional[Dict[str, np.ndarray]] = None,
     ) -> None:
         """Write VTU file with solution fields (synchronous mode)."""
         # Get vector components from vector_form
@@ -831,7 +858,19 @@ class CheckpointManager:
                 A = np.hstack([A, np.zeros((A.shape[0], 3 - A.shape[1]))])
             point_data["Acceleration"] = A[:, :3]
             point_data["Acceleration_magnitude"] = np.linalg.norm(A[:, :3], axis=1)
-
+        # Add extra fields if provided
+        if extra_fields:
+            for name, data in extra_fields.items():
+                if data.ndim == 1:
+                    point_data[name] = data
+                else:
+                    # Assume vector data
+                    vec_data = data
+                    if vec_data.shape[1] == 2:
+                        vec_data = np.hstack([vec_data, np.zeros((vec_data.shape[0], 1))])
+                    elif vec_data.shape[1] > 3:
+                        vec_data = vec_data[:, :3]
+                    point_data[name] = vec_data
         # Build cell connectivity
         cells_dict: Dict[str, List] = {}
         for element in self.mesh_obj.element_map.values():

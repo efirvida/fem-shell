@@ -52,7 +52,7 @@ class MeshAssembler:
         Uses mesh.node_id_to_index mapping to ensure DOF indices are consecutive
         starting from 0, regardless of the original node IDs in the mesh.
         This is critical for merged meshes where node IDs may not be consecutive.
-        
+
         Supports mixed-element meshes where elements may have different numbers
         of nodes (e.g., pyramid + tetrahedron meshes). In this case, stores
         lists instead of uniform numpy arrays.
@@ -103,7 +103,7 @@ class MeshAssembler:
 
         # Check if all elements have the same DOF count (uniform mesh)
         self._is_mixed_mesh = len(dof_sizes) > 1
-        
+
         if self._is_mixed_mesh:
             # Mixed mesh: store as lists (variable-size arrays not supported by numpy)
             self._dofs_list = dofs_list
@@ -120,7 +120,7 @@ class MeshAssembler:
             self._dofs_list = None
             self._ke_list = None
             self._me_list = None
-            
+
         self.dofs_count = self.mesh.node_count * self.dofs_per_node
 
     def _compute_sparsity_pattern(self):
@@ -134,10 +134,10 @@ class MeshAssembler:
         Supports both uniform and mixed-element meshes.
         """
         nnz = [set() for _ in range(self.dofs_count)]
-        
+
         # Get the appropriate DOF data (list for mixed, array for uniform)
         dofs_data = self._dofs_list if self._is_mixed_mesh else self._dofs_array
-        
+
         for elem_dofs in dofs_data:
             for dof_i in elem_dofs:
                 nnz[dof_i].update(dof_j for dof_j in elem_dofs)
@@ -214,7 +214,7 @@ class MeshAssembler:
         -------
         PETSc.Mat
             Distributed sparse mass matrix
-            
+
         Notes
         -----
         Supports both uniform and mixed-element meshes.
@@ -418,5 +418,3 @@ class MeshAssembler:
 
         K_G.assemble()
         return K_G
-
-

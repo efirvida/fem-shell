@@ -105,20 +105,24 @@ class BlockMesh:
             points.append(kp)
 
         def add_spline(from_point, to_point, spline_coords):
-            splines.append({
-                "from_point": from_point,
-                "to_point": to_point,
-                "coords": spline_coords,
-            })
+            splines.append(
+                {
+                    "from_point": from_point,
+                    "to_point": to_point,
+                    "coords": spline_coords,
+                }
+            )
 
         def add_block(point_ids, blocks_x, blocks_y, blocks_z, grading):
-            blocks.append({
-                "point_ids": point_ids,
-                "blocks_x": blocks_x,
-                "blocks_y": blocks_y,
-                "blocks_z": blocks_z,
-                "grading": grading,
-            })
+            blocks.append(
+                {
+                    "point_ids": point_ids,
+                    "blocks_x": blocks_x,
+                    "blocks_y": blocks_y,
+                    "blocks_z": blocks_z,
+                    "grading": grading,
+                }
+            )
 
         # # Add closing section
         # n_fit_sections = 10  # usar las últimas 3 secciones para extrapolar la curvatura
@@ -336,12 +340,14 @@ class BlockMesh:
             ny = NY * NY_factor if i in (3, 5) else NY
 
             if sec != len(blade_definition):
-                boundaries.append([
-                    points_map[f"af-{af_kp_current[i]}-sec-{sec}"],
-                    points_map[f"af-{af_kp_current[i + 1]}-sec-{sec}"],
-                    points_map[f"af-{af_kp_next[i]}-sec-{sec + 1}"],
-                    points_map[f"af-{af_kp_next[i + 1]}-sec-{sec + 1}"],
-                ])
+                boundaries.append(
+                    [
+                        points_map[f"af-{af_kp_current[i]}-sec-{sec}"],
+                        points_map[f"af-{af_kp_current[i + 1]}-sec-{sec}"],
+                        points_map[f"af-{af_kp_next[i]}-sec-{sec + 1}"],
+                        points_map[f"af-{af_kp_next[i + 1]}-sec-{sec + 1}"],
+                    ]
+                )
 
             add_block(Bl_blk, NX_BL, ny, nz, BL_GRADING)
             add_block(OUT_blk, NX_OUTTER, ny, nz, OUTTER_GRADING)
@@ -429,12 +435,14 @@ class BlockMesh:
         add_block(OUT_blk_0, NX_OUTTER, 10, nz, OUTTER_GRADING)
 
         if close_TE:
-            boundaries.append([
-                points_map[f"af-{af_kp_current[-1]}-sec-{sec}"],
-                points_map[f"af-{af_kp_current[0]}-sec-{sec}"],
-                points_map[f"af-{af_kp_next[-1]}-sec-{sec + 1}"],
-                points_map[f"af-{af_kp_next[0]}-sec-{sec + 1}"],
-            ])
+            boundaries.append(
+                [
+                    points_map[f"af-{af_kp_current[-1]}-sec-{sec}"],
+                    points_map[f"af-{af_kp_current[0]}-sec-{sec}"],
+                    points_map[f"af-{af_kp_next[-1]}-sec-{sec + 1}"],
+                    points_map[f"af-{af_kp_next[0]}-sec-{sec + 1}"],
+                ]
+            )
 
     def _create_top_blocks(
         self,
@@ -469,12 +477,14 @@ class BlockMesh:
         )
 
         # Add boundaries
-        boundaries.extend([
-            [points_map[f"af-{af_kp_prev[i]}-sec-{n_sections - 2}"] for i in [0, 1, 8, 9]],
-            [points_map[f"af-{af_kp_prev[i]}-sec-{n_sections - 2}"] for i in [1, 2, 7, 8]],
-            [points_map[f"af-{af_kp_prev[i]}-sec-{n_sections - 2}"] for i in [2, 3, 6, 7]],
-            [points_map[f"af-{af_kp_prev[i]}-sec-{n_sections - 2}"] for i in [3, 4, 5, 6]],
-        ])
+        boundaries.extend(
+            [
+                [points_map[f"af-{af_kp_prev[i]}-sec-{n_sections - 2}"] for i in [0, 1, 8, 9]],
+                [points_map[f"af-{af_kp_prev[i]}-sec-{n_sections - 2}"] for i in [1, 2, 7, 8]],
+                [points_map[f"af-{af_kp_prev[i]}-sec-{n_sections - 2}"] for i in [2, 3, 6, 7]],
+                [points_map[f"af-{af_kp_prev[i]}-sec-{n_sections - 2}"] for i in [3, 4, 5, 6]],
+            ]
+        )
 
         # Add top blocks
         for blk in blk_top[:-1]:

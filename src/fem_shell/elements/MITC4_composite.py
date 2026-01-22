@@ -17,22 +17,13 @@ References
 - Reddy, J.N. (2004). Mechanics of Laminated Composite Plates and Shells.
 """
 
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Tuple
 
 import numpy as np
 
-from fem_shell.core.laminate import (
-    Laminate,
-    Ply,
-    compute_Qbar,
-)
+from fem_shell.constitutive.failure import evaluate_ply_failure, stress_transformation_matrix
+from fem_shell.core.laminate import Laminate, compute_Qbar
 from fem_shell.core.material import OrthotropicMaterial
-from fem_shell.constitutive.failure import (
-    FailureMode,
-    FailureResult,
-    evaluate_ply_failure,
-    stress_transformation_matrix,
-)
 from fem_shell.elements.MITC4 import MITC4
 
 
@@ -127,14 +118,16 @@ class MITC4Composite(MITC4):
         equiv_props = laminate.get_equivalent_properties()
         equivalent_material = self._create_equivalent_material(laminate, equiv_props)
 
+        # Store modifiers for curvature calculation
+        self._kx_mod = kx_mod
+        self._ky_mod = ky_mod
+
         # Call parent constructor
         super().__init__(
             node_coords=node_coords,
             node_ids=node_ids,
             material=equivalent_material,
             thickness=laminate.total_thickness,
-            kx_mod=kx_mod,
-            ky_mod=ky_mod,
             shear_correction_factor=laminate.shear_correction_factor,
             nonlinear=nonlinear,
         )
@@ -158,10 +151,10 @@ class MITC4Composite(MITC4):
         ref_material = laminate.plies[0].material
 
         # Compute average/equivalent properties
-        Ex = equiv_props['Ex_membrane']
-        Ey = equiv_props['Ey_membrane']
-        Gxy = equiv_props['Gxy_membrane']
-        nuxy = equiv_props['nuxy_membrane']
+        Ex = equiv_props["Ex_membrane"]
+        Ey = equiv_props["Ey_membrane"]
+        Gxy = equiv_props["Gxy_membrane"]
+        nuxy = equiv_props["nuxy_membrane"]
 
         # Use reference material for out-of-plane properties
         _, G23, G13 = ref_material.G
@@ -281,30 +274,23 @@ class MITC4Composite(MITC4):
         D_mat = self._D_matrix
         Cs_mat = self._Cs_matrix
 
-        # DOF indices
-        mem_dofs = np.array([0, 1, 6, 7, 12, 13, 18, 19])
-        bend_dofs = np.array([2, 3, 4, 8, 9, 10, 14, 15, 16, 20, 21, 22])
-
         # Gauss integration
         for r, s in self._gauss_points:
             _, detJ = self.J(r, s)
 
-            # Strain-displacement matrices
-            B_m = self.B_m(r, s)  # 3x8
-            B_kappa = self.B_kappa(r, s)  # 3x12
-            B_gamma = self.B_gamma(r, s)  # 2x12
+            # Strain-displacement matrices (all 24-DOF format)
+            B_m = self.B_m(r, s)  # 3x24
+            B_kappa = self.B_kappa(r, s)  # 3x24
+            B_gamma = self.B_gamma_MITC4(r, s)  # 2x24
 
             # Membrane stiffness: Bm^T @ A @ Bm (A already includes thickness integration)
-            K_mm = B_m.T @ A_mat @ B_m * detJ
-            K[np.ix_(mem_dofs, mem_dofs)] += K_mm
+            K += B_m.T @ A_mat @ B_m * detJ
 
             # Bending stiffness: Bκ^T @ D @ Bκ (D already includes h³/12 factor)
-            K_bb = B_kappa.T @ D_mat @ B_kappa * detJ
-            K[np.ix_(bend_dofs, bend_dofs)] += K_bb
+            K += B_kappa.T @ D_mat @ B_kappa * detJ
 
             # Shear stiffness: Bγ^T @ Cs @ Bγ
-            K_ss = B_gamma.T @ Cs_mat @ B_gamma * detJ
-            K[np.ix_(bend_dofs, bend_dofs)] += K_ss
+            K += B_gamma.T @ Cs_mat @ B_gamma * detJ
 
         # Apply drilling stiffness
         K = self._add_drilling_stiffness(K)
@@ -317,7 +303,7 @@ class MITC4Composite(MITC4):
 
         For asymmetric laminates:
         K = ∫[Bm^T·A·Bm + Bm^T·B·Bκ + Bκ^T·B·Bm + Bκ^T·D·Bκ + Bγ^T·Cs·Bγ]dA
-        
+
         Returns local stiffness matrix (transformation to global is done in K()).
         """
         K = np.zeros((24, 24))
@@ -328,37 +314,28 @@ class MITC4Composite(MITC4):
         D_mat = self._D_matrix
         Cs_mat = self._Cs_matrix
 
-        # DOF indices
-        # Membrane DOFs: u, v for each node
-        mem_dofs = np.array([0, 1, 6, 7, 12, 13, 18, 19])
-        # Bending DOFs: w, θx, θy for each node
-        bend_dofs = np.array([2, 3, 4, 8, 9, 10, 14, 15, 16, 20, 21, 22])
-
         # Gauss integration
         for r, s in self._gauss_points:
             _, detJ = self.J(r, s)
 
-            # Strain-displacement matrices
-            B_m = self.B_m(r, s)  # 3x8
-            B_kappa = self.B_kappa(r, s)  # 3x12
-            B_gamma = self.B_gamma(r, s)  # 2x12
+            # Strain-displacement matrices (all 24-DOF format)
+            B_m = self.B_m(r, s)  # 3x24
+            B_kappa = self.B_kappa(r, s)  # 3x24
+            B_gamma = self.B_gamma_MITC4(r, s)  # 2x24
 
             # Membrane stiffness: Bm^T @ A @ Bm
-            K_mm = B_m.T @ A_mat @ B_m * detJ
-            K[np.ix_(mem_dofs, mem_dofs)] += K_mm
+            K += B_m.T @ A_mat @ B_m * detJ
 
             # Bending stiffness: Bκ^T @ D @ Bκ
-            K_bb = B_kappa.T @ D_mat @ B_kappa * detJ
-            K[np.ix_(bend_dofs, bend_dofs)] += K_bb
+            K += B_kappa.T @ D_mat @ B_kappa * detJ
 
             # Shear stiffness: Bγ^T @ Cs @ Bγ
-            K_ss = B_gamma.T @ Cs_mat @ B_gamma * detJ
-            K[np.ix_(bend_dofs, bend_dofs)] += K_ss
+            K += B_gamma.T @ Cs_mat @ B_gamma * detJ
 
             # Coupling terms: Bm^T @ B @ Bκ and Bκ^T @ B @ Bm
             K_mb = B_m.T @ B_mat @ B_kappa * detJ
-            K[np.ix_(mem_dofs, bend_dofs)] += K_mb
-            K[np.ix_(bend_dofs, mem_dofs)] += K_mb.T
+            K += K_mb
+            K += K_mb.T
 
         # Apply drilling stiffness
         K = self._add_drilling_stiffness(K)
@@ -401,20 +378,12 @@ class MITC4Composite(MITC4):
         kappa : np.ndarray
             Curvatures [κxx, κyy, κxy]
         """
-        # Membrane DOFs
-        mem_dofs = np.array([0, 1, 6, 7, 12, 13, 18, 19])
-        u_membrane = u_local[mem_dofs]
+        # Compute strains using full 24-DOF B matrices
+        B_m = self.B_m(r, s)  # 3x24
+        epsilon_0 = B_m @ u_local
 
-        # Bending DOFs
-        bend_dofs = np.array([2, 3, 4, 8, 9, 10, 14, 15, 16, 20, 21, 22])
-        u_bending = u_local[bend_dofs]
-
-        # Compute strains
-        B_m = self.B_m(r, s)
-        epsilon_0 = B_m @ u_membrane
-
-        B_kappa = self.B_kappa(r, s)
-        kappa = B_kappa @ u_bending
+        B_kappa = self.B_kappa(r, s)  # 3x24
+        kappa = B_kappa @ u_local
 
         return epsilon_0, kappa
 
@@ -472,13 +441,15 @@ class MITC4Composite(MITC4):
                 T_eps = self._strain_transformation_matrix(ply.angle)
                 epsilon_ply = T_eps @ epsilon_lam
 
-                results.append({
-                    'ply_index': k,
-                    'angle': ply.angle,
-                    'z': z,
-                    'epsilon_laminate': epsilon_lam.copy(),
-                    'epsilon_ply': epsilon_ply.copy(),
-                })
+                results.append(
+                    {
+                        "ply_index": k,
+                        "angle": ply.angle,
+                        "z": z,
+                        "epsilon_laminate": epsilon_lam.copy(),
+                        "epsilon_ply": epsilon_ply.copy(),
+                    }
+                )
 
         return results
 
@@ -542,13 +513,15 @@ class MITC4Composite(MITC4):
                 T_stress = stress_transformation_matrix(ply.angle)
                 sigma_ply = T_stress @ sigma_lam
 
-                results.append({
-                    'ply_index': k,
-                    'angle': ply.angle,
-                    'z': z,
-                    'sigma_laminate': sigma_lam.copy(),
-                    'sigma_ply': sigma_ply.copy(),
-                })
+                results.append(
+                    {
+                        "ply_index": k,
+                        "angle": ply.angle,
+                        "z": z,
+                        "sigma_laminate": sigma_lam.copy(),
+                        "sigma_ply": sigma_ply.copy(),
+                    }
+                )
 
         return results
 
@@ -567,11 +540,7 @@ class MITC4Composite(MITC4):
         s = np.sin(theta)
         c2, s2 = c**2, s**2
 
-        return np.array([
-            [c2, s2, s * c],
-            [s2, c2, -s * c],
-            [-2 * s * c, 2 * s * c, c2 - s2]
-        ])
+        return np.array([[c2, s2, s * c], [s2, c2, -s * c], [-2 * s * c, 2 * s * c, c2 - s2]])
 
     def evaluate_failure(
         self,
@@ -616,7 +585,7 @@ class MITC4Composite(MITC4):
         results = []
 
         for stress_data in stresses:
-            k = stress_data['ply_index']
+            k = stress_data["ply_index"]
             ply = self.laminate.plies[k]
 
             if ply.strength is None:
@@ -625,23 +594,23 @@ class MITC4Composite(MITC4):
                     "Define StrengthProperties for failure analysis."
                 )
 
-            sigma_ply = stress_data['sigma_ply']
+            sigma_ply = stress_data["sigma_ply"]
 
             # Evaluate failure criterion
-            failure_result = evaluate_ply_failure(
-                sigma_ply, ply.strength, criterion
-            )
+            failure_result = evaluate_ply_failure(sigma_ply, ply.strength, criterion)
 
-            results.append({
-                'ply_index': k,
-                'angle': ply.angle,
-                'z': stress_data['z'],
-                'sigma_ply': sigma_ply.copy(),
-                'failure_result': failure_result,
-                'failed': failure_result.failed,
-                'failure_index': failure_result.failure_index,
-                'mode': failure_result.mode,
-            })
+            results.append(
+                {
+                    "ply_index": k,
+                    "angle": ply.angle,
+                    "z": stress_data["z"],
+                    "sigma_ply": sigma_ply.copy(),
+                    "failure_result": failure_result,
+                    "failed": failure_result.failed,
+                    "failure_index": failure_result.failure_index,
+                    "mode": failure_result.mode,
+                }
+            )
 
         return results
 
@@ -671,7 +640,7 @@ class MITC4Composite(MITC4):
         """
         failure_results = self.evaluate_failure(u_local, r, s, criterion)
 
-        return max(failure_results, key=lambda x: x['failure_index'])
+        return max(failure_results, key=lambda x: x["failure_index"])
 
     def compute_stress_resultants(
         self,
@@ -718,15 +687,11 @@ class MITC4Composite(MITC4):
             24x24 consistent mass matrix
         """
         # Compute total mass per unit area (ρ*h equivalent)
-        mass_per_area = sum(
-            ply.material.rho * ply.thickness
-            for ply in self.laminate.plies
-        )
+        mass_per_area = sum(ply.material.rho * ply.thickness for ply in self.laminate.plies)
 
         # Compute rotational inertia (ρ*h³/12 equivalent for laminate)
         rotational_inertia = sum(
-            ply.material.rho * (ply.z_top**3 - ply.z_bottom**3) / 3
-            for ply in self.laminate.plies
+            ply.material.rho * (ply.z_top**3 - ply.z_bottom**3) / 3 for ply in self.laminate.plies
         )
 
         M_local = np.zeros((24, 24))
@@ -734,7 +699,13 @@ class MITC4Composite(MITC4):
         # Use same approach as parent class
         for r, s in self._gauss_points:
             _, detJ = self.J(r, s)
-            N = self.shape_functions(r, s)  # Returns (6, 24) matrix
+
+            # Build shape function matrix (6x24) for mass matrix
+            N_vals = self._shape_functions(r, s)  # [N0, N1, N2, N3]
+            N = np.zeros((6, 24))
+            for i in range(4):
+                for dof in range(6):
+                    N[dof, 6 * i + dof] = N_vals[i]
 
             # Translational mass (u, v, w)
             M_trans = mass_per_area * (N[:3].T @ N[:3]) * detJ

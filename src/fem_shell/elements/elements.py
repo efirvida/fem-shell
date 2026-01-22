@@ -76,9 +76,11 @@ class ShellElement(FemElement):
         material: Material,
         dofs_per_node: int,
         thickness: float,
+        nonlinear: bool,
     ):
         super().__init__(name, node_coords, node_ids, material, dofs_per_node)
         self.thickness = thickness
+        self.nonlinear = nonlinear
         self.element_family = ElementFamily.SHELL
 
     def __repr__(self):
@@ -104,13 +106,13 @@ class PlaneElement(FemElement):
 class ElementFactory:
     """
     Factory for creating finite element instances based on mesh and configuration.
-    
+
     The factory automatically selects the appropriate element type based on:
     - Element family (SHELL, PLANE, or SOLID)
     - Number of nodes (3 for triangular, 4 for quadrilateral, etc.)
     - Material type (isotropic Material or Laminate for composites)
     - Analysis type (linear or nonlinear)
-    
+
     Examples
     --------
     >>> # Isotropic shell element
@@ -120,21 +122,21 @@ class ElementFactory:
     ...     material=material,
     ...     thickness=0.01
     ... )
-    
+
     >>> # Composite shell element (auto-detected from laminate)
     >>> elem = ElementFactory.get_element(
     ...     element_family=ElementFamily.SHELL,
     ...     mesh_element=mesh_elem,
     ...     laminate=laminate  # MITC4Composite or MITC3Composite used
     ... )
-    
+
     >>> # Solid element (3D volumetric)
     >>> elem = ElementFactory.get_element(
     ...     element_family=ElementFamily.SOLID,
     ...     mesh_element=mesh_elem,
     ...     material=material  # Isotropic or Orthotropic
     ... )
-    
+
     >>> # Nonlinear analysis
     >>> elem = ElementFactory.get_element(
     ...     element_family=ElementFamily.SHELL,
@@ -144,14 +146,14 @@ class ElementFactory:
     ...     nonlinear=True
     ... )
     """
-    
+
     @staticmethod
     def get_element(
         element_family: ElementFamily, mesh_element: MeshElement, **kwargs
     ) -> FemElement | bool:
         """
         Create a finite element instance for the given mesh element.
-        
+
         Parameters
         ----------
         element_family : ElementFamily
@@ -160,7 +162,7 @@ class ElementFactory:
             The mesh element containing node coordinates and IDs
         **kwargs : dict
             Additional parameters passed to element constructor:
-            
+
             For isotropic shell elements:
             - material : Material
                 Isotropic material properties
@@ -168,41 +170,41 @@ class ElementFactory:
                 Shell thickness
             - nonlinear : bool, optional
                 Enable geometric nonlinear analysis (default False)
-                
+
             For composite shell elements:
             - laminate : Laminate
                 Laminate definition (auto-selects composite element)
             - nonlinear : bool, optional
                 Enable geometric nonlinear analysis (default False)
-                
+
             For plane elements:
             - material : Material
                 Material properties
-                
+
             For solid elements:
             - material : Material
                 Isotropic or Orthotropic material properties
             - orientation : np.ndarray, optional
                 3×3 rotation matrix for orthotropic material orientation
-                
+
         Returns
         -------
         FemElement or False
             The created element instance, or False if element type not supported
-            
+
         Notes
         -----
         Element selection logic:
-        
+
         **Shell Elements (by node count):**
         - 3 nodes: MITC3 (isotropic) or MITC3Composite (laminate)
         - 4 nodes: MITC4 (isotropic) or MITC4Composite (laminate)
-        
+
         **Plane Elements (by node count):**
         - 4 nodes: QUAD4
         - 8 nodes: QUAD8
         - 9 nodes: QUAD9
-        
+
         **Solid Elements (by node count):**
         - 4 nodes: TETRA4
         - 5 nodes: PYRAMID5
@@ -212,8 +214,8 @@ class ElementFactory:
         - 13 nodes: PYRAMID13
         - 15 nodes: WEDGE15
         - 20 nodes: HEXA20
-        
-        The composite variant is automatically selected when `laminate` 
+
+        The composite variant is automatically selected when `laminate`
         parameter is provided instead of `material` + `thickness`.
         """
         from .MITC3 import MITC3
@@ -221,21 +223,19 @@ class ElementFactory:
         from .MITC4 import MITC4
         from .MITC4_composite import MITC4Composite
         from .QUAD import QUAD4, QUAD8, QUAD9
-        from .SOLID import (
-            HEXA8, HEXA20, PYRAMID5, PYRAMID13, TETRA4, TETRA10, WEDGE6, WEDGE15
-        )
-        
+        from .SOLID import HEXA8, HEXA20, PYRAMID5, PYRAMID13, TETRA4, TETRA10, WEDGE6, WEDGE15
+
         # Check if this is a composite element (laminate provided)
-        laminate = kwargs.pop('laminate', None)
+        laminate = kwargs.pop("laminate", None)
         is_composite = laminate is not None
-        
+
         # Shell element maps
         SHELL_ELEMENT_MAP = {3: MITC3, 4: MITC4}
         SHELL_COMPOSITE_MAP = {3: MITC3Composite, 4: MITC4Composite}
-        
+
         # Plane element map
         PLANE_ELEMENT_MAP = {4: QUAD4, 8: QUAD8, 9: QUAD9}
-        
+
         # Solid element map
         SOLID_ELEMENT_MAP = {
             4: TETRA4,
@@ -251,46 +251,29 @@ class ElementFactory:
         node_ids = mesh_element.node_ids
         node_coords = mesh_element.node_coords
         node_count = mesh_element.node_count
-        
+
         try:
             if element_family == ElementFamily.SHELL:
                 if is_composite:
                     # Composite shell element
                     element_class = SHELL_COMPOSITE_MAP[node_count]
                     return element_class(
-                        node_coords=node_coords,
-                        node_ids=node_ids,
-                        laminate=laminate,
-                        **kwargs
+                        node_coords=node_coords, node_ids=node_ids, laminate=laminate, **kwargs
                     )
                 else:
                     # Isotropic shell element
                     element_class = SHELL_ELEMENT_MAP[node_count]
-                    return element_class(
-                        node_coords=node_coords,
-                        node_ids=node_ids,
-                        **kwargs
-                    )
-                    
+                    return element_class(node_coords=node_coords, node_ids=node_ids, **kwargs)
+
             elif element_family == ElementFamily.PLANE:
                 element_class = PLANE_ELEMENT_MAP[node_count]
-                return element_class(
-                    node_coords=node_coords,
-                    node_ids=node_ids,
-                    **kwargs
-                )
-                
+                return element_class(node_coords=node_coords, node_ids=node_ids, **kwargs)
+
             elif element_family == ElementFamily.SOLID:
                 element_class = SOLID_ELEMENT_MAP[node_count]
-                return element_class(
-                    node_coords=node_coords,
-                    node_ids=node_ids,
-                    **kwargs
-                )
+                return element_class(node_coords=node_coords, node_ids=node_ids, **kwargs)
             else:
-                raise NotImplementedError(
-                    f"Element family {element_family} not implemented"
-                )
-                
+                raise NotImplementedError(f"Element family {element_family} not implemented")
+
         except KeyError:
             return False

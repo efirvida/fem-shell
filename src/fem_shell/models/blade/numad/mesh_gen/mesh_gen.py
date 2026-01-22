@@ -140,18 +140,24 @@ def get_shell_mesh(blade, elementSize):
     splineYi = interpolator_wrap(spParam, splineY[:, 0], spParami, "pchip")
     splineZi = interpolator_wrap(spParam, splineZ[:, 0], spParami, "pchip")
     for i in range(1, cls):
-        splineXi = np.vstack([
-            splineXi,
-            interpolator_wrap(spParam, splineX[:, i], spParami, "pchip"),
-        ])
-        splineYi = np.vstack([
-            splineYi,
-            interpolator_wrap(spParam, splineY[:, i], spParami, "pchip"),
-        ])
-        splineZi = np.vstack([
-            splineZi,
-            interpolator_wrap(spParam, splineZ[:, i], spParami, "pchip"),
-        ])
+        splineXi = np.vstack(
+            [
+                splineXi,
+                interpolator_wrap(spParam, splineX[:, i], spParami, "pchip"),
+            ]
+        )
+        splineYi = np.vstack(
+            [
+                splineYi,
+                interpolator_wrap(spParam, splineY[:, i], spParami, "pchip"),
+            ]
+        )
+        splineZi = np.vstack(
+            [
+                splineZi,
+                interpolator_wrap(spParam, splineZ[:, i], spParami, "pchip"),
+            ]
+        )
     splineXi = splineXi.T
     splineYi = splineYi.T
     splineZi = splineZi.T
@@ -181,84 +187,86 @@ def get_shell_mesh(blade, elementSize):
         endSec = 11
         stSp = 0
         for j in range(stSec, endSec + 1):
-            shellKp = np.array([
-                [splineXi[stPt, stSp], splineYi[stPt, stSp], splineZi[stPt, stSp]],
+            shellKp = np.array(
                 [
-                    splineXi[stPt, stSp + 3],
-                    splineYi[stPt, stSp + 3],
-                    splineZi[stPt, stSp + 3],
-                ],
-                [
-                    splineXi[stPt + 3, stSp + 3],
-                    splineYi[stPt + 3, stSp + 3],
-                    splineZi[stPt + 3, stSp + 3],
-                ],
-                [
-                    splineXi[stPt + 3, stSp],
-                    splineYi[stPt + 3, stSp],
-                    splineZi[stPt + 3, stSp],
-                ],
-                [
-                    splineXi[stPt, stSp + 1],
-                    splineYi[stPt, stSp + 1],
-                    splineZi[stPt, stSp + 1],
-                ],
-                [
-                    splineXi[stPt, stSp + 2],
-                    splineYi[stPt, stSp + 2],
-                    splineZi[stPt, stSp + 2],
-                ],
-                [
-                    splineXi[stPt + 1, stSp + 3],
-                    splineYi[stPt + 1, stSp + 3],
-                    splineZi[stPt + 1, stSp + 3],
-                ],
-                [
-                    splineXi[stPt + 2, stSp + 3],
-                    splineYi[stPt + 2, stSp + 3],
-                    splineZi[stPt + 2, stSp + 3],
-                ],
-                [
-                    splineXi[stPt + 3, stSp + 2],
-                    splineYi[stPt + 3, stSp + 2],
-                    splineZi[stPt + 3, stSp + 2],
-                ],
-                [
-                    splineXi[stPt + 3, stSp + 1],
-                    splineYi[stPt + 3, stSp + 1],
-                    splineZi[stPt + 3, stSp + 1],
-                ],
-                [
-                    splineXi[stPt + 2, stSp],
-                    splineYi[stPt + 2, stSp],
-                    splineZi[stPt + 2, stSp],
-                ],
-                [
-                    splineXi[stPt + 1, stSp],
-                    splineYi[stPt + 1, stSp],
-                    splineZi[stPt + 1, stSp],
-                ],
-                [
-                    splineXi[stPt + 1, stSp + 1],
-                    splineYi[stPt + 1, stSp + 1],
-                    splineZi[stPt + 1, stSp + 1],
-                ],
-                [
-                    splineXi[stPt + 1, stSp + 2],
-                    splineYi[stPt + 1, stSp + 2],
-                    splineZi[stPt + 1, stSp + 2],
-                ],
-                [
-                    splineXi[stPt + 2, stSp + 2],
-                    splineYi[stPt + 2, stSp + 2],
-                    splineZi[stPt + 2, stSp + 2],
-                ],
-                [
-                    splineXi[stPt + 2, stSp + 1],
-                    splineYi[stPt + 2, stSp + 1],
-                    splineZi[stPt + 2, stSp + 1],
-                ],
-            ])
+                    [splineXi[stPt, stSp], splineYi[stPt, stSp], splineZi[stPt, stSp]],
+                    [
+                        splineXi[stPt, stSp + 3],
+                        splineYi[stPt, stSp + 3],
+                        splineZi[stPt, stSp + 3],
+                    ],
+                    [
+                        splineXi[stPt + 3, stSp + 3],
+                        splineYi[stPt + 3, stSp + 3],
+                        splineZi[stPt + 3, stSp + 3],
+                    ],
+                    [
+                        splineXi[stPt + 3, stSp],
+                        splineYi[stPt + 3, stSp],
+                        splineZi[stPt + 3, stSp],
+                    ],
+                    [
+                        splineXi[stPt, stSp + 1],
+                        splineYi[stPt, stSp + 1],
+                        splineZi[stPt, stSp + 1],
+                    ],
+                    [
+                        splineXi[stPt, stSp + 2],
+                        splineYi[stPt, stSp + 2],
+                        splineZi[stPt, stSp + 2],
+                    ],
+                    [
+                        splineXi[stPt + 1, stSp + 3],
+                        splineYi[stPt + 1, stSp + 3],
+                        splineZi[stPt + 1, stSp + 3],
+                    ],
+                    [
+                        splineXi[stPt + 2, stSp + 3],
+                        splineYi[stPt + 2, stSp + 3],
+                        splineZi[stPt + 2, stSp + 3],
+                    ],
+                    [
+                        splineXi[stPt + 3, stSp + 2],
+                        splineYi[stPt + 3, stSp + 2],
+                        splineZi[stPt + 3, stSp + 2],
+                    ],
+                    [
+                        splineXi[stPt + 3, stSp + 1],
+                        splineYi[stPt + 3, stSp + 1],
+                        splineZi[stPt + 3, stSp + 1],
+                    ],
+                    [
+                        splineXi[stPt + 2, stSp],
+                        splineYi[stPt + 2, stSp],
+                        splineZi[stPt + 2, stSp],
+                    ],
+                    [
+                        splineXi[stPt + 1, stSp],
+                        splineYi[stPt + 1, stSp],
+                        splineZi[stPt + 1, stSp],
+                    ],
+                    [
+                        splineXi[stPt + 1, stSp + 1],
+                        splineYi[stPt + 1, stSp + 1],
+                        splineZi[stPt + 1, stSp + 1],
+                    ],
+                    [
+                        splineXi[stPt + 1, stSp + 2],
+                        splineYi[stPt + 1, stSp + 2],
+                        splineZi[stPt + 1, stSp + 2],
+                    ],
+                    [
+                        splineXi[stPt + 2, stSp + 2],
+                        splineYi[stPt + 2, stSp + 2],
+                        splineZi[stPt + 2, stSp + 2],
+                    ],
+                    [
+                        splineXi[stPt + 2, stSp + 1],
+                        splineYi[stPt + 2, stSp + 1],
+                        splineZi[stPt + 2, stSp + 1],
+                    ],
+                ]
+            )
             # vec = shellKp[1, :] - shellKp[0, :]
             # mag = np.linalg.norm(vec)
             # nEl = np.array([], dtype=int)
@@ -331,36 +339,48 @@ def get_shell_mesh(blade, elementSize):
             shellKp = np.zeros((16, 3))
             shellKp[0, :] = np.array([splineXi[stPt, 12], splineYi[stPt, 12], splineZi[stPt, 12]])
             shellKp[1, :] = np.array([splineXi[stPt, 24], splineYi[stPt, 24], splineZi[stPt, 24]])
-            shellKp[2, :] = np.array([
-                splineXi[stPt + 3, 24],
-                splineYi[stPt + 3, 24],
-                splineZi[stPt + 3, 24],
-            ])
-            shellKp[3, :] = np.array([
-                splineXi[stPt + 3, 12],
-                splineYi[stPt + 3, 12],
-                splineZi[stPt + 3, 12],
-            ])
-            shellKp[6, :] = np.array([
-                splineXi[stPt + 1, 24],
-                splineYi[stPt + 1, 24],
-                splineZi[stPt + 1, 24],
-            ])
-            shellKp[7, :] = np.array([
-                splineXi[stPt + 2, 24],
-                splineYi[stPt + 2, 24],
-                splineZi[stPt + 2, 24],
-            ])
-            shellKp[10, :] = np.array([
-                splineXi[stPt + 2, 12],
-                splineYi[stPt + 2, 12],
-                splineZi[stPt + 2, 12],
-            ])
-            shellKp[11, :] = np.array([
-                splineXi[stPt + 1, 12],
-                splineYi[stPt + 1, 12],
-                splineZi[stPt + 1, 12],
-            ])
+            shellKp[2, :] = np.array(
+                [
+                    splineXi[stPt + 3, 24],
+                    splineYi[stPt + 3, 24],
+                    splineZi[stPt + 3, 24],
+                ]
+            )
+            shellKp[3, :] = np.array(
+                [
+                    splineXi[stPt + 3, 12],
+                    splineYi[stPt + 3, 12],
+                    splineZi[stPt + 3, 12],
+                ]
+            )
+            shellKp[6, :] = np.array(
+                [
+                    splineXi[stPt + 1, 24],
+                    splineYi[stPt + 1, 24],
+                    splineZi[stPt + 1, 24],
+                ]
+            )
+            shellKp[7, :] = np.array(
+                [
+                    splineXi[stPt + 2, 24],
+                    splineYi[stPt + 2, 24],
+                    splineZi[stPt + 2, 24],
+                ]
+            )
+            shellKp[10, :] = np.array(
+                [
+                    splineXi[stPt + 2, 12],
+                    splineYi[stPt + 2, 12],
+                    splineZi[stPt + 2, 12],
+                ]
+            )
+            shellKp[11, :] = np.array(
+                [
+                    splineXi[stPt + 1, 12],
+                    splineYi[stPt + 1, 12],
+                    splineZi[stPt + 1, 12],
+                ]
+            )
             shellKp[4, :] = 0.6666 * shellKp[0, :] + 0.3333 * shellKp[1, :]
             shellKp[5, :] = 0.3333 * shellKp[0, :] + 0.6666 * shellKp[1, :]
             shellKp[8, :] = 0.6666 * shellKp[2, :] + 0.3333 * shellKp[3, :]
@@ -434,36 +454,48 @@ def get_shell_mesh(blade, elementSize):
             shellKp = np.zeros((16, 3))
             shellKp[0, :] = np.array([splineXi[stPt, 27], splineYi[stPt, 27], splineZi[stPt, 27]])
             shellKp[1, :] = np.array([splineXi[stPt, 9], splineYi[stPt, 9], splineZi[stPt, 9]])
-            shellKp[2, :] = np.array([
-                splineXi[stPt + 3, 9],
-                splineYi[stPt + 3, 9],
-                splineZi[stPt + 3, 9],
-            ])
-            shellKp[3, :] = np.array([
-                splineXi[stPt + 3, 27],
-                splineYi[stPt + 3, 27],
-                splineZi[stPt + 3, 27],
-            ])
-            shellKp[6, :] = np.array([
-                splineXi[stPt + 1, 9],
-                splineYi[stPt + 1, 9],
-                splineZi[stPt + 1, 9],
-            ])
-            shellKp[7, :] = np.array([
-                splineXi[stPt + 2, 9],
-                splineYi[stPt + 2, 9],
-                splineZi[stPt + 2, 9],
-            ])
-            shellKp[10, :] = np.array([
-                splineXi[stPt + 2, 27],
-                splineYi[stPt + 2, 27],
-                splineZi[stPt + 2, 27],
-            ])
-            shellKp[11, :] = np.array([
-                splineXi[stPt + 1, 27],
-                splineYi[stPt + 1, 27],
-                splineZi[stPt + 1, 27],
-            ])
+            shellKp[2, :] = np.array(
+                [
+                    splineXi[stPt + 3, 9],
+                    splineYi[stPt + 3, 9],
+                    splineZi[stPt + 3, 9],
+                ]
+            )
+            shellKp[3, :] = np.array(
+                [
+                    splineXi[stPt + 3, 27],
+                    splineYi[stPt + 3, 27],
+                    splineZi[stPt + 3, 27],
+                ]
+            )
+            shellKp[6, :] = np.array(
+                [
+                    splineXi[stPt + 1, 9],
+                    splineYi[stPt + 1, 9],
+                    splineZi[stPt + 1, 9],
+                ]
+            )
+            shellKp[7, :] = np.array(
+                [
+                    splineXi[stPt + 2, 9],
+                    splineYi[stPt + 2, 9],
+                    splineZi[stPt + 2, 9],
+                ]
+            )
+            shellKp[10, :] = np.array(
+                [
+                    splineXi[stPt + 2, 27],
+                    splineYi[stPt + 2, 27],
+                    splineZi[stPt + 2, 27],
+                ]
+            )
+            shellKp[11, :] = np.array(
+                [
+                    splineXi[stPt + 1, 27],
+                    splineYi[stPt + 1, 27],
+                    splineZi[stPt + 1, 27],
+                ]
+            )
             shellKp[4, :] = 0.6666 * shellKp[0, :] + 0.3333 * shellKp[1, :]
             shellKp[5, :] = 0.3333 * shellKp[0, :] + 0.6666 * shellKp[1, :]
             shellKp[8, :] = 0.6666 * shellKp[2, :] + 0.3333 * shellKp[3, :]

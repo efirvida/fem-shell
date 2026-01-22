@@ -76,6 +76,7 @@ GMESH_TO_VTK_ORDER = {
     ElementType.quad9: list(range(9)),
 }
 
+
 def _to_vtk_order(element) -> list[int]:
     """Convert an element's node IDs from Gmsh order to VTK order.
 
@@ -95,6 +96,7 @@ def _to_vtk_order(element) -> list[int]:
         return node_ids
     # Reindex according to mapping
     return [node_ids[i] for i in order]
+
 
 import matplotlib.pyplot as plt
 
@@ -509,6 +511,7 @@ class MeshViewer(QWidget):
         # Element Types Section
         if num_elements > 0:
             from collections import Counter
+
             type_counts = Counter([el.element_type.name for el in self.mesh.elements])
 
             layout.addSpacing(10)
@@ -524,8 +527,13 @@ class MeshViewer(QWidget):
             for tname, count in sorted(type_counts.items()):
                 t_lbl = QLabel(tname)
                 c_lbl = QLabel(f"{count:,}")
-                tf = t_lbl.font(); tf.setPointSize(9); t_lbl.setFont(tf)
-                cf = c_lbl.font(); cf.setPointSize(9); cf.setBold(True); c_lbl.setFont(cf)
+                tf = t_lbl.font()
+                tf.setPointSize(9)
+                t_lbl.setFont(tf)
+                cf = c_lbl.font()
+                cf.setPointSize(9)
+                cf.setBold(True)
+                c_lbl.setFont(cf)
                 types_grid.addWidget(t_lbl, row, 0)
                 types_grid.addWidget(c_lbl, row, 1)
                 row += 1
@@ -558,16 +566,16 @@ class MeshViewer(QWidget):
                 l_lbl = QLabel(label)
                 r_lbl = QLabel(range_str)
                 d_lbl = QLabel(dim_str)
-                
+
                 for lbl in [l_lbl, r_lbl, d_lbl]:
                     f = lbl.font()
                     f.setPointSize(9)
                     if lbl is d_lbl:
                         f.setBold(True)
                     lbl.setFont(f)
-                
+
                 r_lbl.setStyleSheet("color: #555;")
-                
+
                 bbox_grid.addWidget(l_lbl, row, 0)
                 bbox_grid.addWidget(r_lbl, row, 1)
                 bbox_grid.addWidget(d_lbl, row, 2)
@@ -918,14 +926,22 @@ class MeshViewer(QWidget):
 
         # Qualitative color palette for sets (Tab10)
         set_colors = [
-            "#1f77b4", "#ff7f0e", "#2ca02c", "#d62728", "#9467bd",
-            "#8c564b", "#e377c2", "#7f7f7f", "#bcbd22", "#17becf"
+            "#1f77b4",
+            "#ff7f0e",
+            "#2ca02c",
+            "#d62728",
+            "#9467bd",
+            "#8c564b",
+            "#e377c2",
+            "#7f7f7f",
+            "#bcbd22",
+            "#17becf",
         ]
         color_idx = 0
 
         # Base mesh visibility logic
         show_base = self.show_base_mesh_chk.isChecked()
-        
+
         # Determine if we should show the full mesh as the primary model
         # (if no element sets are selected OR if explicitly requested)
         if show_base:
@@ -941,7 +957,7 @@ class MeshViewer(QWidget):
                 element_set = self.mesh.get_element_set(s_name)
                 color = set_colors[color_idx % len(set_colors)]
                 color_idx += 1
-                
+
                 if grid := self._create_element_grid(selected_elements=element_set.elements):
                     set_style = style.copy()
                     set_style["color"] = color
@@ -953,7 +969,7 @@ class MeshViewer(QWidget):
                 node_set = self.mesh.get_node_set(s_name)
                 color = set_colors[color_idx % len(set_colors)]
                 color_idx += 1
-                
+
                 if points := self._create_node_points(node_set.node_ids):
                     self.plotter.add_points(
                         points,

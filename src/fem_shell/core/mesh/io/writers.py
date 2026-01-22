@@ -49,21 +49,21 @@ ELEMENTS_TO_CALCULIX = {
 
 ELEMENT_TYPE_TO_GMSH = {
     # 2D Surface elements
-    ElementType.triangle: 2,      # 3-node triangle
-    ElementType.triangle6: 9,     # 6-node second order triangle
-    ElementType.quad: 3,          # 4-node quadrangle
-    ElementType.quad8: 16,        # 8-node second order quadrangle
-    ElementType.quad9: 10,        # 9-node second order quadrangle
+    ElementType.triangle: 2,  # 3-node triangle
+    ElementType.triangle6: 9,  # 6-node second order triangle
+    ElementType.quad: 3,  # 4-node quadrangle
+    ElementType.quad8: 16,  # 8-node second order quadrangle
+    ElementType.quad9: 10,  # 9-node second order quadrangle
     # 3D Volumetric elements
-    ElementType.tetra: 4,         # 4-node tetrahedron
-    ElementType.tetra10: 11,      # 10-node second order tetrahedron
-    ElementType.hexahedron: 5,    # 8-node hexahedron
-    ElementType.hexahedron20: 17, # 20-node second order hexahedron
-    ElementType.hexahedron27: 12, # 27-node second order hexahedron
-    ElementType.wedge: 6,         # 6-node prism/wedge
-    ElementType.wedge15: 18,      # 15-node second order prism
-    ElementType.pyramid: 7,       # 5-node pyramid
-    ElementType.pyramid13: 19,    # 13-node second order pyramid
+    ElementType.tetra: 4,  # 4-node tetrahedron
+    ElementType.tetra10: 11,  # 10-node second order tetrahedron
+    ElementType.hexahedron: 5,  # 8-node hexahedron
+    ElementType.hexahedron20: 17,  # 20-node second order hexahedron
+    ElementType.hexahedron27: 12,  # 27-node second order hexahedron
+    ElementType.wedge: 6,  # 6-node prism/wedge
+    ElementType.wedge15: 18,  # 15-node second order prism
+    ElementType.pyramid: 7,  # 5-node pyramid
+    ElementType.pyramid13: 19,  # 13-node second order pyramid
 }
 
 
@@ -479,11 +479,13 @@ def write_gmsh_mesh(mesh: "MeshModel", filename: str) -> None:
                 for el_type, elements in elements_by_type.items():
                     gmsh_type = ELEMENT_TYPE_TO_GMSH.get(el_type)
                     if gmsh_type:
-                        element_blocks.append({
-                            "entity_tag": elset_entity_tags[name],
-                            "gmsh_type": gmsh_type,
-                            "elements": elements,
-                        })
+                        element_blocks.append(
+                            {
+                                "entity_tag": elset_entity_tags[name],
+                                "gmsh_type": gmsh_type,
+                                "elements": elements,
+                            }
+                        )
 
             elements_in_sets = set()
             for el_set in mesh.element_sets.values():
@@ -500,11 +502,13 @@ def write_gmsh_mesh(mesh: "MeshModel", filename: str) -> None:
                 for el_type, elements in elements_by_type.items():
                     gmsh_type = ELEMENT_TYPE_TO_GMSH.get(el_type)
                     if gmsh_type:
-                        element_blocks.append({
-                            "entity_tag": 1,
-                            "gmsh_type": gmsh_type,
-                            "elements": elements,
-                        })
+                        element_blocks.append(
+                            {
+                                "entity_tag": 1,
+                                "gmsh_type": gmsh_type,
+                                "elements": elements,
+                            }
+                        )
         else:
             elements_by_type = {}
             for el in mesh.elements:
@@ -515,11 +519,13 @@ def write_gmsh_mesh(mesh: "MeshModel", filename: str) -> None:
             for el_type, elements in elements_by_type.items():
                 gmsh_type = ELEMENT_TYPE_TO_GMSH.get(el_type)
                 if gmsh_type:
-                    element_blocks.append({
-                        "entity_tag": 1,
-                        "gmsh_type": gmsh_type,
-                        "elements": elements,
-                    })
+                    element_blocks.append(
+                        {
+                            "entity_tag": 1,
+                            "gmsh_type": gmsh_type,
+                            "elements": elements,
+                        }
+                    )
 
         total_elements = sum(len(block["elements"]) for block in element_blocks)
         f.write(f"{len(element_blocks)} {total_elements} 1 {total_elements}\n")

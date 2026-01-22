@@ -368,6 +368,8 @@ class LinearDynamicSolver(Solver):
         u_full: np.ndarray,
         v_full: Optional[np.ndarray] = None,
         a_full: Optional[np.ndarray] = None,
+        extra_fields: Optional[Dict[str, np.ndarray]] = None,
+        **kwargs,
     ) -> None:
         """
         Handle checkpoint writing if conditions are met.
@@ -386,6 +388,10 @@ class LinearDynamicSolver(Solver):
             Full displacement vector (for VTU).
         v_full, a_full : np.ndarray, optional
             Full velocity/acceleration vectors (for VTU).
+        extra_fields : Dict[str, np.ndarray], optional
+            Extra fields to write to VTU.
+        **kwargs : Any
+            Additional state variables to save in the checkpoint (NPZ).
         """
         if self._checkpoint_manager is None:
             return
@@ -397,6 +403,7 @@ class LinearDynamicSolver(Solver):
             "u_red": u_red,
             "v_red": v_red,
             "a_red": a_red,
+            **kwargs,
         }
 
         self._checkpoint_manager.write(
@@ -407,6 +414,7 @@ class LinearDynamicSolver(Solver):
             u_full=u_full,
             v_full=v_full,
             a_full=a_full,
+            extra_fields=extra_fields,
         )
 
     def _compute_critical_timestep(self, K: PETSc.Mat, M: PETSc.Mat) -> float:

@@ -133,10 +133,12 @@ class Blade:
 
                 # Línea normal extendida
                 line_length = 1000
-                normal_line = shp.LineString([
-                    (px - normal[0] * line_length, py - normal[1] * line_length),
-                    (px + normal[0] * line_length, py + normal[1] * line_length),
-                ])
+                normal_line = shp.LineString(
+                    [
+                        (px - normal[0] * line_length, py - normal[1] * line_length),
+                        (px + normal[0] * line_length, py + normal[1] * line_length),
+                    ]
+                )
 
                 # Intersección con la curva offset
                 intersection = normal_line.intersection(offset_curve)
@@ -163,10 +165,12 @@ class Blade:
                 closest_offset_point_index = np.argmin(dists_to_offset)
 
                 # Guardar resultado
-                offset_points.append((
-                    closest_offset_point_index,
-                    *closest_point,  # Usamos el punto de intersección, no el punto del array
-                ))
+                offset_points.append(
+                    (
+                        closest_offset_point_index,
+                        *closest_point,  # Usamos el punto de intersección, no el punto del array
+                    )
+                )
 
             return np.array(offset_points, dtype=float)
 
@@ -271,10 +275,12 @@ class Blade:
 
             # Retornar tanto los puntos como sus índices correspondientes
             points = np.array([(point.x, point.y) for point in equidistant_points])
-            return np.array([
-                [closest_indices[i], points[i][0], points[i][1]]
-                for i in range(len(closest_indices))
-            ])
+            return np.array(
+                [
+                    [closest_indices[i], points[i][0], points[i][1]]
+                    for i in range(len(closest_indices))
+                ]
+            )
 
         def rotate_spline_arrays(x_coords, y_coords, new_start_index):
             """
@@ -352,16 +358,18 @@ class Blade:
 
             lower_airfoil_points_idx = lower_airfoil_points[:, 0]
 
-            airfoil_keypoints = sorted({
-                int(p)
-                for p in [
-                    *lower_airfoil_points_idx,
-                    le_airfoil_idx - le_offset_points,
-                    le_airfoil_idx + le_offset_points,
-                    *upper_airfoil_points_idx,
-                ]
-                if p != le_airfoil_idx
-            })
+            airfoil_keypoints = sorted(
+                {
+                    int(p)
+                    for p in [
+                        *lower_airfoil_points_idx,
+                        le_airfoil_idx - le_offset_points,
+                        le_airfoil_idx + le_offset_points,
+                        *upper_airfoil_points_idx,
+                    ]
+                    if p != le_airfoil_idx
+                }
+            )
 
             airfoil_spline_z = np.full_like(airfoil_spline_x, current_z)
             airfoil_spline = np.column_stack([airfoil_spline_x, airfoil_spline_y, airfoil_spline_z])
@@ -397,17 +405,19 @@ class Blade:
                 (bl_spline_x.size - upper_bl_points_idx[0].astype(int)) // 4
             )
             bl_start_point_idx = lower_bl_points_idx[0].astype(int) // 4
-            bl_keypoints = sorted([
-                int(pt)
-                for pt in [
-                    bl_start_point_idx,
-                    *lower_bl_points_idx,
-                    le_bl_idx - int(le_offset_points * 1.2),
-                    le_bl_idx + le_offset_points,
-                    *upper_bl_points_idx,
-                    bl_end_point_idx,
+            bl_keypoints = sorted(
+                [
+                    int(pt)
+                    for pt in [
+                        bl_start_point_idx,
+                        *lower_bl_points_idx,
+                        le_bl_idx - int(le_offset_points * 1.2),
+                        le_bl_idx + le_offset_points,
+                        *upper_bl_points_idx,
+                        bl_end_point_idx,
+                    ]
                 ]
-            ])
+            )
             bl_spline = rotate_spline_arrays(bl_spline_x, bl_spline_y, bl_keypoints[0])
             bl_keypoints = np.array(bl_keypoints) - bl_keypoints[0]
 
@@ -438,17 +448,19 @@ class Blade:
             ) // 2
             outter_start_point_idx = lower_outter_points_idx[0].astype(int) // 2
 
-            outter_keypoints = sorted([
-                int(pt)
-                for pt in [
-                    outter_start_point_idx,
-                    *lower_outter_points_idx,
-                    le_outter_idx - int(le_offset_points * 1.4),
-                    le_outter_idx + le_offset_points,
-                    *upper_outter_points_idx,
-                    outter_end_point_idx,
+            outter_keypoints = sorted(
+                [
+                    int(pt)
+                    for pt in [
+                        outter_start_point_idx,
+                        *lower_outter_points_idx,
+                        le_outter_idx - int(le_offset_points * 1.4),
+                        le_outter_idx + le_offset_points,
+                        *upper_outter_points_idx,
+                        outter_end_point_idx,
+                    ]
                 ]
-            ])
+            )
             outter_spline = rotate_spline_arrays(
                 outter_spline_x, outter_spline_y, outter_keypoints[0]
             )
@@ -457,18 +469,20 @@ class Blade:
             outter_spline_z = np.full((outter_spline.shape[0], 1), current_z)
             outter_spline = np.hstack([outter_spline, outter_spline_z])
 
-            airfoil_list.append({
-                "keypoints": {
-                    "af": airfoil_keypoints,
-                    "bl": bl_keypoints,
-                    "out": outter_keypoints,
-                },
-                "splines": {
-                    "af": airfoil_spline,
-                    "bl": bl_spline,
-                    "out": outter_spline,
-                },
-            })
+            airfoil_list.append(
+                {
+                    "keypoints": {
+                        "af": airfoil_keypoints,
+                        "bl": bl_keypoints,
+                        "out": outter_keypoints,
+                    },
+                    "splines": {
+                        "af": airfoil_spline,
+                        "bl": bl_spline,
+                        "out": outter_spline,
+                    },
+                }
+            )
 
         # airfoil_list[-1]["splines"]["out"] = airfoil_list[-2]["splines"]["out"]
         # airfoil_list[-1]["keypoints"]["out"] = airfoil_list[-2]["keypoints"]["out"]

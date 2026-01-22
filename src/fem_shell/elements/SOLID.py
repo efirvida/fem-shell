@@ -104,7 +104,9 @@ class SolidElement(FemElement):
 
         # Ensure 3D coordinates
         if self.node_coords.shape[1] != 3:
-            raise ValueError(f"Solid elements require 3D coordinates, got shape {self.node_coords.shape}")
+            raise ValueError(
+                f"Solid elements require 3D coordinates, got shape {self.node_coords.shape}"
+            )
 
     @property
     @abstractmethod
@@ -185,14 +187,28 @@ class SolidElement(FemElement):
         dN_dxi, dN_deta, dN_dzeta = self.shape_function_derivatives(xi, eta, zeta)
 
         # J[i,j] = ∂x_j/∂ξ_i where ξ_0=ξ, ξ_1=η, ξ_2=ζ and x_0=x, x_1=y, x_2=z
-        J = np.array([
-            [dN_dxi @ self.node_coords[:, 0], dN_dxi @ self.node_coords[:, 1], dN_dxi @ self.node_coords[:, 2]],
-            [dN_deta @ self.node_coords[:, 0], dN_deta @ self.node_coords[:, 1], dN_deta @ self.node_coords[:, 2]],
-            [dN_dzeta @ self.node_coords[:, 0], dN_dzeta @ self.node_coords[:, 1], dN_dzeta @ self.node_coords[:, 2]],
-        ])
+        J = np.array(
+            [
+                [
+                    dN_dxi @ self.node_coords[:, 0],
+                    dN_dxi @ self.node_coords[:, 1],
+                    dN_dxi @ self.node_coords[:, 2],
+                ],
+                [
+                    dN_deta @ self.node_coords[:, 0],
+                    dN_deta @ self.node_coords[:, 1],
+                    dN_deta @ self.node_coords[:, 2],
+                ],
+                [
+                    dN_dzeta @ self.node_coords[:, 0],
+                    dN_dzeta @ self.node_coords[:, 1],
+                    dN_dzeta @ self.node_coords[:, 2],
+                ],
+            ]
+        )
 
         det_J = np.linalg.det(J)
-        
+
         if det_J <= 1e-14:
             raise ValueError(f"Non-positive Jacobian determinant at ({xi}, {eta}, {zeta}): {det_J}")
 
@@ -238,14 +254,14 @@ class SolidElement(FemElement):
 
         for i in range(n_nodes):
             col = 3 * i
-            B[0, col] = dN_dx[i]      # εxx = ∂u/∂x
+            B[0, col] = dN_dx[i]  # εxx = ∂u/∂x
             B[1, col + 1] = dN_dy[i]  # εyy = ∂v/∂y
             B[2, col + 2] = dN_dz[i]  # εzz = ∂w/∂z
-            B[3, col] = dN_dy[i]      # γxy = ∂u/∂y + ∂v/∂x
+            B[3, col] = dN_dy[i]  # γxy = ∂u/∂y + ∂v/∂x
             B[3, col + 1] = dN_dx[i]
             B[4, col + 1] = dN_dz[i]  # γyz = ∂v/∂z + ∂w/∂y
             B[4, col + 2] = dN_dy[i]
-            B[5, col] = dN_dz[i]      # γzx = ∂w/∂x + ∂u/∂z
+            B[5, col] = dN_dz[i]  # γzx = ∂w/∂x + ∂u/∂z
             B[5, col + 2] = dN_dx[i]
 
         return B
@@ -293,14 +309,16 @@ class SolidElement(FemElement):
         lambd = E * nu / ((1 + nu) * (1 - 2 * nu))
         mu = E / (2 * (1 + nu))  # Shear modulus G
 
-        C = np.array([
-            [lambd + 2 * mu, lambd, lambd, 0, 0, 0],
-            [lambd, lambd + 2 * mu, lambd, 0, 0, 0],
-            [lambd, lambd, lambd + 2 * mu, 0, 0, 0],
-            [0, 0, 0, mu, 0, 0],
-            [0, 0, 0, 0, mu, 0],
-            [0, 0, 0, 0, 0, mu],
-        ])
+        C = np.array(
+            [
+                [lambd + 2 * mu, lambd, lambd, 0, 0, 0],
+                [lambd, lambd + 2 * mu, lambd, 0, 0, 0],
+                [lambd, lambd, lambd + 2 * mu, 0, 0, 0],
+                [0, 0, 0, mu, 0, 0],
+                [0, 0, 0, 0, mu, 0],
+                [0, 0, 0, 0, 0, mu],
+            ]
+        )
 
         return C
 
@@ -325,14 +343,16 @@ class SolidElement(FemElement):
         nu13 = nu31 * E1 / E3
 
         # Compliance matrix S (strain = S · stress)
-        S = np.array([
-            [1/E1, -nu21/E2, -nu31/E3, 0, 0, 0],
-            [-nu12/E1, 1/E2, -nu32/E3, 0, 0, 0],
-            [-nu13/E1, -nu23/E2, 1/E3, 0, 0, 0],
-            [0, 0, 0, 1/G12, 0, 0],
-            [0, 0, 0, 0, 1/G23, 0],
-            [0, 0, 0, 0, 0, 1/G31],
-        ])
+        S = np.array(
+            [
+                [1 / E1, -nu21 / E2, -nu31 / E3, 0, 0, 0],
+                [-nu12 / E1, 1 / E2, -nu32 / E3, 0, 0, 0],
+                [-nu13 / E1, -nu23 / E2, 1 / E3, 0, 0, 0],
+                [0, 0, 0, 1 / G12, 0, 0],
+                [0, 0, 0, 0, 1 / G23, 0],
+                [0, 0, 0, 0, 0, 1 / G31],
+            ]
+        )
 
         # Stiffness matrix C = S⁻¹
         C = np.linalg.inv(S)
@@ -361,14 +381,58 @@ class SolidElement(FemElement):
         # T transforms stress: σ_global = T · σ_local
         r = R  # 3×3 rotation matrix
 
-        T = np.array([
-            [r[0,0]**2, r[0,1]**2, r[0,2]**2, 2*r[0,0]*r[0,1], 2*r[0,1]*r[0,2], 2*r[0,2]*r[0,0]],
-            [r[1,0]**2, r[1,1]**2, r[1,2]**2, 2*r[1,0]*r[1,1], 2*r[1,1]*r[1,2], 2*r[1,2]*r[1,0]],
-            [r[2,0]**2, r[2,1]**2, r[2,2]**2, 2*r[2,0]*r[2,1], 2*r[2,1]*r[2,2], 2*r[2,2]*r[2,0]],
-            [r[0,0]*r[1,0], r[0,1]*r[1,1], r[0,2]*r[1,2], r[0,0]*r[1,1]+r[0,1]*r[1,0], r[0,1]*r[1,2]+r[0,2]*r[1,1], r[0,0]*r[1,2]+r[0,2]*r[1,0]],
-            [r[1,0]*r[2,0], r[1,1]*r[2,1], r[1,2]*r[2,2], r[1,0]*r[2,1]+r[1,1]*r[2,0], r[1,1]*r[2,2]+r[1,2]*r[2,1], r[1,0]*r[2,2]+r[1,2]*r[2,0]],
-            [r[2,0]*r[0,0], r[2,1]*r[0,1], r[2,2]*r[0,2], r[2,0]*r[0,1]+r[2,1]*r[0,0], r[2,1]*r[0,2]+r[2,2]*r[0,1], r[2,0]*r[0,2]+r[2,2]*r[0,0]],
-        ])
+        T = np.array(
+            [
+                [
+                    r[0, 0] ** 2,
+                    r[0, 1] ** 2,
+                    r[0, 2] ** 2,
+                    2 * r[0, 0] * r[0, 1],
+                    2 * r[0, 1] * r[0, 2],
+                    2 * r[0, 2] * r[0, 0],
+                ],
+                [
+                    r[1, 0] ** 2,
+                    r[1, 1] ** 2,
+                    r[1, 2] ** 2,
+                    2 * r[1, 0] * r[1, 1],
+                    2 * r[1, 1] * r[1, 2],
+                    2 * r[1, 2] * r[1, 0],
+                ],
+                [
+                    r[2, 0] ** 2,
+                    r[2, 1] ** 2,
+                    r[2, 2] ** 2,
+                    2 * r[2, 0] * r[2, 1],
+                    2 * r[2, 1] * r[2, 2],
+                    2 * r[2, 2] * r[2, 0],
+                ],
+                [
+                    r[0, 0] * r[1, 0],
+                    r[0, 1] * r[1, 1],
+                    r[0, 2] * r[1, 2],
+                    r[0, 0] * r[1, 1] + r[0, 1] * r[1, 0],
+                    r[0, 1] * r[1, 2] + r[0, 2] * r[1, 1],
+                    r[0, 0] * r[1, 2] + r[0, 2] * r[1, 0],
+                ],
+                [
+                    r[1, 0] * r[2, 0],
+                    r[1, 1] * r[2, 1],
+                    r[1, 2] * r[2, 2],
+                    r[1, 0] * r[2, 1] + r[1, 1] * r[2, 0],
+                    r[1, 1] * r[2, 2] + r[1, 2] * r[2, 1],
+                    r[1, 0] * r[2, 2] + r[1, 2] * r[2, 0],
+                ],
+                [
+                    r[2, 0] * r[0, 0],
+                    r[2, 1] * r[0, 1],
+                    r[2, 2] * r[0, 2],
+                    r[2, 0] * r[0, 1] + r[2, 1] * r[0, 0],
+                    r[2, 1] * r[0, 2] + r[2, 2] * r[0, 1],
+                    r[2, 0] * r[0, 2] + r[2, 2] * r[0, 0],
+                ],
+            ]
+        )
 
         # Transform: C_global = T · C_local · Tᵀ
         C_global = T @ C_local @ T.T
@@ -465,7 +529,9 @@ class SolidElement(FemElement):
 
         return f
 
-    def compute_strain(self, displacements: np.ndarray, xi: float, eta: float, zeta: float) -> np.ndarray:
+    def compute_strain(
+        self, displacements: np.ndarray, xi: float, eta: float, zeta: float
+    ) -> np.ndarray:
         """Compute strain at a point given nodal displacements.
 
         Parameters
@@ -483,7 +549,9 @@ class SolidElement(FemElement):
         B = self.compute_B_matrix(xi, eta, zeta)
         return B @ displacements
 
-    def compute_stress(self, displacements: np.ndarray, xi: float, eta: float, zeta: float) -> np.ndarray:
+    def compute_stress(
+        self, displacements: np.ndarray, xi: float, eta: float, zeta: float
+    ) -> np.ndarray:
         """Compute stress at a point given nodal displacements.
 
         Parameters
@@ -517,13 +585,16 @@ class SolidElement(FemElement):
             Von Mises stress
         """
         sxx, syy, szz, txy, tyz, tzx = stress
-        return np.sqrt(0.5 * ((sxx - syy)**2 + (syy - szz)**2 + (szz - sxx)**2) 
-                       + 3 * (txy**2 + tyz**2 + tzx**2))
+        return np.sqrt(
+            0.5 * ((sxx - syy) ** 2 + (syy - szz) ** 2 + (szz - sxx) ** 2)
+            + 3 * (txy**2 + tyz**2 + tzx**2)
+        )
 
 
 # =============================================================================
 # WEDGE (Prism) Elements
 # =============================================================================
+
 
 class WEDGE6(SolidElement):
     """6-node linear wedge/prism element.
@@ -559,12 +630,14 @@ class WEDGE6(SolidElement):
     def integration_points(self) -> Tuple[np.ndarray, np.ndarray]:
         """2-point triangular × 2-point linear Gauss rule (6 points total)."""
         # Triangular coordinates (3-point rule for linear triangle)
-        tri_pts = np.array([
-            [1/6, 1/6],
-            [2/3, 1/6],
-            [1/6, 2/3],
-        ])
-        tri_w = np.array([1/6, 1/6, 1/6])  # Weights sum to 0.5 (triangle area)
+        tri_pts = np.array(
+            [
+                [1 / 6, 1 / 6],
+                [2 / 3, 1 / 6],
+                [1 / 6, 2 / 3],
+            ]
+        )
+        tri_w = np.array([1 / 6, 1 / 6, 1 / 6])  # Weights sum to 0.5 (triangle area)
 
         # Linear direction (2-point Gauss)
         gp = 1 / np.sqrt(3)
@@ -589,21 +662,23 @@ class WEDGE6(SolidElement):
         """
         # Triangular shape functions
         L1 = 1 - xi - eta  # Node 0, 3
-        L2 = xi            # Node 1, 4
-        L3 = eta           # Node 2, 5
+        L2 = xi  # Node 1, 4
+        L3 = eta  # Node 2, 5
 
         # Linear interpolation in z
         Lm = 0.5 * (1 - zeta)  # Bottom
         Lp = 0.5 * (1 + zeta)  # Top
 
-        return np.array([
-            L1 * Lm,  # N0
-            L2 * Lm,  # N1
-            L3 * Lm,  # N2
-            L1 * Lp,  # N3
-            L2 * Lp,  # N4
-            L3 * Lp,  # N5
-        ])
+        return np.array(
+            [
+                L1 * Lm,  # N0
+                L2 * Lm,  # N1
+                L3 * Lm,  # N2
+                L1 * Lp,  # N3
+                L2 * Lp,  # N4
+                L3 * Lp,  # N5
+            ]
+        )
 
     def shape_function_derivatives(
         self, xi: float, eta: float, zeta: float
@@ -627,32 +702,38 @@ class WEDGE6(SolidElement):
         dLm_dzeta = -0.5
         dLp_dzeta = 0.5
 
-        dN_dxi = np.array([
-            dL1_dxi * Lm,
-            dL2_dxi * Lm,
-            dL3_dxi * Lm,
-            dL1_dxi * Lp,
-            dL2_dxi * Lp,
-            dL3_dxi * Lp,
-        ])
+        dN_dxi = np.array(
+            [
+                dL1_dxi * Lm,
+                dL2_dxi * Lm,
+                dL3_dxi * Lm,
+                dL1_dxi * Lp,
+                dL2_dxi * Lp,
+                dL3_dxi * Lp,
+            ]
+        )
 
-        dN_deta = np.array([
-            dL1_deta * Lm,
-            dL2_deta * Lm,
-            dL3_deta * Lm,
-            dL1_deta * Lp,
-            dL2_deta * Lp,
-            dL3_deta * Lp,
-        ])
+        dN_deta = np.array(
+            [
+                dL1_deta * Lm,
+                dL2_deta * Lm,
+                dL3_deta * Lm,
+                dL1_deta * Lp,
+                dL2_deta * Lp,
+                dL3_deta * Lp,
+            ]
+        )
 
-        dN_dzeta = np.array([
-            L1 * dLm_dzeta,
-            L2 * dLm_dzeta,
-            L3 * dLm_dzeta,
-            L1 * dLp_dzeta,
-            L2 * dLp_dzeta,
-            L3 * dLp_dzeta,
-        ])
+        dN_dzeta = np.array(
+            [
+                L1 * dLm_dzeta,
+                L2 * dLm_dzeta,
+                L3 * dLm_dzeta,
+                L1 * dLp_dzeta,
+                L2 * dLp_dzeta,
+                L3 * dLp_dzeta,
+            ]
+        )
 
         return dN_dxi, dN_deta, dN_dzeta
 
@@ -709,29 +790,36 @@ class WEDGE15(SolidElement):
     def integration_points(self) -> Tuple[np.ndarray, np.ndarray]:
         """3-point triangular × 3-point linear Gauss rule (21 points)."""
         # 7-point triangular rule for quadratic accuracy
-        tri_pts = np.array([
-            [1/3, 1/3],
-            [0.797426985353087, 0.101286507323456],
-            [0.101286507323456, 0.797426985353087],
-            [0.101286507323456, 0.101286507323456],
-            [0.470142064105115, 0.059715871789770],
-            [0.470142064105115, 0.470142064105115],
-            [0.059715871789770, 0.470142064105115],
-        ])
-        tri_w = np.array([
-            0.225,
-            0.125939180544827,
-            0.125939180544827,
-            0.125939180544827,
-            0.132394152788506,
-            0.132394152788506,
-            0.132394152788506,
-        ]) * 0.5  # Scale for unit triangle
+        tri_pts = np.array(
+            [
+                [1 / 3, 1 / 3],
+                [0.797426985353087, 0.101286507323456],
+                [0.101286507323456, 0.797426985353087],
+                [0.101286507323456, 0.101286507323456],
+                [0.470142064105115, 0.059715871789770],
+                [0.470142064105115, 0.470142064105115],
+                [0.059715871789770, 0.470142064105115],
+            ]
+        )
+        tri_w = (
+            np.array(
+                [
+                    0.225,
+                    0.125939180544827,
+                    0.125939180544827,
+                    0.125939180544827,
+                    0.132394152788506,
+                    0.132394152788506,
+                    0.132394152788506,
+                ]
+            )
+            * 0.5
+        )  # Scale for unit triangle
 
         # 3-point Gauss in z
-        sqrt35 = np.sqrt(3/5)
+        sqrt35 = np.sqrt(3 / 5)
         lin_pts = np.array([-sqrt35, 0, sqrt35])
-        lin_w = np.array([5/9, 8/9, 5/9])
+        lin_w = np.array([5 / 9, 8 / 9, 5 / 9])
 
         # Tensor product
         points = []
@@ -752,18 +840,18 @@ class WEDGE15(SolidElement):
 
         # Quadratic 1D shape functions in z
         Lm = 0.5 * zeta * (zeta - 1)  # Bottom
-        L0 = 1 - zeta**2               # Middle
+        L0 = 1 - zeta**2  # Middle
         Lp = 0.5 * zeta * (zeta + 1)  # Top
 
         N = np.zeros(15)
 
         # Corner nodes (bottom: 0,1,2 | top: 3,4,5)
-        N[0] = L1 * (2*L1 - 1) * Lm
-        N[1] = L2 * (2*L2 - 1) * Lm
-        N[2] = L3 * (2*L3 - 1) * Lm
-        N[3] = L1 * (2*L1 - 1) * Lp
-        N[4] = L2 * (2*L2 - 1) * Lp
-        N[5] = L3 * (2*L3 - 1) * Lp
+        N[0] = L1 * (2 * L1 - 1) * Lm
+        N[1] = L2 * (2 * L2 - 1) * Lm
+        N[2] = L3 * (2 * L3 - 1) * Lm
+        N[3] = L1 * (2 * L1 - 1) * Lp
+        N[4] = L2 * (2 * L2 - 1) * Lp
+        N[5] = L3 * (2 * L3 - 1) * Lp
 
         # Mid-edge nodes (Gmsh convention)
         # 6: edge 0-1 (bottom)
@@ -810,30 +898,30 @@ class WEDGE15(SolidElement):
         dN_dzeta = np.zeros(15)
 
         # Corner nodes - bottom
-        dN_dxi[0] = (4*L1 - 1) * (-1) * Lm
-        dN_deta[0] = (4*L1 - 1) * (-1) * Lm
-        dN_dzeta[0] = L1 * (2*L1 - 1) * dLm
+        dN_dxi[0] = (4 * L1 - 1) * (-1) * Lm
+        dN_deta[0] = (4 * L1 - 1) * (-1) * Lm
+        dN_dzeta[0] = L1 * (2 * L1 - 1) * dLm
 
-        dN_dxi[1] = (4*L2 - 1) * Lm
+        dN_dxi[1] = (4 * L2 - 1) * Lm
         dN_deta[1] = 0
-        dN_dzeta[1] = L2 * (2*L2 - 1) * dLm
+        dN_dzeta[1] = L2 * (2 * L2 - 1) * dLm
 
         dN_dxi[2] = 0
-        dN_deta[2] = (4*L3 - 1) * Lm
-        dN_dzeta[2] = L3 * (2*L3 - 1) * dLm
+        dN_deta[2] = (4 * L3 - 1) * Lm
+        dN_dzeta[2] = L3 * (2 * L3 - 1) * dLm
 
         # Corner nodes - top
-        dN_dxi[3] = (4*L1 - 1) * (-1) * Lp
-        dN_deta[3] = (4*L1 - 1) * (-1) * Lp
-        dN_dzeta[3] = L1 * (2*L1 - 1) * dLp
+        dN_dxi[3] = (4 * L1 - 1) * (-1) * Lp
+        dN_deta[3] = (4 * L1 - 1) * (-1) * Lp
+        dN_dzeta[3] = L1 * (2 * L1 - 1) * dLp
 
-        dN_dxi[4] = (4*L2 - 1) * Lp
+        dN_dxi[4] = (4 * L2 - 1) * Lp
         dN_deta[4] = 0
-        dN_dzeta[4] = L2 * (2*L2 - 1) * dLp
+        dN_dzeta[4] = L2 * (2 * L2 - 1) * dLp
 
         dN_dxi[5] = 0
-        dN_deta[5] = (4*L3 - 1) * Lp
-        dN_dzeta[5] = L3 * (2*L3 - 1) * dLp
+        dN_deta[5] = (4 * L3 - 1) * Lp
+        dN_dzeta[5] = L3 * (2 * L3 - 1) * dLp
 
         # Mid-edge nodes (Gmsh convention)
         # 6: edge 0-1 (bottom)
@@ -888,6 +976,7 @@ class WEDGE15(SolidElement):
 # PYRAMID Elements
 # =============================================================================
 
+
 class PYRAMID5(SolidElement):
     """5-node linear pyramid element.
 
@@ -922,57 +1011,63 @@ class PYRAMID5(SolidElement):
     @property
     def integration_points(self) -> Tuple[np.ndarray, np.ndarray]:
         """8-point Felippa integration rule for pyramid (precision 3).
-        
+
         Reference: Felippa, C.A. (2004). "A compendium of FEM integration formulas
         for symbolic work," Engineering Computation, 21(8), 867-890.
         """
-        points = np.array([
-            [-0.26318405556971359557, -0.26318405556971359557, 0.54415184401122528880],
-            [ 0.26318405556971359557, -0.26318405556971359557, 0.54415184401122528880],
-            [ 0.26318405556971359557,  0.26318405556971359557, 0.54415184401122528880],
-            [-0.26318405556971359557,  0.26318405556971359557, 0.54415184401122528880],
-            [-0.50661630334978742377, -0.50661630334978742377, 0.12251482265544137787],
-            [ 0.50661630334978742377, -0.50661630334978742377, 0.12251482265544137787],
-            [ 0.50661630334978742377,  0.50661630334978742377, 0.12251482265544137787],
-            [-0.50661630334978742377,  0.50661630334978742377, 0.12251482265544137787],
-        ])
-        
-        weights = np.array([
-            0.10078588207982543059,
-            0.10078588207982543059,
-            0.10078588207982543059,
-            0.10078588207982543059,
-            0.23254745125350790274,
-            0.23254745125350790274,
-            0.23254745125350790274,
-            0.23254745125350790274,
-        ])
+        points = np.array(
+            [
+                [-0.26318405556971359557, -0.26318405556971359557, 0.54415184401122528880],
+                [0.26318405556971359557, -0.26318405556971359557, 0.54415184401122528880],
+                [0.26318405556971359557, 0.26318405556971359557, 0.54415184401122528880],
+                [-0.26318405556971359557, 0.26318405556971359557, 0.54415184401122528880],
+                [-0.50661630334978742377, -0.50661630334978742377, 0.12251482265544137787],
+                [0.50661630334978742377, -0.50661630334978742377, 0.12251482265544137787],
+                [0.50661630334978742377, 0.50661630334978742377, 0.12251482265544137787],
+                [-0.50661630334978742377, 0.50661630334978742377, 0.12251482265544137787],
+            ]
+        )
+
+        weights = np.array(
+            [
+                0.10078588207982543059,
+                0.10078588207982543059,
+                0.10078588207982543059,
+                0.10078588207982543059,
+                0.23254745125350790274,
+                0.23254745125350790274,
+                0.23254745125350790274,
+                0.23254745125350790274,
+            ]
+        )
 
         return points, weights
 
     def shape_functions(self, xi: float, eta: float, zeta: float) -> np.ndarray:
         """Linear pyramid shape functions (singularity-free formulation).
-        
+
         Based on Bedrosian (1992) degenerate hexahedron approach.
         Shape functions are expressed to avoid explicit 1/(1-zeta) terms.
-        
+
         N_i = 0.25 * (r ± xi) * (r ± eta) / r  for base nodes
         N_4 = zeta  for apex
-        
+
         where r = 1 - zeta
         """
         eps = 1e-14
         r = max(1 - zeta, eps)
-        
+
         # Singularity-free form: (r ± xi)(r ± eta) / (4r)
         # This form keeps numerator stable as zeta → 1 (where xi, eta → 0)
-        N = np.array([
-            0.25 * (r - xi) * (r - eta) / r,  # N0: (1 - xi/r)(1 - eta/r) * r
-            0.25 * (r + xi) * (r - eta) / r,  # N1: (1 + xi/r)(1 - eta/r) * r
-            0.25 * (r + xi) * (r + eta) / r,  # N2: (1 + xi/r)(1 + eta/r) * r
-            0.25 * (r - xi) * (r + eta) / r,  # N3: (1 - xi/r)(1 + eta/r) * r
-            zeta,                              # N4 (apex)
-        ])
+        N = np.array(
+            [
+                0.25 * (r - xi) * (r - eta) / r,  # N0: (1 - xi/r)(1 - eta/r) * r
+                0.25 * (r + xi) * (r - eta) / r,  # N1: (1 + xi/r)(1 - eta/r) * r
+                0.25 * (r + xi) * (r + eta) / r,  # N2: (1 + xi/r)(1 + eta/r) * r
+                0.25 * (r - xi) * (r + eta) / r,  # N3: (1 - xi/r)(1 + eta/r) * r
+                zeta,  # N4 (apex)
+            ]
+        )
 
         return N
 
@@ -980,7 +1075,7 @@ class PYRAMID5(SolidElement):
         self, xi: float, eta: float, zeta: float
     ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
         """Analytical derivatives of linear pyramid shape functions.
-        
+
         Formulated to minimize numerical issues near the apex.
         Uses direct differentiation of N_i = (r ± xi)(r ± eta) / (4r)
         where r = 1 - zeta.
@@ -988,24 +1083,28 @@ class PYRAMID5(SolidElement):
         eps = 1e-14
         r = max(1 - zeta, eps)
         r2 = r * r
-        
+
         # dN/dxi: d/dxi [(r ± xi)(r ± eta) / (4r)] = ±(r ± eta) / (4r)
-        dN_dxi = np.array([
-            -0.25 * (r - eta) / r,  # Node 0: -(r - eta) / (4r)
-             0.25 * (r - eta) / r,  # Node 1: +(r - eta) / (4r)
-             0.25 * (r + eta) / r,  # Node 2: +(r + eta) / (4r)
-            -0.25 * (r + eta) / r,  # Node 3: -(r + eta) / (4r)
-             0.0,                   # Node 4 (apex)
-        ])
+        dN_dxi = np.array(
+            [
+                -0.25 * (r - eta) / r,  # Node 0: -(r - eta) / (4r)
+                0.25 * (r - eta) / r,  # Node 1: +(r - eta) / (4r)
+                0.25 * (r + eta) / r,  # Node 2: +(r + eta) / (4r)
+                -0.25 * (r + eta) / r,  # Node 3: -(r + eta) / (4r)
+                0.0,  # Node 4 (apex)
+            ]
+        )
 
         # dN/deta: d/deta [(r ± xi)(r ± eta) / (4r)] = ±(r ± xi) / (4r)
-        dN_deta = np.array([
-            -0.25 * (r - xi) / r,   # Node 0: -(r - xi) / (4r)
-            -0.25 * (r + xi) / r,   # Node 1: -(r + xi) / (4r)
-             0.25 * (r + xi) / r,   # Node 2: +(r + xi) / (4r)
-             0.25 * (r - xi) / r,   # Node 3: +(r - xi) / (4r)
-             0.0,                   # Node 4 (apex)
-        ])
+        dN_deta = np.array(
+            [
+                -0.25 * (r - xi) / r,  # Node 0: -(r - xi) / (4r)
+                -0.25 * (r + xi) / r,  # Node 1: -(r + xi) / (4r)
+                0.25 * (r + xi) / r,  # Node 2: +(r + xi) / (4r)
+                0.25 * (r - xi) / r,  # Node 3: +(r - xi) / (4r)
+                0.0,  # Node 4 (apex)
+            ]
+        )
 
         # dN/dzeta: Use quotient rule on N_i = (r ± xi)(r ± eta) / (4r)
         # Let f = (r ± xi)(r ± eta), g = 4r
@@ -1014,30 +1113,32 @@ class PYRAMID5(SolidElement):
         # g' = 4 * (-1) = -4
         # Simplified: dN_i/dzeta = [±xi ± eta - (r ± xi)(r ± eta)/r] / (4r)
         #           = [±xi ± eta] / (4r) - N_i / r
-        
+
         # More stable formulation using product form:
         # N_i = (r ± xi)(r ± eta) / (4r)
         # dN_i/dzeta = -[(r ± eta) + (r ± xi)] / (4r) + (r ± xi)(r ± eta) / (4r²)
         #            = -[(r ± eta) + (r ± xi)] / (4r) + N_i / r
-        
+
         # Pre-compute terms
         rm_xi = r - xi
         rp_xi = r + xi
         rm_eta = r - eta
         rp_eta = r + eta
-        
-        dN_dzeta = np.array([
-            # Node 0: N0 = (r-xi)(r-eta)/(4r)
-            -0.25 * (rm_eta + rm_xi) / r + 0.25 * rm_xi * rm_eta / r2,
-            # Node 1: N1 = (r+xi)(r-eta)/(4r)
-            -0.25 * (rm_eta + rp_xi) / r + 0.25 * rp_xi * rm_eta / r2,
-            # Node 2: N2 = (r+xi)(r+eta)/(4r)
-            -0.25 * (rp_eta + rp_xi) / r + 0.25 * rp_xi * rp_eta / r2,
-            # Node 3: N3 = (r-xi)(r+eta)/(4r)
-            -0.25 * (rp_eta + rm_xi) / r + 0.25 * rm_xi * rp_eta / r2,
-            # Node 4 (apex)
-            1.0,
-        ])
+
+        dN_dzeta = np.array(
+            [
+                # Node 0: N0 = (r-xi)(r-eta)/(4r)
+                -0.25 * (rm_eta + rm_xi) / r + 0.25 * rm_xi * rm_eta / r2,
+                # Node 1: N1 = (r+xi)(r-eta)/(4r)
+                -0.25 * (rm_eta + rp_xi) / r + 0.25 * rp_xi * rm_eta / r2,
+                # Node 2: N2 = (r+xi)(r+eta)/(4r)
+                -0.25 * (rp_eta + rp_xi) / r + 0.25 * rp_xi * rp_eta / r2,
+                # Node 3: N3 = (r-xi)(r+eta)/(4r)
+                -0.25 * (rp_eta + rm_xi) / r + 0.25 * rm_xi * rp_eta / r2,
+                # Node 4 (apex)
+                1.0,
+            ]
+        )
 
         return dN_dxi, dN_deta, dN_dzeta
 
@@ -1095,124 +1196,128 @@ class PYRAMID13(SolidElement):
     @property
     def integration_points(self) -> Tuple[np.ndarray, np.ndarray]:
         """18-point Felippa integration rule for quadratic pyramid (precision 5).
-        
+
         Reference: Felippa, C.A. (2004). "A compendium of FEM integration formulas
         for symbolic work," Engineering Computation, 21(8), 867-890.
-        
+
         This rule exactly integrates polynomials up to degree 5 over the pyramid.
         """
         # 3×3 grid at two height levels optimized for pyramid geometry
-        points = np.array([
-            # 9 points at z ≈ 0.544 (upper layer, near apex)
-            [-0.35309846330877704481, -0.35309846330877704481, 0.54415184401122528880],
-            [ 0.00000000000000000000, -0.35309846330877704481, 0.54415184401122528880],
-            [ 0.35309846330877704481, -0.35309846330877704481, 0.54415184401122528880],
-            [-0.35309846330877704481,  0.00000000000000000000, 0.54415184401122528880],
-            [ 0.00000000000000000000,  0.00000000000000000000, 0.54415184401122528880],
-            [ 0.35309846330877704481,  0.00000000000000000000, 0.54415184401122528880],
-            [-0.35309846330877704481,  0.35309846330877704481, 0.54415184401122528880],
-            [ 0.00000000000000000000,  0.35309846330877704481, 0.54415184401122528880],
-            [ 0.35309846330877704481,  0.35309846330877704481, 0.54415184401122528880],
-            # 9 points at z ≈ 0.122 (lower layer, near base)
-            [-0.67969709567986745790, -0.67969709567986745790, 0.12251482265544137787],
-            [ 0.00000000000000000000, -0.67969709567986745790, 0.12251482265544137787],
-            [ 0.67969709567986745790, -0.67969709567986745790, 0.12251482265544137787],
-            [-0.67969709567986745790,  0.00000000000000000000, 0.12251482265544137787],
-            [ 0.00000000000000000000,  0.00000000000000000000, 0.12251482265544137787],
-            [ 0.67969709567986745790,  0.00000000000000000000, 0.12251482265544137787],
-            [-0.67969709567986745790,  0.67969709567986745790, 0.12251482265544137787],
-            [ 0.00000000000000000000,  0.67969709567986745790, 0.12251482265544137787],
-            [ 0.67969709567986745790,  0.67969709567986745790, 0.12251482265544137787],
-        ])
-        
-        weights = np.array([
-            # Upper layer (z ≈ 0.544) - smaller weights (smaller cross-section)
-            0.023330065296255886709,
-            0.037328104474009418735,
-            0.023330065296255886709,
-            0.037328104474009418735,
-            0.059724967158415069975,
-            0.037328104474009418735,
-            0.023330065296255886709,
-            0.037328104474009418735,
-            0.023330065296255886709,
-            # Lower layer (z ≈ 0.122) - larger weights (larger cross-section)
-            0.053830428530904607120,
-            0.086128685649447371390,
-            0.053830428530904607120,
-            0.086128685649447371390,
-            0.137805897039115794220,
-            0.086128685649447371390,
-            0.053830428530904607120,
-            0.086128685649447371390,
-            0.053830428530904607120,
-        ])
+        points = np.array(
+            [
+                # 9 points at z ≈ 0.544 (upper layer, near apex)
+                [-0.35309846330877704481, -0.35309846330877704481, 0.54415184401122528880],
+                [0.00000000000000000000, -0.35309846330877704481, 0.54415184401122528880],
+                [0.35309846330877704481, -0.35309846330877704481, 0.54415184401122528880],
+                [-0.35309846330877704481, 0.00000000000000000000, 0.54415184401122528880],
+                [0.00000000000000000000, 0.00000000000000000000, 0.54415184401122528880],
+                [0.35309846330877704481, 0.00000000000000000000, 0.54415184401122528880],
+                [-0.35309846330877704481, 0.35309846330877704481, 0.54415184401122528880],
+                [0.00000000000000000000, 0.35309846330877704481, 0.54415184401122528880],
+                [0.35309846330877704481, 0.35309846330877704481, 0.54415184401122528880],
+                # 9 points at z ≈ 0.122 (lower layer, near base)
+                [-0.67969709567986745790, -0.67969709567986745790, 0.12251482265544137787],
+                [0.00000000000000000000, -0.67969709567986745790, 0.12251482265544137787],
+                [0.67969709567986745790, -0.67969709567986745790, 0.12251482265544137787],
+                [-0.67969709567986745790, 0.00000000000000000000, 0.12251482265544137787],
+                [0.00000000000000000000, 0.00000000000000000000, 0.12251482265544137787],
+                [0.67969709567986745790, 0.00000000000000000000, 0.12251482265544137787],
+                [-0.67969709567986745790, 0.67969709567986745790, 0.12251482265544137787],
+                [0.00000000000000000000, 0.67969709567986745790, 0.12251482265544137787],
+                [0.67969709567986745790, 0.67969709567986745790, 0.12251482265544137787],
+            ]
+        )
+
+        weights = np.array(
+            [
+                # Upper layer (z ≈ 0.544) - smaller weights (smaller cross-section)
+                0.023330065296255886709,
+                0.037328104474009418735,
+                0.023330065296255886709,
+                0.037328104474009418735,
+                0.059724967158415069975,
+                0.037328104474009418735,
+                0.023330065296255886709,
+                0.037328104474009418735,
+                0.023330065296255886709,
+                # Lower layer (z ≈ 0.122) - larger weights (larger cross-section)
+                0.053830428530904607120,
+                0.086128685649447371390,
+                0.053830428530904607120,
+                0.086128685649447371390,
+                0.137805897039115794220,
+                0.086128685649447371390,
+                0.053830428530904607120,
+                0.086128685649447371390,
+                0.053830428530904607120,
+            ]
+        )
 
         return points, weights
 
     def shape_functions(self, xi: float, eta: float, zeta: float) -> np.ndarray:
         """Quadratic pyramid shape functions (Gmsh convention).
-        
+
         Uses rational blending approach for 13-node serendipity pyramid.
         The functions satisfy both partition of unity and Kronecker delta properties.
-        
+
         Reference: Bedrosian (1992), adapted for quadratic serendipity elements.
         """
         eps = 1e-14
         r = max(1 - zeta, eps)
-        
+
         # Scaled coordinates (collapsed hexahedron approach)
         xi_s = np.clip(xi / r, -1.0, 1.0)
         eta_s = np.clip(eta / r, -1.0, 1.0)
 
         N = np.zeros(13)
-        
+
         # 8-node serendipity functions on the scaled square [-1,1]²
         # These are the standard 2D serendipity shape functions
-        
+
         # Corner functions (with edge corrections)
         f0 = 0.25 * (1 - xi_s) * (1 - eta_s) * (-xi_s - eta_s - 1)  # node 0
-        f1 = 0.25 * (1 + xi_s) * (1 - eta_s) * (xi_s - eta_s - 1)   # node 1
-        f2 = 0.25 * (1 + xi_s) * (1 + eta_s) * (xi_s + eta_s - 1)   # node 2
+        f1 = 0.25 * (1 + xi_s) * (1 - eta_s) * (xi_s - eta_s - 1)  # node 1
+        f2 = 0.25 * (1 + xi_s) * (1 + eta_s) * (xi_s + eta_s - 1)  # node 2
         f3 = 0.25 * (1 - xi_s) * (1 + eta_s) * (-xi_s + eta_s - 1)  # node 3
-        
+
         # Edge midpoint functions
-        f5 = 0.5 * (1 - xi_s**2) * (1 - eta_s)   # edge 0-1 (y=-1)
-        f6 = 0.5 * (1 - xi_s) * (1 - eta_s**2)   # edge 0-3 (x=-1)
-        f8 = 0.5 * (1 + xi_s) * (1 - eta_s**2)   # edge 1-2 (x=+1)
+        f5 = 0.5 * (1 - xi_s**2) * (1 - eta_s)  # edge 0-1 (y=-1)
+        f6 = 0.5 * (1 - xi_s) * (1 - eta_s**2)  # edge 0-3 (x=-1)
+        f8 = 0.5 * (1 + xi_s) * (1 - eta_s**2)  # edge 1-2 (x=+1)
         f10 = 0.5 * (1 - xi_s**2) * (1 + eta_s)  # edge 2-3 (y=+1)
-        
+
         # Vertical blending using (1-zeta) scaling
         # This ensures partition of unity
         base_scale = r  # = 1 - zeta
-        
+
         # For base nodes: scale by (1-zeta)² and add quadratic vertical term
         # Base corners (at z=0)
-        N[0] = f0 * base_scale * (1 - 2*zeta)
-        N[1] = f1 * base_scale * (1 - 2*zeta)
-        N[2] = f2 * base_scale * (1 - 2*zeta)
-        N[3] = f3 * base_scale * (1 - 2*zeta)
-        
+        N[0] = f0 * base_scale * (1 - 2 * zeta)
+        N[1] = f1 * base_scale * (1 - 2 * zeta)
+        N[2] = f2 * base_scale * (1 - 2 * zeta)
+        N[3] = f3 * base_scale * (1 - 2 * zeta)
+
         # Base edge midpoints (at z=0)
-        N[5] = f5 * base_scale * (1 - 2*zeta)
-        N[6] = f6 * base_scale * (1 - 2*zeta)
-        N[8] = f8 * base_scale * (1 - 2*zeta)
-        N[10] = f10 * base_scale * (1 - 2*zeta)
-        
+        N[5] = f5 * base_scale * (1 - 2 * zeta)
+        N[6] = f6 * base_scale * (1 - 2 * zeta)
+        N[8] = f8 * base_scale * (1 - 2 * zeta)
+        N[10] = f10 * base_scale * (1 - 2 * zeta)
+
         # Apex (node 4): Gets all contribution at z=1
-        N[4] = zeta * (2*zeta - 1)  # Quadratic, =1 at z=1, =0 at z=0,0.5
-        
+        N[4] = zeta * (2 * zeta - 1)  # Quadratic, =1 at z=1, =0 at z=0,0.5
+
         # Lateral edge midpoints (at z=0.5): Use bilinear × bubble vertical
         # Bilinear corner functions for lateral interpolation
         phi_0 = 0.25 * (1 - xi_s) * (1 - eta_s)
         phi_1 = 0.25 * (1 + xi_s) * (1 - eta_s)
         phi_2 = 0.25 * (1 + xi_s) * (1 + eta_s)
         phi_3 = 0.25 * (1 - xi_s) * (1 + eta_s)
-        
+
         lateral_blend = 4 * zeta * (1 - zeta)  # =1 at z=0.5, =0 at z=0,1
-        
-        N[7] = phi_0 * lateral_blend   # edge 0-4
-        N[9] = phi_1 * lateral_blend   # edge 1-4
+
+        N[7] = phi_0 * lateral_blend  # edge 0-4
+        N[9] = phi_1 * lateral_blend  # edge 1-4
         N[11] = phi_2 * lateral_blend  # edge 2-4
         N[12] = phi_3 * lateral_blend  # edge 3-4
 
@@ -1222,7 +1327,7 @@ class PYRAMID13(SolidElement):
         self, xi: float, eta: float, zeta: float
     ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
         """Analytical derivatives of quadratic pyramid shape functions.
-        
+
         Matches the rational blending shape functions.
         Uses chain rule for scaled coordinates xi_s = xi/r, eta_s = eta/r
         where r = 1 - zeta.
@@ -1230,89 +1335,101 @@ class PYRAMID13(SolidElement):
         eps = 1e-14
         r = max(1 - zeta, eps)
         r2 = r * r
-        
+
         xi_s = np.clip(xi / r, -1.0, 1.0)
         eta_s = np.clip(eta / r, -1.0, 1.0)
-        
+
         dN_dxi = np.zeros(13)
         dN_deta = np.zeros(13)
         dN_dzeta = np.zeros(13)
-        
+
         # Vertical blending functions
-        h_base = r * (1 - 2*zeta)  # = (1-zeta)(1-2*zeta)
-        h_lateral = 4 * zeta * r   # = 4*zeta*(1-zeta)
-        h_apex = zeta * (2*zeta - 1)
-        
+        h_base = r * (1 - 2 * zeta)  # = (1-zeta)(1-2*zeta)
+        h_lateral = 4 * zeta * r  # = 4*zeta*(1-zeta)
+        h_apex = zeta * (2 * zeta - 1)
+
         # Their derivatives w.r.t. zeta
-        dh_base_dzeta = -3 + 4*zeta
-        dh_lateral_dzeta = 4 * (1 - 2*zeta)
-        dh_apex_dzeta = 4*zeta - 1
-        
+        dh_base_dzeta = -3 + 4 * zeta
+        dh_lateral_dzeta = 4 * (1 - 2 * zeta)
+        dh_apex_dzeta = 4 * zeta - 1
+
         # 8-node serendipity corner functions on scaled base
         # f_i = 0.25 * (1 ± xi_s) * (1 ± eta_s) * (±xi_s ± eta_s - 1)
-        f = np.array([
-            0.25 * (1 - xi_s) * (1 - eta_s) * (-xi_s - eta_s - 1),  # 0
-            0.25 * (1 + xi_s) * (1 - eta_s) * (xi_s - eta_s - 1),   # 1
-            0.25 * (1 + xi_s) * (1 + eta_s) * (xi_s + eta_s - 1),   # 2
-            0.25 * (1 - xi_s) * (1 + eta_s) * (-xi_s + eta_s - 1),  # 3
-        ])
-        
+        f = np.array(
+            [
+                0.25 * (1 - xi_s) * (1 - eta_s) * (-xi_s - eta_s - 1),  # 0
+                0.25 * (1 + xi_s) * (1 - eta_s) * (xi_s - eta_s - 1),  # 1
+                0.25 * (1 + xi_s) * (1 + eta_s) * (xi_s + eta_s - 1),  # 2
+                0.25 * (1 - xi_s) * (1 + eta_s) * (-xi_s + eta_s - 1),  # 3
+            ]
+        )
+
         # Derivatives of serendipity corners w.r.t. xi_s
-        df_dxi_s = np.array([
-            0.25 * (1 - eta_s) * (2*xi_s + eta_s),       # 0
-            0.25 * (1 - eta_s) * (2*xi_s - eta_s),       # 1
-            0.25 * (1 + eta_s) * (2*xi_s + eta_s),       # 2
-            0.25 * (1 + eta_s) * (2*xi_s - eta_s),       # 3
-        ])
-        
+        df_dxi_s = np.array(
+            [
+                0.25 * (1 - eta_s) * (2 * xi_s + eta_s),  # 0
+                0.25 * (1 - eta_s) * (2 * xi_s - eta_s),  # 1
+                0.25 * (1 + eta_s) * (2 * xi_s + eta_s),  # 2
+                0.25 * (1 + eta_s) * (2 * xi_s - eta_s),  # 3
+            ]
+        )
+
         # Derivatives of serendipity corners w.r.t. eta_s
-        df_deta_s = np.array([
-            0.25 * (1 - xi_s) * (xi_s + 2*eta_s),        # 0
-            0.25 * (1 + xi_s) * (-xi_s + 2*eta_s),       # 1
-            0.25 * (1 + xi_s) * (xi_s + 2*eta_s),        # 2
-            0.25 * (1 - xi_s) * (-xi_s + 2*eta_s),       # 3
-        ])
-        
+        df_deta_s = np.array(
+            [
+                0.25 * (1 - xi_s) * (xi_s + 2 * eta_s),  # 0
+                0.25 * (1 + xi_s) * (-xi_s + 2 * eta_s),  # 1
+                0.25 * (1 + xi_s) * (xi_s + 2 * eta_s),  # 2
+                0.25 * (1 - xi_s) * (-xi_s + 2 * eta_s),  # 3
+            ]
+        )
+
         # Edge bubble functions
-        g5 = 0.5 * (1 - xi_s**2) * (1 - eta_s)   # edge 0-1
-        g6 = 0.5 * (1 - xi_s) * (1 - eta_s**2)   # edge 0-3
-        g8 = 0.5 * (1 + xi_s) * (1 - eta_s**2)   # edge 1-2
+        g5 = 0.5 * (1 - xi_s**2) * (1 - eta_s)  # edge 0-1
+        g6 = 0.5 * (1 - xi_s) * (1 - eta_s**2)  # edge 0-3
+        g8 = 0.5 * (1 + xi_s) * (1 - eta_s**2)  # edge 1-2
         g10 = 0.5 * (1 - xi_s**2) * (1 + eta_s)  # edge 2-3
-        
+
         dg5_dxi_s = -xi_s * (1 - eta_s)
         dg5_deta_s = -0.5 * (1 - xi_s**2)
-        
+
         dg6_dxi_s = -0.5 * (1 - eta_s**2)
         dg6_deta_s = -(1 - xi_s) * eta_s
-        
+
         dg8_dxi_s = 0.5 * (1 - eta_s**2)
         dg8_deta_s = -(1 + xi_s) * eta_s
-        
+
         dg10_dxi_s = -xi_s * (1 + eta_s)
         dg10_deta_s = 0.5 * (1 - xi_s**2)
-        
+
         # Bilinear functions for lateral edges
-        phi = np.array([
-            0.25 * (1 - xi_s) * (1 - eta_s),  # 0
-            0.25 * (1 + xi_s) * (1 - eta_s),  # 1
-            0.25 * (1 + xi_s) * (1 + eta_s),  # 2
-            0.25 * (1 - xi_s) * (1 + eta_s),  # 3
-        ])
-        
-        dphi_dxi_s = np.array([
-            -0.25 * (1 - eta_s),
-             0.25 * (1 - eta_s),
-             0.25 * (1 + eta_s),
-            -0.25 * (1 + eta_s),
-        ])
-        
-        dphi_deta_s = np.array([
-            -0.25 * (1 - xi_s),
-            -0.25 * (1 + xi_s),
-             0.25 * (1 + xi_s),
-             0.25 * (1 - xi_s),
-        ])
-        
+        phi = np.array(
+            [
+                0.25 * (1 - xi_s) * (1 - eta_s),  # 0
+                0.25 * (1 + xi_s) * (1 - eta_s),  # 1
+                0.25 * (1 + xi_s) * (1 + eta_s),  # 2
+                0.25 * (1 - xi_s) * (1 + eta_s),  # 3
+            ]
+        )
+
+        dphi_dxi_s = np.array(
+            [
+                -0.25 * (1 - eta_s),
+                0.25 * (1 - eta_s),
+                0.25 * (1 + eta_s),
+                -0.25 * (1 + eta_s),
+            ]
+        )
+
+        dphi_deta_s = np.array(
+            [
+                -0.25 * (1 - xi_s),
+                -0.25 * (1 + xi_s),
+                0.25 * (1 + xi_s),
+                0.25 * (1 - xi_s),
+            ]
+        )
+
         # Helper function for chain rule
         def compute_derivs(func, df_dxi_s_val, df_deta_s_val, h, dh_dzeta):
             """Compute dN/dxi, dN/deta, dN/dzeta for N = func(xi_s, eta_s) * h(zeta)"""
@@ -1321,33 +1438,42 @@ class PYRAMID13(SolidElement):
             # Chain rule: dxi_s/dzeta = xi/r², deta_s/dzeta = eta/r²
             d_dzeta = ((df_dxi_s_val * xi + df_deta_s_val * eta) / r2) * h + func * dh_dzeta
             return d_dxi, d_deta, d_dzeta
-        
+
         # Base corner nodes (0-3)
         for i in range(4):
             dN_dxi[i], dN_deta[i], dN_dzeta[i] = compute_derivs(
-                f[i], df_dxi_s[i], df_deta_s[i], h_base, dh_base_dzeta)
-        
+                f[i], df_dxi_s[i], df_deta_s[i], h_base, dh_base_dzeta
+            )
+
         # Apex (4)
         dN_dxi[4] = 0.0
         dN_deta[4] = 0.0
         dN_dzeta[4] = dh_apex_dzeta
-        
+
         # Base edge midpoints (5, 6, 8, 10)
         dN_dxi[5], dN_deta[5], dN_dzeta[5] = compute_derivs(
-            g5, dg5_dxi_s, dg5_deta_s, h_base, dh_base_dzeta)
+            g5, dg5_dxi_s, dg5_deta_s, h_base, dh_base_dzeta
+        )
         dN_dxi[6], dN_deta[6], dN_dzeta[6] = compute_derivs(
-            g6, dg6_dxi_s, dg6_deta_s, h_base, dh_base_dzeta)
+            g6, dg6_dxi_s, dg6_deta_s, h_base, dh_base_dzeta
+        )
         dN_dxi[8], dN_deta[8], dN_dzeta[8] = compute_derivs(
-            g8, dg8_dxi_s, dg8_deta_s, h_base, dh_base_dzeta)
+            g8, dg8_dxi_s, dg8_deta_s, h_base, dh_base_dzeta
+        )
         dN_dxi[10], dN_deta[10], dN_dzeta[10] = compute_derivs(
-            g10, dg10_dxi_s, dg10_deta_s, h_base, dh_base_dzeta)
-        
+            g10, dg10_dxi_s, dg10_deta_s, h_base, dh_base_dzeta
+        )
+
         # Lateral edge midpoints (7, 9, 11, 12)
         lateral_nodes = [(7, 0), (9, 1), (11, 2), (12, 3)]
         for node_idx, corner_idx in lateral_nodes:
             dN_dxi[node_idx], dN_deta[node_idx], dN_dzeta[node_idx] = compute_derivs(
-                phi[corner_idx], dphi_dxi_s[corner_idx], dphi_deta_s[corner_idx],
-                h_lateral, dh_lateral_dzeta)
+                phi[corner_idx],
+                dphi_dxi_s[corner_idx],
+                dphi_deta_s[corner_idx],
+                h_lateral,
+                dh_lateral_dzeta,
+            )
 
         return dN_dxi, dN_deta, dN_dzeta
 
@@ -1355,6 +1481,7 @@ class PYRAMID13(SolidElement):
 # =============================================================================
 # TETRAHEDRON Elements
 # =============================================================================
+
 
 class TETRA4(SolidElement):
     """4-node linear tetrahedron element.
@@ -1389,17 +1516,19 @@ class TETRA4(SolidElement):
     def integration_points(self) -> Tuple[np.ndarray, np.ndarray]:
         """1-point centroid rule for linear tetrahedron."""
         points = np.array([[0.25, 0.25, 0.25]])
-        weights = np.array([1/6])  # Volume of unit tetrahedron
+        weights = np.array([1 / 6])  # Volume of unit tetrahedron
         return points, weights
 
     def shape_functions(self, xi: float, eta: float, zeta: float) -> np.ndarray:
         """Linear tetrahedral shape functions (volume coordinates)."""
-        return np.array([
-            1 - xi - eta - zeta,  # N0
-            xi,                    # N1
-            eta,                   # N2
-            zeta,                  # N3
-        ])
+        return np.array(
+            [
+                1 - xi - eta - zeta,  # N0
+                xi,  # N1
+                eta,  # N2
+                zeta,  # N3
+            ]
+        )
 
     def shape_function_derivatives(
         self, xi: float, eta: float, zeta: float
@@ -1457,14 +1586,16 @@ class TETRA10(SolidElement):
     def integration_points(self) -> Tuple[np.ndarray, np.ndarray]:
         """4-point integration rule for quadratic tetrahedron."""
         a = (5 - np.sqrt(5)) / 20
-        b = (5 + 3*np.sqrt(5)) / 20
+        b = (5 + 3 * np.sqrt(5)) / 20
 
-        points = np.array([
-            [a, a, a],
-            [b, a, a],
-            [a, b, a],
-            [a, a, b],
-        ])
+        points = np.array(
+            [
+                [a, a, a],
+                [b, a, a],
+                [a, b, a],
+                [a, a, b],
+            ]
+        )
         weights = np.array([1, 1, 1, 1]) / 24  # Each = V_tet/4
         return points, weights
 
@@ -1475,18 +1606,20 @@ class TETRA10(SolidElement):
         L3 = eta
         L4 = zeta
 
-        return np.array([
-            L1 * (2*L1 - 1),  # N0
-            L2 * (2*L2 - 1),  # N1
-            L3 * (2*L3 - 1),  # N2
-            L4 * (2*L4 - 1),  # N3
-            4 * L1 * L2,      # N4 - edge 0-1
-            4 * L2 * L3,      # N5 - edge 1-2
-            4 * L3 * L1,      # N6 - edge 0-2 (Gmsh convention)
-            4 * L1 * L4,      # N7 - edge 0-3
-            4 * L3 * L4,      # N8 - edge 2-3 (Gmsh: swapped with N9)
-            4 * L2 * L4,      # N9 - edge 1-3 (Gmsh: swapped with N8)
-        ])
+        return np.array(
+            [
+                L1 * (2 * L1 - 1),  # N0
+                L2 * (2 * L2 - 1),  # N1
+                L3 * (2 * L3 - 1),  # N2
+                L4 * (2 * L4 - 1),  # N3
+                4 * L1 * L2,  # N4 - edge 0-1
+                4 * L2 * L3,  # N5 - edge 1-2
+                4 * L3 * L1,  # N6 - edge 0-2 (Gmsh convention)
+                4 * L1 * L4,  # N7 - edge 0-3
+                4 * L3 * L4,  # N8 - edge 2-3 (Gmsh: swapped with N9)
+                4 * L2 * L4,  # N9 - edge 1-3 (Gmsh: swapped with N8)
+            ]
+        )
 
     def shape_function_derivatives(
         self, xi: float, eta: float, zeta: float
@@ -1506,10 +1639,10 @@ class TETRA10(SolidElement):
         dN = np.zeros((10, 3))
 
         # Corner nodes
-        dN[0] = (4*L1 - 1) * dL1
-        dN[1] = (4*L2 - 1) * dL2
-        dN[2] = (4*L3 - 1) * dL3
-        dN[3] = (4*L4 - 1) * dL4
+        dN[0] = (4 * L1 - 1) * dL1
+        dN[1] = (4 * L2 - 1) * dL2
+        dN[2] = (4 * L3 - 1) * dL3
+        dN[3] = (4 * L4 - 1) * dL4
 
         # Edge midpoints (Gmsh convention)
         dN[4] = 4 * (L2 * dL1 + L1 * dL2)  # edge 0-1
@@ -1525,6 +1658,7 @@ class TETRA10(SolidElement):
 # =============================================================================
 # HEXAHEDRON Elements
 # =============================================================================
+
 
 class HEXA8(SolidElement):
     """8-node linear hexahedron (brick) element.
@@ -1552,18 +1686,18 @@ class HEXA8(SolidElement):
     ):
         if len(node_ids) != 8:
             raise ValueError(f"HEXA8 requires 8 nodes, got {len(node_ids)}")
-        super().__init__("HEXA8", node_coords, node_ids, material, orientation,reduced_integration)
+        super().__init__("HEXA8", node_coords, node_ids, material, orientation, reduced_integration)
 
     @property
     def integration_points(self) -> Tuple[np.ndarray, np.ndarray]:
         """2×2×2 Gauss quadrature for linear hexahedron (default).
-        
+
         Reduced integration (1 point) available but requires hourglass control.
         """
-        
+
         if self.reduced_integration:
             # 1 point rule - requires hourglass control to avoid spurious modes
-            return np.array([[0,0,0]]), np.array([8.0])
+            return np.array([[0, 0, 0]]), np.array([8.0])
         else:
             # 2×2×2 full integration - default, avoids hourglass modes
             gp = 1 / np.sqrt(3)
@@ -1580,53 +1714,61 @@ class HEXA8(SolidElement):
 
     def shape_functions(self, xi: float, eta: float, zeta: float) -> np.ndarray:
         """Trilinear shape functions."""
-        return 0.125 * np.array([
-            (1 - xi) * (1 - eta) * (1 - zeta),  # N0
-            (1 + xi) * (1 - eta) * (1 - zeta),  # N1
-            (1 + xi) * (1 + eta) * (1 - zeta),  # N2
-            (1 - xi) * (1 + eta) * (1 - zeta),  # N3
-            (1 - xi) * (1 - eta) * (1 + zeta),  # N4
-            (1 + xi) * (1 - eta) * (1 + zeta),  # N5
-            (1 + xi) * (1 + eta) * (1 + zeta),  # N6
-            (1 - xi) * (1 + eta) * (1 + zeta),  # N7
-        ])
+        return 0.125 * np.array(
+            [
+                (1 - xi) * (1 - eta) * (1 - zeta),  # N0
+                (1 + xi) * (1 - eta) * (1 - zeta),  # N1
+                (1 + xi) * (1 + eta) * (1 - zeta),  # N2
+                (1 - xi) * (1 + eta) * (1 - zeta),  # N3
+                (1 - xi) * (1 - eta) * (1 + zeta),  # N4
+                (1 + xi) * (1 - eta) * (1 + zeta),  # N5
+                (1 + xi) * (1 + eta) * (1 + zeta),  # N6
+                (1 - xi) * (1 + eta) * (1 + zeta),  # N7
+            ]
+        )
 
     def shape_function_derivatives(
         self, xi: float, eta: float, zeta: float
     ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
         """Derivatives of trilinear shape functions."""
-        dN_dxi = 0.125 * np.array([
-            -(1 - eta) * (1 - zeta),
-            (1 - eta) * (1 - zeta),
-            (1 + eta) * (1 - zeta),
-            -(1 + eta) * (1 - zeta),
-            -(1 - eta) * (1 + zeta),
-            (1 - eta) * (1 + zeta),
-            (1 + eta) * (1 + zeta),
-            -(1 + eta) * (1 + zeta),
-        ])
+        dN_dxi = 0.125 * np.array(
+            [
+                -(1 - eta) * (1 - zeta),
+                (1 - eta) * (1 - zeta),
+                (1 + eta) * (1 - zeta),
+                -(1 + eta) * (1 - zeta),
+                -(1 - eta) * (1 + zeta),
+                (1 - eta) * (1 + zeta),
+                (1 + eta) * (1 + zeta),
+                -(1 + eta) * (1 + zeta),
+            ]
+        )
 
-        dN_deta = 0.125 * np.array([
-            -(1 - xi) * (1 - zeta),
-            -(1 + xi) * (1 - zeta),
-            (1 + xi) * (1 - zeta),
-            (1 - xi) * (1 - zeta),
-            -(1 - xi) * (1 + zeta),
-            -(1 + xi) * (1 + zeta),
-            (1 + xi) * (1 + zeta),
-            (1 - xi) * (1 + zeta),
-        ])
+        dN_deta = 0.125 * np.array(
+            [
+                -(1 - xi) * (1 - zeta),
+                -(1 + xi) * (1 - zeta),
+                (1 + xi) * (1 - zeta),
+                (1 - xi) * (1 - zeta),
+                -(1 - xi) * (1 + zeta),
+                -(1 + xi) * (1 + zeta),
+                (1 + xi) * (1 + zeta),
+                (1 - xi) * (1 + zeta),
+            ]
+        )
 
-        dN_dzeta = 0.125 * np.array([
-            -(1 - xi) * (1 - eta),
-            -(1 + xi) * (1 - eta),
-            -(1 + xi) * (1 + eta),
-            -(1 - xi) * (1 + eta),
-            (1 - xi) * (1 - eta),
-            (1 + xi) * (1 - eta),
-            (1 + xi) * (1 + eta),
-            (1 - xi) * (1 + eta),
-        ])
+        dN_dzeta = 0.125 * np.array(
+            [
+                -(1 - xi) * (1 - eta),
+                -(1 + xi) * (1 - eta),
+                -(1 + xi) * (1 + eta),
+                -(1 - xi) * (1 + eta),
+                (1 - xi) * (1 - eta),
+                (1 + xi) * (1 - eta),
+                (1 + xi) * (1 + eta),
+                (1 - xi) * (1 + eta),
+            ]
+        )
 
         return dN_dxi, dN_deta, dN_dzeta
 
@@ -1675,9 +1817,9 @@ class HEXA20(SolidElement):
     @property
     def integration_points(self) -> Tuple[np.ndarray, np.ndarray]:
         """3×3×3 Gauss quadrature for quadratic hexahedron."""
-        sqrt35 = np.sqrt(3/5)
+        sqrt35 = np.sqrt(3 / 5)
         pts_1d = np.array([-sqrt35, 0, sqrt35])
-        wts_1d = np.array([5/9, 8/9, 5/9])
+        wts_1d = np.array([5 / 9, 8 / 9, 5 / 9])
 
         points = []
         weights = []
@@ -1692,18 +1834,31 @@ class HEXA20(SolidElement):
     def shape_functions(self, xi: float, eta: float, zeta: float) -> np.ndarray:
         """Serendipity (20-node) hexahedron shape functions."""
         # Corner node coordinates
-        corners = np.array([
-            [-1, -1, -1], [1, -1, -1], [1, 1, -1], [-1, 1, -1],
-            [-1, -1, 1], [1, -1, 1], [1, 1, 1], [-1, 1, 1],
-        ])
+        corners = np.array(
+            [
+                [-1, -1, -1],
+                [1, -1, -1],
+                [1, 1, -1],
+                [-1, 1, -1],
+                [-1, -1, 1],
+                [1, -1, 1],
+                [1, 1, 1],
+                [-1, 1, 1],
+            ]
+        )
 
         N = np.zeros(20)
 
         # Corner nodes
         for i in range(8):
             xi_i, eta_i, zeta_i = corners[i]
-            N[i] = 0.125 * (1 + xi*xi_i) * (1 + eta*eta_i) * (1 + zeta*zeta_i) * \
-                   (xi*xi_i + eta*eta_i + zeta*zeta_i - 2)
+            N[i] = (
+                0.125
+                * (1 + xi * xi_i)
+                * (1 + eta * eta_i)
+                * (1 + zeta * zeta_i)
+                * (xi * xi_i + eta * eta_i + zeta * zeta_i - 2)
+            )
 
         # Mid-edge nodes (Gmsh convention - see edge mapping in docstring)
         # Edge 0-1: xi varies, eta=-1, zeta=-1

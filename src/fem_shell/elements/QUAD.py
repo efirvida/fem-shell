@@ -135,11 +135,13 @@ class QUAD(PlaneElement):
         lambd = E * nu / ((1 + nu) * (1 - 2 * nu))
         mu = E / (2 * (1 + nu))
 
-        return np.array([
-            [lambd + 2 * mu, lambd, 0],
-            [lambd, lambd + 2 * mu, 0],
-            [0, 0, mu],
-        ])
+        return np.array(
+            [
+                [lambd + 2 * mu, lambd, 0],
+                [lambd, lambd + 2 * mu, 0],
+                [0, 0, mu],
+            ]
+        )
 
     @property
     def K(self) -> np.ndarray:
@@ -248,10 +250,12 @@ class QUAD(PlaneElement):
         dN_dxi, dN_deta = self.shape_function_derivatives(xi, eta)
 
         # J[i,j] = ∂x_j/∂ξ_i where ξ_0=xi, ξ_1=eta and x_0=x, x_1=y
-        J = np.array([
-            [dN_dxi @ self.node_coords[:, 0], dN_dxi @ self.node_coords[:, 1]],
-            [dN_deta @ self.node_coords[:, 0], dN_deta @ self.node_coords[:, 1]],
-        ])
+        J = np.array(
+            [
+                [dN_dxi @ self.node_coords[:, 0], dN_dxi @ self.node_coords[:, 1]],
+                [dN_deta @ self.node_coords[:, 0], dN_deta @ self.node_coords[:, 1]],
+            ]
+        )
 
         det_J = np.linalg.det(J)
         inv_J = np.linalg.inv(J)
@@ -286,12 +290,14 @@ class QUAD4(QUAD):
         N2 = 0.25(1 + xi)(1 + eta)
         N3 = 0.25(1 - xi)(1 + eta)
         """
-        return 0.25 * np.array([
-            (1 - xi) * (1 - eta),
-            (1 + xi) * (1 - eta),
-            (1 + xi) * (1 + eta),
-            (1 - xi) * (1 + eta),
-        ])
+        return 0.25 * np.array(
+            [
+                (1 - xi) * (1 - eta),
+                (1 + xi) * (1 - eta),
+                (1 + xi) * (1 + eta),
+                (1 - xi) * (1 + eta),
+            ]
+        )
 
     def shape_function_derivatives(self, xi: float, eta: float) -> Tuple[np.ndarray, np.ndarray]:
         """Shape function derivatives
@@ -331,32 +337,36 @@ class QUAD8(QUAD):
     def integration_points(self) -> Tuple[np.ndarray, np.ndarray]:
         """3x3 Gauss quadrature for exact integration"""
         sqrt3_5 = np.sqrt(3 / 5)
-        points = np.array([
-            (-sqrt3_5, -sqrt3_5),
-            (0, -sqrt3_5),
-            (sqrt3_5, -sqrt3_5),
-            (-sqrt3_5, 0),
-            (0, 0),
-            (sqrt3_5, 0),
-            (-sqrt3_5, sqrt3_5),
-            (0, sqrt3_5),
-            (sqrt3_5, sqrt3_5),
-        ])
+        points = np.array(
+            [
+                (-sqrt3_5, -sqrt3_5),
+                (0, -sqrt3_5),
+                (sqrt3_5, -sqrt3_5),
+                (-sqrt3_5, 0),
+                (0, 0),
+                (sqrt3_5, 0),
+                (-sqrt3_5, sqrt3_5),
+                (0, sqrt3_5),
+                (sqrt3_5, sqrt3_5),
+            ]
+        )
         weights = np.array([25, 40, 25, 40, 64, 40, 25, 40, 25]) / 81
         return points, weights
 
     def shape_functions(self, xi: float, eta: float) -> np.ndarray:
         """Serendipity shape functions"""
-        return np.array([
-            0.25 * (1 - xi) * (1 - eta) * (-1 - xi - eta),  # N0
-            0.25 * (1 + xi) * (1 - eta) * (-1 + xi - eta),  # N1
-            0.25 * (1 + xi) * (1 + eta) * (-1 + xi + eta),  # N2
-            0.25 * (1 - xi) * (1 + eta) * (-1 - xi + eta),  # N3
-            0.5 * (1 - xi**2) * (1 - eta),  # N4
-            0.5 * (1 + xi) * (1 - eta**2),  # N5
-            0.5 * (1 - xi**2) * (1 + eta),  # N6
-            0.5 * (1 - xi) * (1 - eta**2),  # N7
-        ])
+        return np.array(
+            [
+                0.25 * (1 - xi) * (1 - eta) * (-1 - xi - eta),  # N0
+                0.25 * (1 + xi) * (1 - eta) * (-1 + xi - eta),  # N1
+                0.25 * (1 + xi) * (1 + eta) * (-1 + xi + eta),  # N2
+                0.25 * (1 - xi) * (1 + eta) * (-1 - xi + eta),  # N3
+                0.5 * (1 - xi**2) * (1 - eta),  # N4
+                0.5 * (1 + xi) * (1 - eta**2),  # N5
+                0.5 * (1 - xi**2) * (1 + eta),  # N6
+                0.5 * (1 - xi) * (1 - eta**2),  # N7
+            ]
+        )
 
     def shape_function_derivatives(self, xi: float, eta: float) -> Tuple[np.ndarray, np.ndarray]:
         """Analytical derivatives of shape functions
@@ -371,27 +381,31 @@ class QUAD8(QUAD):
         N6 = 0.5(1-ξ²)(1+η)
         N7 = 0.5(1-ξ)(1-η²)
         """
-        dN_dxi = np.array([
-            0.25 * (1 - eta) * (2 * xi + eta),      # dN0/dxi
-            0.25 * (1 - eta) * (2 * xi - eta),      # dN1/dxi
-            0.25 * (1 + eta) * (2 * xi + eta),      # dN2/dxi
-            0.25 * (1 + eta) * (2 * xi - eta),      # dN3/dxi
-            -xi * (1 - eta),                         # dN4/dxi
-            0.5 * (1 - eta**2),                      # dN5/dxi
-            -xi * (1 + eta),                         # dN6/dxi
-            -0.5 * (1 - eta**2),                     # dN7/dxi
-        ])
+        dN_dxi = np.array(
+            [
+                0.25 * (1 - eta) * (2 * xi + eta),  # dN0/dxi
+                0.25 * (1 - eta) * (2 * xi - eta),  # dN1/dxi
+                0.25 * (1 + eta) * (2 * xi + eta),  # dN2/dxi
+                0.25 * (1 + eta) * (2 * xi - eta),  # dN3/dxi
+                -xi * (1 - eta),  # dN4/dxi
+                0.5 * (1 - eta**2),  # dN5/dxi
+                -xi * (1 + eta),  # dN6/dxi
+                -0.5 * (1 - eta**2),  # dN7/dxi
+            ]
+        )
 
-        dN_deta = np.array([
-            0.25 * (1 - xi) * (2 * eta + xi),       # dN0/deta
-            0.25 * (1 + xi) * (2 * eta - xi),       # dN1/deta
-            0.25 * (1 + xi) * (2 * eta + xi),       # dN2/deta
-            0.25 * (1 - xi) * (2 * eta - xi),       # dN3/deta
-            -0.5 * (1 - xi**2),                      # dN4/deta
-            -(1 + xi) * eta,                         # dN5/deta
-            0.5 * (1 - xi**2),                       # dN6/deta
-            -(1 - xi) * eta,                         # dN7/deta
-        ])
+        dN_deta = np.array(
+            [
+                0.25 * (1 - xi) * (2 * eta + xi),  # dN0/deta
+                0.25 * (1 + xi) * (2 * eta - xi),  # dN1/deta
+                0.25 * (1 + xi) * (2 * eta + xi),  # dN2/deta
+                0.25 * (1 - xi) * (2 * eta - xi),  # dN3/deta
+                -0.5 * (1 - xi**2),  # dN4/deta
+                -(1 + xi) * eta,  # dN5/deta
+                0.5 * (1 - xi**2),  # dN6/deta
+                -(1 - xi) * eta,  # dN7/deta
+            ]
+        )
 
         return dN_dxi, dN_deta
 
@@ -419,42 +433,48 @@ class QUAD9(QUAD):
 
     def shape_functions(self, xi: float, eta: float) -> np.ndarray:
         """Biquadratic shape functions"""
-        return np.array([
-            0.25 * xi * eta * (xi - 1) * (eta - 1),  # N0
-            0.25 * xi * eta * (xi + 1) * (eta - 1),  # N1
-            0.25 * xi * eta * (xi + 1) * (eta + 1),  # N2
-            0.25 * xi * eta * (xi - 1) * (eta + 1),  # N3
-            0.5 * (1 - xi**2) * eta * (eta - 1),  # N4
-            0.5 * xi * (xi + 1) * (1 - eta**2),  # N5
-            0.5 * (1 - xi**2) * eta * (eta + 1),  # N6
-            0.5 * xi * (xi - 1) * (1 - eta**2),  # N7
-            (1 - xi**2) * (1 - eta**2),  # N8
-        ])
+        return np.array(
+            [
+                0.25 * xi * eta * (xi - 1) * (eta - 1),  # N0
+                0.25 * xi * eta * (xi + 1) * (eta - 1),  # N1
+                0.25 * xi * eta * (xi + 1) * (eta + 1),  # N2
+                0.25 * xi * eta * (xi - 1) * (eta + 1),  # N3
+                0.5 * (1 - xi**2) * eta * (eta - 1),  # N4
+                0.5 * xi * (xi + 1) * (1 - eta**2),  # N5
+                0.5 * (1 - xi**2) * eta * (eta + 1),  # N6
+                0.5 * xi * (xi - 1) * (1 - eta**2),  # N7
+                (1 - xi**2) * (1 - eta**2),  # N8
+            ]
+        )
 
     def shape_function_derivatives(self, xi: float, eta: float) -> Tuple[np.ndarray, np.ndarray]:
         """Analytical derivatives of shape functions"""
-        dN_dxi = np.array([
-            0.25 * eta * (eta - 1) * (2 * xi - 1),  # N0
-            0.25 * eta * (eta - 1) * (2 * xi + 1),  # N1
-            0.25 * eta * (eta + 1) * (2 * xi + 1),  # N2
-            0.25 * eta * (eta + 1) * (2 * xi - 1),  # N3
-            -xi * eta * (eta - 1),  # N4
-            0.5 * (1 - eta**2) * (2 * xi + 1),  # N5
-            -xi * eta * (eta + 1),  # N6
-            0.5 * (1 - eta**2) * (2 * xi - 1),  # N7
-            -2 * xi * (1 - eta**2),  # N8
-        ])
+        dN_dxi = np.array(
+            [
+                0.25 * eta * (eta - 1) * (2 * xi - 1),  # N0
+                0.25 * eta * (eta - 1) * (2 * xi + 1),  # N1
+                0.25 * eta * (eta + 1) * (2 * xi + 1),  # N2
+                0.25 * eta * (eta + 1) * (2 * xi - 1),  # N3
+                -xi * eta * (eta - 1),  # N4
+                0.5 * (1 - eta**2) * (2 * xi + 1),  # N5
+                -xi * eta * (eta + 1),  # N6
+                0.5 * (1 - eta**2) * (2 * xi - 1),  # N7
+                -2 * xi * (1 - eta**2),  # N8
+            ]
+        )
 
-        dN_deta = np.array([
-            0.25 * xi * (xi - 1) * (2 * eta - 1),  # N0
-            0.25 * xi * (xi + 1) * (2 * eta - 1),  # N1
-            0.25 * xi * (xi + 1) * (2 * eta + 1),  # N2
-            0.25 * xi * (xi - 1) * (2 * eta + 1),  # N3
-            0.5 * (1 - xi**2) * (2 * eta - 1),  # N4
-            -xi * (xi + 1) * eta,  # N5
-            0.5 * (1 - xi**2) * (2 * eta + 1),  # N6
-            -xi * (xi - 1) * eta,  # N7
-            -2 * eta * (1 - xi**2),  # N8
-        ])
+        dN_deta = np.array(
+            [
+                0.25 * xi * (xi - 1) * (2 * eta - 1),  # N0
+                0.25 * xi * (xi + 1) * (2 * eta - 1),  # N1
+                0.25 * xi * (xi + 1) * (2 * eta + 1),  # N2
+                0.25 * xi * (xi - 1) * (2 * eta + 1),  # N3
+                0.5 * (1 - xi**2) * (2 * eta - 1),  # N4
+                -xi * (xi + 1) * eta,  # N5
+                0.5 * (1 - xi**2) * (2 * eta + 1),  # N6
+                -xi * (xi - 1) * eta,  # N7
+                -2 * eta * (1 - xi**2),  # N8
+            ]
+        )
 
         return dN_dxi, dN_deta

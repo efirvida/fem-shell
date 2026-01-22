@@ -1,23 +1,29 @@
+from fem_shell.postprocess.stress_recovery import (
+    StrainResult,
+    StressLocation,
+    StressRecovery,
+    StressResult,
+    StressType,
+)
+
 from .linear import LinearDynamicSolver, LinearStaticSolver
 from .modal import ModalSolver
-from fem_shell.postprocess.stress_recovery import StrainResult, StressLocation, StressRecovery, StressResult, StressType
 
 try:
-    from .fsi import LinearDynamicFSISolver
-    from .fsi_rotor import (
-        AerodynamicsCalculator,
-        CheckpointState,
+    from .fsi import (
+        Adapter,
+        ConstantOmega,
         CoordinateTransforms,
-        FSIRotorSolver,
-        GeneratorController,
+        ForceClipper,
+        FSIRunner,
+        FunctionOmega,
         InertialForcesCalculator,
-        InertiaMode,
-        LoadTorqueMode,
-        OmegaMode,
-        RotorConfig,
-        RotorLogger,
+        LinearDynamicFSIRotorSolver,
+        LinearDynamicFSISolver,
+        OmegaProvider,
+        run_from_yaml,
+        TableOmega,
     )
-    from .fsi_runner import FSIRunner, run_from_yaml
 except ImportError:
     # preCICE not available
     pass

@@ -975,7 +975,7 @@ class MITC3(ShellElement):
         # We use an integrated formulation: K_drill = integral( B_drill.T * k_stab * B_drill ) dA
         # This respects rigid body rotation unlike grounded springs.
         # Tuned to alpha=0.15 consistent with MITC4 fix for Ko 2017 benchmarks
-        k_drill_stab = self.material.E * (self.thickness ** 2) * 0.15
+        k_drill_stab = self.material.E * (self.thickness**2) * 0.15
         for (r, s), w in zip(self._gauss_points, self._gauss_weights):
             B_drill = self._compute_B_drill(r, s)
             # Use only the 5-th row which corresponds to d_theta_z

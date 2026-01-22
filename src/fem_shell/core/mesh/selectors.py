@@ -8,15 +8,29 @@ import numpy as np
 
 if TYPE_CHECKING:
     from fem_shell.core.mesh.model import MeshModel
-    from fem_shell.core.mesh.entities import Node
+
+
+def select_all(mesh: "MeshModel", **kwargs) -> List[int]:
+    """
+    Select all nodes in the mesh.
+
+    Parameters
+    ----------
+    mesh : MeshModel
+        The mesh to select nodes from.
+    **kwargs
+        Ignored. Accepted for API consistency.
+
+    Returns
+    -------
+    List[int]
+        List of all node IDs.
+    """
+    return list(mesh.node_map.keys())
 
 
 def select_by_coordinate(
-    mesh: "MeshModel",
-    axis: Union[int, str],
-    value: float,
-    mode: str = "near",
-    tol: float = 1e-6
+    mesh: "MeshModel", axis: Union[int, str], value: float, mode: str = "near", tol: float = 1e-6
 ) -> List[int]:
     """
     Select nodes based on a coordinate value.
@@ -39,7 +53,7 @@ def select_by_coordinate(
     List[int]
         List of node IDs satisfying the criteria.
     """
-    axis_map = {'x': 0, 'y': 1, 'z': 2}
+    axis_map = {"x": 0, "y": 1, "z": 2}
     if isinstance(axis, str):
         axis = axis_map.get(axis.lower())
         if axis is None:
@@ -63,7 +77,7 @@ def select_by_box(
     mesh: "MeshModel",
     x_range: Optional[Tuple[float, float]] = None,
     y_range: Optional[Tuple[float, float]] = None,
-    z_range: Optional[Tuple[float, float]] = None
+    z_range: Optional[Tuple[float, float]] = None,
 ) -> List[int]:
     """Select nodes within a bounding box."""
     coords = mesh.coords_array
@@ -81,7 +95,7 @@ def select_by_distance(
     mesh: "MeshModel",
     point: Union[Iterable[float], np.ndarray],
     radius: float,
-    mode: str = "inside"
+    mode: str = "inside",
 ) -> List[int]:
     """Select nodes based on distance to a point."""
     point = np.asarray(point)
@@ -108,7 +122,7 @@ def select_by_direction(
     distance: Optional[float] = None,
     range: Optional[Tuple[float, float]] = None,
     radius: Optional[float] = None,
-    angle: Optional[float] = None
+    angle: Optional[float] = None,
 ) -> List[int]:
     """
     Select nodes based on a point and a direction vector.

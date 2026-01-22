@@ -41,7 +41,7 @@ class StrengthProperties:
     S12 : float
         In-plane shear strength [Pa]
     S23 : float, optional
-        Transverse shear strength (for Hashin criterion). 
+        Transverse shear strength (for Hashin criterion).
         Default is S12/2 if not provided.
 
     Notes
@@ -147,11 +147,7 @@ def compute_Q(material: OrthotropicMaterial) -> np.ndarray:
     Q12 = nu12 * E2 / denom
     Q66 = G12
 
-    return np.array([
-        [Q11, Q12, 0],
-        [Q12, Q22, 0],
-        [0, 0, Q66]
-    ])
+    return np.array([[Q11, Q12, 0], [Q12, Q22, 0], [0, 0, Q66]])
 
 
 def compute_Qbar(material: OrthotropicMaterial, theta_deg: float) -> np.ndarray:
@@ -173,7 +169,7 @@ def compute_Qbar(material: OrthotropicMaterial, theta_deg: float) -> np.ndarray:
     Notes
     -----
     The transformation accounts for the fiber orientation angle θ:
-    
+
     Qbar_11 = Q11·c⁴ + 2(Q12 + 2Q66)·s²c² + Q22·s⁴
     Qbar_22 = Q11·s⁴ + 2(Q12 + 2Q66)·s²c² + Q22·c⁴
     Qbar_12 = (Q11 + Q22 - 4Q66)·s²c² + Q12·(s⁴ + c⁴)
@@ -228,7 +224,7 @@ def compute_shear_Cbar(material: OrthotropicMaterial, theta_deg: float) -> np.nd
     -----
     The transformation is:
     C44 = G23·cos²θ + G13·sin²θ
-    C55 = G13·cos²θ + G23·sin²θ  
+    C55 = G13·cos²θ + G23·sin²θ
     C45 = (G13 - G23)·sinθ·cosθ
     """
     _, G23, G13 = material.G
@@ -242,10 +238,7 @@ def compute_shear_Cbar(material: OrthotropicMaterial, theta_deg: float) -> np.nd
     C55 = G13 * c2 + G23 * s2
     C45 = (G13 - G23) * s * c
 
-    return np.array([
-        [C55, C45],
-        [C45, C44]
-    ])
+    return np.array([[C55, C45], [C45, C44]])
 
 
 @dataclass
@@ -380,10 +373,7 @@ class Laminate:
             A44 += Cbar[1, 1] * t
 
         k = self.shear_correction_factor
-        self.Cs = k * np.array([
-            [A55, A45],
-            [A45, A44]
-        ])
+        self.Cs = k * np.array([[A55, A45], [A45, A44]])
 
     @property
     def is_symmetric(self) -> bool:
@@ -454,18 +444,18 @@ class Laminate:
         Ey_b = 12 / (h**3 * d[1, 1])
 
         return {
-            'Ex_membrane': Ex_m,
-            'Ey_membrane': Ey_m,
-            'Gxy_membrane': Gxy_m,
-            'nuxy_membrane': nuxy_m,
-            'Ex_bending': Ex_b,
-            'Ey_bending': Ey_b,
-            'total_thickness': h,
+            "Ex_membrane": Ex_m,
+            "Ey_membrane": Ey_m,
+            "Gxy_membrane": Gxy_m,
+            "nuxy_membrane": nuxy_m,
+            "Ex_bending": Ex_b,
+            "Ey_bending": Ey_b,
+            "total_thickness": h,
         }
 
     def __repr__(self) -> str:
         angles = [f"{p.angle:.0f}" for p in self.plies]
-        return f"Laminate([{'/'.join(angles)}], h={self.total_thickness*1000:.3f}mm)"
+        return f"Laminate([{'/'.join(angles)}], h={self.total_thickness * 1000:.3f}mm)"
 
 
 def create_symmetric_laminate(
@@ -537,10 +527,7 @@ def create_laminate_from_angles(
     ...     material, 0.125e-3, [0, 45, -45, 90, 90, -45, 45, 0]
     ... )
     """
-    plies = [
-        Ply(material, ply_thickness, angle, strength)
-        for angle in angles
-    ]
+    plies = [Ply(material, ply_thickness, angle, strength) for angle in angles]
     return Laminate(plies, shear_correction_factor)
 
 

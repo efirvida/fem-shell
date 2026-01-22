@@ -21,7 +21,7 @@ from .laminate import (
 __all__ = [
     "FSISimulationConfig",
     "Ply",
-    "Laminate", 
+    "Laminate",
     "StrengthProperties",
     "compute_Q",
     "compute_Qbar",

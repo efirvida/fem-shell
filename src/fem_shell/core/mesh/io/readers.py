@@ -23,10 +23,22 @@ MESHIO_TYPE_MAP = {
     "quad": ElementType.quad,
     "quad8": ElementType.quad8,
     "quad9": ElementType.quad9,
+    # 3D volumetric elements
+    "tetra": ElementType.tetra,
+    "tetra10": ElementType.tetra10,
+    "hexahedron": ElementType.hexahedron,
+    "hexahedron20": ElementType.hexahedron20,
+    "hexahedron27": ElementType.hexahedron27,
+    "wedge": ElementType.wedge,
+    "wedge15": ElementType.wedge15,
+    "pyramid": ElementType.pyramid,
+    "pyramid13": ElementType.pyramid13,
 }
 
 
-def load_mesh(filepath: str, format: str = "auto", nodesets: Optional[List[dict]] = None) -> "MeshModel":
+def load_mesh(
+    filepath: str, format: str = "auto", nodesets: Optional[List[dict]] = None
+) -> "MeshModel":
     """
     Load a mesh from disk.
 

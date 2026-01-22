@@ -13,8 +13,8 @@ This module contains classes for generating various types of structured meshes:
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, List, Tuple
 import math
+from typing import TYPE_CHECKING, List, Tuple
 
 import gmsh
 import numpy as np
@@ -50,6 +50,8 @@ class SquareShapeMesh:
         Use quadratic elements
     triangular : bool
         Use triangular elements
+    distorted : bool
+        Apply Ko2017 ratio-based mesh distortion (default: False)
     """
 
     def __init__(
@@ -60,6 +62,7 @@ class SquareShapeMesh:
         ny: int,
         quadratic: bool = False,
         triangular: bool = False,
+        distorted: bool = False,
     ):
         self.width = width
         self.height = height
@@ -67,6 +70,33 @@ class SquareShapeMesh:
         self.ny = ny
         self.quadratic = quadratic
         self.triangular = triangular
+        self.distorted = distorted
+
+    def _apply_ko2017_distortion(self, mesh_model: "MeshModel") -> None:
+        """Apply Ko2017 ratio-based mesh distortion in-place."""
+        if not self.distorted:
+            return
+
+        def _ratio_positions(n: int) -> np.ndarray:
+            seg = np.arange(1, n + 1, dtype=float)
+            cum = np.concatenate([[0.0], np.cumsum(seg)])
+            return cum / cum[-1]
+
+        # Domain is [-width/2, width/2] x [0, height]
+        x0, x1 = -self.width / 2, self.width / 2
+        y0, y1 = 0.0, self.height
+
+        x_uniform = np.linspace(x0, x1, self.nx + 1)
+        y_uniform = np.linspace(y0, y1, self.ny + 1)
+        x_dist = x0 + _ratio_positions(self.nx) * (x1 - x0)
+        y_dist = y0 + _ratio_positions(self.ny) * (y1 - y0)
+
+        for node in mesh_model.nodes:
+            x, y, z = node.coords
+            i_x = int(np.argmin(np.abs(x_uniform - x)))
+            i_y = int(np.argmin(np.abs(y_uniform - y)))
+            node.coords[0] = float(x_dist[i_x])
+            node.coords[1] = float(y_dist[i_y])
 
     def generate(self) -> "MeshModel":
         """Generates and returns a MeshModel with the structured mesh"""
@@ -85,7 +115,9 @@ class SquareShapeMesh:
             gmsh.model.mesh.generate(2)
             gmsh.model.mesh.optimize()
 
-            return self._create_mesh_model(MeshModel)
+            mesh_model = self._create_mesh_model(MeshModel)
+            self._apply_ko2017_distortion(mesh_model)
+            return mesh_model
         finally:
             gmsh.finalize()
 
@@ -149,6 +181,7 @@ class SquareShapeMesh:
         self.tag_map = {}
         # Reset Node ID counter
         from fem_shell.core.mesh.entities import Node
+
         Node._id_counter = 0
 
         elementTypes, elementTags, nodeTags = gmsh.model.mesh.getElements(2)
@@ -207,7 +240,7 @@ class SquareShapeMesh:
     def _create_node_sets(self, mesh_model: "MeshModel"):
         """Creates node sets including boundary corners"""
         physical_groups = gmsh.model.getPhysicalGroups()
-        
+
         # Store GMsh Tags in sets
         boundary_sets = {"top": set(), "bottom": set(), "left": set(), "right": set()}
 
@@ -390,20 +423,24 @@ class BoxSurfaceMesh:
         self.faces = {
             "bottom": self._create_face_loop([edges["l1"], edges["l2"], edges["l3"], edges["l4"]]),
             "top": self._create_face_loop([edges["l5"], edges["l6"], edges["l7"], edges["l8"]]),
-            "front": self._create_face_loop([
-                edges["l3"],
-                edges["l12"],
-                -edges["l7"],
-                -edges["l11"],
-            ]),
+            "front": self._create_face_loop(
+                [
+                    edges["l3"],
+                    edges["l12"],
+                    -edges["l7"],
+                    -edges["l11"],
+                ]
+            ),
             "back": self._create_face_loop([edges["l1"], edges["l10"], -edges["l5"], -edges["l9"]]),
             "left": self._create_face_loop([-edges["l4"], edges["l12"], edges["l8"], -edges["l9"]]),
-            "right": self._create_face_loop([
-                edges["l2"],
-                edges["l11"],
-                -edges["l6"],
-                -edges["l10"],
-            ]),
+            "right": self._create_face_loop(
+                [
+                    edges["l2"],
+                    edges["l11"],
+                    -edges["l6"],
+                    -edges["l10"],
+                ]
+            ),
         }
 
         for name, face_tag in self.faces.items():
@@ -624,11 +661,13 @@ class MultiFlapMesh:
         positions = []
         for i in range(self.n_flaps):
             x_left = x_start + i * (self.flap_width + self.x_spacing)
-            positions.append({
-                "index": i + 1,
-                "x_left": x_left,
-                "x_right": x_left + self.flap_width,
-            })
+            positions.append(
+                {
+                    "index": i + 1,
+                    "x_left": x_left,
+                    "x_right": x_left + self.flap_width,
+                }
+            )
         return positions
 
     def generate(self) -> "MeshModel":
@@ -688,13 +727,15 @@ class MultiFlapMesh:
             p_right = gmsh.model.geo.addPoint(fp["x_right"], y_flap_top, 0)
             self.points[f"ft_{fp['index']}_left"] = p_left
             self.points[f"ft_{fp['index']}_right"] = p_right
-            flap_top_points.append({
-                "index": fp["index"],
-                "x_left": fp["x_left"],
-                "x_right": fp["x_right"],
-                "p_left": p_left,
-                "p_right": p_right,
-            })
+            flap_top_points.append(
+                {
+                    "index": fp["index"],
+                    "x_left": fp["x_left"],
+                    "x_right": fp["x_right"],
+                    "p_left": p_left,
+                    "p_right": p_right,
+                }
+            )
 
         self._create_base_structure(base_bottom_points, base_top_points, flap_positions)
         self._create_flaps(base_top_points, flap_top_points, flap_positions)
@@ -719,12 +760,14 @@ class MultiFlapMesh:
             vertical_lines.append(l_vert)
 
         for i in range(len(bottom_lines)):
-            loop = gmsh.model.geo.addCurveLoop([
-                bottom_lines[i],
-                vertical_lines[i + 1],
-                -top_lines[i],
-                -vertical_lines[i],
-            ])
+            loop = gmsh.model.geo.addCurveLoop(
+                [
+                    bottom_lines[i],
+                    vertical_lines[i + 1],
+                    -top_lines[i],
+                    -vertical_lines[i],
+                ]
+            )
             surf = gmsh.model.geo.addPlaneSurface([loop])
             self.base_surfaces.append(surf)
 
@@ -755,14 +798,16 @@ class MultiFlapMesh:
             loop = gmsh.model.geo.addCurveLoop([l_left, l_top, l_right, l_bottom])
             surf = gmsh.model.geo.addPlaneSurface([loop])
 
-            self.flap_surfaces.append({
-                "index": idx,
-                "surface": surf,
-                "l_left": l_left,
-                "l_top": l_top,
-                "l_right": l_right,
-                "l_bottom": l_bottom,
-            })
+            self.flap_surfaces.append(
+                {
+                    "index": idx,
+                    "surface": surf,
+                    "l_left": l_left,
+                    "l_top": l_top,
+                    "l_right": l_right,
+                    "l_bottom": l_bottom,
+                }
+            )
 
     def _add_physical_groups(self, flap_positions):
         """Add physical groups for boundary conditions"""
@@ -1477,16 +1522,17 @@ class RotorMesh:
             n_samples=n_samples,
         ).generate(renumber=renumber)
 
+
 class CylindricalSurfaceMesh:
     """
     Generates a structured cylindrical shell mesh using Gmsh.
-    
+
     Coordinate system:
     - Cylinder axis aligns with Z-axis.
     - Base center at (0, 0, 0).
     - Surface generated at radius R.
     - Angle measures from X-axis towards Y-axis.
-    
+
     Attributes
     ----------
     radius : float
@@ -1501,6 +1547,10 @@ class CylindricalSurfaceMesh:
         Number of axial elements
     quadratic : bool
         Use quadratic elements (default: False)
+    triangular : bool
+        Use triangular elements instead of quads (default: False)
+    distorted : bool
+        Apply Ko2017 ratio-based mesh distortion (default: False)
     """
 
     def __init__(
@@ -1511,6 +1561,8 @@ class CylindricalSurfaceMesh:
         ny: int,
         angle_deg: float = 90.0,
         quadratic: bool = False,
+        triangular: bool = False,
+        distorted: bool = False,
     ):
         self.radius = radius
         self.length = length
@@ -1518,21 +1570,23 @@ class CylindricalSurfaceMesh:
         self.ny = ny
         self.angle_deg = angle_deg
         self.quadratic = quadratic
+        self.triangular = triangular
+        self.distorted = distorted
 
     def generate(self) -> "MeshModel":
         from fem_shell.core.mesh.model import MeshModel
-        
+
         gmsh.initialize()
         try:
             gmsh.option.setNumber("General.Terminal", 0)
             gmsh.model.add("cylinder")
-            
+
             self._create_geometry()
             self._configure_mesh()
-            
+
             gmsh.model.geo.synchronize()
             gmsh.model.mesh.generate(2)
-            
+
             return self._create_mesh_model(MeshModel)
         finally:
             gmsh.finalize()
@@ -1542,63 +1596,63 @@ class CylindricalSurfaceMesh:
         R = self.radius
         L = self.length
         theta = np.radians(self.angle_deg)
-        
+
         # Determine number of segments needed (arcs < 180 deg, prefer <= 90)
         n_segments = int(np.ceil(self.angle_deg / 90.0))
         d_theta = theta / n_segments
-        
+
         # Center points at different Z levels (for axis)
         c_bottom = gmsh.model.geo.addPoint(0, 0, 0)
         c_top = gmsh.model.geo.addPoint(0, 0, L)
-        
+
         points_bottom = []
         points_top = []
-        
+
         # Create points along the arc
         for i in range(n_segments + 1):
             ang = i * d_theta
             x = R * np.cos(ang)
             y = R * np.sin(ang)
-            
+
             points_bottom.append(gmsh.model.geo.addPoint(x, y, 0))
             points_top.append(gmsh.model.geo.addPoint(x, y, L))
-            
+
         self.surfaces = []
         self.curves_bottom = []
         self.curves_top = []
         self.lines_vertical = []
-        
+
         # First vertical line
         last_vertical = gmsh.model.geo.addLine(points_bottom[0], points_top[0])
         self.lines_vertical.append(last_vertical)
-        
+
         # Create surfaces segment by segment
         for i in range(n_segments):
             # Arcs
-            arc_bot = gmsh.model.geo.addCircleArc(points_bottom[i], c_bottom, points_bottom[i+1])
-            arc_top = gmsh.model.geo.addCircleArc(points_top[i], c_top, points_top[i+1])
-            
+            arc_bot = gmsh.model.geo.addCircleArc(points_bottom[i], c_bottom, points_bottom[i + 1])
+            arc_top = gmsh.model.geo.addCircleArc(points_top[i], c_top, points_top[i + 1])
+
             # Next vertical line
-            next_vertical = gmsh.model.geo.addLine(points_bottom[i+1], points_top[i+1])
-            
+            next_vertical = gmsh.model.geo.addLine(points_bottom[i + 1], points_top[i + 1])
+
             # Loop
             # Orientation: bot -> right -> -top -> -left
             loop = gmsh.model.geo.addCurveLoop([arc_bot, next_vertical, -arc_top, -last_vertical])
             surf = gmsh.model.geo.addSurfaceFilling([loop])
-            
+
             self.surfaces.append(surf)
             self.curves_bottom.append(arc_bot)
             self.curves_top.append(arc_top)
             self.lines_vertical.append(next_vertical)
-            
+
             last_vertical = next_vertical
-            
+
         # Store boundaries for physical groups
         self.edge_bottom = self.curves_bottom
         self.edge_top = self.curves_top
         self.edge_left = [self.lines_vertical[0]]
         self.edge_right = [self.lines_vertical[-1]]
-            
+
         self._add_physical_groups()
 
     def _add_physical_groups(self):
@@ -1615,44 +1669,87 @@ class CylindricalSurfaceMesh:
         nx_seg = max(1, self.nx // n_segments)
         # Remainder distribution handled simply here (might lose 1-2 elements if not divisible)
         # For benchmarks usually power of 2, so it's fine.
-        
+
         for i, surf in enumerate(self.surfaces):
             # Curves order in loop: bot, right, top, left
             # Transfinite curve needs specific points if lines are used
             # Here we just set counts on curves
-            
+
             gmsh.model.geo.mesh.setTransfiniteCurve(self.curves_bottom[i], nx_seg + 1)
             gmsh.model.geo.mesh.setTransfiniteCurve(self.curves_top[i], nx_seg + 1)
-            
+
             # Vertical lines are shared, set only once effectively
             # Left of current is self.lines_vertical[i]
             # Right of current is self.lines_vertical[i+1]
             gmsh.model.geo.mesh.setTransfiniteCurve(self.lines_vertical[i], self.ny + 1)
-            gmsh.model.geo.mesh.setTransfiniteCurve(self.lines_vertical[i+1], self.ny + 1)
-            
+            gmsh.model.geo.mesh.setTransfiniteCurve(self.lines_vertical[i + 1], self.ny + 1)
+
             gmsh.model.geo.mesh.setTransfiniteSurface(surf)
-            
-        # Recombine to get quads
-        gmsh.option.setNumber("Mesh.RecombineAll", 1)
-        gmsh.option.setNumber("Mesh.Algorithm", 8) # Frontal-Delaunay for Quads
-        
+
+        # Configure element type (triangular or quad)
+        if self.triangular:
+            gmsh.option.setNumber("Mesh.Algorithm", 6)  # Frontal-Delaunay for triangles
+        else:
+            gmsh.option.setNumber("Mesh.RecombineAll", 1)
+            gmsh.option.setNumber("Mesh.Algorithm", 8)  # Frontal-Delaunay for Quads
+
         if self.quadratic:
             gmsh.option.setNumber("Mesh.ElementOrder", 2)
+
+    def _apply_ko2017_distortion(self, mesh_model: "MeshModel") -> None:
+        """Apply Ko2017 ratio-based mesh distortion in-place.
+
+        The distortion pattern uses monotonically increasing segment lengths
+        with ratios 1:2:3:...:n for both parametric directions.
+        """
+        if not self.distorted:
+            return
+
+        def _ratio_positions(n: int) -> np.ndarray:
+            """Monotone node positions in [0,1] with segment lengths 1:2:...:n."""
+            seg = np.arange(1, n + 1, dtype=float)
+            cum = np.concatenate([[0.0], np.cumsum(seg)])
+            return cum / cum[-1]
+
+        # Original uniform parametric positions
+        thetas_uniform = np.linspace(0.0, np.radians(self.angle_deg), self.nx + 1)
+        zs_uniform = np.linspace(0.0, self.length, self.ny + 1)
+
+        # Distorted positions using Ko2017 ratio pattern
+        theta_dist = _ratio_positions(self.nx) * np.radians(self.angle_deg)
+        z_dist = _ratio_positions(self.ny) * self.length
+
+        R = self.radius
+        for node in mesh_model.nodes:
+            x, y, z = node.coords
+            # Convert to parametric (theta, z)
+            th = float(np.arctan2(y, x))
+            if th < 0:
+                th += 2 * np.pi
+            # Snap to nearest uniform level
+            i_th = int(np.argmin(np.abs(thetas_uniform - th)))
+            i_z = int(np.argmin(np.abs(zs_uniform - z)))
+            # Apply distorted positions
+            new_th = theta_dist[i_th]
+            new_z = z_dist[i_z]
+            node.coords[0] = float(R * np.cos(new_th))
+            node.coords[1] = float(R * np.sin(new_th))
+            node.coords[2] = float(new_z)
 
     def _create_mesh_model(self, MeshModelClass) -> "MeshModel":
         # Reuse logic from SquareShapeMesh or similar base
         # But since I cannot inherit easily from here due to structure, I'll copy-paste adaptation
         # Ideally this should be a mixin or base class method.
         # For now, minimal implementation to get nodes/elements.
-        
+
         mesh_model = MeshModelClass()
-        
+
         # 1. Get all elements first to find used nodes
         # Retrieve all 2D elements (shells) irrespective of the entity tag (-1)
         elem_types, elem_tags_list, elem_node_tags_list = gmsh.model.mesh.getElements(2, -1)
         used_node_tags = set()
-        
-        parsed_elements = [] # List of (et, current_elem_node_tags)
+
+        parsed_elements = []  # List of (et, current_elem_node_tags)
 
         for i, et in enumerate(elem_types):
             props = gmsh.model.mesh.getElementProperties(et)
@@ -1661,29 +1758,29 @@ class CylindricalSurfaceMesh:
             # elem_node_tags_list[i] is a flat array of node tags
             current_elem_node_tags = elem_node_tags_list[i].reshape(-1, num_nodes)
             parsed_elements.append((et, current_elem_node_tags))
-            
+
             for tags in current_elem_node_tags:
                 used_node_tags.update(tags)
 
         # 2. Get all nodes and filter
         node_tags, coords, _ = gmsh.model.mesh.getNodes()
         coords = np.array(coords).reshape(-1, 3)
-        node_map_gmsh = {} # gmsh_tag -> Node object
-        
+        node_map_gmsh = {}  # gmsh_tag -> Node object
+
         for tag, coord in zip(node_tags, coords):
             if tag in used_node_tags:
                 # Basic node creation
                 node = Node(coord, geometric_node=False)
                 mesh_model.add_node(node)
                 node_map_gmsh[tag] = node
-            
+
         # 3. Create elements
         for et, current_elem_node_tags in parsed_elements:
             for nodes_gmsh in current_elem_node_tags:
                 nodes = [node_map_gmsh[tag] for tag in nodes_gmsh]
                 e_type = ELEMENT_NODES_MAP.get(len(nodes), ElementType.quad)
                 mesh_model.add_element(MeshElement(nodes=nodes, element_type=e_type))
-                
+
         # Create node sets from physical groups
         physical_groups = gmsh.model.getPhysicalGroups(1)
         for dim, tag in physical_groups:
@@ -1691,81 +1788,119 @@ class CylindricalSurfaceMesh:
             entities = gmsh.model.getEntitiesForPhysicalGroup(dim, tag)
             nodes_set = set()
             for e_tag in entities:
-                 nt, _, _ = gmsh.model.mesh.getNodes(dim, e_tag, includeBoundary=True)
-                 for n_tag in nt:
-                     nodes_set.add(node_map_gmsh[n_tag])
-            
+                nt, _, _ = gmsh.model.mesh.getNodes(dim, e_tag, includeBoundary=True)
+                for n_tag in nt:
+                    nodes_set.add(node_map_gmsh[n_tag])
+
             if nodes_set:
                 mesh_model.add_node_set(NodeSet(name=name, nodes=nodes_set))
-                
+
+        # Apply distortion if requested
+        self._apply_ko2017_distortion(mesh_model)
+
         return mesh_model
+
 
 class HyperbolicParaboloidMesh(SquareShapeMesh):
     """
     Hyperbolic Paraboloid Shell Mesh Generator.
     Surface defined by z = c * (x^2 - y^2) over a square domain.
+
+    Parameters
+    ----------
+    length : float
+        Side length of the square domain
+    c : float
+        Curvature parameter for z = c * (x^2 - y^2)
+    nx : int
+        Number of elements in x-direction
+    ny : int
+        Number of elements in y-direction
+    thickness : float, optional
+        Shell thickness (stored for reference)
+    triangular : bool
+        Use triangular elements instead of quads (default: False)
+    distorted : bool
+        Apply Ko2017 ratio-based mesh distortion (default: False)
     """
-    def __init__(self, length, c, nx, ny, thickness=None):
-        super().__init__(width=length, height=length, nx=nx, ny=ny)
+
+    def __init__(self, length, c, nx, ny, thickness=None, triangular=False, distorted=False):
+        super().__init__(width=length, height=length, nx=nx, ny=ny, triangular=triangular)
         self.c = c
         self.thickness = thickness
+        self.distorted = distorted
 
     def _create_geometry(self):
         # Create base flat square first
         super()._create_geometry()
-        
-        # We will warp the nodes in generate() or create a custom _create_geometry
-        # But SquareShapeMesh._create_geometry creates a plane surface.
-        # Gmsh supports direct surface equations but mapping nodes is easier.
         pass
+
+    def _apply_ko2017_distortion(self, mesh_model: "MeshModel") -> None:
+        """Apply Ko2017 ratio-based mesh distortion in-place."""
+        if not self.distorted:
+            return
+
+        def _ratio_positions(n: int) -> np.ndarray:
+            seg = np.arange(1, n + 1, dtype=float)
+            cum = np.concatenate([[0.0], np.cumsum(seg)])
+            return cum / cum[-1]
+
+        # Domain is [-width/2, width/2] x [0, height]
+        x0, x1 = -self.width / 2, self.width / 2
+        y0, y1 = 0.0, self.height
+
+        x_uniform = np.linspace(x0, x1, self.nx + 1)
+        y_uniform = np.linspace(y0, y1, self.ny + 1)
+        x_dist = x0 + _ratio_positions(self.nx) * (x1 - x0)
+        y_dist = y0 + _ratio_positions(self.ny) * (y1 - y0)
+
+        for node in mesh_model.nodes:
+            x, y, z = node.coords
+            i_x = int(np.argmin(np.abs(x_uniform - x)))
+            i_y = int(np.argmin(np.abs(y_uniform - y)))
+            new_x = x_dist[i_x]
+            new_y = y_dist[i_y]
+            # Recalculate z with distorted x, y
+            y_shifted = new_y - self.height / 2.0
+            new_z = self.c * (new_x**2 - y_shifted**2)
+            node.coords[0] = float(new_x)
+            node.coords[1] = float(new_y)
+            node.coords[2] = float(new_z)
 
     def generate(self) -> "MeshModel":
         from fem_shell.core.mesh.model import MeshModel
-        
+
         gmsh.initialize()
         try:
             gmsh.option.setNumber("General.Terminal", 0)
             gmsh.model.add("hyperbolic_paraboloid")
-            
+
             # 1. Create flat mesh
             super()._create_geometry()
             self._configure_mesh()
-            
+
             gmsh.model.geo.synchronize()
             gmsh.model.mesh.generate(2)
-            
+
             # 2. Warp nodes to z = c * (x^2 - y^2)
-            # Center the domain? SquareShapeMesh uses [-width/2, width/2] x [0, height].
-            # Wait, SquareShapeMesh uses x0 = -width/2, x1=width/2, y0=0, y1=height.
-            # For H.P., we usually want symmetry around (0,0).
-            # So let's shift y.
-            
             node_tags, coords_flat, _ = gmsh.model.mesh.getNodes()
-            coords_new = []
-            
-            # Reshape coords
+
             for i in range(0, len(coords_flat), 3):
                 x = coords_flat[i]
-                y = coords_flat[i+1]
-                z = coords_flat[i+2]
-                
-                # Shift y to center if needed, or assume domain is [0, L]
-                # Usually H.P. is defined on [-L/2, L/2] x [-L/2, L/2]
-                # Our SquareShapeMesh makes x in [-W/2, W/2] and y in [0, H].
-                # Let's shift y by -H/2
-                
+                y = coords_flat[i + 1]
+
                 y_shifted = y - self.height / 2.0
-                
-                # Formula z = c * (x^2 - y^2)
                 z_new = self.c * (x**2 - y_shifted**2)
-                
-                # Update node
-                # gmsh.model.mesh.setNode(tag, coord, parametricCoord)
-                # coord is list of 3 floats
-                gmsh.model.mesh.setNode(node_tags[i//3], [x, y, z_new], [])
-                
-            return self._create_mesh_model(MeshModel)
-            
+
+                gmsh.model.mesh.setNode(node_tags[i // 3], [x, y, z_new], [])
+
+            mesh_model = self._create_mesh_model(MeshModel)
+
+            # Apply distortion if requested
+            self._apply_ko2017_distortion(mesh_model)
+
+            return mesh_model
+
         finally:
             gmsh.finalize()
 
@@ -1773,61 +1908,64 @@ class HyperbolicParaboloidMesh(SquareShapeMesh):
 class RaaschHookMesh:
     """
     Raasch Challenge Hook Mesh.
-    
+
     Based on Knight (1997) and Ko et al. geometry:
     - Two circular arc segments with G1 continuity
     - R2 is the MAIN arc (large radius) starting from the clamped end
     - R1 is the TIP arc (small radius) at the free end
     - theta2 is the angle of the main arc (typically 150°)
     - theta1 is the angle of the tip arc (typically 60°)
-    
+
     Geometry (in X-Z plane, extruded in Y):
     - Clamped end at origin A=(0,0,0)
     - Hook curves toward negative X (inward)
     - Main arc center C2 at (-R2, 0, 0)
     - Tip arc center C1 positioned for G1 continuity
-    
+
     Parameters from Knight (1997):
     - R1 = 14 (tip arc radius)
-    - R2 = 46 (main arc radius)  
+    - R2 = 46 (main arc radius)
     - theta1 = 60° (tip arc angle)
     - theta2 = 150° (main arc angle)
     - width = 20 (extrusion in Y)
     """
-    def __init__(self, width, R1, R2, nx, ny, angle1_deg=60, angle2_deg=150):
+
+    def __init__(self, width, R1, R2, nx, ny, angle1_deg=60, angle2_deg=150, triangular=False):
         self.width = width
-        self.R1 = R1   # Tip arc radius (small)
-        self.R2 = R2   # Main arc radius (large)
-        self.nx = nx   # Elements along width (Y direction)
-        self.ny = ny   # Elements along curve (total for both arcs)
+        self.R1 = R1  # Tip arc radius (small)
+        self.R2 = R2  # Main arc radius (large)
+        self.nx = nx  # Elements along width (Y direction)
+        self.ny = ny  # Elements along curve (total for both arcs)
         self.angle1 = math.radians(angle1_deg)  # Tip arc angle
         self.angle2 = math.radians(angle2_deg)  # Main arc angle
-        
+        self.triangular = triangular  # Use triangular elements
+
     def generate(self) -> "MeshModel":
-        from fem_shell.core.mesh.model import MeshModel
         import math
-        
+
+        from fem_shell.core.mesh.model import MeshModel
+
         gmsh.initialize()
         try:
             gmsh.option.setNumber("General.Terminal", 0)
             gmsh.model.add("raasch_hook")
-            
+
             # ============================================================
             # Geometry: Hook in X-Z plane, extruded in Y
             # Based on the figure from Ko et al. / Knight (1997)
             # ============================================================
-            
+
             # Point A: Origin (clamped end)
             # Tangent at A is vertical (along +Z axis)
             p0 = gmsh.model.geo.addPoint(0, 0, 0)
-            
+
             # ---------------------------------------------------------
             # Main arc (Arc 2): R2, angle theta2
             # Center C2 at (-R2, 0, 0) so the arc starts at origin
             # and curves toward negative X
             # ---------------------------------------------------------
             c2 = gmsh.model.geo.addPoint(-self.R2, 0, 0)
-            
+
             # End point of main arc P1
             # Arc sweeps counterclockwise from angle 0 to angle theta2
             # Point at angle 0 relative to C2: (0, 0, 0) ✓
@@ -1835,27 +1973,27 @@ class RaaschHookMesh:
             x1 = -self.R2 + self.R2 * math.cos(self.angle2)
             z1 = self.R2 * math.sin(self.angle2)
             p1 = gmsh.model.geo.addPoint(x1, 0, z1)
-            
+
             # Create main arc
             arc2 = gmsh.model.geo.addCircleArc(p0, c2, p1)
-            
+
             # ---------------------------------------------------------
             # Tip arc (Arc 1): R1, angle theta1
             # For G1 continuity, C1 lies on the line C2-P1 extended
             # Direction from C2 to P1 (outward radial)
             # ---------------------------------------------------------
             radial_x = x1 - (-self.R2)  # = x1 + R2 = R2*cos(theta2)
-            radial_z = z1 - 0            # = R2*sin(theta2)
+            radial_z = z1 - 0  # = R2*sin(theta2)
             norm = math.sqrt(radial_x**2 + radial_z**2)
             dir_x = radial_x / norm
             dir_z = radial_z / norm
-            
+
             # Center C1: For OPPOSITE curvature direction (true hook - curves back),
             # C1 = P1 + dir * R1 (center is "outside" the curve, opposite to main arc)
             cx1 = x1 + dir_x * self.R1
             cz1 = z1 + dir_z * self.R1
             c1 = gmsh.model.geo.addPoint(cx1, 0, cz1)
-            
+
             # End point P2 (tip of hook)
             # Since we reversed curvature direction, we need to sweep in CLOCKWISE direction
             # Starting angle at P1 relative to C1 is theta2 + π (opposite direction)
@@ -1865,74 +2003,75 @@ class RaaschHookMesh:
             x2 = cx1 + self.R1 * math.cos(theta_end)
             z2 = cz1 + self.R1 * math.sin(theta_end)
             p2 = gmsh.model.geo.addPoint(x2, 0, z2)
-            
+
             # Create tip arc
             arc1 = gmsh.model.geo.addCircleArc(p1, c1, p2)
-            
+
             # ---------------------------------------------------------
             # Transfinite mesh: split ny proportionally by arc length
             # ---------------------------------------------------------
             L2 = self.R2 * self.angle2  # Main arc length
             L1 = self.R1 * self.angle1  # Tip arc length
             L_tot = L1 + L2
-            
+
             # Distribute elements proportionally
-            ny2 = max(2, int(self.ny * (L2/L_tot)) + 1)
+            ny2 = max(2, int(self.ny * (L2 / L_tot)) + 1)
             ny1 = max(2, self.ny - ny2 + 2)
-            
+
             gmsh.model.geo.mesh.setTransfiniteCurve(arc2, ny2)  # Main arc (from origin)
             gmsh.model.geo.mesh.setTransfiniteCurve(arc1, ny1)  # Tip arc
-            
+
             # Extrude in Y with transfinite layers
             # Order: main arc first (from clamped end), then tip arc
+            # recombine=True generates quads, recombine=False generates triangles
+            recombine = not self.triangular
             extrusion = gmsh.model.geo.extrude(
-                [(1, arc2), (1, arc1)], 
-                0, self.width, 0,
-                numElements=[self.nx],
-                recombine=True
+                [(1, arc2), (1, arc1)], 0, self.width, 0, numElements=[self.nx], recombine=recombine
             )
-            
+
             # Collect surfaces
             surfaces = []
             for e in extrusion:
                 if e[0] == 2:
                     surfaces.append(e[1])
-            
+
             gmsh.model.geo.synchronize()
-            
+
             # Physical groups
             gmsh.model.addPhysicalGroup(2, surfaces, 1, "surface")
-            
+
             gmsh.model.mesh.generate(2)
-            
+
             from fem_shell.core.mesh.model import MeshModel
+
             return self._extract_mesh(MeshModel)
         finally:
             gmsh.finalize()
 
     def _extract_mesh(self, MeshModelClass):
         """Duplicated extraction logic with Raasch-specific sets"""
-        import math
+
         # Reset Node ID counter
         from fem_shell.core.mesh.entities import Node
+
         Node._id_counter = 0
         mesh_model = MeshModelClass()
-         
+
         elem_types, elem_tags_list, elem_node_tags_list = gmsh.model.mesh.getElements(2, -1)
         used_node_tags = set()
         parsed_elements = []
         for i, et in enumerate(elem_types):
             props = gmsh.model.mesh.getElementProperties(et)
             num_nodes = props[3]
-            # Filter Quad (4 nodes)
-            if num_nodes != 4:
+            # Filter Quad (4 nodes) or Triangle (3 nodes)
+            if num_nodes not in (3, 4):
                 continue
-                
+
             current_elem_node_tags = elem_node_tags_list[i].reshape(-1, num_nodes)
             parsed_elements.append((et, current_elem_node_tags))
             for tags in current_elem_node_tags:
                 used_node_tags.update(tags)
-                
+
         node_tags, coords, _ = gmsh.model.mesh.getNodes()
         coords = np.array(coords).reshape(-1, 3)
         node_map = {}
@@ -1941,7 +2080,7 @@ class RaaschHookMesh:
                 node = Node(coord, geometric_node=False)
                 mesh_model.add_node(node)
                 node_map[tag] = node
-                
+
         for et, current_elem_node_tags in parsed_elements:
             for nodes_gmsh in current_elem_node_tags:
                 nodes = [node_map[tag] for tag in nodes_gmsh]
@@ -1951,51 +2090,41 @@ class RaaschHookMesh:
         # Create node sets (boundaries)
         root_nodes = []
         tip_nodes = []
-         
-        # Tip Calculation
-        theta1 = math.pi - self.angle1
-        x1 = self.R1 + self.R1 * math.cos(theta1)
-        z1 = self.R1 * math.sin(theta1)
-         
-        v_x = x1 - self.R1
-        v_z = z1
-        norm = math.sqrt(v_x**2 + v_z**2)
-        dir_x = v_x / norm
-        dir_z = v_z / norm
-         
-        cx2 = x1 - dir_x * self.R2
-        cz2 = z1 - dir_z * self.R2
-         
-        theta2 = theta1 - self.angle2
-        x2 = cx2 + self.R2 * math.cos(theta2)
-        z2 = cz2 + self.R2 * math.sin(theta2)
-         
+
+        # Find tip and root by geometry:
+        # - Tip (load applied): at the origin (x=0, z=0), varies in Y
+        # - Root (clamped): at the end of the hook (minimum X), varies in Y
         tol = 1e-3
-         
-        for node in mesh_model.nodes:
-            # Root: near (0,0,0) in X-Z projection
-            if abs(node.x) < tol and abs(node.z) < tol:
-                root_nodes.append(node)
-            # Tip: near (x2, z2) in X-Z projection
-            if abs(node.x - x2) < tol and abs(node.z - z2) < tol:
-                tip_nodes.append(node)
-                 
-        mesh_model.add_node_set(NodeSet("root", root_nodes))
-        mesh_model.add_node_set(NodeSet("tip", tip_nodes))
-         
+
+        # Find min X to identify root (clamped end)
+        all_nodes = list(mesh_model.nodes)
+        if all_nodes:
+            min_x = min(n.x for n in all_nodes)
+
+            for node in all_nodes:
+                # Tip: near (0, *, 0) - origin, extrusion in Y - where load is applied
+                if abs(node.x) < tol and abs(node.z) < tol:
+                    tip_nodes.append(node)
+                # Root: at minimum X (clamped end of hook)
+                if abs(node.x - min_x) < tol:
+                    root_nodes.append(node)
+
+        mesh_model.add_node_set(NodeSet("root", set(root_nodes)))
+        mesh_model.add_node_set(NodeSet("tip", set(tip_nodes)))
+
         return mesh_model
 
 
 class SphericalSurfaceMesh:
     """
     Generates a structured spherical shell mesh (hemisphere or partial sphere).
-    
+
     Coordinate system:
     - Sphere center at origin (0, 0, 0).
     - Z-axis is the polar axis.
     - θ (theta): polar angle from Z-axis (0° = north pole, 90° = equator)
     - φ (phi): azimuthal angle in X-Y plane from X-axis
-    
+
     Parameters
     ----------
     radius : float
@@ -2010,7 +2139,11 @@ class SphericalSurfaceMesh:
         Number of elements in polar direction
     n_phi : int
         Number of elements in azimuthal direction
-    
+    triangular : bool
+        Use triangular elements instead of quads (default: False)
+    distorted : bool
+        Apply Ko2017 ratio-based mesh distortion (default: False)
+
     Example
     -------
     # 1/4 hemisphere with 18° hole (MacNeal-Harder pinched hemisphere)
@@ -2033,6 +2166,8 @@ class SphericalSurfaceMesh:
         theta_min_deg: float = 0.0,
         theta_max_deg: float = 90.0,
         phi_max_deg: float = 90.0,
+        triangular: bool = False,
+        distorted: bool = False,
     ):
         self.radius = radius
         self.n_theta = n_theta
@@ -2040,34 +2175,78 @@ class SphericalSurfaceMesh:
         self.theta_min = np.radians(theta_min_deg)
         self.theta_max = np.radians(theta_max_deg)
         self.phi_max = np.radians(phi_max_deg)
+        self.theta_min_deg = theta_min_deg
+        self.theta_max_deg = theta_max_deg
+        self.phi_max_deg = phi_max_deg
+        self.triangular = triangular
+        self.distorted = distorted
+
+    def _apply_ko2017_distortion(self, mesh_model: "MeshModel") -> None:
+        """Apply Ko2017 ratio-based mesh distortion in-place."""
+        if not self.distorted:
+            return
+
+        def _ratio_positions(n: int) -> np.ndarray:
+            seg = np.arange(1, n + 1, dtype=float)
+            cum = np.concatenate([[0.0], np.cumsum(seg)])
+            return cum / cum[-1]
+
+        R = self.radius
+        thetas_uniform = np.linspace(self.theta_min, self.theta_max, self.n_theta + 1)
+        phis_uniform = np.linspace(0.0, self.phi_max, self.n_phi + 1)
+
+        theta_dist = self.theta_min + _ratio_positions(self.n_theta) * (
+            self.theta_max - self.theta_min
+        )
+        phi_dist = _ratio_positions(self.n_phi) * self.phi_max
+
+        for node in mesh_model.nodes:
+            x, y, z = node.coords
+            # Convert to spherical
+            th = float(np.arccos(np.clip(z / R, -1.0, 1.0)))
+            ph = float(np.arctan2(y, x))
+            if ph < 0:
+                ph += 2 * np.pi
+
+            # Snap to nearest uniform level
+            i_th = int(np.argmin(np.abs(thetas_uniform - th)))
+            i_ph = int(np.argmin(np.abs(phis_uniform - ph)))
+
+            # Apply distorted positions
+            new_th = theta_dist[i_th]
+            new_ph = phi_dist[i_ph]
+
+            node.coords[0] = float(R * np.sin(new_th) * np.cos(new_ph))
+            node.coords[1] = float(R * np.sin(new_th) * np.sin(new_ph))
+            node.coords[2] = float(R * np.cos(new_th))
 
     def generate(self) -> "MeshModel":
+        from fem_shell.core.mesh.entities import ElementType, MeshElement, Node, NodeSet
         from fem_shell.core.mesh.model import MeshModel
-        from fem_shell.core.mesh.entities import Node, MeshElement, ElementType, NodeSet
-        
+
         Node._id_counter = 0
         mesh_model = MeshModel()
-        
+
         R = self.radius
         n_theta = self.n_theta
         n_phi = self.n_phi
-        
+
         # Create nodes
         node_grid = {}  # (j, i) -> Node
-        
+
         for j in range(n_theta + 1):
             theta = self.theta_min + j * (self.theta_max - self.theta_min) / n_theta
             for i in range(n_phi + 1):
                 phi = i * self.phi_max / n_phi
-                
+
                 x = R * np.sin(theta) * np.cos(phi)
                 y = R * np.sin(theta) * np.sin(phi)
                 z = R * np.cos(theta)
-                
+
                 node = Node([x, y, z], geometric_node=False)
                 mesh_model.add_node(node)
                 node_grid[(j, i)] = node
-        
+
         # Create elements
         for j in range(n_theta):
             for i in range(n_phi):
@@ -2075,30 +2254,37 @@ class SphericalSurfaceMesh:
                 n1 = node_grid[(j, i + 1)]
                 n2 = node_grid[(j + 1, i + 1)]
                 n3 = node_grid[(j + 1, i)]
-                
-                elem = MeshElement(
-                    nodes=[n0, n1, n2, n3],
-                    element_type=ElementType.quad
-                )
-                mesh_model.add_element(elem)
-        
+
+                if self.triangular:
+                    # Split quad into two triangles
+                    elem1 = MeshElement(nodes=[n0, n1, n2], element_type=ElementType.triangle)
+                    elem2 = MeshElement(nodes=[n0, n2, n3], element_type=ElementType.triangle)
+                    mesh_model.add_element(elem1)
+                    mesh_model.add_element(elem2)
+                else:
+                    elem = MeshElement(nodes=[n0, n1, n2, n3], element_type=ElementType.quad)
+                    mesh_model.add_element(elem)
+
         # Create boundary node sets
         # theta_min edge (hole/apex)
         theta_min_nodes = [node_grid[(0, i)] for i in range(n_phi + 1)]
         mesh_model.add_node_set(NodeSet("theta_min", theta_min_nodes))
-        
+
         # theta_max edge (equator)
         theta_max_nodes = [node_grid[(n_theta, i)] for i in range(n_phi + 1)]
         mesh_model.add_node_set(NodeSet("equator", theta_max_nodes))
-        
+
         # phi=0 edge
         phi_0_nodes = [node_grid[(j, 0)] for j in range(n_theta + 1)]
         mesh_model.add_node_set(NodeSet("phi_0", phi_0_nodes))
-        
+
         # phi=phi_max edge
         phi_max_nodes = [node_grid[(j, n_phi)] for j in range(n_theta + 1)]
         mesh_model.add_node_set(NodeSet("phi_max", phi_max_nodes))
-        
+
+        # Apply distortion if requested
+        self._apply_ko2017_distortion(mesh_model)
+
         return mesh_model
 
 
@@ -2106,13 +2292,14 @@ class SphericalSurfaceMesh:
 # 3D Volumetric Mesh Generators
 # =============================================================================
 
+
 class BoxVolumeMesh:
     """
     Generates structured 3D volumetric meshes using Gmsh.
-    
+
     Creates hexahedral or tetrahedral solid elements for a box domain.
     Supports mixed-element meshes with transition elements (wedges, pyramids).
-    
+
     Parameters
     ----------
     center : Tuple[float, float, float]
@@ -2125,13 +2312,13 @@ class BoxVolumeMesh:
         Element type: 'hex', 'tet', 'wedge', or 'mixed'
     quadratic : bool
         Use quadratic elements (default: False)
-        
+
     Examples
     --------
     >>> gen = BoxVolumeMesh((0, 0, 0), (1, 1, 1), 4, 4, 4, element_type='hex')
     >>> mesh = gen.generate()
     """
-    
+
     def __init__(
         self,
         center: Tuple[float, float, float],
@@ -2139,7 +2326,7 @@ class BoxVolumeMesh:
         nx: int,
         ny: int,
         nz: int,
-        element_type: str = 'hex',
+        element_type: str = "hex",
         quadratic: bool = False,
     ):
         self.center = center
@@ -2150,35 +2337,35 @@ class BoxVolumeMesh:
         self.element_type = element_type.lower()
         self.quadratic = quadratic
         self.tag_map = {}
-        
+
     def generate(self) -> "MeshModel":
         """Generate and return a MeshModel with volumetric elements."""
         from fem_shell.core.mesh.model import MeshModel
-        
+
         gmsh.initialize()
         try:
             gmsh.option.setNumber("General.Terminal", 0)
             gmsh.model.add("box_volume")
-            
+
             self._create_geometry()
             self._configure_mesh()
-            
+
             gmsh.model.geo.synchronize()
             gmsh.model.mesh.generate(3)
-            
+
             return self._create_mesh_model(MeshModel)
         finally:
             gmsh.finalize()
-            
+
     def _create_geometry(self):
         """Create box geometry."""
         cx, cy, cz = self.center
         dx, dy, dz = self.dims
-        
-        x0, x1 = cx - dx/2, cx + dx/2
-        y0, y1 = cy - dy/2, cy + dy/2
-        z0, z1 = cz - dz/2, cz + dz/2
-        
+
+        x0, x1 = cx - dx / 2, cx + dx / 2
+        y0, y1 = cy - dy / 2, cy + dy / 2
+        z0, z1 = cz - dz / 2, cz + dz / 2
+
         # Create points
         self.points = [
             gmsh.model.geo.addPoint(x0, y0, z0),  # 0
@@ -2190,97 +2377,98 @@ class BoxVolumeMesh:
             gmsh.model.geo.addPoint(x1, y1, z1),  # 6
             gmsh.model.geo.addPoint(x0, y1, z1),  # 7
         ]
-        
+
         # Create edges
         p = self.points
         self.edges = {
             # Bottom face
-            'e0': gmsh.model.geo.addLine(p[0], p[1]),
-            'e1': gmsh.model.geo.addLine(p[1], p[2]),
-            'e2': gmsh.model.geo.addLine(p[2], p[3]),
-            'e3': gmsh.model.geo.addLine(p[3], p[0]),
+            "e0": gmsh.model.geo.addLine(p[0], p[1]),
+            "e1": gmsh.model.geo.addLine(p[1], p[2]),
+            "e2": gmsh.model.geo.addLine(p[2], p[3]),
+            "e3": gmsh.model.geo.addLine(p[3], p[0]),
             # Top face
-            'e4': gmsh.model.geo.addLine(p[4], p[5]),
-            'e5': gmsh.model.geo.addLine(p[5], p[6]),
-            'e6': gmsh.model.geo.addLine(p[6], p[7]),
-            'e7': gmsh.model.geo.addLine(p[7], p[4]),
+            "e4": gmsh.model.geo.addLine(p[4], p[5]),
+            "e5": gmsh.model.geo.addLine(p[5], p[6]),
+            "e6": gmsh.model.geo.addLine(p[6], p[7]),
+            "e7": gmsh.model.geo.addLine(p[7], p[4]),
             # Vertical edges
-            'e8': gmsh.model.geo.addLine(p[0], p[4]),
-            'e9': gmsh.model.geo.addLine(p[1], p[5]),
-            'e10': gmsh.model.geo.addLine(p[2], p[6]),
-            'e11': gmsh.model.geo.addLine(p[3], p[7]),
+            "e8": gmsh.model.geo.addLine(p[0], p[4]),
+            "e9": gmsh.model.geo.addLine(p[1], p[5]),
+            "e10": gmsh.model.geo.addLine(p[2], p[6]),
+            "e11": gmsh.model.geo.addLine(p[3], p[7]),
         }
-        
+
         # Create faces
         e = self.edges
-        bottom_loop = gmsh.model.geo.addCurveLoop([e['e0'], e['e1'], e['e2'], e['e3']])
-        top_loop = gmsh.model.geo.addCurveLoop([e['e4'], e['e5'], e['e6'], e['e7']])
-        front_loop = gmsh.model.geo.addCurveLoop([e['e0'], e['e9'], -e['e4'], -e['e8']])
-        back_loop = gmsh.model.geo.addCurveLoop([-e['e2'], e['e10'], e['e6'], -e['e11']])
-        left_loop = gmsh.model.geo.addCurveLoop([-e['e3'], e['e11'], e['e7'], -e['e8']])
-        right_loop = gmsh.model.geo.addCurveLoop([e['e1'], e['e10'], -e['e5'], -e['e9']])
-        
+        bottom_loop = gmsh.model.geo.addCurveLoop([e["e0"], e["e1"], e["e2"], e["e3"]])
+        top_loop = gmsh.model.geo.addCurveLoop([e["e4"], e["e5"], e["e6"], e["e7"]])
+        front_loop = gmsh.model.geo.addCurveLoop([e["e0"], e["e9"], -e["e4"], -e["e8"]])
+        back_loop = gmsh.model.geo.addCurveLoop([-e["e2"], e["e10"], e["e6"], -e["e11"]])
+        left_loop = gmsh.model.geo.addCurveLoop([-e["e3"], e["e11"], e["e7"], -e["e8"]])
+        right_loop = gmsh.model.geo.addCurveLoop([e["e1"], e["e10"], -e["e5"], -e["e9"]])
+
         self.faces = {
-            'bottom': gmsh.model.geo.addPlaneSurface([bottom_loop]),
-            'top': gmsh.model.geo.addPlaneSurface([top_loop]),
-            'front': gmsh.model.geo.addPlaneSurface([front_loop]),
-            'back': gmsh.model.geo.addPlaneSurface([back_loop]),
-            'left': gmsh.model.geo.addPlaneSurface([left_loop]),
-            'right': gmsh.model.geo.addPlaneSurface([right_loop]),
+            "bottom": gmsh.model.geo.addPlaneSurface([bottom_loop]),
+            "top": gmsh.model.geo.addPlaneSurface([top_loop]),
+            "front": gmsh.model.geo.addPlaneSurface([front_loop]),
+            "back": gmsh.model.geo.addPlaneSurface([back_loop]),
+            "left": gmsh.model.geo.addPlaneSurface([left_loop]),
+            "right": gmsh.model.geo.addPlaneSurface([right_loop]),
         }
-        
+
         # Create volume
         surface_loop = gmsh.model.geo.addSurfaceLoop(list(self.faces.values()))
         self.volume = gmsh.model.geo.addVolume([surface_loop])
-        
+
         # Add physical groups
         for name, face in self.faces.items():
             gmsh.model.addPhysicalGroup(2, [face], name=name)
         gmsh.model.addPhysicalGroup(3, [self.volume], name="volume")
-        
+
     def _configure_mesh(self):
         """Configure meshing parameters."""
         e = self.edges
-        
+
         # Set transfinite curves
-        for edge in ['e0', 'e2', 'e4', 'e6']:
+        for edge in ["e0", "e2", "e4", "e6"]:
             gmsh.model.geo.mesh.setTransfiniteCurve(e[edge], self.nx + 1)
-        for edge in ['e1', 'e3', 'e5', 'e7']:
+        for edge in ["e1", "e3", "e5", "e7"]:
             gmsh.model.geo.mesh.setTransfiniteCurve(e[edge], self.ny + 1)
-        for edge in ['e8', 'e9', 'e10', 'e11']:
+        for edge in ["e8", "e9", "e10", "e11"]:
             gmsh.model.geo.mesh.setTransfiniteCurve(e[edge], self.nz + 1)
-            
+
         # Set transfinite surfaces
         for face in self.faces.values():
             gmsh.model.geo.mesh.setTransfiniteSurface(face)
-            
+
         # Set transfinite volume
         gmsh.model.geo.mesh.setTransfiniteVolume(self.volume)
-        
+
         # Configure element type
-        if self.element_type == 'hex':
+        if self.element_type == "hex":
             gmsh.option.setNumber("Mesh.RecombineAll", 1)
             gmsh.option.setNumber("Mesh.Recombine3DAll", 1)
-        elif self.element_type == 'tet':
+        elif self.element_type == "tet":
             pass  # Default is tetrahedral
-        elif self.element_type == 'wedge':
+        elif self.element_type == "wedge":
             # Use prism mesh
             gmsh.option.setNumber("Mesh.SubdivisionAlgorithm", 2)
-            
+
         if self.quadratic:
             gmsh.option.setNumber("Mesh.ElementOrder", 2)
             # Use serendipity elements (20-node hex) instead of Lagrange (27-node)
             gmsh.option.setNumber("Mesh.SecondOrderIncomplete", 1)
-            
+
     def _create_mesh_model(self, MeshModelClass) -> "MeshModel":
         """Convert Gmsh mesh to MeshModel."""
         mesh_model = MeshModelClass()
         from fem_shell.core.mesh.entities import Node
+
         Node._id_counter = 0
-        
+
         # Get all 3D elements
         elementTypes, elementTags, nodeTags = gmsh.model.mesh.getElements(3)
-        
+
         # Identify geometric nodes (corners of linear elements)
         geometric_node_tags = set()
         for et, conn in zip(elementTypes, nodeTags):
@@ -2291,7 +2479,11 @@ class BoxVolumeMesh:
                 # Get corner nodes based on element type
                 if elem_type in (ElementType.tetra, ElementType.tetra10):
                     n_corners = 4
-                elif elem_type in (ElementType.hexahedron, ElementType.hexahedron20, ElementType.hexahedron27):
+                elif elem_type in (
+                    ElementType.hexahedron,
+                    ElementType.hexahedron20,
+                    ElementType.hexahedron27,
+                ):
                     n_corners = 8
                 elif elem_type in (ElementType.wedge, ElementType.wedge15):
                     n_corners = 6
@@ -2299,30 +2491,28 @@ class BoxVolumeMesh:
                     n_corners = 5
                 else:
                     n_corners = total_nodes
-                geometric_node_tags.update(
-                    conn.reshape(-1, total_nodes)[:, :n_corners].flatten()
-                )
-        
+                geometric_node_tags.update(conn.reshape(-1, total_nodes)[:, :n_corners].flatten())
+
         # Get nodes
         node_tags, coords, _ = gmsh.model.mesh.getNodes()
         coords = np.array(coords).reshape(-1, 3)
-        
+
         p = np.argsort(node_tags)
         node_tags = node_tags[p]
         coords = coords[p]
-        
+
         for tag, coord in zip(node_tags, coords):
             is_geometric = tag in geometric_node_tags
             n = Node(coord, geometric_node=is_geometric)
             mesh_model.add_node(n)
             self.tag_map[tag] = n
-            
+
         # Add elements
         self._add_elements(mesh_model)
         self._create_node_sets(mesh_model)
-        
+
         return mesh_model
-        
+
     def _add_elements(self, mesh_model: "MeshModel"):
         """Add 3D elements to mesh model."""
         elem_types = gmsh.model.mesh.getElementTypes()
@@ -2333,19 +2523,19 @@ class BoxVolumeMesh:
                 _, elem_node_tags = gmsh.model.mesh.getElementsByType(elem_type)
                 num_nodes = props[3]
                 connectivity = elem_node_tags.reshape(-1, num_nodes)
-                
+
                 e_type = SOLID_ELEMENT_NODES_MAP.get(num_nodes)
                 if e_type is None:
                     continue
-                    
+
                 for nodes in connectivity:
                     node_objs = [self.tag_map[nt] for nt in nodes]
                     mesh_model.add_element(MeshElement(nodes=node_objs, element_type=e_type))
-                    
+
     def _create_node_sets(self, mesh_model: "MeshModel"):
         """Create node sets for boundaries."""
         physical_groups = gmsh.model.getPhysicalGroups()
-        
+
         for dim, tag in physical_groups:
             name = gmsh.model.getPhysicalName(dim, tag)
             if dim == 2:  # Surface groups
@@ -2357,16 +2547,16 @@ class BoxVolumeMesh:
                 nodes = {self.tag_map[t] for t in node_tags if t in self.tag_map}
                 if nodes:
                     mesh_model.add_node_set(NodeSet(name=name, nodes=nodes))
-                    
+
         # Add "all" node set
         all_nodes = {node for node in mesh_model.nodes}
         mesh_model.add_node_set(NodeSet(name="all", nodes=all_nodes))
-        
+
     @classmethod
     def create_unit_cube(
         cls,
         divisions: int = 4,
-        element_type: str = 'hex',
+        element_type: str = "hex",
         quadratic: bool = False,
     ) -> "MeshModel":
         """Create a unit cube mesh centered at origin."""
@@ -2384,10 +2574,10 @@ class BoxVolumeMesh:
 class CylinderVolumeMesh:
     """
     Generates structured 3D cylindrical volumetric meshes.
-    
+
     Creates hex/tet elements for a solid cylinder.
     Uses O-grid topology for better element quality near the axis.
-    
+
     Parameters
     ----------
     radius : float
@@ -2405,7 +2595,7 @@ class CylinderVolumeMesh:
     quadratic : bool
         Use quadratic elements
     """
-    
+
     def __init__(
         self,
         radius: float,
@@ -2413,7 +2603,7 @@ class CylinderVolumeMesh:
         n_radial: int,
         n_circum: int,
         n_axial: int,
-        element_type: str = 'hex',
+        element_type: str = "hex",
         quadratic: bool = False,
     ):
         self.radius = radius
@@ -2424,58 +2614,58 @@ class CylinderVolumeMesh:
         self.element_type = element_type.lower()
         self.quadratic = quadratic
         self.tag_map = {}
-        
+
     def generate(self) -> "MeshModel":
         """Generate and return a MeshModel with volumetric elements."""
         from fem_shell.core.mesh.model import MeshModel
-        
+
         gmsh.initialize()
         try:
             gmsh.option.setNumber("General.Terminal", 0)
             gmsh.model.add("cylinder_volume")
-            
+
             self._create_geometry()
             self._configure_mesh()
-            
+
             gmsh.model.geo.synchronize()
             gmsh.model.mesh.generate(3)
-            
+
             return self._create_mesh_model(MeshModel)
         finally:
             gmsh.finalize()
-            
+
     def _create_geometry(self):
         """Create cylinder geometry using revolution."""
         R = self.radius
         L = self.length
-        
+
         # Create a disk at z=0 and extrude
         center = gmsh.model.geo.addPoint(0, 0, 0)
         p1 = gmsh.model.geo.addPoint(R, 0, 0)
         p2 = gmsh.model.geo.addPoint(0, R, 0)
         p3 = gmsh.model.geo.addPoint(-R, 0, 0)
         p4 = gmsh.model.geo.addPoint(0, -R, 0)
-        
+
         # Create circular arcs
         arc1 = gmsh.model.geo.addCircleArc(p1, center, p2)
         arc2 = gmsh.model.geo.addCircleArc(p2, center, p3)
         arc3 = gmsh.model.geo.addCircleArc(p3, center, p4)
         arc4 = gmsh.model.geo.addCircleArc(p4, center, p1)
-        
+
         # Create disk surface
         loop = gmsh.model.geo.addCurveLoop([arc1, arc2, arc3, arc4])
         disk = gmsh.model.geo.addPlaneSurface([loop])
-        
+
         # Extrude to create cylinder
         extrusion = gmsh.model.geo.extrude([(2, disk)], 0, 0, L, [self.n_axial], recombine=True)
-        
+
         # Find the volume in the extrusion result
         self.volume = None
         for dim, tag in extrusion:
             if dim == 3:
                 self.volume = tag
                 break
-                
+
         # Add physical groups
         gmsh.model.addPhysicalGroup(2, [disk], name="bottom")
         # Top surface is created by extrusion
@@ -2485,28 +2675,29 @@ class CylinderVolumeMesh:
                 pass
         if self.volume:
             gmsh.model.addPhysicalGroup(3, [self.volume], name="volume")
-            
+
     def _configure_mesh(self):
         """Configure meshing parameters."""
         gmsh.option.setNumber("Mesh.CharacteristicLengthMin", self.radius / self.n_radial)
         gmsh.option.setNumber("Mesh.CharacteristicLengthMax", self.radius / self.n_radial)
-        
-        if self.element_type == 'hex':
+
+        if self.element_type == "hex":
             gmsh.option.setNumber("Mesh.RecombineAll", 1)
             gmsh.option.setNumber("Mesh.Recombine3DAll", 1)
-            
+
         if self.quadratic:
             gmsh.option.setNumber("Mesh.ElementOrder", 2)
-            
+
     def _create_mesh_model(self, MeshModelClass) -> "MeshModel":
         """Convert Gmsh mesh to MeshModel."""
         mesh_model = MeshModelClass()
         from fem_shell.core.mesh.entities import Node
+
         Node._id_counter = 0
-        
+
         # Get all 3D elements
         elementTypes, elementTags, nodeTags = gmsh.model.mesh.getElements(3)
-        
+
         geometric_node_tags = set()
         for et, conn in zip(elementTypes, nodeTags):
             props = gmsh.model.mesh.getElementProperties(et)
@@ -2523,30 +2714,28 @@ class CylinderVolumeMesh:
                     n_corners = 5
                 else:
                     n_corners = total_nodes
-                geometric_node_tags.update(
-                    conn.reshape(-1, total_nodes)[:, :n_corners].flatten()
-                )
-        
+                geometric_node_tags.update(conn.reshape(-1, total_nodes)[:, :n_corners].flatten())
+
         node_tags, coords, _ = gmsh.model.mesh.getNodes()
         coords = np.array(coords).reshape(-1, 3)
-        
+
         p = np.argsort(node_tags)
         node_tags = node_tags[p]
         coords = coords[p]
-        
+
         for tag, coord in zip(node_tags, coords):
             is_geometric = tag in geometric_node_tags
             n = Node(coord, geometric_node=is_geometric)
             mesh_model.add_node(n)
             self.tag_map[tag] = n
-            
+
         self._add_elements(mesh_model)
-        
+
         all_nodes = {node for node in mesh_model.nodes}
         mesh_model.add_node_set(NodeSet(name="all", nodes=all_nodes))
-        
+
         return mesh_model
-        
+
     def _add_elements(self, mesh_model: "MeshModel"):
         """Add 3D elements to mesh model."""
         elem_types = gmsh.model.mesh.getElementTypes()
@@ -2557,11 +2746,11 @@ class CylinderVolumeMesh:
                 _, elem_node_tags = gmsh.model.mesh.getElementsByType(elem_type)
                 num_nodes = props[3]
                 connectivity = elem_node_tags.reshape(-1, num_nodes)
-                
+
                 e_type = SOLID_ELEMENT_NODES_MAP.get(num_nodes)
                 if e_type is None:
                     continue
-                    
+
                 for nodes in connectivity:
                     node_objs = [self.tag_map[nt] for nt in nodes]
                     mesh_model.add_element(MeshElement(nodes=node_objs, element_type=e_type))
@@ -2570,21 +2759,21 @@ class CylinderVolumeMesh:
 class MixedElementBeamMesh:
     """
     Generates a beam mesh with mixed volumetric elements for testing element transitions.
-    
+
     Creates a rectangular beam divided into sections with different element types.
     This is useful for testing element compatibility at interfaces.
-    
+
     Structure:
     - Section 1: Hexahedra
     - Section 2: Wedges (transition from hex)
     - Section 3: Tetrahedra
     - Section 4: Pyramids (optional, for hex-tet transition)
-    
+
     Parameters
     ----------
     length : float
         Total beam length (X direction)
-    width : float  
+    width : float
         Beam width (Y direction)
     height : float
         Beam height (Z direction)
@@ -2595,7 +2784,7 @@ class MixedElementBeamMesh:
     n_height : int
         Number of divisions in height
     """
-    
+
     def __init__(
         self,
         length: float = 10.0,
@@ -2611,25 +2800,26 @@ class MixedElementBeamMesh:
         self.n_sections = n_sections
         self.n_width = n_width
         self.n_height = n_height
-        
+
     def generate(self) -> "MeshModel":
         """Generate beam mesh with mixed elements."""
         from fem_shell.core.mesh.model import MeshModel
         from fem_shell.core.mesh.entities import Node, ElementSet
+
         Node._id_counter = 0
         MeshElement._id_counter = 0
-        
+
         mesh_model = MeshModel()
-        
+
         # Create structured grid of nodes
         nx = self.n_sections * 4 + 1  # 4 sections
         ny = self.n_width + 1
         nz = self.n_height + 1
-        
+
         dx = self.length / (nx - 1)
         dy = self.width / self.n_width
         dz = self.height / self.n_height
-        
+
         # Create nodes
         node_grid = {}
         for i in range(nx):
@@ -2641,78 +2831,71 @@ class MixedElementBeamMesh:
                     node = Node([x, y, z], geometric_node=True)
                     mesh_model.add_node(node)
                     node_grid[(i, j, k)] = node
-                    
+
         # Section boundaries
         sec_len = self.n_sections
-        
+
         hex_elements = []
         wedge_elements = []
         tet_elements = []
-        
+
         # Section 1: Hexahedra (i: 0 to sec_len)
         for i in range(sec_len):
             for j in range(self.n_width):
                 for k in range(self.n_height):
                     n0 = node_grid[(i, j, k)]
-                    n1 = node_grid[(i+1, j, k)]
-                    n2 = node_grid[(i+1, j+1, k)]
-                    n3 = node_grid[(i, j+1, k)]
-                    n4 = node_grid[(i, j, k+1)]
-                    n5 = node_grid[(i+1, j, k+1)]
-                    n6 = node_grid[(i+1, j+1, k+1)]
-                    n7 = node_grid[(i, j+1, k+1)]
-                    
+                    n1 = node_grid[(i + 1, j, k)]
+                    n2 = node_grid[(i + 1, j + 1, k)]
+                    n3 = node_grid[(i, j + 1, k)]
+                    n4 = node_grid[(i, j, k + 1)]
+                    n5 = node_grid[(i + 1, j, k + 1)]
+                    n6 = node_grid[(i + 1, j + 1, k + 1)]
+                    n7 = node_grid[(i, j + 1, k + 1)]
+
                     elem = MeshElement(
-                        nodes=[n0, n1, n2, n3, n4, n5, n6, n7],
-                        element_type=ElementType.hexahedron
+                        nodes=[n0, n1, n2, n3, n4, n5, n6, n7], element_type=ElementType.hexahedron
                     )
                     mesh_model.add_element(elem)
                     hex_elements.append(elem)
-                    
+
         # Section 2: Wedges (i: sec_len to 2*sec_len)
         # Split each "hex" into 2 wedges
         for i in range(sec_len, 2 * sec_len):
             for j in range(self.n_width):
                 for k in range(self.n_height):
                     n0 = node_grid[(i, j, k)]
-                    n1 = node_grid[(i+1, j, k)]
-                    n2 = node_grid[(i+1, j+1, k)]
-                    n3 = node_grid[(i, j+1, k)]
-                    n4 = node_grid[(i, j, k+1)]
-                    n5 = node_grid[(i+1, j, k+1)]
-                    n6 = node_grid[(i+1, j+1, k+1)]
-                    n7 = node_grid[(i, j+1, k+1)]
-                    
+                    n1 = node_grid[(i + 1, j, k)]
+                    n2 = node_grid[(i + 1, j + 1, k)]
+                    n3 = node_grid[(i, j + 1, k)]
+                    n4 = node_grid[(i, j, k + 1)]
+                    n5 = node_grid[(i + 1, j, k + 1)]
+                    n6 = node_grid[(i + 1, j + 1, k + 1)]
+                    n7 = node_grid[(i, j + 1, k + 1)]
+
                     # Wedge 1: 0-1-3, 4-5-7
-                    w1 = MeshElement(
-                        nodes=[n0, n1, n3, n4, n5, n7],
-                        element_type=ElementType.wedge
-                    )
+                    w1 = MeshElement(nodes=[n0, n1, n3, n4, n5, n7], element_type=ElementType.wedge)
                     mesh_model.add_element(w1)
                     wedge_elements.append(w1)
-                    
+
                     # Wedge 2: 1-2-3, 5-6-7
-                    w2 = MeshElement(
-                        nodes=[n1, n2, n3, n5, n6, n7],
-                        element_type=ElementType.wedge
-                    )
+                    w2 = MeshElement(nodes=[n1, n2, n3, n5, n6, n7], element_type=ElementType.wedge)
                     mesh_model.add_element(w2)
                     wedge_elements.append(w2)
-                    
+
         # Section 3: Tetrahedra (i: 2*sec_len to 3*sec_len)
         # Split each "hex" into 5 tets
         for i in range(2 * sec_len, 3 * sec_len):
             for j in range(self.n_width):
                 for k in range(self.n_height):
                     n0 = node_grid[(i, j, k)]
-                    n1 = node_grid[(i+1, j, k)]
-                    n2 = node_grid[(i+1, j+1, k)]
-                    n3 = node_grid[(i, j+1, k)]
-                    n4 = node_grid[(i, j, k+1)]
-                    n5 = node_grid[(i+1, j, k+1)]
-                    n6 = node_grid[(i+1, j+1, k+1)]
-                    n7 = node_grid[(i, j+1, k+1)]
-                    
+                    n1 = node_grid[(i + 1, j, k)]
+                    n2 = node_grid[(i + 1, j + 1, k)]
+                    n3 = node_grid[(i, j + 1, k)]
+                    n4 = node_grid[(i, j, k + 1)]
+                    n5 = node_grid[(i + 1, j, k + 1)]
+                    n6 = node_grid[(i + 1, j + 1, k + 1)]
+                    n7 = node_grid[(i, j + 1, k + 1)]
+
                     # 5-tet decomposition of a hex
                     tet_conn = [
                         [n0, n1, n3, n4],
@@ -2725,44 +2908,43 @@ class MixedElementBeamMesh:
                         elem = MeshElement(nodes=conn, element_type=ElementType.tetra)
                         mesh_model.add_element(elem)
                         tet_elements.append(elem)
-                        
+
         # Section 4: More Hexahedra (i: 3*sec_len to 4*sec_len)
         for i in range(3 * sec_len, 4 * sec_len):
             for j in range(self.n_width):
                 for k in range(self.n_height):
                     n0 = node_grid[(i, j, k)]
-                    n1 = node_grid[(i+1, j, k)]
-                    n2 = node_grid[(i+1, j+1, k)]
-                    n3 = node_grid[(i, j+1, k)]
-                    n4 = node_grid[(i, j, k+1)]
-                    n5 = node_grid[(i+1, j, k+1)]
-                    n6 = node_grid[(i+1, j+1, k+1)]
-                    n7 = node_grid[(i, j+1, k+1)]
-                    
+                    n1 = node_grid[(i + 1, j, k)]
+                    n2 = node_grid[(i + 1, j + 1, k)]
+                    n3 = node_grid[(i, j + 1, k)]
+                    n4 = node_grid[(i, j, k + 1)]
+                    n5 = node_grid[(i + 1, j, k + 1)]
+                    n6 = node_grid[(i + 1, j + 1, k + 1)]
+                    n7 = node_grid[(i, j + 1, k + 1)]
+
                     elem = MeshElement(
-                        nodes=[n0, n1, n2, n3, n4, n5, n6, n7],
-                        element_type=ElementType.hexahedron
+                        nodes=[n0, n1, n2, n3, n4, n5, n6, n7], element_type=ElementType.hexahedron
                     )
                     mesh_model.add_element(elem)
                     hex_elements.append(elem)
-        
+
         # Create element sets
         mesh_model.add_element_set(ElementSet(name="hexahedra", elements=set(hex_elements)))
         mesh_model.add_element_set(ElementSet(name="wedges", elements=set(wedge_elements)))
         mesh_model.add_element_set(ElementSet(name="tetrahedra", elements=set(tet_elements)))
-        
+
         # Create node sets for boundaries
         fixed_nodes = {node_grid[(0, j, k)] for j in range(ny) for k in range(nz)}
         mesh_model.add_node_set(NodeSet(name="fixed", nodes=fixed_nodes))
-        
-        loaded_nodes = {node_grid[(nx-1, j, k)] for j in range(ny) for k in range(nz)}
+
+        loaded_nodes = {node_grid[(nx - 1, j, k)] for j in range(ny) for k in range(nz)}
         mesh_model.add_node_set(NodeSet(name="loaded", nodes=loaded_nodes))
-        
+
         all_nodes = {node for node in mesh_model.nodes}
         mesh_model.add_node_set(NodeSet(name="all", nodes=all_nodes))
-        
+
         return mesh_model
-        
+
     @classmethod
     def create_test_beam(
         cls,
@@ -2784,10 +2966,10 @@ class MixedElementBeamMesh:
 class PyramidTransitionMesh:
     """
     Generates a mesh demonstrating pyramid elements as hex-tet transition.
-    
+
     Creates a block where one face has hexahedra and transitions through
     pyramids to tetrahedra. This is a classic mesh transition problem.
-    
+
     Parameters
     ----------
     size : float
@@ -2795,120 +2977,127 @@ class PyramidTransitionMesh:
     n_div : int
         Number of divisions on each edge
     """
-    
+
     def __init__(self, size: float = 1.0, n_div: int = 2):
         self.size = size
         self.n_div = n_div
-        
+
     def generate(self) -> "MeshModel":
         """Generate mesh with pyramid transitions."""
         from fem_shell.core.mesh.model import MeshModel
         from fem_shell.core.mesh.entities import Node, ElementSet
+
         Node._id_counter = 0
         MeshElement._id_counter = 0
-        
+
         mesh_model = MeshModel()
-        
+
         # Create a structured grid for the bottom layer (hex)
         # and transition through pyramids to tets on top
-        
+
         s = self.size
         n = self.n_div
         h = s / 3  # Height of each layer
-        
+
         # Layer 1: Hexahedra (z = 0 to h)
-        # Layer 2: Pyramids (z = h to 2h) 
+        # Layer 2: Pyramids (z = h to 2h)
         # Layer 3: Tetrahedra (z = 2h to 3h)
-        
+
         # Create nodes for bottom layer (z=0 and z=h)
         nodes_z0 = {}
         nodes_z1 = {}
         nodes_z2 = {}
         nodes_z3 = {}
-        
+
         dx = s / n
-        
+
         for i in range(n + 1):
             for j in range(n + 1):
                 x, y = i * dx, j * dx
-                
+
                 n0 = Node([x, y, 0], geometric_node=True)
                 mesh_model.add_node(n0)
                 nodes_z0[(i, j)] = n0
-                
+
                 n1 = Node([x, y, h], geometric_node=True)
                 mesh_model.add_node(n1)
                 nodes_z1[(i, j)] = n1
-                
-                n2 = Node([x, y, 2*h], geometric_node=True)
+
+                n2 = Node([x, y, 2 * h], geometric_node=True)
                 mesh_model.add_node(n2)
                 nodes_z2[(i, j)] = n2
-                
-                n3 = Node([x, y, 3*h], geometric_node=True)
+
+                n3 = Node([x, y, 3 * h], geometric_node=True)
                 mesh_model.add_node(n3)
                 nodes_z3[(i, j)] = n3
-                
+
         hex_elements = []
         pyr_elements = []
         tet_elements = []
-        
+
         # Layer 1: Hexahedra
         for i in range(n):
             for j in range(n):
                 corners_bot = [
-                    nodes_z0[(i, j)], nodes_z0[(i+1, j)],
-                    nodes_z0[(i+1, j+1)], nodes_z0[(i, j+1)]
+                    nodes_z0[(i, j)],
+                    nodes_z0[(i + 1, j)],
+                    nodes_z0[(i + 1, j + 1)],
+                    nodes_z0[(i, j + 1)],
                 ]
                 corners_top = [
-                    nodes_z1[(i, j)], nodes_z1[(i+1, j)],
-                    nodes_z1[(i+1, j+1)], nodes_z1[(i, j+1)]
+                    nodes_z1[(i, j)],
+                    nodes_z1[(i + 1, j)],
+                    nodes_z1[(i + 1, j + 1)],
+                    nodes_z1[(i, j + 1)],
                 ]
-                
+
                 elem = MeshElement(
-                    nodes=corners_bot + corners_top,
-                    element_type=ElementType.hexahedron
+                    nodes=corners_bot + corners_top, element_type=ElementType.hexahedron
                 )
                 mesh_model.add_element(elem)
                 hex_elements.append(elem)
-                
+
         # Layer 2: For pyramid transition, we create a center node
         # This is a simplified demonstration
         for i in range(n):
             for j in range(n):
                 base = [
-                    nodes_z1[(i, j)], nodes_z1[(i+1, j)],
-                    nodes_z1[(i+1, j+1)], nodes_z1[(i, j+1)]
+                    nodes_z1[(i, j)],
+                    nodes_z1[(i + 1, j)],
+                    nodes_z1[(i + 1, j + 1)],
+                    nodes_z1[(i, j + 1)],
                 ]
                 # Apex at center of top face at z2
                 cx = (i + 0.5) * dx
                 cy = (j + 0.5) * dx
-                apex = Node([cx, cy, 2*h], geometric_node=True)
+                apex = Node([cx, cy, 2 * h], geometric_node=True)
                 mesh_model.add_node(apex)
-                
-                elem = MeshElement(
-                    nodes=base + [apex],
-                    element_type=ElementType.pyramid
-                )
+
+                elem = MeshElement(nodes=base + [apex], element_type=ElementType.pyramid)
                 mesh_model.add_element(elem)
                 pyr_elements.append(elem)
-                
+
         # Layer 3: Tetrahedra filling the gaps
         # This is a simplified version - just create tets from z2 to z3
         for i in range(n):
             for j in range(n):
                 corners_bot = [
-                    nodes_z2[(i, j)], nodes_z2[(i+1, j)],
-                    nodes_z2[(i+1, j+1)], nodes_z2[(i, j+1)]
+                    nodes_z2[(i, j)],
+                    nodes_z2[(i + 1, j)],
+                    nodes_z2[(i + 1, j + 1)],
+                    nodes_z2[(i, j + 1)],
                 ]
                 corners_top = [
-                    nodes_z3[(i, j)], nodes_z3[(i+1, j)],
-                    nodes_z3[(i+1, j+1)], nodes_z3[(i, j+1)]
+                    nodes_z3[(i, j)],
+                    nodes_z3[(i + 1, j)],
+                    nodes_z3[(i + 1, j + 1)],
+                    nodes_z3[(i, j + 1)],
                 ]
-                
+
                 # 5-tet decomposition
                 n0, n1, n2, n3 = corners_bot
                 n4, n5, n6, n7 = corners_top
-                
+
                 tet_conn = [
                     [n0, n1, n3, n4],
                     [n1, n2, n3, n6],
@@ -2920,21 +3109,20 @@ class PyramidTransitionMesh:
                     elem = MeshElement(nodes=conn, element_type=ElementType.tetra)
                     mesh_model.add_element(elem)
                     tet_elements.append(elem)
-                    
+
         # Create element sets
         mesh_model.add_element_set(ElementSet(name="hexahedra", elements=set(hex_elements)))
         mesh_model.add_element_set(ElementSet(name="pyramids", elements=set(pyr_elements)))
         mesh_model.add_element_set(ElementSet(name="tetrahedra", elements=set(tet_elements)))
-        
+
         # Boundary node sets
-        bottom = {nodes_z0[(i, j)] for i in range(n+1) for j in range(n+1)}
+        bottom = {nodes_z0[(i, j)] for i in range(n + 1) for j in range(n + 1)}
         mesh_model.add_node_set(NodeSet(name="bottom", nodes=bottom))
-        
-        top = {nodes_z3[(i, j)] for i in range(n+1) for j in range(n+1)}
+
+        top = {nodes_z3[(i, j)] for i in range(n + 1) for j in range(n + 1)}
         mesh_model.add_node_set(NodeSet(name="top", nodes=top))
-        
+
         all_nodes = {node for node in mesh_model.nodes}
         mesh_model.add_node_set(NodeSet(name="all", nodes=all_nodes))
-        
-        return mesh_model
 
+        return mesh_model

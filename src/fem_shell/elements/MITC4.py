@@ -962,7 +962,7 @@ class MITC4(ShellElement):
         # Stabilization factor (small compared to membrane stiffness)
         # Scaled with t^2 to be consistent with rotational stiffness dimensions (Force*Length)
         # alpha=0.15 works well for both Twisted Beam (t=0.32) and Hook (t=2.0)
-        k_drill_stab = self.material.E * (self.thickness ** 2) * 0.15
+        k_drill_stab = self.material.E * (self.thickness**2) * 0.15
 
         K_drill = np.zeros((24, 24))
 

@@ -759,9 +759,7 @@ class FSISimulationConfig:
             write_data = interface_data.get("write_data") or coupling_data.get(
                 "write_data", ["Displacement"]
             )
-            read_data = interface_data.get("read_data") or coupling_data.get(
-                "read_data", ["Force"]
-            )
+            read_data = interface_data.get("read_data") or coupling_data.get("read_data", ["Force"])
             coupling_mesh = interface_data.get("coupling_mesh") or coupling_data.get(
                 "coupling_mesh"
             )
@@ -957,12 +955,14 @@ class FSISimulationConfig:
         if self.mesh.generator:
             lines.append(f"  Generator: {self.mesh.generator.type}")
 
-        lines.extend([
-            f"Material: {self.material.type} ({self.material.name})",
-            f"  E={self.material.E}, nu={self.material.nu}, rho={self.material.rho}",
-            f"Elements: {self.elements.family}",
-            f"Solver: {self.solver.type}",
-        ])
+        lines.extend(
+            [
+                f"Material: {self.material.type} ({self.material.name})",
+                f"  E={self.material.E}, nu={self.material.nu}, rho={self.material.rho}",
+                f"Elements: {self.elements.family}",
+                f"Solver: {self.solver.type}",
+            ]
+        )
 
         # Handle optional time parameters
         total_time = self.solver.total_time or "auto (from preCICE)"

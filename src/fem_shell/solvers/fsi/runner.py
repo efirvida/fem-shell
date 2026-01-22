@@ -5,7 +5,7 @@ This module provides a generic runner that executes FSI simulations
 based on YAML configuration files, without requiring any Python code editing.
 
 Example usage:
-    from fem_shell.solvers.fsi_runner import FSIRunner
+    from fem_shell.solvers.fsi import FSIRunner
 
     runner = FSIRunner("simulation.yaml")
     runner.run()
@@ -18,8 +18,8 @@ import logging
 from pathlib import Path
 from typing import Any, Dict, Optional, Union
 
-from ..core.bc import BodyForce, DirichletCondition
-from ..core.config import (
+from ...core.bc import BodyForce, DirichletCondition
+from ...core.config import (
     ElementFamily,
     FSISimulationConfig,
     MaterialType,
@@ -27,9 +27,9 @@ from ..core.config import (
     MeshSource,
     SolverType,
 )
-from ..core.material import IsotropicMaterial, OrthotropicMaterial
-from ..core.mesh import BoxSurfaceMesh, MeshModel, MultiFlapMesh, RotorMesh, SquareShapeMesh
-from ..elements import ElementFamily as ElemFamily
+from ...core.material import IsotropicMaterial, OrthotropicMaterial
+from ...core.mesh import BoxSurfaceMesh, MeshModel, MultiFlapMesh, RotorMesh, SquareShapeMesh
+from ...elements import ElementFamily as ElemFamily
 
 logger = logging.getLogger(__name__)
 
@@ -185,7 +185,7 @@ class FSIRunner:
 
     def _try_load_checkpoint_mesh(self) -> Optional[MeshModel]:
         """Try to load deformed mesh from latest checkpoint."""
-        from ..solvers.checkpoint import CheckpointManager
+        from ..checkpoint import CheckpointManager
 
         output_folder = self.config.output.folder if self.config.output else "results"
 
@@ -425,17 +425,17 @@ class FSIRunner:
         solver_type = self.config.solver.type
 
         if solver_type == SolverType.LINEAR_STATIC.value:
-            from ..solvers.linear import LinearStaticSolver
+            from ..linear import LinearStaticSolver
 
             solver = LinearStaticSolver(self.mesh, model_config)
 
         elif solver_type == SolverType.LINEAR_DYNAMIC.value:
-            from ..solvers.linear import LinearDynamicSolver
+            from ..linear import LinearDynamicSolver
 
             solver = LinearDynamicSolver(self.mesh, model_config)
 
         elif solver_type == SolverType.LINEAR_DYNAMIC_FSI.value:
-            from ..solvers.fsi import LinearDynamicFSISolver
+            from . import LinearDynamicFSISolver
 
             solver = LinearDynamicFSISolver(self.mesh, model_config)
 
@@ -490,7 +490,7 @@ class FSIRunner:
         print("\n[Post-processing]", flush=True)
 
         try:
-            from ..postprocess.precice import FSIDataVisualizer
+            from ...postprocess.precice import FSIDataVisualizer
 
             if self.config.postprocess.watchpoint_file:
                 visualizer = FSIDataVisualizer(self.config.postprocess.watchpoint_file)
@@ -560,7 +560,7 @@ def run_from_yaml(yaml_path: Union[str, Path], working_dir: Optional[str] = None
 
     Examples
     --------
-    >>> from fem_shell.solvers.fsi_runner import run_from_yaml
+    >>> from fem_shell.solvers.fsi import run_from_yaml
     >>> solver = run_from_yaml("simulation.yaml")
     """
     runner = FSIRunner(yaml_path, working_dir)

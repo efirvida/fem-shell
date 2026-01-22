@@ -436,10 +436,12 @@ class Solver(ABC):
         cells = []
         for element in self.mesh_obj.element_map.values():
             if element:
-                cells.append((
-                    element.element_type.name,
-                    [element.node_ids],
-                ))
+                cells.append(
+                    (
+                        element.element_type.name,
+                        [element.node_ids],
+                    )
+                )
 
         mesh_object = meshio.Mesh(points, cells=cells, point_data=point_data)
         mesh_object.write(output_file, file_format="vtk")

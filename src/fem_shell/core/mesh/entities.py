@@ -18,7 +18,7 @@ from pyvista.core.celltype import CellType
 
 class ElementType(IntEnum):
     """Enumeration of supported element types.
-    
+
     Includes 2D surface elements and 3D volumetric elements.
     Values correspond to PyVista/VTK cell type constants.
     """

@@ -7,15 +7,16 @@ with nodes, elements, node sets, and element sets.
 
 from __future__ import annotations
 
+from collections import defaultdict
 from pathlib import Path
-from typing import Dict, Iterable, List, Optional, Tuple, Union
+from typing import Dict, Iterable, List, Optional, Set, Tuple, Union
 
 import numpy as np
 
-from fem_shell.core.mesh.entities import ElementSet, MeshElement, Node, NodeSet
+from fem_shell.core.mesh import selectors
+from fem_shell.core.mesh.entities import ElementSet, ElementType, MeshElement, Node, NodeSet
 from fem_shell.core.mesh.io import load_mesh, write_hdf5, write_mesh, write_pickle
 from fem_shell.core.viewer import plot_mesh
-from fem_shell.core.mesh import selectors
 
 
 class MeshModel:
@@ -365,8 +366,101 @@ class MeshModel:
             raise ValueError(f"ElementSet '{element_set.name}' already exists.")
         self.element_sets[element_set.name] = element_set
 
+    def _get_surface_node_ids(self) -> Set[int]:
+        """Identify nodes on the surface boundaries of the mesh."""
+        # Check if we have volume elements
+        has_volume = False
+        volume_types = (
+            ElementType.tetra,
+            ElementType.tetra10,
+            ElementType.hexahedron,
+            ElementType.hexahedron20,
+            ElementType.hexahedron27,
+            ElementType.wedge,
+            ElementType.wedge15,
+            ElementType.pyramid,
+            ElementType.pyramid13,
+        )
+
+        for element in self.elements:
+            if element.element_type in volume_types:
+                has_volume = True
+                break
+
+        if not has_volume:
+            # For surface meshes, all nodes are technically on the surface geometry
+            return {n.id for n in self.nodes}
+
+        # For volumetric meshes, count faces
+        face_count = defaultdict(int)
+        for element in self.elements:
+            faces = self._get_element_faces(element)
+            for face in faces:
+                # Sort to ensure unique key for same face
+                face_key = tuple(sorted(face))
+                face_count[face_key] += 1
+
+        surface_nodes = set()
+        for face_key, count in face_count.items():
+            if count == 1:  # Shared by only one element -> Boundary
+                surface_nodes.update(face_key)
+
+        return surface_nodes
+
+    def _get_element_faces(self, element: MeshElement) -> List[Tuple[int, ...]]:
+        """Get faces of an element as tuples of node IDs."""
+        ids = element.node_ids
+        t = element.element_type
+
+        # Tetrahedron
+        if t in (ElementType.tetra, ElementType.tetra10):
+            # 4 nodes for tetra (corners)
+            p = [ids[0], ids[1], ids[2], ids[3]]
+            return [
+                (p[0], p[1], p[2]),
+                (p[0], p[3], p[1]),
+                (p[1], p[3], p[2]),
+                (p[0], p[2], p[3]),
+            ]
+
+        # Hexahedron
+        elif t in (ElementType.hexahedron, ElementType.hexahedron20, ElementType.hexahedron27):
+            p = list(ids[:8])
+            return [
+                (p[0], p[3], p[2], p[1]),  # Bottom
+                (p[4], p[5], p[6], p[7]),  # Top
+                (p[0], p[1], p[5], p[4]),  # Front
+                (p[1], p[2], p[6], p[5]),  # Right
+                (p[2], p[3], p[7], p[6]),  # Back
+                (p[3], p[0], p[4], p[7]),  # Left
+            ]
+
+        # Wedge (Prism)
+        elif t in (ElementType.wedge, ElementType.wedge15):
+            p = list(ids[:6])
+            return [
+                (p[0], p[1], p[2]),  # Bottom Tri
+                (p[3], p[4], p[5]),  # Top Tri
+                (p[0], p[1], p[4], p[3]),  # Side 1
+                (p[1], p[2], p[5], p[4]),  # Side 2
+                (p[2], p[0], p[3], p[5]),  # Side 3
+            ]
+
+        # Pyramid
+        elif t in (ElementType.pyramid, ElementType.pyramid13):
+            p = list(ids[:5])
+            return [
+                (p[0], p[3], p[2], p[1]),  # Base Quad
+                (p[0], p[1], p[4]),  # Side Tri
+                (p[1], p[2], p[4]),
+                (p[2], p[3], p[4]),
+                (p[3], p[0], p[4]),
+            ]
+
+        return []
+
     def create_node_set_by_geometry(
-        self, name: str, criteria_type: str, **kwargs
+        self, name: str, criteria_type: str, on_surface: bool = False, **kwargs
     ) -> NodeSet:
         """
         Create a NodeSet based on geometric criteria.
@@ -376,7 +470,9 @@ class MeshModel:
         name : str
             Name of the new node set.
         criteria_type : str
-            Type of selection: 'coordinate', 'box', 'distance', 'direction'.
+            Type of selection: 'all', 'coordinate', 'box', 'distance', 'direction'.
+        on_surface : bool, optional
+            If True, filter selected nodes to include only those on the surface.
         **kwargs
             Arguments passed to the corresponding selector function in
             fem_shell.core.mesh.selectors.
@@ -387,6 +483,7 @@ class MeshModel:
             The created node set (also added to the mesh).
         """
         selector_map = {
+            "all": selectors.select_all,
             "coordinate": selectors.select_by_coordinate,
             "box": selectors.select_by_box,
             "distance": selectors.select_by_distance,
@@ -395,13 +492,16 @@ class MeshModel:
 
         if criteria_type not in selector_map:
             raise ValueError(
-                f"Unknown criteria type '{criteria_type}'. "
-                f"Available: {list(selector_map.keys())}"
+                f"Unknown criteria type '{criteria_type}'. Available: {list(selector_map.keys())}"
             )
 
         selector_func = selector_map[criteria_type]
         node_ids = selector_func(self, **kwargs)
-        
+
+        if on_surface:
+            surface_node_ids = self._get_surface_node_ids()
+            node_ids = [nid for nid in node_ids if nid in surface_node_ids]
+
         node_objs = {self.get_node_by_id(nid) for nid in node_ids}
         nset = NodeSet(name, node_objs)
         self.add_node_set(nset)

@@ -9,7 +9,7 @@ composite laminae, including:
 
 References
 ----------
-- Tsai, S.W. and Wu, E.M. (1971). "A General Theory of Strength for 
+- Tsai, S.W. and Wu, E.M. (1971). "A General Theory of Strength for
   Anisotropic Materials." J. Composite Materials, 5, 58-80.
 - Hashin, Z. (1980). "Failure Criteria for Unidirectional Fiber Composites."
   J. Applied Mechanics, 47, 329-334.
@@ -26,7 +26,7 @@ from fem_shell.core.laminate import StrengthProperties
 
 class FailureMode(Enum):
     """Enumeration of composite failure modes."""
-    
+
     NO_FAILURE = "no_failure"
     FIBER_TENSION = "fiber_tension"
     FIBER_COMPRESSION = "fiber_compression"
@@ -66,8 +66,8 @@ class FailureResult:
             self.reserve_factor = 1 / np.sqrt(self.failure_index)
             self.margin_of_safety = self.reserve_factor - 1
         else:
-            self.reserve_factor = float('inf')
-            self.margin_of_safety = float('inf')
+            self.reserve_factor = float("inf")
+            self.margin_of_safety = float("inf")
 
 
 def tsai_wu_failure_index(
@@ -131,9 +131,7 @@ def tsai_wu_failure_index(
     F12 = f12_coefficient / np.sqrt(Xt * Xc * Yt * Yc)
 
     # Failure index
-    FI = (F1 * s1 + F2 * s2 +
-          F11 * s1**2 + F22 * s2**2 + F66 * t12**2 +
-          2 * F12 * s1 * s2)
+    FI = F1 * s1 + F2 * s2 + F11 * s1**2 + F22 * s2**2 + F66 * t12**2 + 2 * F12 * s1 * s2
 
     failed = FI >= 1.0
 
@@ -204,7 +202,7 @@ def hashin_failure_indices(
 
     # Fiber tension (σ1 >= 0)
     if s1 >= 0:
-        FI_ft = (s1 / Xt)**2 + (t12 / S)**2
+        FI_ft = (s1 / Xt) ** 2 + (t12 / S) ** 2
         results[FailureMode.FIBER_TENSION] = FailureResult(
             failed=FI_ft >= 1.0,
             failure_index=FI_ft,
@@ -212,7 +210,7 @@ def hashin_failure_indices(
         )
     else:
         # Fiber compression (σ1 < 0)
-        FI_fc = (abs(s1) / Xc)**2
+        FI_fc = (abs(s1) / Xc) ** 2
         results[FailureMode.FIBER_COMPRESSION] = FailureResult(
             failed=FI_fc >= 1.0,
             failure_index=FI_fc,
@@ -221,7 +219,7 @@ def hashin_failure_indices(
 
     # Matrix tension (σ2 >= 0)
     if s2 >= 0:
-        FI_mt = (s2 / Yt)**2 + (t12 / S)**2
+        FI_mt = (s2 / Yt) ** 2 + (t12 / S) ** 2
         results[FailureMode.MATRIX_TENSION] = FailureResult(
             failed=FI_mt >= 1.0,
             failure_index=FI_mt,
@@ -229,9 +227,7 @@ def hashin_failure_indices(
         )
     else:
         # Matrix compression (σ2 < 0)
-        FI_mc = ((s2 / (2 * ST))**2 +
-                 ((Yc / (2 * ST))**2 - 1) * (s2 / Yc) +
-                 (t12 / S)**2)
+        FI_mc = (s2 / (2 * ST)) ** 2 + ((Yc / (2 * ST)) ** 2 - 1) * (s2 / Yc) + (t12 / S) ** 2
         results[FailureMode.MATRIX_COMPRESSION] = FailureResult(
             failed=FI_mc >= 1.0,
             failure_index=FI_mc,
@@ -350,8 +346,9 @@ def evaluate_ply_failure(
         return max_stress_failure_index(sigma, strength)
 
     else:
-        raise ValueError(f"Unknown criterion: {criterion}. "
-                        f"Use 'tsai-wu', 'hashin', or 'max-stress'.")
+        raise ValueError(
+            f"Unknown criterion: {criterion}. Use 'tsai-wu', 'hashin', or 'max-stress'."
+        )
 
 
 def stress_transformation_matrix(theta_deg: float) -> np.ndarray:
@@ -384,11 +381,7 @@ def stress_transformation_matrix(theta_deg: float) -> np.ndarray:
     s = np.sin(theta)
     c2, s2 = c**2, s**2
 
-    return np.array([
-        [c2, s2, 2 * s * c],
-        [s2, c2, -2 * s * c],
-        [-s * c, s * c, c2 - s2]
-    ])
+    return np.array([[c2, s2, 2 * s * c], [s2, c2, -2 * s * c], [-s * c, s * c, c2 - s2]])
 
 
 def strain_transformation_matrix(theta_deg: float) -> np.ndarray:
@@ -418,8 +411,4 @@ def strain_transformation_matrix(theta_deg: float) -> np.ndarray:
     s = np.sin(theta)
     c2, s2 = c**2, s**2
 
-    return np.array([
-        [c2, s2, s * c],
-        [s2, c2, -s * c],
-        [-2 * s * c, 2 * s * c, c2 - s2]
-    ])
+    return np.array([[c2, s2, s * c], [s2, c2, -s * c], [-2 * s * c, 2 * s * c, c2 - s2]])

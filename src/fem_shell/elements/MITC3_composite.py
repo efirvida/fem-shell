@@ -1,7 +1,7 @@
 """
 MITC3+ Composite Shell Element Implementation.
 
-This module extends the MITC3+ triangular shell element for laminated composite 
+This module extends the MITC3+ triangular shell element for laminated composite
 materials using Classical Lamination Theory (CLT). The element supports:
 
 - Multi-layer composite laminates with arbitrary fiber orientations
@@ -151,10 +151,10 @@ class MITC3Composite(MITC3):
         ref_material = laminate.plies[0].material
 
         # Compute average/equivalent properties
-        Ex = equiv_props['Ex_membrane']
-        Ey = equiv_props['Ey_membrane']
-        Gxy = equiv_props['Gxy_membrane']
-        nuxy = equiv_props['nuxy_membrane']
+        Ex = equiv_props["Ex_membrane"]
+        Ey = equiv_props["Ey_membrane"]
+        Gxy = equiv_props["Gxy_membrane"]
+        nuxy = equiv_props["nuxy_membrane"]
 
         # Use reference material for out-of-plane properties
         _, G23, G13 = ref_material.G
@@ -262,7 +262,7 @@ class MITC3Composite(MITC3):
         avg_diag = np.trace(K) / 18.0
         drill_stiff = 1e-6 * max(avg_diag, 1e-10)
         for i in range(3):
-            idx = 6*i + 5  # θz
+            idx = 6 * i + 5  # θz
             K[idx, idx] += drill_stiff
 
         return K
@@ -321,7 +321,7 @@ class MITC3Composite(MITC3):
 
         For asymmetric laminates:
         K = ∫[Bm^T·A·Bm + Bm^T·B·Bκ + Bκ^T·B·Bm + Bκ^T·D·Bκ + Bγ^T·Cs·Bγ]dA
-        
+
         Returns local stiffness matrix (transformation to global is done in K property).
         """
         K = np.zeros((18, 18))
@@ -374,8 +374,8 @@ class MITC3Composite(MITC3):
     def compute_midplane_strains(
         self,
         u_local: np.ndarray,
-        r: float = 1.0/3.0,
-        s: float = 1.0/3.0,
+        r: float = 1.0 / 3.0,
+        s: float = 1.0 / 3.0,
     ) -> Tuple[np.ndarray, np.ndarray]:
         """
         Compute mid-plane strains and curvatures at a point.
@@ -414,8 +414,8 @@ class MITC3Composite(MITC3):
     def compute_ply_strains(
         self,
         u_local: np.ndarray,
-        r: float = 1.0/3.0,
-        s: float = 1.0/3.0,
+        r: float = 1.0 / 3.0,
+        s: float = 1.0 / 3.0,
         z_positions: str = "mid",
     ) -> List[Dict]:
         """
@@ -465,21 +465,23 @@ class MITC3Composite(MITC3):
                 T_eps = self._strain_transformation_matrix(ply.angle)
                 epsilon_ply = T_eps @ epsilon_lam
 
-                results.append({
-                    'ply_index': k,
-                    'angle': ply.angle,
-                    'z': z,
-                    'epsilon_laminate': epsilon_lam.copy(),
-                    'epsilon_ply': epsilon_ply.copy(),
-                })
+                results.append(
+                    {
+                        "ply_index": k,
+                        "angle": ply.angle,
+                        "z": z,
+                        "epsilon_laminate": epsilon_lam.copy(),
+                        "epsilon_ply": epsilon_ply.copy(),
+                    }
+                )
 
         return results
 
     def compute_ply_stresses(
         self,
         u_local: np.ndarray,
-        r: float = 1.0/3.0,
-        s: float = 1.0/3.0,
+        r: float = 1.0 / 3.0,
+        s: float = 1.0 / 3.0,
         z_positions: str = "mid",
     ) -> List[Dict]:
         """
@@ -535,13 +537,15 @@ class MITC3Composite(MITC3):
                 T_stress = stress_transformation_matrix(ply.angle)
                 sigma_ply = T_stress @ sigma_lam
 
-                results.append({
-                    'ply_index': k,
-                    'angle': ply.angle,
-                    'z': z,
-                    'sigma_laminate': sigma_lam.copy(),
-                    'sigma_ply': sigma_ply.copy(),
-                })
+                results.append(
+                    {
+                        "ply_index": k,
+                        "angle": ply.angle,
+                        "z": z,
+                        "sigma_laminate": sigma_lam.copy(),
+                        "sigma_ply": sigma_ply.copy(),
+                    }
+                )
 
         return results
 
@@ -560,17 +564,13 @@ class MITC3Composite(MITC3):
         s = np.sin(theta)
         c2, s2 = c**2, s**2
 
-        return np.array([
-            [c2, s2, s * c],
-            [s2, c2, -s * c],
-            [-2 * s * c, 2 * s * c, c2 - s2]
-        ])
+        return np.array([[c2, s2, s * c], [s2, c2, -s * c], [-2 * s * c, 2 * s * c, c2 - s2]])
 
     def evaluate_failure(
         self,
         u_local: np.ndarray,
-        r: float = 1.0/3.0,
-        s: float = 1.0/3.0,
+        r: float = 1.0 / 3.0,
+        s: float = 1.0 / 3.0,
         criterion: str = "tsai-wu",
     ) -> List[Dict]:
         """
@@ -609,7 +609,7 @@ class MITC3Composite(MITC3):
         results = []
 
         for stress_data in stresses:
-            k = stress_data['ply_index']
+            k = stress_data["ply_index"]
             ply = self.laminate.plies[k]
 
             if ply.strength is None:
@@ -618,31 +618,31 @@ class MITC3Composite(MITC3):
                     "Define StrengthProperties for failure analysis."
                 )
 
-            sigma_ply = stress_data['sigma_ply']
+            sigma_ply = stress_data["sigma_ply"]
 
             # Evaluate failure criterion
-            failure_result = evaluate_ply_failure(
-                sigma_ply, ply.strength, criterion
-            )
+            failure_result = evaluate_ply_failure(sigma_ply, ply.strength, criterion)
 
-            results.append({
-                'ply_index': k,
-                'angle': ply.angle,
-                'z': stress_data['z'],
-                'sigma_ply': sigma_ply.copy(),
-                'failure_result': failure_result,
-                'failed': failure_result.failed,
-                'failure_index': failure_result.failure_index,
-                'mode': failure_result.mode,
-            })
+            results.append(
+                {
+                    "ply_index": k,
+                    "angle": ply.angle,
+                    "z": stress_data["z"],
+                    "sigma_ply": sigma_ply.copy(),
+                    "failure_result": failure_result,
+                    "failed": failure_result.failed,
+                    "failure_index": failure_result.failure_index,
+                    "mode": failure_result.mode,
+                }
+            )
 
         return results
 
     def get_critical_ply(
         self,
         u_local: np.ndarray,
-        r: float = 1.0/3.0,
-        s: float = 1.0/3.0,
+        r: float = 1.0 / 3.0,
+        s: float = 1.0 / 3.0,
         criterion: str = "tsai-wu",
     ) -> Dict:
         """
@@ -664,13 +664,13 @@ class MITC3Composite(MITC3):
         """
         failure_results = self.evaluate_failure(u_local, r, s, criterion)
 
-        return max(failure_results, key=lambda x: x['failure_index'])
+        return max(failure_results, key=lambda x: x["failure_index"])
 
     def compute_stress_resultants(
         self,
         u_local: np.ndarray,
-        r: float = 1.0/3.0,
-        s: float = 1.0/3.0,
+        r: float = 1.0 / 3.0,
+        s: float = 1.0 / 3.0,
     ) -> Tuple[np.ndarray, np.ndarray]:
         """
         Compute membrane forces and bending moments per unit length.
@@ -698,18 +698,18 @@ class MITC3Composite(MITC3):
         return N, M
 
     def compute_membrane_stress_from_displacement(
-        self, 
+        self,
         u_local: np.ndarray,
-        r: float = 1.0/3.0,
-        s: float = 1.0/3.0,
+        r: float = 1.0 / 3.0,
+        s: float = 1.0 / 3.0,
     ) -> np.ndarray:
         """
         Compute membrane stress from local displacement vector.
-        
+
         For composite laminates, uses the A matrix constitutive relation:
             N = A · ε₀  (for symmetric laminate)
             σ_avg = N / h
-            
+
         Parameters
         ----------
         u_local : np.ndarray
@@ -718,20 +718,20 @@ class MITC3Composite(MITC3):
             Parametric coordinate for strain evaluation. Default 1/3 (centroid).
         s : float, optional
             Parametric coordinate for strain evaluation. Default 1/3 (centroid).
-            
+
         Returns
         -------
         np.ndarray
             (3,) average membrane stress [σ_xx, σ_yy, σ_xy]
         """
         epsilon_0, kappa = self.compute_midplane_strains(u_local, r, s)
-        
+
         # Force resultants
         N = self._A_matrix @ epsilon_0 + self._B_matrix @ kappa
-        
+
         # Average stress through thickness
         sigma_avg = N / self.thickness
-        
+
         return sigma_avg
 
     def compute_tangent_stiffness(
@@ -741,16 +741,16 @@ class MITC3Composite(MITC3):
     ) -> np.ndarray:
         """
         Compute tangent stiffness matrix for nonlinear analysis of composite.
-        
+
         The tangent stiffness matrix is:
-        
+
             K_T = K_0 + K_L + K_σ
-            
+
         where:
         - K_0: Initial (linear) stiffness matrix (from ABD formulation)
         - K_L: Large displacement stiffness (from nonlinear strain terms)
         - K_σ: Geometric (stress) stiffness matrix
-        
+
         Parameters
         ----------
         sigma : np.ndarray, optional
@@ -759,7 +759,7 @@ class MITC3Composite(MITC3):
             [σ_xx, σ_yy, σ_xy].
         transform_to_global : bool, optional
             Transform result to global coordinates. Default True.
-            
+
         Returns
         -------
         np.ndarray
@@ -770,50 +770,52 @@ class MITC3Composite(MITC3):
             K_0 = self._K_with_coupling()
         else:
             K_0 = self._K_symmetric_laminate()
-        
+
         if not self.nonlinear:
             if transform_to_global:
                 T = self.T()
                 return T.T @ K_0 @ T
             return K_0
-        
+
         # Compute stress if not provided
         if sigma is None:
             T = self.T()
             u_local = T @ self._current_displacements
             sigma = self.compute_membrane_stress_from_displacement(u_local)
-        
+
         # Large displacement stiffness K_L using A matrix
         K_L = np.zeros((18, 18))
-        
+
         # Use A matrix normalized for constitutive relation
         Cm_raw = self._A_matrix / self.thickness
-        
+
         area = self.area()
-        
+
         for (r, s), w in zip(self._gauss_points, self._gauss_weights):
             B_NL = self._compute_B_NL(r, s)
             B_L = self._compute_B_L(r, s)
-            
+
             B_m_L = B_L[[0, 1, 3], :]
             B_m_NL = B_NL[[0, 1, 3], :]
-            
-            k_L_local = (B_m_L.T @ Cm_raw @ B_m_NL + B_m_NL.T @ Cm_raw @ B_m_L) * w * area * self.thickness
+
+            k_L_local = (
+                (B_m_L.T @ Cm_raw @ B_m_NL + B_m_NL.T @ Cm_raw @ B_m_L) * w * area * self.thickness
+            )
             K_L += k_L_local
-        
+
         # Geometric stiffness K_σ
         K_sigma = self.compute_geometric_stiffness(sigma, transform_to_global=False)
-        
+
         # Total tangent stiffness
         K_T = K_0 + K_L + K_sigma
-        
+
         # Force symmetry
         K_T = 0.5 * (K_T + K_T.T)
-        
+
         if transform_to_global:
             T = self.T()
             K_T = T.T @ K_T @ T
-        
+
         return K_T
 
     def compute_internal_forces(
@@ -822,12 +824,12 @@ class MITC3Composite(MITC3):
     ) -> np.ndarray:
         """
         Compute internal force vector for nonlinear analysis of composite.
-        
+
         Parameters
         ----------
         transform_to_global : bool, optional
             Transform result to global coordinates. Default True.
-            
+
         Returns
         -------
         np.ndarray
@@ -835,52 +837,52 @@ class MITC3Composite(MITC3):
         """
         T = self.T()
         u_local = T @ self._current_displacements
-        
+
         f_int = np.zeros(18)
-        
+
         # Constitutive matrices from laminate
         A_mat = self._A_matrix
         D_mat = self._D_matrix
         Cs_mat = self._Cs_matrix
         B_coup = self._B_matrix
-        
+
         # DOF indices
         mem_dofs = np.array([0, 1, 6, 7, 12, 13])
         bend_dofs = np.array([2, 3, 4, 8, 9, 10, 14, 15, 16])
-        
+
         area = self.area()
-        
+
         for (r, s), w in zip(self._gauss_points, self._gauss_weights):
             # Get strains
             epsilon_0, kappa = self.compute_midplane_strains(u_local, r, s)
-            
+
             # Force and moment resultants using ABD
             N = A_mat @ epsilon_0 + B_coup @ kappa
             M = B_coup @ epsilon_0 + D_mat @ kappa
-            
+
             # Membrane contribution
             B_m = self.B_m(r, s)
             f_int[mem_dofs] += B_m[:, mem_dofs].T @ N * w * area
-            
+
             # Bending contribution
             B_kappa = self.B_kappa(r, s)
             f_int[bend_dofs] += B_kappa[:, bend_dofs].T @ M * w * area
-            
+
             # Shear contribution
             B_gamma = self.B_gamma(r, s)
             gamma = B_gamma[:, bend_dofs] @ u_local[bend_dofs]
             Q = Cs_mat @ gamma
             f_int[bend_dofs] += B_gamma[:, bend_dofs].T @ Q * w * area
-        
+
         if transform_to_global:
             f_int = T.T @ f_int
-        
+
         return f_int
 
     def compute_strain_energy(self) -> float:
         """
         Compute total strain energy stored in the composite element.
-        
+
         Returns
         -------
         float
@@ -888,32 +890,39 @@ class MITC3Composite(MITC3):
         """
         T = self.T()
         u_local = T @ self._current_displacements
-        
+
         U = 0.0
-        
+
         # Constitutive matrices from laminate
         A_mat = self._A_matrix
         D_mat = self._D_matrix
         Cs_mat = self._Cs_matrix
         B_coup = self._B_matrix
-        
+
         bend_dofs = np.array([2, 3, 4, 8, 9, 10, 14, 15, 16])
-        
+
         area = self.area()
-        
+
         for (r, s), w in zip(self._gauss_points, self._gauss_weights):
             epsilon_0, kappa = self.compute_midplane_strains(u_local, r, s)
-            
+
             # Membrane + coupling strain energy: 0.5 * (ε₀ᵀAε₀ + 2ε₀ᵀBκ + κᵀDκ)
-            U += 0.5 * (epsilon_0 @ A_mat @ epsilon_0 + 
-                       2 * epsilon_0 @ B_coup @ kappa + 
-                       kappa @ D_mat @ kappa) * w * area
-            
+            U += (
+                0.5
+                * (
+                    epsilon_0 @ A_mat @ epsilon_0
+                    + 2 * epsilon_0 @ B_coup @ kappa
+                    + kappa @ D_mat @ kappa
+                )
+                * w
+                * area
+            )
+
             # Shear strain energy
             B_gamma = self.B_gamma(r, s)
             gamma = B_gamma[:, bend_dofs] @ u_local[bend_dofs]
             U += 0.5 * gamma @ Cs_mat @ gamma * w * area
-        
+
         return U
 
     @property
@@ -931,15 +940,11 @@ class MITC3Composite(MITC3):
             18x18 consistent mass matrix
         """
         # Compute total mass per unit area (ρ*h equivalent)
-        mass_per_area = sum(
-            ply.material.rho * ply.thickness
-            for ply in self.laminate.plies
-        )
+        mass_per_area = sum(ply.material.rho * ply.thickness for ply in self.laminate.plies)
 
         # Compute rotational inertia (ρ*h³/12 equivalent for laminate)
         rotational_inertia = sum(
-            ply.material.rho * (ply.z_top**3 - ply.z_bottom**3) / 3
-            for ply in self.laminate.plies
+            ply.material.rho * (ply.z_top**3 - ply.z_bottom**3) / 3 for ply in self.laminate.plies
         )
 
         M_local = np.zeros((18, 18))
@@ -952,14 +957,14 @@ class MITC3Composite(MITC3):
             # Translational mass (u, v, w)
             for i in range(3):
                 for j in range(3):
-                    val_t = N[0, 6*i] * N[0, 6*j] * mass_per_area * w * area
+                    val_t = N[0, 6 * i] * N[0, 6 * j] * mass_per_area * w * area
                     for k in range(3):
-                        M_local[6*i+k, 6*j+k] += val_t
+                        M_local[6 * i + k, 6 * j + k] += val_t
 
                     # Rotational (θx, θy, θz)
-                    val_r = N[0, 6*i] * N[0, 6*j] * rotational_inertia * w * area
+                    val_r = N[0, 6 * i] * N[0, 6 * j] * rotational_inertia * w * area
                     for k in range(3, 6):
-                        M_local[6*i+k, 6*j+k] += val_r
+                        M_local[6 * i + k, 6 * j + k] += val_r
 
         # Transform to global coordinates
         T = self.T()
