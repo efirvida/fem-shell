@@ -510,8 +510,12 @@ class KeyPoints:
                 base2 = np.sqrt(np.sum(b2**2, 1))[0]
                 b1 = b1 / base1
                 b2 = b2 / base2
-                h1 = np.abs(np.dot((ob[0, :] - ib[0, :]), (1 - np.transpose(b1))))
-                h2 = np.abs(np.dot((ib[1, :] - ob[1, :]), (1 - np.transpose(b2))))
+                # Calculate height using cross product magnitude (norm of cross product of vector to apex and unit base vector)
+                # h1: distance of ob[0] from line passing through ib[0] with direction b1
+                h1 = np.linalg.norm(np.cross((ob[0, :] - ib[0, :]), b1[0, :]))
+                # h2: distance of ib[1] from line passing through ob[0] with direction b2
+                # Note: b2 is direction ob[1]-ob[0].
+                h2 = np.linalg.norm(np.cross((ib[1, :] - ob[1, :]), b2[0, :]))
                 self.web_areas[ksw][kc] = 0.5 * (base1 * h1 + base2 * h2)
                 self.web_width[ksw][kc] = base1
                 # calculate edge (bond-line) lengths

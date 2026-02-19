@@ -531,6 +531,15 @@ class FSIRunner:
             raise RuntimeError("Mesh not loaded. Call run() or _setup_mesh() first.")
         return list(self.mesh.node_sets.keys())
 
+    def visualize(self) -> None:
+        """Visualize the model mesh.
+
+        This loads the mesh if needed and opens the interactive viewer.
+        """
+        if self.mesh is None:
+            self.mesh = self._setup_mesh()
+        self.mesh.view()
+
     def preview_config(self) -> str:
         """Get a preview of the configuration.
 

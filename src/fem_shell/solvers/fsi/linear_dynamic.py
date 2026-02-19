@@ -6,8 +6,10 @@ problems using preCICE coupling.
 """
 
 import logging
-from typing import Dict
+from pathlib import Path
+from typing import Dict, Optional
 
+import meshio
 import numpy as np
 from petsc4py import PETSc
 
@@ -124,6 +126,123 @@ class LinearDynamicFSISolver(LinearDynamicSolver):
         M_lumped.assemble()
         return M_lumped
 
+    def _export_interface_debug_data(
+        self,
+        step: int,
+        time: float,
+        forces_raw: Optional[np.ndarray],
+        forces_applied: np.ndarray,
+        directory: str = "debug_interface",
+    ):
+        """Export interface debugging data (points + vectors) to VTU."""
+        # Only proceed if enabled
+        if not self.solver_params.get("debug_interface", False):
+            return
+
+        # Only proceed if interface coordinates are available
+        if not hasattr(self.precice_participant, "interface_coordinates"):
+            return
+
+        out_dir = Path(directory)
+        out_dir.mkdir(exist_ok=True, parents=True)
+
+        points = self.precice_participant.interface_coordinates
+        n_points = len(points)
+
+        # Prepare point data
+        point_data = {}
+
+        if forces_raw is not None:
+            point_data["Force CFD Raw"] = (
+                forces_raw.reshape(-1, 3) if forces_raw.ndim == 1 else forces_raw
+            )
+
+        if forces_applied is not None:
+            point_data["Force Applied"] = (
+                forces_applied.reshape(-1, 3) if forces_applied.ndim == 1 else forces_applied
+            )
+
+        if not point_data:
+            return
+
+        # Create vertices for point cloud visualization
+        # Note: meshio needs cells. For points, use 'vertex' cells.
+        cells = [("vertex", np.arange(n_points).reshape(-1, 1))]
+
+        mesh = meshio.Mesh(points=points, cells=cells, point_data=point_data)
+
+        # Write VTU file (points only)
+        # Using VTU instead of VTP because Paraview handles UnstructuredGrid of vertices well
+        # and it's consistent with other outputs
+        filename = f"interface_{step:06d}.vtu"
+        full_path = out_dir / filename
+        mesh.write(str(full_path))
+
+        self._update_debug_pvd(out_dir, "interface_forces.pvd", filename, time)
+
+    def _update_debug_pvd(self, folder: Path, pvd_name: str, filename: str, time: float):
+        """Update PVD file for debug stream."""
+        pvd_path = folder / pvd_name
+
+        header = """<?xml version="1.0"?>
+<VTKFile type="Collection" version="0.1" byte_order="LittleEndian" compressor="vtkZLibDataCompressor">
+  <Collection>
+"""
+        footer = """  </Collection>
+</VTKFile>"""
+
+        entry = f'    <DataSet timestep="{time}" group="" part="0" file="{filename}"/>\n'
+
+        if not pvd_path.exists():
+            with open(pvd_path, "w") as f:
+                f.write(header + entry + footer)
+        else:
+            # Read existing content
+            with open(pvd_path, "r") as f:
+                lines = f.readlines()
+
+            # Remove footer lines to append new entry
+            valid_lines = [
+                line for line in lines if "</Collection>" not in line and "</VTKFile>" not in line
+            ]
+
+            # Append new entry and footer
+            with open(pvd_path, "w") as f:
+                f.writelines(valid_lines)
+                f.write(entry)
+                f.write(footer)
+
+    def _expand_interface_forces_to_full(
+        self,
+        interface_forces: np.ndarray,
+    ) -> np.ndarray:
+        """
+        Expand interface forces to full mesh array for visualization.
+
+        Parameters
+        ----------
+        interface_forces : np.ndarray
+            Forces at interface nodes, shape (n_interface_indices, dim).
+
+        Returns
+        -------
+        np.ndarray
+            Full force array, shape (n_nodes, 3) for VTU visualization.
+        """
+        n_nodes = self.domain.mesh.node_count
+        full_forces = np.zeros((n_nodes, 3), dtype=np.float64)
+        dim = interface_forces.shape[1]
+
+        # Get the proper node indices from the adapter
+        interface_node_indices = self.precice_participant.interface_node_indices
+
+        # Map interface forces to their corresponding mesh node indices
+        for i, node_idx in enumerate(interface_node_indices):
+            if node_idx < n_nodes:
+                full_forces[node_idx, :dim] = interface_forces[i, :]
+
+        return full_forces
+
     def solve(self):
         """Perform dynamic analysis using improved Newmark-β method."""
         logger = logging.getLogger(__name__)
@@ -202,6 +321,19 @@ class LinearDynamicFSISolver(LinearDynamicSolver):
         # Try to restore from checkpoint if start_from='latestTime'
         checkpoint_state = self._try_restore_checkpoint()
         starting_from_zero = True  # Flag to track if we're starting fresh
+
+        # Validate checkpoint dimensionality if present
+        if checkpoint_state is not None and "u_red" in checkpoint_state:
+            stored_dofs = len(checkpoint_state["u_red"])
+            current_dofs = len(u.array)
+            if stored_dofs != current_dofs:
+                print(
+                    f"  ⚠️ Checkpoint DOF mismatch ({stored_dofs} vs {current_dofs}). "
+                    "Incompatible mesh/BCs. Checkpoint ignored.",
+                    flush=True,
+                )
+                checkpoint_state = None
+
         if checkpoint_state is not None:
             starting_from_zero = False
             print(f"  ✓ Restored from checkpoint at t = {checkpoint_state['t']:.6f} s", flush=True)
@@ -247,8 +379,8 @@ class LinearDynamicFSISolver(LinearDynamicSolver):
                 v_red=v.array.copy(),
                 a_red=a.array.copy(),
                 u_full=bc_manager.expand_solution(u).array.copy(),
-                v_full=bc_manager.expand_solution(v).array.copy(),
-                a_full=bc_manager.expand_solution(a).array.copy(),
+                v_full=bc_manager.expand_state_vector(v).array.copy(),
+                a_full=bc_manager.expand_state_vector(a).array.copy(),
             )
 
         # Force clipping and ramping configuration
@@ -267,6 +399,9 @@ class LinearDynamicFSISolver(LinearDynamicSolver):
         # Store interface DOFs reference for checkpoint handling
         self._interface_dofs = self.precice_participant.interface_dofs
 
+        # Get interface mesh dimensions
+        mesh_dim = self.precice_participant.mesh_dimensions
+
         while self.precice_participant.is_coupling_ongoing:
             step += 1
 
@@ -277,6 +412,7 @@ class LinearDynamicFSISolver(LinearDynamicSolver):
             # Read coupling data from preCICE
             logger.debug("Step %d: Reading coupling data from preCICE...", step)
             data = self.precice_participant.read_data()
+            data_raw = data.copy() if data is not None else None
             interface_dofs = self.precice_participant.interface_dofs
 
             # ==============================================================================
@@ -290,11 +426,11 @@ class LinearDynamicFSISolver(LinearDynamicSolver):
                 raw_force_mag = np.sqrt(raw_force_x**2 + raw_force_y**2 + raw_force_z**2)
                 raw_max_nodal = np.max(np.linalg.norm(data, axis=1))
             else:
-                n_nodes = len(data) // 3
-                data_2d = data.reshape(-1, 3)
+                n_nodes = len(data) // mesh_dim
+                data_2d = data.reshape(-1, mesh_dim)
                 raw_force_x = np.sum(data_2d[:, 0])
                 raw_force_y = np.sum(data_2d[:, 1])
-                raw_force_z = np.sum(data_2d[:, 2])
+                raw_force_z = np.sum(data_2d[:, 2]) if mesh_dim >= 3 else 0.0
                 raw_force_mag = np.sqrt(raw_force_x**2 + raw_force_y**2 + raw_force_z**2)
                 raw_max_nodal = np.max(np.linalg.norm(data_2d, axis=1))
 
@@ -331,10 +467,10 @@ class LinearDynamicFSISolver(LinearDynamicSolver):
                 )
                 applied_max_nodal = np.max(np.linalg.norm(data_ramped, axis=1))
             else:
-                data_2d = data_ramped.reshape(-1, 3)
+                data_2d = data_ramped.reshape(-1, mesh_dim)
                 applied_force_x = np.sum(data_2d[:, 0])
                 applied_force_y = np.sum(data_2d[:, 1])
-                applied_force_z = np.sum(data_2d[:, 2])
+                applied_force_z = np.sum(data_2d[:, 2]) if mesh_dim >= 3 else 0.0
                 applied_force_mag = np.sqrt(
                     applied_force_x**2 + applied_force_y**2 + applied_force_z**2
                 )
@@ -361,28 +497,26 @@ class LinearDynamicFSISolver(LinearDynamicSolver):
             print("  │", flush=True)
 
             # Processing section
-            print("  ├─ PROCESSING", flush=True)
-            if clip_diags["n_clipped"] > 0:
-                print(
-                    f"  │  Clipping: {clip_diags['n_clipped']}/{n_nodes} nodes capped at {force_max_cap:.2e} N",
-                    flush=True,
-                )
-            else:
-                print(
-                    f"  │  Clipping: None (cap={force_max_cap:.2e} N)"
-                    if force_max_cap
-                    else "  │  Clipping: Disabled",
-                    flush=True,
-                )
+            if force_max_cap is not None or ramp_time > 0:
+                print("  ├─ PROCESSING", flush=True)
+                if force_max_cap is not None:
+                    if clip_diags["n_clipped"] > 0:
+                        print(
+                            f"  │  Clipping: {clip_diags['n_clipped']}/{n_nodes} nodes capped at {force_max_cap:.2e} N",
+                            flush=True,
+                        )
+                    else:
+                        print(
+                            f"  │  Clipping: None (cap={force_max_cap:.2e} N)",
+                            flush=True,
+                        )
 
-            if ramp_time > 0:
-                print(
-                    f"  │  Ramping:  factor = {ramp_factor:.4f}  (t_target={t_target:.4f}s / {ramp_time:.4f}s)",
-                    flush=True,
-                )
-            else:
-                print("  │  Ramping:  Disabled", flush=True)
-            print("  │", flush=True)
+                if ramp_time > 0:
+                    print(
+                        f"  │  Ramping:  factor = {ramp_factor:.4f}  (t_target={t_target:.4f}s / {ramp_time:.4f}s)",
+                        flush=True,
+                    )
+                print("  │", flush=True)
 
             # Applied Forces section (after all processing)
             print("  └─ APPLIED FORCES (after clipping + ramping)", flush=True)
@@ -395,6 +529,8 @@ class LinearDynamicFSISolver(LinearDynamicSolver):
 
             # Use ramped data for assembly
             data = data_ramped
+
+            self._export_interface_debug_data(step, t_target, data_raw, data)
 
             F_new = self.F.copy()
             F_new.setValues(interface_dofs, data)
@@ -475,6 +611,18 @@ class LinearDynamicFSISolver(LinearDynamicSolver):
                 # Prepare for checkpoint
                 u_expanded = bc_manager.expand_solution(u)
 
+                # Prepare force fields for checkpoint
+                force_fields = {}
+                if data_raw is not None:
+                    force_fields["Force CFD Raw"] = self._expand_interface_forces_to_full(
+                        data_raw.reshape(-1, mesh_dim)
+                    )
+
+                if data is not None:
+                    force_fields["Force Applied"] = self._expand_interface_forces_to_full(
+                        data.reshape(-1, mesh_dim)
+                    )
+
                 # Handle checkpoint writing if enabled
                 self._handle_checkpoint(
                     t=t,
@@ -484,8 +632,9 @@ class LinearDynamicFSISolver(LinearDynamicSolver):
                     v_red=v.array.copy(),
                     a_red=a.array.copy(),
                     u_full=u_expanded.array.copy(),
-                    v_full=bc_manager.expand_solution(v).array.copy(),
-                    a_full=bc_manager.expand_solution(a).array.copy(),
+                    v_full=bc_manager.expand_state_vector(v).array.copy(),
+                    a_full=bc_manager.expand_state_vector(a).array.copy(),
+                    extra_fields=force_fields,
                 )
 
         # Get final clipping statistics
@@ -511,7 +660,7 @@ class LinearDynamicFSISolver(LinearDynamicSolver):
             self._checkpoint_manager.finalize(timeout=60.0)
 
         self.u = bc_manager.expand_solution(u)
-        self.v = bc_manager.expand_solution(v)
-        self.a = bc_manager.expand_solution(a)
+        self.v = bc_manager.expand_state_vector(v)
+        self.a = bc_manager.expand_state_vector(a)
 
         return self.u, self.v, self.a

@@ -25,8 +25,9 @@ from PySide6.QtWidgets import (
 )
 from pyvista import themes
 from pyvista.core.celltype import CellType
-from fem_shell.core.mesh.entities import ElementType
 from pyvistaqt import QtInteractor
+
+from fem_shell.core.mesh.entities import ElementType
 
 __all__ = ["plot_mesh", "plot_results"]
 
@@ -830,6 +831,7 @@ class MeshViewer(QWidget):
         """
         cells, cell_types = [], []
         visible_elements = selected_elements or self.mesh.elements
+        node_id_to_index = self.mesh.node_id_to_index
         for element in visible_elements:
             if element:
                 # Determine VTK cell type using explicit element type
@@ -855,9 +857,10 @@ class MeshViewer(QWidget):
                     # Skip unknown elements gracefully
                     continue
 
-                # Reorder nodes to VTK convention
+                # Reorder nodes to VTK convention and convert IDs to array indices
                 vtk_node_ids = _to_vtk_order(element)
-                cells.append([n] + vtk_node_ids)
+                vtk_node_indices = [node_id_to_index[nid] for nid in vtk_node_ids]
+                cells.append([n] + vtk_node_indices)
                 cell_types.append(vtk_type)
         return (
             pv.UnstructuredGrid(

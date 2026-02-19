@@ -253,7 +253,8 @@ class BoundaryConditionManager:
 
         Notes
         -----
-        Handles parallel distribution of vectors
+        Handles parallel distribution of vectors.
+        For displacement vectors only. For velocity/acceleration, use expand_state_vector.
         """
         # Crear vector completo distribuido
         u_full = self.K.createVecRight()
@@ -283,6 +284,53 @@ class BoundaryConditionManager:
         u_full.assemble()
 
         return u_full
+
+    def expand_state_vector(self, vec_red: PETSc.Vec) -> PETSc.Vec:
+        """Expand reduced state vector (velocity, acceleration) to full system DOFs.
+
+        Parameters
+        ----------
+        vec_red : PETSc.Vec
+            State vector from reduced system (e.g., velocity or acceleration)
+
+        Returns
+        -------
+        PETSc.Vec
+            Full state vector with fixed DOFs set to zero
+
+        Notes
+        -----
+        Unlike expand_solution, this does NOT apply prescribed displacement values
+        to fixed DOFs. Fixed DOFs remain zero, which is correct for velocity and
+        acceleration fields at constrained nodes.
+        """
+        # Crear vector completo distribuido
+        vec_full = self.K.createVecRight()
+        vec_full.set(0.0)  # Inicializar a cero
+
+        # 1. Copiar solución reducida usando el index set
+        free_is = self._free_is
+        local_free_size = free_is.getLocalSize()
+
+        # Obtener indices libres locales
+        free_indices = free_is.getIndices()
+
+        # Obtener array local de la solución reducida
+        vec_red_local = vec_red.getArray(readonly=True)
+
+        # Copiar valores a las posiciones libres
+        vec_full_local = vec_full.getArray()
+        vec_full_local[free_indices - vec_full.getOwnershipRange()[0]] = vec_red_local[
+            :local_free_size
+        ]
+
+        # 2. Los DOFs fijos permanecen en cero (correcto para v y a)
+        # No aplicamos self._fixed_dofs aquí porque esos son valores de desplazamiento
+
+        # 3. Sincronizar entre procesos
+        vec_full.assemble()
+
+        return vec_full
 
     def reduce_vector(self, vector: PETSc.Vec) -> PETSc.Vec:
         """Reduce arbitrary vector using current free DOFs.

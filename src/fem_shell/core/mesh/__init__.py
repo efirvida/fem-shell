@@ -33,6 +33,9 @@ Loading and saving meshes:
 >>> loaded_mesh = MeshModel.load("my_mesh.h5")
 """
 
+# Selection utilities
+from fem_shell.core.mesh import selectors
+
 # Core entities
 from fem_shell.core.mesh.entities import (
     ELEMENT_NODES_MAP,
@@ -73,15 +76,14 @@ from fem_shell.core.mesh.io import (
 # Main mesh model
 from fem_shell.core.mesh.model import MeshModel
 
-# Selection utilities
-from fem_shell.core.mesh import selectors
-
 # Utility functions
 from fem_shell.core.mesh.utils import (
-    detect_open_boundaries,
-    close_open_boundaries,
-    volumetric_remesh,
     boolean_union_meshes,
+    check_mesh_quality,
+    close_open_boundaries,
+    detect_open_boundaries,
+    verify_solid_element_orientations,
+    volumetric_remesh,
 )
 
 __all__ = [
@@ -122,4 +124,6 @@ __all__ = [
     "close_open_boundaries",
     "volumetric_remesh",
     "boolean_union_meshes",
+    "verify_solid_element_orientations",
+    "check_mesh_quality",
 ]

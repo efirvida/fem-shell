@@ -341,6 +341,12 @@ Examples:
     )
 
     parser.add_argument(
+        "--view",
+        action="store_true",
+        help="Visualize the model configuration",
+    )
+
+    parser.add_argument(
         "--template",
         "-t",
         action="store_true",
@@ -390,6 +396,20 @@ Examples:
 
     setup_logging(args.verbose)
 
+    # Visualization
+    if args.view:
+        try:
+            from fem_shell.solvers.fsi import FSIRunner
+
+            # Initialize runner but don't run simulation
+            runner = FSIRunner(str(config_path), args.workdir)
+            print("Visualizing model configuration...")
+            runner.visualize()
+            return 0
+        except Exception as e:
+            logging.error(f"Visualization failed: {e}")
+            return 1
+
     # Validate only
     if args.validate:
         return 0 if validate_config(str(config_path)) else 1
@@ -404,7 +424,7 @@ Examples:
 
     # Run simulation
     try:
-        from fem_shell.solvers.fsi_runner import FSIRunner
+        from fem_shell.solvers.fsi import FSIRunner
 
         runner = FSIRunner(str(config_path), args.workdir)
         runner.run()

@@ -178,23 +178,29 @@ class Adapter:
         write_data: List[str],
         read_data: List[str],
     ):
-        self._participant = participant
-        self._config_file = config_file
-        self._coupling_mesh = coupling_mesh
+        self._participant = str(participant)
+        self._config_file = str(config_file)
+        self._coupling_mesh = str(coupling_mesh)
         self._write_data = write_data if isinstance(write_data, list) else [write_data]
         self._read_data = read_data if isinstance(read_data, list) else [read_data]
 
-        self._interface = precice.Participant(participant, config_file, 0, 1)
+        self._interface = precice.Participant(self._participant, self._config_file, 0, 1)
 
         # coupling mesh related quantities
         self._solver_vertices = None
         self._precice_vertex_ids = None
+        self._mesh_vertex_ids = {}
 
         # Solver state used by the Adapter internally to handle checkpointing
         self._checkpoint: SolverState | None = None
 
         # Necessary bools for enforcing proper control flow / warnings to user
         self._first_advance_done = False
+
+    @property
+    def mesh_dimensions(self) -> int:
+        """Get dimensions of the coupling mesh."""
+        return self._interface.get_mesh_dimensions(self._coupling_mesh)
 
     def read_data(self, data_name: Optional[str] = None) -> np.ndarray:
         """Read data from preCICE.
@@ -250,6 +256,39 @@ class Adapter:
             write_data,
         )
 
+    def write_interface_data(
+        self, data: np.ndarray, data_name: str, mesh_name: Optional[str] = None
+    ) -> None:
+        """Write data already mapped to interface vertices directly to preCICE.
+
+        This bypasses the global-to-local slicing of write_data(), allowing
+        writing of custom fields that exist only on the interface (like locally
+        computed coupling variables).
+
+        Parameters
+        ----------
+        data : np.ndarray
+            Data array aligned with interface vertices.
+        data_name : str
+            Name of the data field.
+        mesh_name : str, optional
+            Name of the mesh to write to. If None, uses the default coupling mesh.
+        """
+        target_mesh = mesh_name if mesh_name else self._coupling_mesh
+
+        vertex_ids = self._precice_vertex_ids
+        if target_mesh != self._coupling_mesh:
+            vertex_ids = self._mesh_vertex_ids.get(target_mesh)
+            if vertex_ids is None:
+                raise ValueError(f"Mesh '{target_mesh}' not registered via register_mesh()")
+
+        self._interface.write_data(
+            target_mesh,
+            data_name,
+            vertex_ids,
+            data,
+        )
+
     def write_all_data(self, data_dict: Dict[str, np.ndarray]) -> None:
         """Write multiple data fields to preCICE.
 
@@ -261,8 +300,65 @@ class Adapter:
         for name, data in data_dict.items():
             self.write_data(data, name)
 
+    def register_mesh(self, mesh_name: str, coordinates: Optional[np.ndarray] = None) -> np.ndarray:
+        """Register an additional mesh with preCICE.
+
+        Parameters
+        ----------
+        mesh_name : str
+            Name of the mesh to register.
+        coordinates : np.ndarray, optional
+            Coordinates of the mesh vertices. If None, uses the main interface coordinates.
+
+        Returns
+        -------
+        np.ndarray
+            Vertex IDs of the registered mesh.
+        """
+        if coordinates is None:
+            if not hasattr(self, "_interface_coords"):
+                raise RuntimeError("Cannot register mesh without coordinates before initialization")
+            coordinates = self._interface_coords
+
+        vertex_ids = self._interface.set_mesh_vertices(mesh_name, coordinates)
+        self._mesh_vertex_ids[mesh_name] = vertex_ids
+        return vertex_ids
+
+    def set_mesh_vertices(self, coordinates: np.ndarray, mesh_name: Optional[str] = None) -> np.ndarray:
+        """Update mesh vertices in preCICE (e.g. for rotating reference frames).
+        
+        Parameters
+        ----------
+        coordinates : np.ndarray
+             New coordinates for the mesh vertices.
+        mesh_name : str, optional
+             Name of the mesh to update. If None, uses the default coupling mesh.
+             
+        Returns
+        -------
+        np.ndarray
+             Vertex IDs (should match existing ones).
+        """
+        target_mesh = mesh_name if mesh_name else self._coupling_mesh
+        
+        # Determine vertex IDs (optional for set_mesh_vertices in some language bindings, but good to ensure consistency)
+        # In python binding, set_mesh_vertices returns user-defined IDs or internal IDs
+        vertex_ids = self._interface.set_mesh_vertices(target_mesh, coordinates)
+        
+        # Update our tracking of coords
+        if target_mesh == self._coupling_mesh:
+            self._interface_coords = coordinates
+            
+        return vertex_ids
+
     def initialize(
-        self, domain: MeshAssembler, coupling_boundaries: Sequence[str], fixed_dofs: Tuple[int]
+        self,
+        domain: MeshAssembler,
+        coupling_boundaries: Sequence[str],
+        fixed_dofs: Tuple[int],
+        extra_meshes: Optional[List[str]] = None,
+        custom_mesh_coords: Optional[Dict[str, np.ndarray]] = None,
+        initial_data_values: Optional[Dict[str, float]] = None,
     ) -> float:
         """Initialize the coupling and set up the mesh in preCICE.
 
@@ -286,14 +382,48 @@ class Adapter:
         for n_set_name in coupling_boundaries:
             self._node_sets.append(self._mesh.node_sets[n_set_name])
 
+        # Collect interface nodes and sort by node ID for consistent ordering
+        # This ensures the order matches between preCICE and our internal structures
         nodes = {node.id: node.coords for _set in self._node_sets for node in _set.nodes.values()}
+        sorted_node_ids = sorted(nodes.keys())
 
-        self._interface_coords = np.array(list(nodes.values()))[:, : self._domain.spatial_dim]
-        self._interface_dofs = np.array([self._domain._node_dofs_map[n] for n in nodes])
+        # Store node IDs in sorted order for proper mapping
+        self._interface_node_ids = np.array(sorted_node_ids, dtype=np.int64)
+
+        # Use full available coordinates (e.g. 3D embedding) regardless of element topology dim
+        self._interface_coords = np.array([nodes[nid] for nid in sorted_node_ids])
+
+        # If the simulation is 2D, ensure we pass 2D coordinates to preCICE
+        if self._domain.spatial_dim == 2 and self._interface_coords.shape[1] > 2:
+            self._interface_coords = self._interface_coords[:, :2]
+
+        self._interface_dofs = np.array([
+            self._domain._node_dofs_map[nid] for nid in sorted_node_ids
+        ])
 
         self._precice_vertex_ids = self._interface.set_mesh_vertices(
             self._coupling_mesh, self._interface_coords
         )
+        self._mesh_vertex_ids[self._coupling_mesh] = self._precice_vertex_ids
+
+        # Register extra meshes found in configuration using the same interface coordinates
+        if extra_meshes:
+            for mesh_name in extra_meshes:
+                try:
+                    v_ids = self._interface.set_mesh_vertices(mesh_name, self._interface_coords)
+                    self._mesh_vertex_ids[mesh_name] = v_ids
+                except Exception as e:
+                    logging.debug(f"Could not register extra mesh '{mesh_name}': {e}")
+
+        # Register custom meshes with specific coordinates
+        if custom_mesh_coords:
+            for mesh_name, coords in custom_mesh_coords.items():
+                try:
+                    v_ids = self._interface.set_mesh_vertices(mesh_name, coords)
+                    self._mesh_vertex_ids[mesh_name] = v_ids
+                except Exception as e:
+                    logging.warning(f"Could not register custom mesh '{mesh_name}': {e}")
+
         np.savetxt(
             "interface_coords.csv",
             self.interface_coordinates,
@@ -302,7 +432,7 @@ class Adapter:
         )
 
         if self._interface.requires_initial_data():
-            # Write initial zero data for all write fields
+            # Write initial zero data for all write fields on main coupling mesh
             for data_name in self._write_data:
                 self._interface.write_data(
                     self._coupling_mesh,
@@ -310,6 +440,26 @@ class Adapter:
                     self._precice_vertex_ids,
                     np.zeros(self.interface_dofs.shape),
                 )
+            # Write initial zero data for custom meshes (e.g., GlobalSolidMesh)
+            if custom_mesh_coords:
+                for mesh_name, coords in custom_mesh_coords.items():
+                    if mesh_name in self._mesh_vertex_ids:
+                        n_verts = coords.shape[0]
+                        vertex_ids = self._mesh_vertex_ids[mesh_name]
+                        # Try to write AngularVelocity if this mesh has it
+                        try:
+                            # Use provided initial value or default to 0
+                            init_val = 0.0
+                            if initial_data_values and "AngularVelocity" in initial_data_values:
+                                init_val = initial_data_values["AngularVelocity"]
+                            self._interface.write_data(
+                                mesh_name,
+                                "AngularVelocity",
+                                vertex_ids,
+                                np.full(n_verts, init_val),
+                            )
+                        except Exception:
+                            pass
         self._interface.initialize()
         return self._interface.get_max_time_step_size()
 
@@ -376,8 +526,12 @@ class Adapter:
 
     @property
     def interface_dofs(self):
-        """Return the interface degrees of freedom."""
-        if self._interface_dofs.shape[0] > 3:
+        """Return the interface degrees of freedom (translational DOFs only).
+
+        For shell elements with 6 DOFs per node, returns only the first 3
+        (translational) DOFs. For solid elements with 3 DOFs, returns all DOFs.
+        """
+        if self._interface_dofs.ndim == 2 and self._interface_dofs.shape[1] > 3:
             return self._interface_dofs[:, :3].astype(PETSc.IntType)
         return self._interface_dofs.astype(PETSc.IntType)
 
@@ -385,6 +539,21 @@ class Adapter:
     def interface_coordinates(self):
         """Return the interface coordinates."""
         return self._interface_coords
+
+    @property
+    def interface_node_ids(self) -> np.ndarray:
+        """Return the node IDs of interface nodes in order."""
+        return self._interface_node_ids
+
+    @property
+    def interface_node_indices(self) -> np.ndarray:
+        """Return the mesh node indices for interface nodes.
+
+        These indices correspond to positions in mesh.nodes and coords_array,
+        suitable for indexing point_data arrays in VTU output.
+        """
+        node_id_to_index = self._mesh.node_id_to_index
+        return np.array([node_id_to_index[nid] for nid in self._interface_node_ids], dtype=np.int64)
 
     @property
     def precice(self):

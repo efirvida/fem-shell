@@ -51,22 +51,42 @@ class MeshAssembler:
 
         Uses mesh.node_id_to_index mapping to ensure DOF indices are consecutive
         starting from 0, regardless of the original node IDs in the mesh.
-        This is critical for merged meshes where node IDs may not be consecutive.
-
-        Supports mixed-element meshes where elements may have different numbers
-        of nodes (e.g., pyramid + tetrahedron meshes). In this case, stores
-        lists instead of uniform numpy arrays.
+        
+        CRITICAL FIX FOR MIXED MESHES:
+        We must first determine the MAXIMUM DOFs per node required by any element type
+        in the model. This defines the "global stride".
+        
+        If we used variable strides (e.g. node_idx * 3 for solids, node_idx * 6 for shells),
+        we would get index collisions (aliasing) where different nodes map to the
+        same DOF index.
         """
         elements = self.mesh.elements
         if not elements:
             return
 
+        # --- PASS 1: Determine global maximum stride (max DOFs per node) ---
+        max_dofs_per_node = 0
+        max_spatial_dim = 0
+        
+        # We need a temporary factory check to peek at element properties
+        # This is a bit inefficient but safe
+        for element in elements:
+             # We just need the class type to check properties, not full instantiation
+             # But ElementFactory usually returns an instance. Efficient enough for pre-pass.
+             temp_elem = ElementFactory.get_element(mesh_element=element, **self.model)
+             if temp_elem:
+                 max_dofs_per_node = max(max_dofs_per_node, temp_elem.dofs_per_node)
+                 max_spatial_dim = max(max_spatial_dim, temp_elem.spatial_dimmension)
+
+        self.dofs_per_node = max_dofs_per_node
+        self.spatial_dim = max_spatial_dim
+        
+        # --- PASS 2: Assemble Data ---
         dofs_list = []
         ke_list = []
         me_list = []
-        dof_sizes = set()  # Track if we have variable-size elements
+        dof_sizes = set()
 
-        # Get the node ID to index mapping from the mesh
         node_id_to_index = self.mesh.node_id_to_index
 
         for element in elements:
@@ -74,14 +94,20 @@ class MeshAssembler:
             if not fem_element:
                 continue
 
-            # Remap DOFs using mesh's node_id_to_index to ensure consecutive indices
-            # Original global_dof_indices uses node_id directly, which fails for
-            # merged meshes with non-consecutive node IDs
+            # Remap DOFs using the GLOBAL stride to avoid aliasing
             remapped_dof_indices = {}
             for node_id in fem_element.node_ids:
                 node_index = node_id_to_index[node_id]
-                start_dof = node_index * fem_element.dofs_per_node
-                end_dof = start_dof + fem_element.dofs_per_node
+                
+                # ALWAYS use the global max stride
+                start_dof = node_index * self.dofs_per_node
+                
+                # The element takes only the DOFs it needs (e.g. 3) from the block of 6
+                # This leaves the angular DOFs (3-5) "empty" for solid nodes, which is fine.
+                element_dofs_count = fem_element.dofs_per_node
+                
+                # We simply map to the first N slots of the node's block
+                end_dof = start_dof + element_dofs_count
                 remapped_dof_indices[node_id] = tuple(range(start_dof, end_dof))
 
             self._node_dofs_map.update(remapped_dof_indices)
@@ -96,10 +122,6 @@ class MeshAssembler:
             dofs_list.append(dofs)
             ke_list.append(fem_element.K)
             me_list.append(fem_element.M)
-
-            if not self.dofs_per_node:
-                self.dofs_per_node = fem_element.dofs_per_node
-                self.spatial_dim = fem_element.spatial_dimmension
 
         # Check if all elements have the same DOF count (uniform mesh)
         self._is_mixed_mesh = len(dof_sizes) > 1

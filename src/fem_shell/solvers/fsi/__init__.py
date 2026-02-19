@@ -6,6 +6,7 @@ This module provides solvers for FSI problems using preCICE coupling.
 
 from .base import Adapter, ForceClipper, SolverState
 from .corotational import (
+    ComputedOmega,
     ConstantOmega,
     CoordinateTransforms,
     FunctionOmega,
@@ -29,6 +30,7 @@ __all__ = [
     "CoordinateTransforms",
     "InertialForcesCalculator",
     "OmegaProvider",
+    "ComputedOmega",
     "ConstantOmega",
     "TableOmega",
     "FunctionOmega",

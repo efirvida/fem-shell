@@ -77,6 +77,16 @@ class CoordinateTransforms:
         self._K = self._skew_symmetric(self._axis)
         self._K2 = self._K @ self._K
 
+    @property
+    def axis(self) -> NDArray:
+        """Rotation axis unit vector."""
+        return self._axis
+
+    @property
+    def center(self) -> NDArray:
+        """Rotation center coordinates."""
+        return self._center
+
     @staticmethod
     def _skew_symmetric(v: NDArray) -> NDArray:
         """Compute skew-symmetric matrix from vector v such that K @ x = v × x."""
@@ -192,14 +202,40 @@ class CoordinateTransforms:
         R = self.rotation_matrix(theta)
 
         if force_global.ndim == 1:
-            # Flat array: reshape to (n_nodes, 3), transform, flatten back
-            n_nodes = len(force_global) // 3
-            force_2d = force_global.reshape(n_nodes, 3)
-            force_local_2d = force_2d @ R  # (n, 3) @ (3, 3) = R^T applied row-wise
-            return force_local_2d.flatten()
+            # Determine dimensions
+            n_data = len(force_global)
+            if n_data % 3 == 0:
+                dim = 3
+                n_nodes = n_data // 3
+            elif n_data % 2 == 0:
+                dim = 2
+                n_nodes = n_data // 2
+            else:
+                raise ValueError(f"Force data length {n_data} is not divisible by 2 or 3")
+
+            if dim == 3:
+                force_2d = force_global.reshape(n_nodes, 3)
+                force_local_2d = force_2d @ R
+                return force_local_2d.flatten()
+            else:
+                # 2D case: Pad to 3D -> Rotate -> Slice back
+                force_2d = force_global.reshape(n_nodes, 2)
+                force_3d = np.column_stack((force_2d, np.zeros(n_nodes)))
+                force_local_3d = force_3d @ R
+                return force_local_3d[:, :2].flatten()
         else:
-            # Already (n_nodes, 3)
-            return force_global @ R
+            # Already (n_nodes, dim)
+            if force_global.shape[1] == 3:
+                return force_global @ R
+            elif force_global.shape[1] == 2:
+                n_nodes = force_global.shape[0]
+                force_3d = np.column_stack((force_global, np.zeros(n_nodes)))
+                force_local_3d = force_3d @ R
+                return force_local_3d[:, :2]
+            else:
+                raise ValueError(
+                    f"Force data shape {force_global.shape} not supported (dim must be 2 or 3)"
+                )
 
     def transform_displacement_to_inertial(self, disp_local: NDArray, theta: float) -> NDArray:
         """
@@ -222,12 +258,37 @@ class CoordinateTransforms:
         R = self.rotation_matrix(theta)
 
         if disp_local.ndim == 1:
-            n_nodes = len(disp_local) // 3
-            disp_2d = disp_local.reshape(n_nodes, 3)
-            disp_global_2d = disp_2d @ R.T
-            return disp_global_2d.flatten()
+            n_data = len(disp_local)
+            if n_data % 3 == 0:
+                dim = 3
+                n_nodes = n_data // 3
+            elif n_data % 2 == 0:
+                dim = 2
+                n_nodes = n_data // 2
+            else:
+                raise ValueError(f"Displacement data length {n_data} is not divisible by 2 or 3")
+
+            if dim == 3:
+                disp_2d = disp_local.reshape(n_nodes, 3)
+                disp_global_2d = disp_2d @ R.T
+                return disp_global_2d.flatten()
+            else:
+                disp_2d = disp_local.reshape(n_nodes, 2)
+                disp_3d = np.column_stack((disp_2d, np.zeros(n_nodes)))
+                disp_global_3d = disp_3d @ R.T
+                return disp_global_3d[:, :2].flatten()
         else:
-            return disp_local @ R.T
+            if disp_local.shape[1] == 3:
+                return disp_local @ R.T
+            elif disp_local.shape[1] == 2:
+                n_nodes = disp_local.shape[0]
+                disp_3d = np.column_stack((disp_local, np.zeros(n_nodes)))
+                disp_global_3d = disp_3d @ R.T
+                return disp_global_3d[:, :2]
+            else:
+                raise ValueError(
+                    f"Displacement data shape {disp_local.shape} not supported (dim must be 2 or 3)"
+                )
 
     @property
     def axis(self) -> NDArray:
@@ -471,7 +532,7 @@ class InertialForcesCalculator:
                 "mean_nodal": float(np.mean(cor_mag)),
             }
 
-        if include_euler and alpha != 0.0:
+        if include_euler:
             F_euler = self.compute_euler_force(nodal_coords, nodal_masses, alpha)
             F_total += F_euler
             euler_mag = np.linalg.norm(F_euler, axis=1)
@@ -605,6 +666,47 @@ class ConstantOmega(OmegaProvider):
         return f"ConstantOmega(omega={self._omega})"
 
 
+class RampedOmega(OmegaProvider):
+    """
+    Ramped angular velocity provider (Linear Ramp).
+
+    Omega increases linearly from 0 to target_omega over ramp_time,
+    then remains constant.
+
+    Parameters
+    ----------
+    target_omega : float
+        Target angular velocity in rad/s.
+    ramp_time : float
+        Time duration to reach target_omega in seconds.
+    """
+
+    def __init__(self, target_omega: float, ramp_time: float):
+        self._target_omega = float(target_omega)
+        self._ramp_time = float(ramp_time)
+        if self._ramp_time <= 0:
+            raise ValueError("ramp_time must be positive")
+
+    def get_omega(self, t: float) -> Tuple[float, float]:
+        """Return ramped omega and constant acceleration during ramp."""
+        if t >= self._ramp_time:
+            return self._target_omega, 0.0
+
+        # Linear ramp: w(t) = w_target * (t / t_ramp)
+        # alpha = dw/dt = w_target / t_ramp
+        ratio = t / self._ramp_time
+        omega = self._target_omega * ratio
+        alpha = self._target_omega / self._ramp_time
+        return omega, alpha
+
+    @property
+    def initial_omega(self) -> float:
+        return 0.0
+
+    def __repr__(self) -> str:
+        return f"RampedOmega(target={self._target_omega}, ramp_time={self._ramp_time})"
+
+
 # =============================================================================
 # Placeholder classes for future omega modes (documented for architecture)
 # =============================================================================
@@ -718,3 +820,212 @@ class FunctionOmega(OmegaProvider):
 
     def __repr__(self) -> str:
         return f"FunctionOmega(initial_omega={self._initial_omega})"
+
+
+class ComputedOmega(OmegaProvider):
+    """
+    Dynamically computed angular velocity from torque balance.
+
+    Solves the equation of motion for a rigid rotor:
+        I * dω/dt = τ_driving - τ_resistive
+
+    Parameters
+    ----------
+    moment_of_inertia : float
+        Moment of inertia (I) about the rotation axis [kg·m²].
+    initial_omega : float, optional
+        Initial angular velocity [rad/s]. Default: 0.0.
+    resistive_torque : float, optional
+        Constant resistive torque (e.g. generator torque) [N·m]. Default: 0.0.
+    """
+
+    def __init__(
+        self,
+        moment_of_inertia: float,
+        initial_omega: float = 0.0,
+        resistive_torque: float = 0.0,
+    ):
+        self._I = float(moment_of_inertia)
+        if self._I <= 0:
+            raise ValueError("moment_of_inertia must be positive")
+
+        self._omega = float(initial_omega)
+        self._initial_omega_val = float(initial_omega)
+        self._alpha = 0.0
+        self._tau_gen = float(resistive_torque)
+
+    def get_omega(self, t: float) -> Tuple[float, float]:
+        """
+        Return CURRENT state.
+        Note: The time 't' argument is ignored because this provider is state-based,
+        not time-based (except for the internal integration).
+        """
+        return self._omega, self._alpha
+
+    def update(self, torque_fluid: float, dt: float) -> None:
+        """
+        Update state by integrating equation of motion over dt.
+
+        Parameters
+        ----------
+        torque_fluid : float
+            Driving torque from fluid forces [N·m].
+        dt : float
+            Time step size [s].
+        """
+        # Euler integration: I * alpha = Tau_fluid - Tau_gen
+        # alpha = (Tau_fluid - Tau_gen) / I
+        self._alpha = (torque_fluid - self._tau_gen) / self._I
+        self._omega += self._alpha * dt
+
+    def get_state(self) -> Tuple[float, float]:
+        """Get current (omega, alpha) state for checkpointing."""
+        return self._omega, self._alpha
+
+    def set_state(self, state: Tuple[float, float]) -> None:
+        """Set current (omega, alpha) state from checkpoint."""
+        self._omega, self._alpha = state
+
+    @property
+    def initial_omega(self) -> float:
+        """Return the initial omega used at start."""
+        return self._initial_omega_val
+
+    def __repr__(self) -> str:
+        return f"ComputedOmega(I={self._I}, omega={self._omega:.4f}, alpha={self._alpha:.4f}, tau_gen={self._tau_gen})"
+
+
+class RampedComputedOmega(OmegaProvider):
+    """
+    Two-phase angular velocity provider: Ramp + Dynamic Computation.
+
+    Phase 1 (Ramp): Omega increases linearly from 0 to target_omega over ramp_time.
+    Phase 2 (Computed): After ramp completes, omega is computed dynamically from
+                        torque balance using the equation of motion.
+
+    This provider is useful for simulations where:
+    - The rotor needs to spin up gradually (ramp phase)
+    - After reaching operating speed, the dynamics should respond to torque (computed phase)
+
+    Parameters
+    ----------
+    target_omega : float
+        Target angular velocity at end of ramp [rad/s].
+    ramp_time : float
+        Time duration to reach target_omega [s].
+    moment_of_inertia : float
+        Moment of inertia (I) about the rotation axis [kg·m²].
+    resistive_torque : float, optional
+        Constant resistive torque (e.g. generator torque) [N·m]. Default: 0.0.
+
+    Notes
+    -----
+    During the ramp phase, `update()` calls are ignored and omega follows the
+    prescribed linear ramp. After ramp completion, the provider transitions to
+    dynamic mode where omega evolves according to:
+
+        I * dω/dt = τ_driving - τ_resistive
+
+    The transition is smooth: at t = ramp_time, ω = target_omega, α = 0.
+    """
+
+    def __init__(
+        self,
+        target_omega: float,
+        ramp_time: float,
+        moment_of_inertia: float,
+        resistive_torque: float = 0.0,
+    ):
+        self._target_omega = float(target_omega)
+        self._ramp_time = float(ramp_time)
+        if self._ramp_time <= 0:
+            raise ValueError("ramp_time must be positive")
+
+        self._I = float(moment_of_inertia)
+        if self._I <= 0:
+            raise ValueError("moment_of_inertia must be positive")
+
+        self._tau_gen = float(resistive_torque)
+
+        # State variables (used after ramp phase)
+        self._omega = 0.0  # Will be set to target_omega at end of ramp
+        self._alpha = 0.0
+        self._ramp_completed = False
+        self._current_time = 0.0
+
+    def get_omega(self, t: float) -> Tuple[float, float]:
+        """
+        Return omega and alpha at time t.
+
+        During ramp phase: returns ramped omega with constant alpha.
+        After ramp phase: returns current dynamic state.
+        """
+        self._current_time = t
+
+        if t < self._ramp_time:
+            # Ramp phase: linear increase
+            ratio = t / self._ramp_time
+            omega = self._target_omega * ratio
+            alpha = self._target_omega / self._ramp_time
+            return omega, alpha
+        else:
+            # Dynamic phase: use computed state
+            if not self._ramp_completed:
+                # Transition point: initialize dynamic state
+                self._omega = self._target_omega
+                self._alpha = 0.0
+                self._ramp_completed = True
+            return self._omega, self._alpha
+
+    def update(self, driving_torque: float, dt: float) -> None:
+        """
+        Update state by integrating equation of motion over dt.
+
+        This method only has effect after the ramp phase is complete.
+        During ramp phase, calls are ignored.
+
+        Parameters
+        ----------
+        driving_torque : float
+            Total driving torque (from all forces: CFD + inertial + gravity) [N·m].
+        dt : float
+            Time step size [s].
+        """
+        if not self._ramp_completed:
+            # Still in ramp phase - ignore torque-based updates
+            return
+
+        # Euler integration: I * alpha = Tau_driving - Tau_gen
+        # alpha = (Tau_driving - Tau_gen) / I
+        self._alpha = (driving_torque - self._tau_gen) / self._I
+        self._omega += self._alpha * dt
+
+    def get_state(self) -> Tuple[float, float, bool, float]:
+        """Get current state for checkpointing."""
+        return self._omega, self._alpha, self._ramp_completed, self._current_time
+
+    def set_state(self, state: Tuple[float, float, bool, float]) -> None:
+        """Set current state from checkpoint."""
+        self._omega, self._alpha, self._ramp_completed, self._current_time = state
+
+    @property
+    def initial_omega(self) -> float:
+        """Return omega at t=0 (start of ramp)."""
+        return 0.0
+
+    @property
+    def ramp_time(self) -> float:
+        """Return the configured ramp time."""
+        return self._ramp_time
+
+    @property
+    def is_in_ramp_phase(self) -> bool:
+        """Return True if still in ramp phase."""
+        return not self._ramp_completed
+
+    def __repr__(self) -> str:
+        phase = "ramp" if not self._ramp_completed else "computed"
+        return (
+            f"RampedComputedOmega(target={self._target_omega}, ramp_time={self._ramp_time}, "
+            f"I={self._I}, phase={phase}, omega={self._omega:.4f}, alpha={self._alpha:.4f})"
+        )
