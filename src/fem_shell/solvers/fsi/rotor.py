@@ -293,6 +293,16 @@ class LinearDynamicFSIRotorSolver(LinearDynamicFSISolver):
         self._include_euler = rotor_cfg.get("include_euler", True)
         self._kg_update_interval = rotor_cfg.get("kg_update_interval", 0)  # Reserved
         self._force_ramp_time = float(rotor_cfg.get("force_ramp_time", 0.0))
+        self._send_omega_to_precice = rotor_cfg.get("send_omega_to_precice", True)
+
+        # Force sanity checks: detect diverged forces from CFD before they
+        # contaminate the structural solve.
+        # force_max_magnitude: absolute upper bound on |F_total| [N]; None = disabled.
+        # force_jump_factor:   if |F_new| > factor * max_seen, treat as CFD divergence.
+        _fmax = rotor_cfg.get("force_max_magnitude", None)
+        self._force_max_magnitude: Optional[float] = float(_fmax) if _fmax is not None else None
+        self._force_jump_factor: float = float(rotor_cfg.get("force_jump_factor", 1000.0))
+        self._max_force_seen: float = 0.0  # running maximum |F_total| observed
 
         # Coordinate transformation options for preCICE data exchange
         # transform_displacement_to_inertial: If True, transforms displacement
@@ -844,6 +854,8 @@ class LinearDynamicFSIRotorSolver(LinearDynamicFSISolver):
         self,
         raw_force: np.ndarray,
         raw_max_nodal: float,
+        applied_force: np.ndarray,
+        applied_max_nodal: float,
         n_nodes: int,
         local_force_mag: float,
         omega: float,
@@ -859,13 +871,10 @@ class LinearDynamicFSIRotorSolver(LinearDynamicFSISolver):
             return
 
         raw_force_mag = np.linalg.norm(raw_force)
+        applied_force_mag = np.linalg.norm(applied_force)
 
         print("  ┌─ CFD FORCES (global frame)", flush=True)
-        if ramp_factor is not None and ramp_factor < 1.0:
-            print(
-                f"  │  ► RAMP ACTIVE: {ramp_factor * 100:5.1f}% applied (Target: {force_ramp_time:.3f}s)",
-                flush=True,
-            )
+        print("  │  Source: preCICE adapter (raw)", flush=True)
         print(f"  │  Total:   |F| = {raw_force_mag:12.4e} N", flush=True)
         print(
             f"  │  Components: Fx={raw_force[0]:+.4e}  "
@@ -873,6 +882,19 @@ class LinearDynamicFSIRotorSolver(LinearDynamicFSISolver):
             flush=True,
         )
         print(f"  │  Max nodal:  {raw_max_nodal:.4e} N  ({n_nodes} nodes)", flush=True)
+        if ramp_factor is not None and ramp_factor < 1.0:
+            print(
+                f"  │  ► RAMP ACTIVE: {ramp_factor * 100:5.1f}% applied (Target: {force_ramp_time:.3f}s)",
+                flush=True,
+            )
+            print("  │  Applied to structure (after ramp)", flush=True)
+            print(f"  │  Total:   |F| = {applied_force_mag:12.4e} N", flush=True)
+            print(
+                f"  │  Components: Fx={applied_force[0]:+.4e}  "
+                f"Fy={applied_force[1]:+.4e}  Fz={applied_force[2]:+.4e}",
+                flush=True,
+            )
+            print(f"  │  Max nodal:  {applied_max_nodal:.4e} N  ({n_nodes} nodes)", flush=True)
         print("  │", flush=True)
         print("  ├─ TRANSFORMED TO ROTATING FRAME", flush=True)
         print(f"  │  Total:   |F| = {local_force_mag:12.4e} N", flush=True)
@@ -1372,24 +1394,27 @@ class LinearDynamicFSIRotorSolver(LinearDynamicFSISolver):
 
         self._print_phase(6, 7, "Initializing preCICE coupling...")
 
-        # Prepare GlobalSolidMesh with a single vertex at origin (0,0,0)
-        # This matches the OpenFOAM adapter which creates a single vertex at origin
-        # for global data exchange (like AngularVelocity)
         custom_meshes = {}
-        # Use origin (0,0,0) for global mesh - this is what OpenFOAM adapter expects
-        origin_vertex = np.array([[0.0, 0.0, 0.0]], dtype=np.float64)
-        custom_meshes["GlobalSolidMesh"] = origin_vertex
+        initial_data = None
+        if getattr(self, "_send_omega_to_precice", True):
+            # Prepare GlobalSolidMesh with a single vertex at origin (0,0,0)
+            # This matches the OpenFOAM adapter which creates a single vertex at origin
+            # for global data exchange (like AngularVelocity)
+            # Use origin (0,0,0) for global mesh - this is what OpenFOAM adapter expects
+            origin_vertex = np.array([[0.0, 0.0, 0.0]], dtype=np.float64)
+            custom_meshes["GlobalSolidMesh"] = origin_vertex
 
-        # Get initial omega value for preCICE initial data
-        initial_omega, _ = self._omega_provider.get_omega(t)
-        initial_data = {"AngularVelocity": initial_omega}
-        _logger.info(f"Initial angular velocity for preCICE: {initial_omega:.4f} rad/s")
+            # Publish the omega that will be used in the first time window
+            # (t -> t + dt), so fluid does not start from a stale zero value.
+            initial_omega, _ = self._omega_provider.get_omega(t + self.dt)
+            initial_data = {"AngularVelocity": initial_omega}
+            _logger.info(f"Initial angular velocity for preCICE: {initial_omega:.4f} rad/s")
 
         self.precice_participant.initialize(
             self.domain,
             self.model_properties["solver"]["coupling_boundaries"],
             tuple(bc_manager.fixed_dofs.keys()),
-            custom_mesh_coords=custom_meshes,
+            custom_mesh_coords=custom_meshes if custom_meshes else None,
             initial_data_values=initial_data,
         )
 
@@ -1491,14 +1516,16 @@ class LinearDynamicFSIRotorSolver(LinearDynamicFSISolver):
         Returns:
             Tuple of (final_t, final_time_step, final_step, u, v, a).
         """
-        # Initialize omega for the first time window
+        # Omega must remain constant inside each implicit-coupling time window.
+        # Recompute only once at the window start, then hold for all sub-iterations.
         omega, alpha = self._omega_provider.get_omega(t + self.dt)
         theta_target = self._theta + omega * self.dt
+        omega_initialized_for_window = False
 
         while self.precice_participant.is_coupling_ongoing:
             step += 1
 
-            # Handle preCICE checkpointing - start of new time window
+            # Handle preCICE checkpointing
             if self.precice_participant.requires_writing_checkpoint:
                 _logger.debug("Step %d: Writing checkpoint at t = %.6f s", step, t)
                 ckpt_data = (u, v, a, t, self._theta)
@@ -1506,17 +1533,19 @@ class LinearDynamicFSIRotorSolver(LinearDynamicFSISolver):
                     ckpt_data += (self._omega_provider.get_state(),)
                 self.precice_participant.store_checkpoint(ckpt_data)
 
-                # Compute omega ONCE at start of time window - constant for all sub-iterations
-                # This ensures consistency between solid and fluid solvers during implicit coupling
+            # Compute omega only once per time window and hold it fixed for
+            # all implicit sub-iterations in that window.
+            if not omega_initialized_for_window:
                 t_target = t + self.dt
                 omega, alpha = self._omega_provider.get_omega(t_target)
                 theta_target = self._theta + omega * self.dt
 
-                # Update K_G if omega changed significantly (only at time window start)
+                # Update K_G if omega changed significantly (window-level update only)
                 K_eff, K_G_red = self._update_geometric_stiffness_if_needed(
                     omega, K_red, M_red, K_eff, C_red, K_G_red, bc_manager, coeffs
                 )
                 self._prev_omega = omega
+                omega_initialized_for_window = True
 
             if not self.precice_participant.requires_reading_checkpoint:
                 self._v_guess_next = None
@@ -1531,7 +1560,29 @@ class LinearDynamicFSIRotorSolver(LinearDynamicFSISolver):
 
 
             # Read and process forces
-            data_global, raw_force, raw_max_nodal, n_nodes = self._read_and_reduce_forces()
+            data_global, applied_force, applied_max_nodal, n_nodes = self._read_and_reduce_forces()
+            raw_force = applied_force.copy()
+            raw_max_nodal = applied_max_nodal
+
+            # --- Force sanity: detect CFD divergence before it contaminates the solve ---
+            force_total_mag = float(np.linalg.norm(applied_force))
+            if self._max_force_seen > 0.0 and force_total_mag > self._force_jump_factor * self._max_force_seen:
+                raise RuntimeError(
+                    f"Diverged force from fluid solver detected at t={t_target:.6f} s: "
+                    f"|F| = {force_total_mag:.3e} N is "
+                    f"{force_total_mag / self._max_force_seen:.1f}× the running max "
+                    f"({self._max_force_seen:.3e} N). "
+                    f"CFD solver likely diverged (Courant blow-up or PIMPLE non-convergence). "
+                    "Aborting to prevent FSI hang."
+                )
+            if self._force_max_magnitude is not None and force_total_mag > self._force_max_magnitude:
+                raise RuntimeError(
+                    f"Force exceeds configured limit at t={t_target:.6f} s: "
+                    f"|F| = {force_total_mag:.3e} N > {self._force_max_magnitude:.3e} N. Aborting."
+                )
+            # Update running maximum (only after ramp so it reflects real physics)
+            self._max_force_seen = max(self._max_force_seen, force_total_mag)
+            # -------------------------------------------------------------------------
 
             # Apply force ramp if configured
             ramp_factor = 1.0
@@ -1540,8 +1591,8 @@ class LinearDynamicFSIRotorSolver(LinearDynamicFSISolver):
                 if ramp_check < 1.0:
                     ramp_factor = ramp_check
                     data_global *= ramp_factor
-                    raw_force *= ramp_factor
-                    raw_max_nodal *= ramp_factor
+                    applied_force *= ramp_factor
+                    applied_max_nodal *= ramp_factor
 
             mesh_dim = self.precice_participant.mesh_dimensions
 
@@ -1559,20 +1610,6 @@ class LinearDynamicFSIRotorSolver(LinearDynamicFSISolver):
             self._export_interface_debug_data(step, t_target, None, data_local_2d)
 
             local_force_mag = np.linalg.norm(np.sum(data_local_2d, axis=0))
-
-            # FSI DEBUG: Detailed Force Logging
-            if step % 1 == 0 and self._is_primary_rank():  # Log every step
-                # Forces
-                force_global_mag = np.linalg.norm(np.sum(data_global, axis=0))
-                max_force_local = np.max(np.linalg.norm(data_local_2d, axis=1))
-                
-                print(f"\n  🔍 [FSI-DEBUG] Time Window {time_step+1} | Step {step} | t={t_target:.5f}s", flush=True)
-                print(f"  ┌─ FORCES", flush=True)
-                print(f"  │  Global Total Force (from preCICE): {force_global_mag:.4e} N", flush=True)
-                print(f"  │  Local Total Force (after R^T·F):   {local_force_mag:.4e} N", flush=True)
-                print(f"  │  Max Local Nodal Force:             {max_force_local:.4e} N", flush=True)
-                print(f"  └─ (Global should match Local magnitude, only direction changes)", flush=True) 
-
 
             # Compute inertial forces
             v_for_inertial = self._v_guess_next if self._v_guess_next is not None else v
@@ -1628,7 +1665,7 @@ class LinearDynamicFSIRotorSolver(LinearDynamicFSISolver):
             # Update rotor radius with deformation for accurate performance coefficients
             current_radius = self._compute_rotor_radius(interface_coords, interface_disps)
 
-            thrust = np.dot(raw_force, self._coord_transforms.axis)
+            thrust = np.dot(applied_force, self._coord_transforms.axis)
             power_watts = torque_power * omega
             ct, cp, tsr = self._compute_performance_coefficients(
                 thrust, power_watts, omega, radius=current_radius
@@ -1639,6 +1676,8 @@ class LinearDynamicFSIRotorSolver(LinearDynamicFSISolver):
             self._log_force_statistics(
                 raw_force,
                 raw_max_nodal,
+                applied_force,
+                applied_max_nodal,
                 n_nodes,
                 local_force_mag,
                 omega,
@@ -1680,6 +1719,10 @@ class LinearDynamicFSIRotorSolver(LinearDynamicFSISolver):
             # Write displacement to preCICE
             self._write_displacement_to_precice(u_new, interface_dofs, theta_target, bc_manager)
 
+            # Write angular velocity to preCICE before every advance() so preCICE
+            # does not see a zero buffer in sub-iterations.
+            self._write_angular_velocity_to_precice(omega)
+
             # Advance preCICE
             if self._is_primary_rank():
                 print("  ┌─ preCICE " + "─" * 57, flush=True)
@@ -1712,28 +1755,37 @@ class LinearDynamicFSIRotorSolver(LinearDynamicFSISolver):
             else:
                 time_step += 1
                 self._theta += omega * self.dt
+                omega_initialized_for_window = False
 
-                # Update Omega for next step (explicit update)
+                # Update Omega state after a converged time window.
                 rotor_dynamics_info = (None, None, None, None)
+                omega_next_for_coupling = omega
                 if isinstance(self._omega_provider, (ComputedOmega, RampedComputedOmega)):
                     self._omega_provider.update(driving_torque_mag, self.dt)
                     if isinstance(self._omega_provider, RampedComputedOmega):
-                        # Use get_omega(t) to get correct omega/alpha during ramp phase
-                        # get_state() returns internal state (0,0) during ramp, not the ramped values
-                        new_omega, new_alpha = self._omega_provider.get_omega(t)
+                        # Use next window target time to report/publish the omega that
+                        # will be used at the start of the next window.
+                        # get_state() returns internal state during ramp, not ramped values.
+                        next_window_t = t + 2.0 * self.dt
+                        new_omega, new_alpha = self._omega_provider.get_omega(next_window_t)
+                        omega_next_for_coupling = new_omega
                         phase_info = "ramp" if self._omega_provider.is_in_ramp_phase else "dynamic"
                         rotor_dynamics_info = (driving_torque_mag, new_alpha, new_omega, phase_info)
                     else:
                         new_omega, new_alpha = self._omega_provider.get_state()
+                        omega_next_for_coupling = new_omega
                         rotor_dynamics_info = (driving_torque_mag, new_alpha, new_omega, None)
                 elif isinstance(self._omega_provider, RampedOmega):
-                    # RampedOmega: omega ramps from 0 to target over ramp_time
-                    new_omega, new_alpha = self._omega_provider.get_omega(t)
+                    # RampedOmega: publish omega for next window start.
+                    next_window_t = t + 2.0 * self.dt
+                    new_omega, new_alpha = self._omega_provider.get_omega(next_window_t)
+                    omega_next_for_coupling = new_omega
                     phase_info = "ramp" if new_alpha > 0 else "constant"
                     rotor_dynamics_info = (driving_torque_mag, new_alpha, new_omega, phase_info)
                 elif isinstance(self._omega_provider, ConstantOmega):
                     # ConstantOmega: fixed omega, alpha=0
                     new_omega, new_alpha = self._omega_provider.get_omega(t)
+                    omega_next_for_coupling = new_omega
                     rotor_dynamics_info = (driving_torque_mag, new_alpha, new_omega, "constant")
 
                 v_new, a_new = self._newmark_update(u, u_new, v, a, coeffs, beta)
@@ -1750,8 +1802,8 @@ class LinearDynamicFSIRotorSolver(LinearDynamicFSISolver):
 
                 self._log_time_window_converged(t, max_disp, max_vel, max_acc, *rotor_dynamics_info)
 
-                # Write angular velocity to preCICE (if configured)
-                self._write_angular_velocity_to_precice(omega)
+                # Write angular velocity for the NEXT time window start.
+                self._write_angular_velocity_to_precice(omega_next_for_coupling)
 
                 # Log converged performance to CSV
                 self._log_rotor_performance(
@@ -1843,6 +1895,15 @@ class LinearDynamicFSIRotorSolver(LinearDynamicFSISolver):
 
         if data_global.ndim == 1:
             data_global = data_global.reshape(-1, mesh_dim)
+
+        # Sanity check: reject NaN/Inf immediately (fluid divergence produces these)
+        if not np.all(np.isfinite(data_global)):
+            n_bad = np.count_nonzero(~np.isfinite(data_global))
+            raise RuntimeError(
+                f"Diverged force data received from fluid solver via preCICE: "
+                f"{n_bad} non-finite values (NaN/Inf) in force array. "
+                "CFD solver likely diverged. Aborting to prevent FSI hang."
+            )
 
         n_nodes = data_global.shape[0]
         raw_force_local = np.sum(data_global, axis=0)
@@ -2012,19 +2073,21 @@ class LinearDynamicFSIRotorSolver(LinearDynamicFSISolver):
 
     def _write_angular_velocity_to_precice(self, omega: float) -> None:
         """
-        Write angular velocity to preCICE if 'AngularVelocity' is in write data.
+        Write angular velocity to preCICE on GlobalSolidMesh.
 
-        This writes a uniform field of angular velocity vectors to all interface nodes,
-        allowing the fluid solver (e.g., OpenFOAM) to read it as a surface field.
+        This writes a single scalar (omega) to the single vertex registered on
+        GlobalSolidMesh (the rotation centre).  AngularVelocity lives on a
+        *secondary* mesh and is therefore not present in write_data_names
+        (which only lists data for the primary Solid-Mesh); we use
+        _send_omega_to_precice as the sole gate.
         """
-        # 1. Check if we should write angular velocity
-        write_names = self.precice_participant.write_data_names
-        omega_name = next((n for n in write_names if "AngularVelocity" in n or "Omega" in n), None)
-
-        if not omega_name:
+        if getattr(self, "_send_omega_to_precice", True) is False:
             return
 
-        # 3. Create scalar field for the single GlobalSolidMesh vertex
+        # AngularVelocity is always exchanged under this fixed name on GlobalSolidMesh
+        omega_name = "AngularVelocity"
+
+        # Create scalar field for the single GlobalSolidMesh vertex
         # The mesh was registered as a single point (rotation center)
         # So we write a single scalar value: omega
 
