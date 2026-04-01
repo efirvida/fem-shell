@@ -21,6 +21,7 @@ where:
     b: Body force vector
 """
 
+from functools import cached_property
 from typing import Tuple
 
 import numpy as np
@@ -143,7 +144,7 @@ class QUAD(PlaneElement):
             ]
         )
 
-    @property
+    @cached_property
     def K(self) -> np.ndarray:
         """Stiffness matrix with numerical stabilization
 
@@ -171,7 +172,7 @@ class QUAD(PlaneElement):
 
         return K
 
-    @property
+    @cached_property
     def M(self) -> np.ndarray:
         """Consistent mass matrix
 

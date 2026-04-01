@@ -14,6 +14,7 @@ References:
 
 from __future__ import annotations
 
+from functools import cached_property
 from typing import Optional, Tuple
 
 import numpy as np
@@ -973,7 +974,7 @@ class MITC4(ShellElement):
 
         return K_drill
 
-    @property
+    @cached_property
     def K(self) -> np.ndarray:
         """
         Global stiffness matrix (24x24).
@@ -989,7 +990,7 @@ class MITC4(ShellElement):
 
         return K_global
 
-    @property
+    @cached_property
     def M(self) -> np.ndarray:
         """Consistent mass matrix (24x24)."""
         rho = self.material.rho

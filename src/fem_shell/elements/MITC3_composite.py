@@ -18,6 +18,7 @@ References
 - Reddy, J.N. (2004). Mechanics of Laminated Composite Plates and Shells.
 """
 
+from functools import cached_property
 from typing import Dict, List, Optional, Tuple
 
 import numpy as np
@@ -231,7 +232,7 @@ class MITC3Composite(MITC3):
         """
         return self._Cs_matrix
 
-    @property
+    @cached_property
     def K(self) -> np.ndarray:
         """
         Compute element stiffness matrix for laminated composite.
@@ -925,7 +926,7 @@ class MITC3Composite(MITC3):
 
         return U
 
-    @property
+    @cached_property
     def M(self) -> np.ndarray:
         """
         Compute element mass matrix for laminate.

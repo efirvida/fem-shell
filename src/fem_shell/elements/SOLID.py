@@ -33,6 +33,7 @@ Stress vector (Voigt notation):
 """
 
 from abc import abstractmethod
+from functools import cached_property
 from typing import Optional, Tuple, Union
 
 import numpy as np
@@ -539,7 +540,7 @@ class SolidElement(FemElement):
 
         return C_global
 
-    @property
+    @cached_property
     def K(self) -> np.ndarray:
         """Stiffness matrix computed via numerical integration.
 
@@ -565,7 +566,7 @@ class SolidElement(FemElement):
 
         return K
 
-    @property
+    @cached_property
     def M(self) -> np.ndarray:
         """Consistent mass matrix.
 

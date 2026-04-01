@@ -24,6 +24,7 @@ References
   Computers & Structures, 146, 91-104.
 """
 
+from functools import cached_property
 from typing import Optional, Tuple
 
 import numpy as np
@@ -1022,7 +1023,7 @@ class MITC3(ShellElement):
 
         return Ks
 
-    @property
+    @cached_property
     def K(self) -> np.ndarray:
         """
         Global stiffness matrix (18×18).
@@ -1046,7 +1047,7 @@ class MITC3(ShellElement):
 
         return K_global
 
-    @property
+    @cached_property
     def M(self) -> np.ndarray:
         """
         Consistent mass matrix (18×18).

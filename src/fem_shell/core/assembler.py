@@ -5,7 +5,7 @@ from mpi4py import MPI
 from petsc4py import PETSc
 
 from fem_shell.core.mesh import MeshModel
-from fem_shell.elements import ElementFactory, FemElement
+from fem_shell.elements import ElementFactory, ElementFamily, FemElement
 
 
 class MeshAssembler:
@@ -46,6 +46,14 @@ class MeshAssembler:
         self._precompute_elements()
         self._compute_sparsity_pattern()
 
+    # Mapping from ElementFamily to (dofs_per_node, spatial_dim).
+    # This avoids instantiating every element twice just to query these constants.
+    _FAMILY_PROPERTIES = {
+        ElementFamily.SHELL: (6, 3),
+        ElementFamily.PLANE: (2, 2),
+        ElementFamily.SOLID: (3, 3),
+    }
+
     def _precompute_elements(self):
         """Precompute element matrices and DOF connectivity arrays.
 
@@ -64,32 +72,48 @@ class MeshAssembler:
         if not elements:
             return
 
-        # --- PASS 1: Determine global maximum stride (max DOFs per node) ---
-        max_dofs_per_node = 0
-        max_spatial_dim = 0
-        
-        # We need a temporary factory check to peek at element properties
-        # This is a bit inefficient but safe
-        for element in elements:
-             # We just need the class type to check properties, not full instantiation
-             # But ElementFactory usually returns an instance. Efficient enough for pre-pass.
-             temp_elem = ElementFactory.get_element(mesh_element=element, **self.model)
-             if temp_elem:
-                 max_dofs_per_node = max(max_dofs_per_node, temp_elem.dofs_per_node)
-                 max_spatial_dim = max(max_spatial_dim, temp_elem.spatial_dimmension)
+        # --- Determine global maximum stride from element family ---
+        # For uniform-family meshes (the common case) this is O(1).
+        # For mixed meshes we inspect all families present in the model.
+        element_family = self.model.get("element_family")
+        if element_family is not None and element_family in self._FAMILY_PROPERTIES:
+            # Fast path: single known family
+            self.dofs_per_node, self.spatial_dim = self._FAMILY_PROPERTIES[element_family]
+        else:
+            # Mixed / unknown family: probe with a single element per distinct node count
+            max_dofs_per_node = 0
+            max_spatial_dim = 0
+            seen_node_counts = set()
+            for element in elements:
+                nc = element.node_count
+                if nc in seen_node_counts:
+                    continue
+                seen_node_counts.add(nc)
+                temp_elem = ElementFactory.get_element(mesh_element=element, **self.model)
+                if temp_elem:
+                    max_dofs_per_node = max(max_dofs_per_node, temp_elem.dofs_per_node)
+                    max_spatial_dim = max(max_spatial_dim, temp_elem.spatial_dimmension)
+            self.dofs_per_node = max_dofs_per_node
+            self.spatial_dim = max_spatial_dim
 
-        self.dofs_per_node = max_dofs_per_node
-        self.spatial_dim = max_spatial_dim
-        
-        # --- PASS 2: Assemble Data ---
+        # --- Assemble element data (single pass) ---
         dofs_list = []
         ke_list = []
         me_list = []
         dof_sizes = set()
 
         node_id_to_index = self.mesh.node_id_to_index
+        n_elements = len(elements)
+        progress_interval = max(n_elements // 10, 1)
 
-        for element in elements:
+        for idx, element in enumerate(elements):
+            if idx % progress_interval == 0:
+                print(
+                    f"\r  Precomputing element matrices... {idx}/{n_elements}"
+                    f" ({100 * idx // n_elements}%)",
+                    end="",
+                    flush=True,
+                )
             fem_element = ElementFactory.get_element(mesh_element=element, **self.model)
             if not fem_element:
                 continue
@@ -122,6 +146,11 @@ class MeshAssembler:
             dofs_list.append(dofs)
             ke_list.append(fem_element.K)
             me_list.append(fem_element.M)
+
+        print(
+            f"\r  Precomputing element matrices... {n_elements}/{n_elements} (100%)",
+            flush=True,
+        )
 
         # Check if all elements have the same DOF count (uniform mesh)
         self._is_mixed_mesh = len(dof_sizes) > 1
