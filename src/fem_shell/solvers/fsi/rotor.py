@@ -1,8 +1,145 @@
 """
 Co-rotational FSI Solver for Rotating Structures.
 
-This module provides the LinearDynamicFSIRotorSolver for rotor/turbine FSI problems
-with support for rotating reference frames and inertial forces.
+This module implements a linear dynamic Fluid-Structure Interaction (FSI) solver
+for rotating structures (wind turbine blades, helicopter rotors, propellers) using
+a co-rotational formulation in a rotating reference frame coupled to a CFD solver
+via the preCICE library.
+
+Governing Equation (Rotating Reference Frame)
+----------------------------------------------
+The equation of motion solved at each time step is (cf. ANSYS MAPDL Theory
+Reference, Eq. 14-57, §14.4.1):
+
+    [M]{ü} + [C]{u̇} + ([K] + [K_G] + [K_SP]){u} = {F_aero} + {F_cf} + {F_cor} + {F_euler} + {F_g}
+
+where:
+    [M]    — Lumped mass matrix (diagonal, row-sum of consistent mass).
+    [C]    — Rayleigh damping matrix: C = η_m·M + η_k·K.
+    [K]    — Linear elastic stiffness matrix (MITC3 shell elements).
+    [K_G]  — Geometric stiffness (stress stiffening) from centrifugal prestress.
+             Assembled element-by-element: K_G = ∫ B_G^T · S̃ · B_G dA,
+             where the in-plane stress S̃ is estimated from the centrifugal
+             prestress σ_cf ≈ ρ·ω²·r·L_char.
+    [K_SP] — Spin softening matrix (ANSYS Eq. 3-74 / 14-55):
+             K_SP = -ω² · M · (I - n̂⊗n̂).
+             Diagonal for lumped mass. Reduces effective stiffness in the plane
+             perpendicular to the rotation axis. This captures the increase in
+             centrifugal loading due to elastic displacement without requiring
+             explicit force evaluation at deformed coordinates.
+
+LHS vs RHS treatment of physical effects:
+    - [K_G] on LHS:  Stress stiffening (INCREASES natural frequencies)
+    - [K_SP] on LHS: Spin softening  (DECREASES natural frequencies in rotation plane)
+    - {F_cf} on RHS: Centrifugal force at UNDEFORMED coordinates X₀.
+                     The correction for deformed coords (ω×(ω×u)) is captured
+                     implicitly by K_SP·u on the LHS. Evaluating F_cf at X₀+u
+                     when K_SP is active would double-count the spin softening.
+    - {F_cor} on RHS: Coriolis force = -2·m·(ω × v), explicit (lagged velocity).
+    - {F_euler} on RHS: Euler force = -m·(α × r) at DEFORMED coordinates X₀+u,
+                        evaluated only when angular acceleration α ≠ 0.
+                        No LHS correction exists for Euler, so explicit evaluation
+                        at deformed coords is appropriate.
+    - {F_g} on RHS: Gravity force transformed to rotating frame via R^T(θ).
+
+Time Integration
+----------------
+Newmark-β method with β = 0.25, γ = 0.5 (average acceleration, unconditionally
+stable for linear systems). The effective stiffness formulation yields:
+
+    K_eff = [K] + [K_G] + [K_SP] + a₀·[M] + a₁·[C]
+    F_eff = {F} + [M]·(a₀·u + a₂·v + a₃·a) + [C]·(a₁·u + a₄·v + a₅·a)
+
+where a₀..a₅ are Newmark coefficients derived from β, γ, and dt.
+
+FSI Coupling Architecture
+-------------------------
+The solver uses preCICE with implicit coupling (IQN-ILS acceleration):
+    1. At each time window, preCICE orchestrates sub-iterations between the
+       fluid (OpenFOAM) and solid (this solver) participants.
+    2. Within a time window, ω is held constant — omega is computed once at
+       the window start and not re-evaluated during sub-iterations.
+    3. K_G and K_SP are rebuilt only when |Δω| > threshold between windows.
+    4. Convergence of the FSI fixed-point iteration is handled by preCICE's
+       IQN-ILS quasi-Newton acceleration, not by internal structural iterations.
+
+Co-rotational Frame
+-------------------
+The FEM mesh is STATIC in global coordinates. Elastic deformation u is computed
+in the co-rotating frame (structure appears stationary). Data exchange with the
+fluid solver follows:
+    - Forces:       F_local = R^T(θ) · F_global   (global → rotating)
+    - Displacement: u_global = R(θ) · u_local      (rotating → global)
+
+Relationship between K_G and K_SP (ANSYS §3.4–3.5, Eq. 3-88)
+--------------------------------------------------------------
+K_G and K_SP model DIFFERENT physical effects and coexist:
+    - K_G captures the geometric nonlinear stiffening from internal membrane
+      stress induced by centrifugal loading (analogous to a taut string).
+    - K_SP captures the variation of the external centrifugal FORCE with
+      displacement (the force increases as the node moves outward).
+    - In ANSYS notation: [K_total] = [K] + [S] + [S̃₂], where [S] is stress
+      stiffening and [S̃₂] is spin softening (both functions of ω²).
+    - For a rotating blade: K_G stiffens flapwise modes, K_SP softens
+      in-plane (lead-lag) modes. Both are essential for correct Campbell diagrams.
+
+Rotor Torque and Angular Velocity Dynamics
+------------------------------------------
+The solver supports both prescribed and dynamic angular velocity via
+OmegaProvider subclasses. The dynamic case solves the rigid-body
+rotational equation of motion for the rotor as a whole:
+
+    I · dω/dt = τ_aero + τ_gravity − τ_gen
+
+where:
+    I         — Total moment of inertia about the rotation axis [kg·m²],
+                computed as I = Σᵢ mᵢ · r_⊥,ᵢ² (from lumped mass and nodal
+                coordinates, or prescribed by user).
+    τ_aero    — Aerodynamic driving torque from CFD forces, projected onto
+                the rotation axis: τ_aero = n̂ · Σᵢ (rᵢ × F_cfd,ᵢ).
+    τ_gravity — Gravitational torque (relevant for mass imbalance).
+    τ_gen     — Constant resistive/generator torque [N·m] (user-specified).
+
+The integration uses explicit Euler:
+
+    α = (τ_driving − τ_gen) / I
+    ω^{n+1} = ω^n + α · Δt
+
+CRITICAL: Only EXTERNAL forces (aerodynamic + gravity) contribute to τ_driving.
+Inertial forces (centrifugal, Coriolis, Euler) are fictitious forces in the
+rotating frame and do NOT accelerate the rotor.
+
+The torque for structural analysis (logged to CSV, performance metrics) includes
+ALL forces (inertial + external) and is computed at deformed coordinates:
+
+    τ = Σᵢ (X₀,ᵢ + uᵢ − center) × F_combined,ᵢ
+
+OmegaProvider Modes
+-------------------
+    ConstantOmega:       ω = const, α = 0 always.
+    RampedOmega:         Linear ramp: ω(t) = ω_target · min(t/t_ramp, 1),
+                         α = ω_target/t_ramp during ramp, 0 after.
+    ComputedOmega:       Dynamic ω from torque balance (Euler integration).
+    RampedComputedOmega: Two-phase — linear ramp then dynamic torque balance.
+    TableOmega:          Prescribed ω(t) from tabulated time-series.
+    FunctionOmega:       Prescribed ω(t) from user callable.
+
+Angular velocity is exchanged with the fluid solver via preCICE on a
+dedicated GlobalSolidMesh (single vertex at rotation center). OpenFOAM
+reads this value to drive its dynamic mesh rotation.
+
+Performance Coefficients
+------------------------
+At each converged time window, the solver computes:
+
+    Thrust = F_aero · n̂   (aerodynamic force projected on rotation axis)
+    Power  = τ_power · ω   (τ_power = torque projected on rotation axis)
+    Ct = Thrust / (½ · ρ · V∞² · π · R²)
+    Cp = Power  / (½ · ρ · V∞³ · π · R²)
+    TSR = ω · R / V∞
+
+where R is the deformed rotor radius (max perpendicular distance from
+rotation axis, updated each step with elastic deformation).
 """
 
 from __future__ import annotations
@@ -136,25 +273,36 @@ class LinearDynamicFSIRotorSolver(LinearDynamicFSISolver):
     """
     Co-rotational FSI solver for rotating structures (rotors, blades, turbines).
 
-    This solver operates in a rotating reference frame, which allows the stiffness
-    matrix to remain constant while accounting for inertial effects. The key features:
+    Solves the rotating-frame equation of motion (ANSYS Eq. 14-57):
 
-    1. **Co-rotational formulation**: Solves elastic deformation in rotating frame
-    2. **Coordinate transforms**: Forces from CFD (global) → local; displacements local → global
-    3. **Inertial forces**: Centrifugal, Coriolis, and Euler (when α ≠ 0)
-    4. **Geometric stiffness**: Optional stress stiffening from centrifugal loading
-    5. **Rayleigh damping**: C = η_m·M + η_k·K
+        [M]{ü} + [C]{u̇} + ([K] + [K_G] + [K_SP]){u} = {F}
 
-    Mathematical Formulation
-    ------------------------
-    Position in inertial frame: x_global = R(θ) · (x_ref + u_local)
+    where the RHS includes aerodynamic forces (from preCICE), centrifugal force
+    at undeformed coordinates, Coriolis force, Euler force at deformed coordinates,
+    and gravity transformed to the rotating frame.
 
-    Equation of motion in rotating frame:
-        M·ü + C·u̇ + (K + K_G)·u = F_aero_local + F_inertial
+    The solver operates in a rotating reference frame, which keeps the stiffness
+    matrix constant while inertial effects are handled through:
+    - **Stress stiffening [K_G]**: Geometric stiffness from centrifugal prestress
+      on the LHS (stiffens flapwise/out-of-plane modes).
+    - **Spin softening [K_SP]**: Negative stiffness = -ω²·M·(I - n̂⊗n̂) on the
+      LHS (softens in-plane modes in the rotation plane). ANSYS Eq. 3-74.
+    - **Centrifugal force**: F_cf = m·ω²·r_⊥ evaluated at X₀ on the RHS.
+      The displacement-dependent correction is captured implicitly by K_SP·u.
+    - **Coriolis force**: F_cor = -2·m·(ω × v) explicit on the RHS using the
+      best available velocity estimate (lagged or sub-iteration guess).
+    - **Euler force**: F_euler = -m·(α × r) evaluated at deformed coordinates
+      X₀ + u, only when angular acceleration α ≠ 0.
+    - **Coordinate transforms**: Forces R^T(θ)·F_global; displacements R(θ)·u_local.
 
-    Where:
-        F_aero_local = R^T · F_aero_global
-        F_inertial = F_centrifugal + F_coriolis + F_euler
+    Numerical Scheme Classification
+    --------------------------------
+    - Spin softening: IMPLICIT (K_SP on LHS, solved simultaneously)
+    - Stress stiffening: IMPLICIT (K_G on LHS)
+    - Centrifugal: IMPLICIT via K_SP + explicit base load at X₀
+    - Coriolis: EXPLICIT (force on RHS, lagged velocity)
+    - Euler: EXPLICIT (force at X₀+u, only when α ≠ 0)
+    - FSI convergence: Handled by preCICE IQN-ILS (no internal iterations)
 
     Configuration Parameters
     ------------------------
@@ -166,15 +314,16 @@ class LinearDynamicFSIRotorSolver(LinearDynamicFSISolver):
         Center of rotation [x, y, z]. Default: [0, 0, 0]
     solver.rotor.include_geometric_stiffness : bool
         Include K_G for stress stiffening. Default: True
+    solver.rotor.include_spin_softening : bool
+        Include K_SP for spin softening (ANSYS Eq. 3-74). Default: True.
+        When True, centrifugal force stays at X₀ (K_SP captures the correction).
+        When False, no spin softening correction is applied.
     solver.rotor.include_centrifugal : bool
-        Include centrifugal forces. Default: True
+        Include centrifugal forces on RHS. Default: True
     solver.rotor.include_coriolis : bool
-        Include Coriolis forces. Default: True
+        Include Coriolis forces on RHS. Default: True
     solver.rotor.include_euler : bool
-        Include Euler forces (tangential acceleration). Default: True
-        Only applies when alpha != 0 (during ramp or dynamic omega).
-    solver.rotor.kg_update_interval : int
-        Re-assemble K_G every N steps (0 = never). Default: 0. Reserved for future use.
+        Include Euler forces at deformed coords (only when α ≠ 0). Default: True
     solver.rotor.gravity : list[float]
         Gravity acceleration vector [gx, gy, gz] in m/s². Default: [0, 0, -9.81]
         Set to [0, 0, 0] to disable gravity.
@@ -190,7 +339,9 @@ class LinearDynamicFSIRotorSolver(LinearDynamicFSISolver):
     1. Explicit Coriolis Force:
        The Coriolis term (-2·M(Ω×v)) is treated as an external force on the RHS.
        This explicit handling may introduce instability for high rotational speeds or
-       very flexible structures unless small time steps are used.
+       very flexible structures unless small time steps are used. The ANSYS-consistent
+       approach would place Coriolis as antisymmetric [G] matrix on the LHS, but
+       this requires a non-symmetric solver (reserved for future).
 
     2. Small Strain Assumption:
        Assumes linear elasticity with stress stiffening only. Does not implement a
@@ -198,14 +349,25 @@ class LinearDynamicFSIRotorSolver(LinearDynamicFSISolver):
        rotations relative to the local frame.
 
     3. Lumped Mass Approximation:
-       Inertial forces are calculated using a diagonal (lumped) mass matrix. This
-       simplifies computation but may approximate rotational inertia terms less
-       accurately than a consistent mass formulation.
+       Inertial forces and K_SP are calculated using a diagonal (lumped) mass
+       matrix. This simplifies K_SP to a diagonal matrix (O(n) cost) but may
+       approximate rotational inertia terms less accurately than a consistent
+       mass formulation.
 
-    Future Extensions
-    -----------------
-    - moment_of_inertia: For computing omega from torque balance
-    - Variable omega via OmegaProvider subclasses (TableOmega, FunctionOmega, ComputedOmega)
+    4. K_SP Singularity Risk:
+       At very high ω, K_SP can make K_eff singular if ω²·m > k_elastic for
+       some DOF (spin-buckle). In practice K_G dominates and prevents this,
+       but eigenvalue monitoring is recommended near critical speeds.
+
+    5. Explicit Euler Integration for ω:
+       Dynamic omega (ComputedOmega) uses forward Euler: ω^{n+1} = ω^n + α·dt.
+       This is first-order and may accumulate error for large dt or rapidly
+       varying torque. Higher-order integrators (RK4) are not yet implemented.
+
+    6. Torque Balance — Fictitious Forces Excluded:
+       The driving torque for ω dynamics excludes centrifugal, Coriolis, and
+       Euler forces. These are artifacts of the rotating reference frame and
+       do not produce net angular acceleration of the rotor assembly.
     """
 
     # =========================================================================
@@ -219,7 +381,21 @@ class LinearDynamicFSIRotorSolver(LinearDynamicFSISolver):
         self._init_state_tracking()
 
     def _init_rotor_config(self) -> None:
-        """Initialize rotor-specific configuration from model properties."""
+        """Initialize rotor-specific configuration from model properties.
+
+        Sets up the angular velocity provider (OmegaProvider) and all rotor
+        physics flags. The OmegaProvider hierarchy is:
+
+        1. auto-inertia + ramp → RampedOmega initially, replaced by
+           RampedComputedOmega in solve() after I is estimated from mesh.
+        2. explicit I + ramp   → RampedComputedOmega (ramp then dynamic).
+        3. explicit I, no ramp → ComputedOmega (dynamic from t=0).
+        4. ramp only           → RampedOmega (prescribed linear ramp).
+        5. constant            → ConstantOmega (fixed ω, α=0).
+
+        Also initializes CoordinateTransforms (rotation R(θ)) and
+        InertialForcesCalculator (centrifugal, Coriolis, Euler).
+        """
         rotor_cfg = self.solver_params.get("rotor", {})
 
         # Angular velocity configuration
@@ -288,6 +464,7 @@ class LinearDynamicFSIRotorSolver(LinearDynamicFSISolver):
 
         # Rotor physics options
         self._include_geometric_stiffness = rotor_cfg.get("include_geometric_stiffness", True)
+        self._include_spin_softening = rotor_cfg.get("include_spin_softening", True)
         self._include_centrifugal = rotor_cfg.get("include_centrifugal", True)
         self._include_coriolis = rotor_cfg.get("include_coriolis", True)
         self._include_euler = rotor_cfg.get("include_euler", True)
@@ -421,7 +598,16 @@ class LinearDynamicFSIRotorSolver(LinearDynamicFSISolver):
         """
         Create Rayleigh damping matrix C = η_m·M + η_k·K.
 
-        Returns:
+        Parameters
+        ----------
+        K : PETSc.Mat
+            Global elastic stiffness matrix.
+        M : PETSc.Mat
+            Global lumped mass matrix.
+
+        Returns
+        -------
+        PETSc.Mat or None
             Damping matrix if either η_m or η_k is non-zero, otherwise None.
         """
         if self._eta_m == 0.0 and self._eta_k == 0.0:
@@ -439,15 +625,109 @@ class LinearDynamicFSIRotorSolver(LinearDynamicFSISolver):
         coeffs: NewmarkCoefficients,
         K_G_red: Optional[PETSc.Mat] = None,
         C_red: Optional[PETSc.Mat] = None,
+        K_SP_red: Optional[PETSc.Mat] = None,
     ) -> PETSc.Mat:
-        """Build effective stiffness matrix: K_eff = K + K_G + a0*M + a1*C."""
+        """Build the Newmark effective stiffness matrix.
+
+        Assembles K_eff for the implicit Newmark-β scheme:
+
+            K_eff = [K] + [K_G] + [K_SP] + a₀·[M] + a₁·[C]
+
+        where a₀ = 1/(β·dt²) and a₁ = γ/(β·dt) are Newmark coefficients.
+        This matrix is factorized once and reused for all sub-iterations
+        within a preCICE time window. It is rebuilt only when ω changes
+        significantly (triggering K_G and/or K_SP updates).
+
+        Parameters
+        ----------
+        K_red : PETSc.Mat
+            Reduced elastic stiffness matrix (free DOFs only).
+        M_red : PETSc.Mat
+            Reduced lumped mass matrix.
+        coeffs : NewmarkCoefficients
+            Precomputed Newmark integration coefficients.
+        K_G_red : PETSc.Mat, optional
+            Reduced geometric stiffness (stress stiffening). Adds positive
+            stiffness from centrifugal prestress.
+        C_red : PETSc.Mat, optional
+            Reduced Rayleigh damping matrix.
+        K_SP_red : PETSc.Mat, optional
+            Reduced spin softening matrix. Adds NEGATIVE stiffness in the
+            rotation plane: K_SP = -ω²·M·(I - n̂⊗n̂).
+
+        Returns
+        -------
+        PETSc.Mat
+            Effective stiffness matrix ready for KSP solve.
+        """
         K_eff = K_red.duplicate()
         K_eff.axpy(coeffs.a0, M_red)
         if K_G_red is not None:
             K_eff.axpy(1.0, K_G_red)
+        if K_SP_red is not None:
+            K_eff.axpy(1.0, K_SP_red)
         if C_red is not None:
             K_eff.axpy(coeffs.a1, C_red)
         return K_eff
+
+    def _build_spin_softening_matrix(self, omega: float) -> PETSc.Mat:
+        """Build spin softening matrix K_SP (full system, unreduced).
+
+        Implements ANSYS Eq. 3-74 / 14-55 for lumped mass:
+            K_SP = -ω² · M · (I - n⊗n)
+
+        For each node, the diagonal entries are:
+            K_SP[dof_j] = -ω² · m_node · (1 - axis[j]²)   for translational DOFs
+            K_SP[dof_j] = 0                                  for rotational DOFs
+
+        This is a negative-definite matrix that softens the structure in the
+        plane perpendicular to the rotation axis (spin softening effect).
+
+        Parameters
+        ----------
+        omega : float
+            Current angular velocity magnitude [rad/s].
+
+        Returns
+        -------
+        PETSc.Mat
+            Diagonal spin softening matrix (full system size).
+        """
+        n_dofs = self.domain.dofs_count
+        dofs_per_node = self.domain.dofs_per_node
+        axis = self._coord_transforms.axis
+
+        # Get lumped mass diagonal
+        M_diag = self.M.getDiagonal()
+        m_array = M_diag.getArray(readonly=True)
+
+        # Build K_SP diagonal
+        ksp_diag = PETSc.Vec().createMPI(n_dofs, comm=self.comm)
+        ksp_array = ksp_diag.getArray()
+
+        omega_sq = omega * omega
+        n_nodes = n_dofs // dofs_per_node
+
+        for i in range(n_nodes):
+            base = i * dofs_per_node
+            # Translational DOFs (first 3): K_SP = -ω²·m·(1 - n_j²)
+            for j in range(3):
+                dof = base + j
+                if dof < n_dofs:
+                    m_node = m_array[dof]
+                    ksp_array[dof] = -omega_sq * m_node * (1.0 - axis[j] ** 2)
+            # Rotational DOFs (3..dofs_per_node-1): leave as 0
+
+        ksp_diag.restoreArray(ksp_array)
+        M_diag.destroy()
+
+        # Create diagonal matrix
+        K_SP = PETSc.Mat().createAIJ(size=(n_dofs, n_dofs), nnz=1, comm=self.comm)
+        K_SP.setDiagonal(ksp_diag)
+        K_SP.assemble()
+        ksp_diag.destroy()
+
+        return K_SP
 
     # =========================================================================
     # Interface Data Extraction
@@ -456,6 +736,19 @@ class LinearDynamicFSIRotorSolver(LinearDynamicFSISolver):
     def _extract_nodal_masses(self, M_lumped: PETSc.Mat, interface_dofs: np.ndarray) -> np.ndarray:
         """
         Extract nodal masses from lumped mass matrix diagonal in serial.
+
+        Parameters
+        ----------
+        M_lumped : PETSc.Mat
+            Lumped mass matrix (diagonal).
+        interface_dofs : np.ndarray
+            DOF indices for interface nodes, shape (n_nodes, dofs_per_node)
+            or (n_nodes * 3,).
+
+        Returns
+        -------
+        np.ndarray
+            Scalar mass per interface node, shape (n_nodes,).
         """
         diag_vec = M_lumped.createVecRight()
         M_lumped.getDiagonal(diag_vec)
@@ -480,10 +773,26 @@ class LinearDynamicFSIRotorSolver(LinearDynamicFSISolver):
         return nodal_masses
 
     def _compute_estimated_inertia(self) -> float:
-        """
-        Estimate total moment of inertia about rotation axis from mass matrix.
+        """Estimate total moment of inertia about the rotation axis.
 
-        Uses the lumped mass matrix diagonal and nodal coordinates.
+        Computes the parallel-axis contribution of all mesh nodes:
+
+            I = Σᵢ mᵢ · r_⊥,ᵢ²
+
+        where mᵢ is the lumped mass (first translational DOF diagonal entry)
+        and r_⊥,ᵢ is the perpendicular distance from the node to the rotation
+        axis:
+
+            r_⊥² = |r|² − (r · n̂)²
+
+        This is a point-mass approximation; rotational DOF inertia (drilling,
+        tilting) is not included. The result is used by ComputedOmega /
+        RampedComputedOmega for the torque balance: I·α = τ_driving − τ_gen.
+
+        Returns
+        -------
+        float
+            Total moment of inertia [kg·m²] about the rotation axis.
         """
         if self.M is None:
             _logger.warning("Mass matrix not available for inertia estimation.")
@@ -524,7 +833,13 @@ class LinearDynamicFSIRotorSolver(LinearDynamicFSISolver):
         return total_inertia
 
     def _get_interface_nodal_coords(self) -> np.ndarray:
-        """Get coordinates of interface nodes in rotating frame."""
+        """Get coordinates of interface nodes in rotating frame.
+
+        Returns
+        -------
+        np.ndarray
+            Reference coordinates X₀, shape (n_nodes, 3).
+        """
         return self.precice_participant.interface_coordinates
 
     def _extract_interface_vector(
@@ -533,12 +848,19 @@ class LinearDynamicFSIRotorSolver(LinearDynamicFSISolver):
         """
         Extract 3D vectors for interface nodes from a full DOF vector.
 
-        Args:
-            full_vec: Full DOF vector (displacement, velocity, etc.).
-            interface_dofs: DOF indices for interface nodes.
+        Parameters
+        ----------
+        full_vec : PETSc.Vec
+            Full DOF vector (displacement, velocity, etc.).
+        interface_dofs : np.ndarray
+            DOF indices for interface nodes, shape (n_nodes, dofs_per_node)
+            or (n_nodes * 3,).
 
-        Returns:
-            Array of shape (n_nodes, 3) with vector values for each interface node.
+        Returns
+        -------
+        np.ndarray
+            Translational vector values for each interface node,
+            shape (n_nodes, 3).
         """
         vec_array = full_vec.array
         n_nodes = interface_dofs.shape[0]
@@ -557,13 +879,39 @@ class LinearDynamicFSIRotorSolver(LinearDynamicFSISolver):
     def _get_interface_nodal_velocities(
         self, v_full: PETSc.Vec, interface_dofs: np.ndarray
     ) -> np.ndarray:
-        """Extract velocity vectors for interface nodes."""
+        """Extract velocity vectors for interface nodes.
+
+        Parameters
+        ----------
+        v_full : PETSc.Vec
+            Full velocity DOF vector.
+        interface_dofs : np.ndarray
+            DOF indices for interface nodes.
+
+        Returns
+        -------
+        np.ndarray
+            Velocity vectors, shape (n_nodes, 3).
+        """
         return self._extract_interface_vector(v_full, interface_dofs)
 
     def _get_interface_displacements(
         self, u_full: PETSc.Vec, interface_dofs: np.ndarray
     ) -> np.ndarray:
-        """Extract displacement vectors for interface nodes."""
+        """Extract displacement vectors for interface nodes.
+
+        Parameters
+        ----------
+        u_full : PETSc.Vec
+            Full displacement DOF vector.
+        interface_dofs : np.ndarray
+            DOF indices for interface nodes.
+
+        Returns
+        -------
+        np.ndarray
+            Displacement vectors, shape (n_nodes, 3).
+        """
         return self._extract_interface_vector(u_full, interface_dofs)
 
     def _expand_interface_forces_to_full(
@@ -606,19 +954,30 @@ class LinearDynamicFSIRotorSolver(LinearDynamicFSISolver):
         interface_coords: np.ndarray,
         interface_disps: Optional[np.ndarray] = None,
     ) -> float:
-        """
-        Compute rotor radius as max perpendicular distance from rotation axis.
+        """Compute rotor radius as max perpendicular distance from rotation axis.
 
-        The radius is computed from the deformed configuration when displacements
-        are provided, which gives a more accurate representation during operation.
+        Uses the deformed configuration (X₀ + u) when displacements are
+        provided. The deformed radius is used for:
+         - Performance coefficients: Ct, Cp, TSR depend on swept area A = πR².
+         - Reporting: monitors blade elongation/contraction under load.
 
-        Args:
-            interface_coords: Reference coordinates of interface nodes.
-            interface_disps: Displacement vectors for interface nodes (optional).
-                            If None, computes radius from reference configuration.
+        The perpendicular distance is computed as:
 
-        Returns:
-            Maximum perpendicular distance from rotation axis.
+            r_⊥ = |r − (r · n̂) · n̂|
+
+        where r = X − center, and n̂ is the rotation axis unit vector.
+
+        Parameters
+        ----------
+        interface_coords : np.ndarray, shape (n_nodes, 3)
+            Undeformed reference coordinates X₀ of interface nodes.
+        interface_disps : np.ndarray, optional, shape (n_nodes, 3)
+            Elastic displacements u. When provided, uses X₀ + u.
+
+        Returns
+        -------
+        float
+            Maximum perpendicular distance from the rotation axis [m].
         """
         # Use deformed coordinates if displacements are provided
         if interface_disps is not None:
@@ -641,26 +1000,43 @@ class LinearDynamicFSIRotorSolver(LinearDynamicFSISolver):
         Note: This computes the initial/reference radius. For deformed radius,
         use _compute_rotor_radius() with displacement data.
 
-        Args:
-            interface_coords: Coordinates of interface nodes.
+        Parameters
+        ----------
+        interface_coords : np.ndarray, shape (n_nodes, 3)
+            Reference coordinates of interface nodes.
 
-        Returns:
-            Maximum perpendicular distance from rotation axis.
+        Returns
+        -------
+        float
+            Maximum perpendicular distance from the rotation axis [m].
         """
         return self._compute_rotor_radius(interface_coords, interface_disps=None)
 
     def _compute_gravity_forces(
         self, interface_masses: np.ndarray, n_nodes: int
     ) -> Tuple[np.ndarray, float]:
-        """
-        Compute gravity force vectors for interface nodes.
+        """Compute gravity force vectors for interface nodes.
 
-        Args:
-            interface_masses: Nodal masses for interface nodes.
-            n_nodes: Number of interface nodes.
+        Gravity is applied in the GLOBAL (inertial) frame as:
 
-        Returns:
-            Tuple of (gravity forces array, magnitude of total gravity force).
+            F_g,i = mᵢ · g
+
+        where g = [gx, gy, gz] is the user-specified gravity vector.
+        These forces are later transformed to the rotating frame via
+        R^T(θ) before assembly, so gravity direction rotates relative
+        to the blade (as physically expected for a rotating structure).
+
+        Parameters
+        ----------
+        interface_masses : np.ndarray, shape (n_nodes,)
+            Scalar nodal masses at interface nodes [kg].
+        n_nodes : int
+            Number of interface nodes.
+
+        Returns
+        -------
+        Tuple[np.ndarray, float]
+            (F_gravity [n_nodes, 3] in global frame, total |F_g| [N]).
         """
         if self._include_gravity:
             F_gravity = np.outer(interface_masses, self._gravity)
@@ -676,18 +1052,34 @@ class LinearDynamicFSIRotorSolver(LinearDynamicFSISolver):
         omega: float,
         radius: Optional[float] = None,
     ) -> Tuple[float, float, float]:
-        """
-        Compute rotor performance coefficients (Ct, Cp, TSR).
+        """Compute non-dimensional rotor performance coefficients.
 
-        Args:
-            thrust: Thrust force in Newtons.
-            power_watts: Power in Watts.
-            omega: Angular velocity in rad/s.
-            radius: Rotor radius in meters. If None, uses the stored reference radius.
-                   For accurate coefficients, pass the deformed radius.
+        Standard wind turbine / propeller aerodynamic coefficients:
 
-        Returns:
-            Tuple of (Ct, Cp, TSR).
+            Ct  = Thrust / (½ · ρ · V∞² · A)
+            Cp  = Power  / (½ · ρ · V∞³ · A)
+            TSR = |ω| · R / V∞
+
+        where A = π·R² is the rotor swept area, ρ is the fluid density,
+        V∞ is the freestream velocity, and R is the rotor radius
+        (deformed if provided, else reference).
+
+        Parameters
+        ----------
+        thrust : float
+            Axial thrust force [N] (aerodynamic force projected on rotation axis).
+        power_watts : float
+            Rotor power [W] = τ_power · ω.
+        omega : float
+            Angular velocity [rad/s].
+        radius : float, optional
+            Rotor radius [m]. If None, uses stored reference radius.
+            Pass the deformed radius for accurate instantaneous coefficients.
+
+        Returns
+        -------
+        Tuple[float, float, float]
+            (Ct, Cp, TSR).
         """
         # Use provided radius (deformed) or fall back to stored radius
         effective_radius = radius if radius is not None else self._rotor_radius
@@ -719,7 +1111,13 @@ class LinearDynamicFSIRotorSolver(LinearDynamicFSISolver):
         return True
 
     def _print_header(self, title: str) -> None:
-        """Print a formatted header section."""
+        """Print a formatted header section.
+
+        Parameters
+        ----------
+        title : str
+            Header text to display.
+        """
         if self._is_primary_rank():
             print("\n" + "═" * 70, flush=True)
             print(f"  {title}", flush=True)
@@ -731,12 +1129,28 @@ class LinearDynamicFSIRotorSolver(LinearDynamicFSISolver):
             print("═" * 70, flush=True)
 
     def _print_phase(self, phase: int, total: int, message: str) -> None:
-        """Print a phase progress message."""
+        """Print a phase progress message.
+
+        Parameters
+        ----------
+        phase : int
+            Current phase number.
+        total : int
+            Total number of phases.
+        message : str
+            Progress description.
+        """
         if self._is_primary_rank():
             print(f"  [{phase}/{total}] {message}", flush=True)
 
     def _print_info(self, message: str) -> None:
-        """Print an info message."""
+        """Print an info message.
+
+        Parameters
+        ----------
+        message : str
+            Informational text to display.
+        """
         if self._is_primary_rank():
             print(f"  [Info] {message}", flush=True)
 
@@ -757,18 +1171,30 @@ class LinearDynamicFSIRotorSolver(LinearDynamicFSISolver):
         """
         Write rotor performance metrics to CSV log (rank 0 only).
 
-        Args:
-            t: Current time in seconds.
-            omega_rpm: Angular velocity in RPM.
-            angle_deg: Rotation angle in degrees.
-            driving_torque: Driving torque in N·m.
-            torque_vector: Full torque vector [Tx, Ty, Tz] in N·m.
-            thrust: Thrust force in N.
-            power: Power in W.
-            cp: Power coefficient.
-            ct: Thrust coefficient.
-            tsr: Tip speed ratio.
-            deformed_radius: Current deformed radius in meters (optional).
+        Parameters
+        ----------
+        t : float
+            Current time [s].
+        omega_rpm : float
+            Angular velocity [RPM].
+        angle_deg : float
+            Rotation angle [°].
+        driving_torque : float
+            Driving torque [N·m].
+        torque_vector : np.ndarray
+            Full torque vector [Tx, Ty, Tz] [N·m].
+        thrust : float
+            Axial thrust force [N].
+        power : float
+            Rotor power [W].
+        cp : float
+            Power coefficient [-].
+        ct : float
+            Thrust coefficient [-].
+        tsr : float
+            Tip speed ratio [-].
+        deformed_radius : float, optional
+            Current deformed rotor radius [m].
         """
         if not self._is_primary_rank():
             return
@@ -803,10 +1229,29 @@ class LinearDynamicFSIRotorSolver(LinearDynamicFSISolver):
         gamma: float,
         omega_initial: float,
         K_G_enabled: bool,
+        K_SP_enabled: bool,
         C_enabled: bool,
         gravity_force_mag: float,
     ) -> None:
-        """Log the solver configuration summary."""
+        """Log the solver configuration summary.
+
+        Parameters
+        ----------
+        beta : float
+            Newmark β parameter.
+        gamma : float
+            Newmark γ parameter.
+        omega_initial : float
+            Initial angular velocity [rad/s].
+        K_G_enabled : bool
+            Whether geometric stiffness is active.
+        K_SP_enabled : bool
+            Whether spin softening is active.
+        C_enabled : bool
+            Whether Rayleigh damping is active.
+        gravity_force_mag : float
+            Magnitude of total gravity force [N].
+        """
         if not self._is_primary_rank():
             return
 
@@ -818,6 +1263,7 @@ class LinearDynamicFSIRotorSolver(LinearDynamicFSISolver):
         )
         print(
             f"  K_G: {'enabled' if K_G_enabled else 'disabled'}  │  "
+            f"K_SP: {'enabled' if K_SP_enabled else 'disabled'}  │  "
             f"Damping: {'enabled' if C_enabled else 'disabled'}  │  "
             f"Solver: {self._solver_type}",
             flush=True,
@@ -838,7 +1284,19 @@ class LinearDynamicFSIRotorSolver(LinearDynamicFSISolver):
     def _log_time_step_header(
         self, time_step: int, step: int, t_target: float, theta_deg: float
     ) -> None:
-        """Log time step header information."""
+        """Log time step header information.
+
+        Parameters
+        ----------
+        time_step : int
+            Current time window index.
+        step : int
+            Global iteration counter.
+        t_target : float
+            Target time for this window [s].
+        theta_deg : float
+            Estimated rotation angle [°].
+        """
         if not self._is_primary_rank():
             return
 
@@ -866,7 +1324,38 @@ class LinearDynamicFSIRotorSolver(LinearDynamicFSISolver):
         ramp_factor: Optional[float] = None,
         force_ramp_time: Optional[float] = None,
     ) -> None:
-        """Log force statistics for current time step."""
+        """Log force statistics for current time step.
+
+        Parameters
+        ----------
+        raw_force : np.ndarray
+            Raw total force from preCICE [N], shape (3,).
+        raw_max_nodal : float
+            Maximum nodal force magnitude before ramping [N].
+        applied_force : np.ndarray
+            Force after ramp scaling [N], shape (3,).
+        applied_max_nodal : float
+            Maximum nodal force magnitude after ramping [N].
+        n_nodes : int
+            Number of interface nodes.
+        local_force_mag : float
+            Total force magnitude in rotating frame [N].
+        omega : float
+            Current angular velocity [rad/s].
+        inertial_diags : Dict[str, Any]
+            Diagnostic dict from InertialForcesCalculator with per-force
+            magnitudes (centrifugal, coriolis, euler, total_inertial).
+        F_gravity_local : np.ndarray or None
+            Gravity forces in rotating frame, shape (n_nodes, 3).
+        torque_global : np.ndarray
+            Total torque vector [N·m], shape (3,).
+        torque_power : float
+            Driving torque projected on rotation axis [N·m].
+        ramp_factor : float, optional
+            Current force ramp factor in [0, 1].
+        force_ramp_time : float, optional
+            Ramp duration [s].
+        """
         if not self._is_primary_rank():
             return
 
@@ -939,7 +1428,17 @@ class LinearDynamicFSIRotorSolver(LinearDynamicFSISolver):
         print("  └" + "─" * 67, flush=True)
 
     def _log_solver_response(self, ksp_its: int, ksp_reason: int, max_disp: float) -> None:
-        """Log linear solver response."""
+        """Log linear solver response.
+
+        Parameters
+        ----------
+        ksp_its : int
+            Number of KSP iterations performed.
+        ksp_reason : int
+            PETSc convergence reason code (positive = converged).
+        max_disp : float
+            Maximum displacement magnitude [m].
+        """
         if not self._is_primary_rank():
             return
 
@@ -959,7 +1458,27 @@ class LinearDynamicFSIRotorSolver(LinearDynamicFSISolver):
         new_omega: Optional[float] = None,
         phase_info: Optional[str] = None,
     ) -> None:
-        """Log time window convergence."""
+        """Log time window convergence.
+
+        Parameters
+        ----------
+        t : float
+            Current time after convergence [s].
+        max_disp : float
+            Maximum displacement magnitude [m].
+        max_vel : float
+            Maximum velocity magnitude [m/s].
+        max_acc : float
+            Maximum acceleration magnitude [m/s²].
+        driving_torque : float, optional
+            Driving torque for this window [N·m].
+        new_alpha : float, optional
+            Updated angular acceleration [rad/s²].
+        new_omega : float, optional
+            Updated angular velocity for next window [rad/s].
+        phase_info : str, optional
+            OmegaProvider phase description (e.g. "ramp", "dynamic").
+        """
         if not self._is_primary_rank():
             return
 
@@ -978,7 +1497,17 @@ class LinearDynamicFSIRotorSolver(LinearDynamicFSISolver):
         )
 
     def _log_finalization(self, t: float, time_step: int, step: int) -> None:
-        """Log simulation finalization."""
+        """Log simulation finalization.
+
+        Parameters
+        ----------
+        t : float
+            Final simulation time [s].
+        time_step : int
+            Total number of time windows completed.
+        step : int
+            Total number of sub-iterations across all time windows.
+        """
         if not self._is_primary_rank():
             return
 
@@ -1005,10 +1534,34 @@ class LinearDynamicFSIRotorSolver(LinearDynamicFSISolver):
         C_red: Optional[PETSc.Mat],
         coeffs: NewmarkCoefficients,
     ) -> PETSc.Vec:
-        """
-        Compute effective force vector for Newmark formulation.
+        """Compute the Newmark effective force vector.
 
-        F_eff = F + M*(a0*u + a2*v + a3*a) + C*(a1*u + a4*v + a5*a)
+        Assembles the RHS of the Newmark implicit system:
+
+            F_eff = {F_new} + [M]·(a₀·u + a₂·v + a₃·a) + [C]·(a₁·u + a₄·v + a₅·a)
+
+        where {F_new} contains all external and inertial forces at the new
+        time step (aerodynamic + centrifugal + Coriolis + Euler + gravity),
+        and the [M] and [C] terms account for the Newmark time integration
+        history from the current state (u, v, a).
+
+        Parameters
+        ----------
+        F_new_red : PETSc.Vec
+            Reduced external + inertial force vector at time t+dt.
+        u, v, a : PETSc.Vec
+            Current displacement, velocity, acceleration (reduced).
+        M_red : PETSc.Mat
+            Reduced lumped mass matrix.
+        C_red : PETSc.Mat, optional
+            Reduced damping matrix.
+        coeffs : NewmarkCoefficients
+            Precomputed integration coefficients.
+
+        Returns
+        -------
+        PETSc.Vec
+            Effective force vector for the Newmark solve.
         """
         # Mass contribution
         temp_vec = u.duplicate()
@@ -1053,19 +1606,35 @@ class LinearDynamicFSIRotorSolver(LinearDynamicFSISolver):
         coeffs: NewmarkCoefficients,
         beta: float,
     ) -> Tuple[PETSc.Vec, PETSc.Vec]:
-        """
-        Perform Newmark state update.
+        """Perform Newmark-β state update after a converged time window.
 
-        Args:
-            u: Current displacement.
-            u_new: New displacement.
-            v: Current velocity.
-            a: Current acceleration.
-            coeffs: Newmark coefficients.
-            beta: Newmark beta parameter.
+        Computes new acceleration and velocity from the displacement increment:
 
-        Returns:
-            Tuple of (new velocity, new acceleration).
+            a_new = (Δu - dt·v - (0.5 - β)·dt²·a) / (β·dt²)
+            v_new = v + dt·(1 - γ)·a + dt·γ·a_new
+
+        With β = 0.25, γ = 0.5 this is the average acceleration method
+        (unconditionally stable, second-order accurate, no numerical damping).
+
+        Parameters
+        ----------
+        u : PETSc.Vec
+            Displacement at current time step (reduced).
+        u_new : PETSc.Vec
+            Displacement at new time step (reduced).
+        v : PETSc.Vec
+            Velocity at current time step (reduced).
+        a : PETSc.Vec
+            Acceleration at current time step (reduced).
+        coeffs : NewmarkCoefficients
+            Precomputed integration coefficients.
+        beta : float
+            Newmark β parameter.
+
+        Returns
+        -------
+        Tuple[PETSc.Vec, PETSc.Vec]
+            (v_new, a_new) velocity and acceleration at t+dt.
         """
         delta_u = u_new - u
         a_new = (delta_u - self.dt * v - (0.5 - beta) * self.dt**2 * a) / (beta * self.dt**2)
@@ -1078,23 +1647,33 @@ class LinearDynamicFSIRotorSolver(LinearDynamicFSISolver):
     # =========================================================================
 
     def solve(self) -> Tuple[PETSc.Vec, PETSc.Vec, PETSc.Vec]:
-        """
-        Perform co-rotational dynamic FSI analysis.
+        """Perform co-rotational dynamic FSI analysis.
 
-        The solver operates in a rotating reference frame:
-        1. Assemble K, M, C, K_G (constant throughout simulation)
-        2. Form effective stiffness K_eff and factorize (once)
-        3. Time loop:
-           a. Get omega, alpha from OmegaProvider
-           b. Update rotation angle theta
-           c. Read forces from preCICE and transform to rotating frame
-           d. Compute inertial forces (centrifugal, Coriolis)
-           e. Solve for displacement in rotating frame
-           f. Transform displacement to inertial frame and write to preCICE
-           g. Update state variables
+        Orchestrates the full simulation pipeline:
 
-        Returns:
-            Tuple of (displacement, velocity, acceleration) PETSc vectors.
+        1. **Matrix assembly** (once):
+           - K (elastic), M (lumped mass), C (Rayleigh damping)
+           - K_G (geometric stiffness from centrifugal prestress)
+           - K_SP (spin softening, diagonal: -ω²·M·(I - n̂⊗n̂))
+
+        2. **Effective stiffness** (once, rebuilt when ω changes):
+           K_eff = K + K_G + K_SP + a₀·M + a₁·C
+
+        3. **preCICE time loop** (implicit coupling with sub-iterations):
+           a. Get ω, α from OmegaProvider (constant within time window)
+           b. Read aerodynamic forces from fluid → transform to rotating frame
+           c. Compute inertial forces:
+              - Centrifugal at X₀ (spin softening via K_SP handles X₀+u)
+              - Coriolis at current velocity estimate
+              - Euler at X₀+u (only when α ≠ 0)
+           d. Solve: K_eff · u_new = F_eff
+           e. Transform u_local → u_global and write to preCICE
+           f. preCICE sub-iteration or advance to next window
+
+        Returns
+        -------
+        Tuple[PETSc.Vec, PETSc.Vec, PETSc.Vec]
+            Final (displacement, velocity, acceleration) vectors.
         """
         omega_initial, _ = self._omega_provider.get_omega(0.0)
 
@@ -1145,12 +1724,18 @@ class LinearDynamicFSIRotorSolver(LinearDynamicFSISolver):
         C_red = bc_manager.reduce_matrix(C) if C is not None else None
         K_G_red = bc_manager.reduce_matrix(K_G) if K_G is not None else None
 
+        # Build spin softening matrix (ANSYS Eq. 3-74 / 14-55)
+        K_SP_red = None
+        if self._include_spin_softening and omega_initial != 0.0:
+            K_SP = self._build_spin_softening_matrix(omega_initial)
+            K_SP_red = bc_manager.reduce_matrix(K_SP)
+
         # Phase 4: Newmark coefficients and effective stiffness
         beta = self.solver_params["beta"]
         gamma = self.solver_params["gamma"]
         coeffs = NewmarkCoefficients.from_newmark_params(beta, gamma, self.dt)
 
-        K_eff = self._build_effective_stiffness(K_red, M_red, coeffs, K_G_red, C_red)
+        K_eff = self._build_effective_stiffness(K_red, M_red, coeffs, K_G_red, C_red, K_SP_red)
 
         if not self._prepared:
             self._setup_solver()
@@ -1282,6 +1867,7 @@ class LinearDynamicFSIRotorSolver(LinearDynamicFSISolver):
             gamma,
             omega_initial,
             K_G_red is not None,
+            K_SP_red is not None,
             C_red is not None,
             gravity_force_mag,
         )
@@ -1299,6 +1885,7 @@ class LinearDynamicFSIRotorSolver(LinearDynamicFSISolver):
             K_eff,
             C_red,
             K_G_red,
+            K_SP_red,
             bc_manager,
             coeffs,
             beta,
@@ -1333,7 +1920,19 @@ class LinearDynamicFSIRotorSolver(LinearDynamicFSISolver):
         Optional[PETSc.Mat],
         Optional[PETSc.Mat],
     ]:
-        """Assemble stiffness, mass, damping, and geometric stiffness matrices."""
+        """Assemble stiffness, mass, damping, and geometric stiffness matrices.
+
+        Parameters
+        ----------
+        omega_initial : float
+            Initial angular velocity [rad/s], used to compute the centrifugal
+            prestress for K_G.
+
+        Returns
+        -------
+        Tuple[Tuple[PETSc.Mat, PETSc.Mat], BoundaryConditionManager, Optional[PETSc.Mat], Optional[PETSc.Mat]]
+            ((K, M), bc_manager, C, K_G) where C and K_G may be None.
+        """
         self._print_phase(1, 7, "Assembling stiffness matrix...")
         self.K = self.domain.assemble_stiffness_matrix()
 
@@ -1387,7 +1986,19 @@ class LinearDynamicFSIRotorSolver(LinearDynamicFSISolver):
         return (self.K, self.M), bc_manager, C, K_G
 
     def _initialize_precice(self, bc_manager: BoundaryConditionManager) -> Tuple[float, int, int]:
-        """Initialize preCICE coupling and return timing state."""
+        """Initialize preCICE coupling and return timing state.
+
+        Parameters
+        ----------
+        bc_manager : BoundaryConditionManager
+            Boundary condition manager with fixed/free DOF partitioning.
+
+        Returns
+        -------
+        Tuple[float, int, int]
+            (t, step, time_step) initial time, iteration counter, and
+            time window index.
+        """
         t = self.solver_params.get("start_time", 0.0)
         step = 0
         time_step = int(round(t / self.solver_params.get("time_step", 1.0)))
@@ -1437,8 +2048,27 @@ class LinearDynamicFSIRotorSolver(LinearDynamicFSISolver):
     ) -> Tuple[PETSc.Vec, PETSc.Vec, PETSc.Vec, float, int, bool]:
         """Setup initial conditions and restore from checkpoint if available.
 
-        Returns:
-            Tuple of (u, v, a, t, time_step, starting_from_zero).
+        Parameters
+        ----------
+        K_red : PETSc.Mat
+            Reduced elastic stiffness matrix.
+        F_red : PETSc.Vec
+            Reduced force vector (used for initial acceleration).
+        M_red : PETSc.Mat
+            Reduced lumped mass matrix.
+        bc_manager : BoundaryConditionManager
+            Boundary condition manager.
+        t : float
+            Initial time [s].
+        time_step : int
+            Initial time window index.
+        omega_initial : float
+            Initial angular velocity [rad/s] (for θ estimation on restart).
+
+        Returns
+        -------
+        Tuple[PETSc.Vec, PETSc.Vec, PETSc.Vec, float, int, bool]
+            (u, v, a, t, time_step, starting_from_zero).
         """
         self._print_phase(7, 7, "Setting up linear solver...")
 
@@ -1504,6 +2134,7 @@ class LinearDynamicFSIRotorSolver(LinearDynamicFSISolver):
         K_eff: PETSc.Mat,
         C_red: Optional[PETSc.Mat],
         K_G_red: Optional[PETSc.Mat],
+        K_SP_red: Optional[PETSc.Mat],
         bc_manager: BoundaryConditionManager,
         coeffs: NewmarkCoefficients,
         beta: float,
@@ -1513,11 +2144,70 @@ class LinearDynamicFSIRotorSolver(LinearDynamicFSISolver):
         interface_masses: np.ndarray,
         F_gravity_global: np.ndarray,
     ) -> Tuple[float, int, int, PETSc.Vec, PETSc.Vec, PETSc.Vec]:
-        """
-        Main time stepping loop for the FSI simulation.
+        """Main preCICE-driven time stepping loop.
 
-        Returns:
-            Tuple of (final_t, final_time_step, final_step, u, v, a).
+        Implements the implicit FSI coupling protocol:
+
+        For each time window [t, t+dt]:
+          1. ω is computed once and held fixed for all sub-iterations.
+          2. K_G and K_SP are rebuilt if |Δω| > threshold.
+          3. Forces from fluid solver are read, transformed R^T(θ)·F_global,
+             and combined with inertial + gravity forces.
+          4. The Newmark system K_eff·u_new = F_eff is solved.
+          5. Displacement is transformed R(θ)·u_local and written to preCICE.
+          6. preCICE decides: sub-iterate (restore checkpoint) or converge.
+
+        Force evaluation strategy (consistent with ANSYS §14.4):
+          - Centrifugal F_cf(X₀) on RHS + K_SP·u on LHS = total centrifugal
+            effect at deformed position, handled implicitly.
+          - Coriolis F_cor(v_guess) on RHS, explicit with best velocity estimate.
+          - Euler F_euler(X₀+u) on RHS, only when α ≠ 0. No LHS correction
+            exists for Euler, so explicit at deformed coords is appropriate.
+          - Gravity F_g transformed to rotating frame via R^T(θ).
+
+        Parameters
+        ----------
+        u, v, a : PETSc.Vec
+            Initial displacement, velocity, acceleration (reduced).
+        t : float
+            Start time [s].
+        time_step : int
+            Starting time window index.
+        step : int
+            Starting global iteration counter.
+        K_red : PETSc.Mat
+            Reduced elastic stiffness matrix.
+        M_red : PETSc.Mat
+            Reduced lumped mass matrix.
+        K_eff : PETSc.Mat
+            Current effective stiffness matrix.
+        C_red : PETSc.Mat, optional
+            Reduced damping matrix.
+        K_G_red : PETSc.Mat, optional
+            Reduced geometric stiffness matrix.
+        K_SP_red : PETSc.Mat, optional
+            Reduced spin softening matrix.
+        bc_manager : BoundaryConditionManager
+            Boundary condition manager.
+        coeffs : NewmarkCoefficients
+            Precomputed integration coefficients.
+        beta : float
+            Newmark β parameter.
+        gamma : float
+            Newmark γ parameter.
+        interface_coords : np.ndarray, shape (n_nodes, 3)
+            Reference coordinates of interface nodes.
+        interface_dofs : np.ndarray
+            DOF indices for interface nodes.
+        interface_masses : np.ndarray, shape (n_nodes,)
+            Scalar nodal masses at interface nodes [kg].
+        F_gravity_global : np.ndarray, shape (n_nodes, 3)
+            Gravity forces in inertial frame [N].
+
+        Returns
+        -------
+        Tuple[float, int, int, PETSc.Vec, PETSc.Vec, PETSc.Vec]
+            (final_t, final_time_step, final_step, u, v, a).
         """
         # Omega must remain constant inside each implicit-coupling time window.
         # Recompute only once at the window start, then hold for all sub-iterations.
@@ -1543,9 +2233,9 @@ class LinearDynamicFSIRotorSolver(LinearDynamicFSISolver):
                 omega, alpha = self._omega_provider.get_omega(t_target)
                 theta_target = self._theta + omega * self.dt
 
-                # Update K_G if omega changed significantly (window-level update only)
-                K_eff, K_G_red = self._update_geometric_stiffness_if_needed(
-                    omega, K_red, M_red, K_eff, C_red, K_G_red, bc_manager, coeffs
+                # Update K_G and K_SP if omega changed significantly (window-level update only)
+                K_eff, K_G_red, K_SP_red = self._update_geometric_stiffness_if_needed(
+                    omega, K_red, M_red, K_eff, C_red, K_G_red, K_SP_red, bc_manager, coeffs
                 )
                 self._prev_omega = omega
                 omega_initialized_for_window = True
@@ -1619,9 +2309,18 @@ class LinearDynamicFSIRotorSolver(LinearDynamicFSISolver):
             v_full = bc_manager.expand_solution(v_for_inertial)
             interface_velocities = self._get_interface_nodal_velocities(v_full, interface_dofs)
 
+            # Extract interface displacements (needed for Euler at deformed coords and torque)
+            u_full_disp = bc_manager.expand_solution(u)
+            interface_disps = self._get_interface_displacements(u_full_disp, interface_dofs)
+
             # Only include Euler force when enabled AND there is angular acceleration (alpha != 0)
             include_euler = self._include_euler and abs(alpha) > 1e-12
 
+            # Centrifugal and Coriolis always evaluated at X₀ (initial coords).
+            # When K_SP is active, the spin softening correction ω×(ω×u) is handled
+            # implicitly via K_SP on the LHS — evaluating centrifugal at X₀+u would
+            # double-count. Euler force is evaluated at X₀+u since it depends on α
+            # (angular acceleration) which has no LHS matrix correction.
             F_inertial, inertial_diags = self._inertial_calculator.compute_all_inertial_forces(
                 nodal_coords=interface_coords,
                 nodal_velocities=interface_velocities,
@@ -1630,8 +2329,18 @@ class LinearDynamicFSIRotorSolver(LinearDynamicFSISolver):
                 alpha=alpha,
                 include_centrifugal=self._include_centrifugal,
                 include_coriolis=self._include_coriolis,
-                include_euler=include_euler,
+                include_euler=False,  # Euler handled separately at deformed coords
             )
+
+            if include_euler:
+                euler_coords = interface_coords + interface_disps
+                F_euler = self._inertial_calculator.compute_euler_force(
+                    nodal_coords=euler_coords,
+                    nodal_masses=interface_masses,
+                    alpha=alpha,
+                )
+                F_inertial = F_inertial + F_euler
+                inertial_diags["euler_max"] = float(np.max(np.linalg.norm(F_euler, axis=1)))
 
             # Transform gravity to rotating frame
             F_gravity_local = self._transform_gravity_to_local(
@@ -1640,10 +2349,6 @@ class LinearDynamicFSIRotorSolver(LinearDynamicFSISolver):
 
             # Combine forces
             data_combined = data_local_2d + F_inertial + F_gravity_local
-
-            # Compute interface displacements for torque calculations
-            u_full_disp = bc_manager.expand_solution(u)
-            interface_disps = self._get_interface_displacements(u_full_disp, interface_dofs)
 
             # Compute driving torque for dynamic omega (rotor angular momentum balance)
             # Only EXTERNAL forces contribute to rotor acceleration:
@@ -1869,11 +2574,47 @@ class LinearDynamicFSIRotorSolver(LinearDynamicFSISolver):
         K_eff: PETSc.Mat,
         C_red: Optional[PETSc.Mat],
         K_G_red: Optional[PETSc.Mat],
+        K_SP_red: Optional[PETSc.Mat],
         bc_manager: BoundaryConditionManager,
         coeffs: NewmarkCoefficients,
-    ) -> Tuple[PETSc.Mat, Optional[PETSc.Mat]]:
-        """Update geometric stiffness if omega changed significantly."""
+    ) -> Tuple[PETSc.Mat, Optional[PETSc.Mat], Optional[PETSc.Mat]]:
+        """Rebuild K_G and K_SP when ω changes, then re-form K_eff.
+
+        Called once per preCICE time window (not per sub-iteration). Both K_G
+        and K_SP scale with ω² but through different mechanisms:
+          - K_G: element-level assembly from centrifugal prestress σ_cf ∝ ω².
+          - K_SP: diagonal matrix K_SP = -ω²·M·(I - n̂⊗n̂), trivial to rebuild.
+
+        The threshold |Δω| > 1e-4 rad/s avoids unnecessary refactorizations
+        when ω is essentially constant.
+
+        Parameters
+        ----------
+        omega : float
+            New angular velocity [rad/s].
+        K_red, M_red : PETSc.Mat
+            Reduced elastic stiffness and mass matrices (constant).
+        K_eff : PETSc.Mat
+            Current effective stiffness (returned unchanged if no rebuild).
+        C_red : PETSc.Mat, optional
+            Reduced damping matrix.
+        K_G_red : PETSc.Mat, optional
+            Current reduced geometric stiffness.
+        K_SP_red : PETSc.Mat, optional
+            Current reduced spin softening matrix.
+        bc_manager : BoundaryConditionManager
+            For reducing new full-system matrices to free DOFs.
+        coeffs : NewmarkCoefficients
+            For rebuilding K_eff.
+
+        Returns
+        -------
+        Tuple[PETSc.Mat, Optional[PETSc.Mat], Optional[PETSc.Mat]]
+            Updated (K_eff, K_G_red, K_SP_red).
+        """
         if self._prev_omega is not None and abs(omega - self._prev_omega) > _OMEGA_CHANGE_THRESHOLD:
+            rebuild = False
+
             if self._include_geometric_stiffness and K_G_red is not None:
                 self._print_info(f"Updating K_G (ω changed: {self._prev_omega:.4f} -> {omega:.4f})")
                 try:
@@ -1883,15 +2624,35 @@ class LinearDynamicFSIRotorSolver(LinearDynamicFSISolver):
                         rotation_center=self._coord_transforms.center,
                     )
                     K_G_red = bc_manager.reduce_matrix(K_G_new)
-                    K_eff = self._build_effective_stiffness(K_red, M_red, coeffs, K_G_red, C_red)
-                    self._solver.setOperators(K_eff)
+                    rebuild = True
                 except Exception as e:
                     _logger.warning("Failed to update K_G: %s", e)
 
-        return K_eff, K_G_red
+            if self._include_spin_softening:
+                self._print_info(f"Updating K_SP (ω changed: {self._prev_omega:.4f} -> {omega:.4f})")
+                K_SP_new = self._build_spin_softening_matrix(omega)
+                K_SP_red = bc_manager.reduce_matrix(K_SP_new)
+                rebuild = True
+
+            if rebuild:
+                K_eff = self._build_effective_stiffness(
+                    K_red, M_red, coeffs, K_G_red, C_red, K_SP_red
+                )
+                self._solver.setOperators(K_eff)
+
+        return K_eff, K_G_red, K_SP_red
 
     def _read_and_reduce_forces(self) -> Tuple[np.ndarray, np.ndarray, float, int]:
-        """Read forces from preCICE and compute global reductions."""
+        """Read forces from preCICE and compute global reductions.
+
+        Returns
+        -------
+        Tuple[np.ndarray, np.ndarray, float, int]
+            (data_global, raw_force, raw_max_nodal, n_nodes) where
+            data_global has shape (n_nodes, dim), raw_force is the summed
+            force vector, raw_max_nodal the max nodal magnitude, and
+            n_nodes the number of interface nodes.
+        """
         _logger.debug("Reading coupling data from preCICE...")
         data_global = self.precice_participant.read_data()
         mesh_dim = self.precice_participant.mesh_dimensions
@@ -1918,7 +2679,28 @@ class LinearDynamicFSIRotorSolver(LinearDynamicFSISolver):
     def _transform_gravity_to_local(
         self, F_gravity_global: np.ndarray, theta: float, shape: Tuple[int, int]
     ) -> np.ndarray:
-        """Transform gravity forces to rotating frame."""
+        """Transform gravity forces from global (inertial) to rotating frame.
+
+        Applies F_local = R^T(θ) · F_global to each nodal gravity vector.
+        Since gravity is constant in the inertial frame but the blade rotates,
+        the gravity direction in the co-rotating frame changes with θ. This
+        produces the cyclic gravitational loading (1P frequency) experienced
+        by each blade as it sweeps through 360°.
+
+        Parameters
+        ----------
+        F_gravity_global : np.ndarray
+            Gravity forces in inertial frame, shape (n_nodes, 3).
+        theta : float
+            Current rotation angle [rad].
+        shape : Tuple[int, int]
+            Output array shape, typically (n_nodes, 3).
+
+        Returns
+        -------
+        np.ndarray
+            Gravity forces in the co-rotating frame, shape ``shape``.
+        """
         if self._include_gravity:
             return self._coord_transforms.transform_force_to_rotating(
                 F_gravity_global.flatten(), theta
@@ -1931,7 +2713,39 @@ class LinearDynamicFSIRotorSolver(LinearDynamicFSISolver):
         interface_disps: np.ndarray,
         data_combined: np.ndarray,
     ) -> Tuple[np.ndarray, float]:
-        """Compute rotor torque from combined forces."""
+        """Compute rotor torque about the rotation center.
+
+        Evaluates the total moment from distributed nodal forces at the
+        DEFORMED configuration:
+
+            τ = Σᵢ (X₀,ᵢ + uᵢ − center) × Fᵢ
+
+        The torque vector is projected onto the rotation axis to obtain the
+        scalar driving/resisting torque:
+
+            τ_power = τ · n̂
+
+        This method is called TWICE per step with different force sets:
+         1. With EXTERNAL forces only (aero + gravity) → driving torque for
+            the ω dynamics equation I·α = τ_driving − τ_gen.
+         2. With ALL forces (aero + inertial + gravity) → total torque for
+            performance reporting and CSV logging.
+
+        Parameters
+        ----------
+        interface_coords : np.ndarray, shape (n_nodes, 3)
+            Undeformed reference coordinates X₀ of interface nodes.
+        interface_disps : np.ndarray, shape (n_nodes, 3)
+            Elastic displacement u at interface nodes.
+        data_combined : np.ndarray, shape (n_nodes, 3)
+            Nodal force vectors to compute torque from.
+
+        Returns
+        -------
+        Tuple[np.ndarray, float]
+            (torque_vector [3], torque_power_scalar) where torque_power is
+            the projection onto the rotation axis [N·m].
+        """
         r_vec = (interface_coords + interface_disps) - self._coord_transforms.center
         nodal_torques = np.cross(r_vec, data_combined)
         torque_local_sum = np.sum(nodal_torques, axis=0)
@@ -1953,7 +2767,42 @@ class LinearDynamicFSIRotorSolver(LinearDynamicFSISolver):
         bc_manager: BoundaryConditionManager,
         coeffs: NewmarkCoefficients,
     ) -> Tuple[PETSc.Vec, int, int]:
-        """Solve the linear system for a single time step."""
+        """Solve K_eff · u_new = F_eff for a single time step / sub-iteration.
+
+        Assembles the full force vector by scattering the combined interface
+        forces (aerodynamic + inertial + gravity) into the global DOF vector,
+        reduces to free DOFs, computes F_eff via Newmark history terms, and
+        solves the linear system using the pre-factorized K_eff.
+
+        Parameters
+        ----------
+        u : PETSc.Vec
+            Current displacement (reduced).
+        v : PETSc.Vec
+            Current velocity (reduced).
+        a : PETSc.Vec
+            Current acceleration (reduced).
+        data_combined : np.ndarray
+            Combined interface forces (aero + inertial + gravity), flat array
+            aligned with ``interface_dofs``.
+        interface_dofs : np.ndarray
+            DOF indices for interface nodes.
+        K_eff : PETSc.Mat
+            Effective stiffness matrix (pre-factorized).
+        M_red : PETSc.Mat
+            Reduced lumped mass matrix.
+        C_red : PETSc.Mat, optional
+            Reduced damping matrix.
+        bc_manager : BoundaryConditionManager
+            For vector reduction.
+        coeffs : NewmarkCoefficients
+            Precomputed integration coefficients.
+
+        Returns
+        -------
+        Tuple[PETSc.Vec, int, int]
+            (u_new, ksp_iterations, ksp_converged_reason).
+        """
         # Assemble force vector
         F_new = self.F.duplicate()
         self.F.copy(F_new)
@@ -1987,7 +2836,28 @@ class LinearDynamicFSIRotorSolver(LinearDynamicFSISolver):
         beta: float,
         gamma: float,
     ) -> None:
-        """Update velocity guess for next sub-iteration (Coriolis)."""
+        """Compute velocity estimate for the next preCICE sub-iteration.
+
+        Uses the current displacement solution u_new to estimate v_new via
+        Newmark relations. This velocity guess is used to evaluate the
+        explicit Coriolis force F_cor = -2·m·(ω × v) in the next sub-iteration,
+        improving convergence of the implicit FSI loop.
+
+        Parameters
+        ----------
+        u : PETSc.Vec
+            Displacement at current time step (reduced).
+        u_new : PETSc.Vec
+            Displacement solution from latest solve (reduced).
+        v : PETSc.Vec
+            Velocity at current time step (reduced).
+        a : PETSc.Vec
+            Acceleration at current time step (reduced).
+        beta : float
+            Newmark β parameter.
+        gamma : float
+            Newmark γ parameter.
+        """
         a_new_iter = u_new.duplicate()
         u_new.copy(a_new_iter)
         a_new_iter.axpy(-1.0, u)
@@ -2031,6 +2901,17 @@ class LinearDynamicFSIRotorSolver(LinearDynamicFSISolver):
 
         This transforms the elastic deformation from the rotating frame to the
         inertial/global frame so OpenFOAM can apply it correctly.
+
+        Parameters
+        ----------
+        u_new : PETSc.Vec
+            Displacement solution (reduced DOFs).
+        interface_dofs : np.ndarray
+            DOF indices for interface nodes.
+        theta_target : float
+            Target rotation angle [rad] for R(θ) transformation.
+        bc_manager : BoundaryConditionManager
+            For expanding reduced solution to full DOF vector.
         """
         u_full_new = bc_manager.expand_solution(u_new)
 
@@ -2075,14 +2956,28 @@ class LinearDynamicFSIRotorSolver(LinearDynamicFSISolver):
         u_full_new.destroy()
 
     def _write_angular_velocity_to_precice(self, omega: float) -> None:
-        """
-        Write angular velocity to preCICE on GlobalSolidMesh.
+        """Publish angular velocity to the fluid solver via preCICE.
 
-        This writes a single scalar (omega) to the single vertex registered on
-        GlobalSolidMesh (the rotation centre).  AngularVelocity lives on a
-        *secondary* mesh and is therefore not present in write_data_names
-        (which only lists data for the primary Solid-Mesh); we use
-        _send_omega_to_precice as the sole gate.
+        Writes ω [rad/s] as a scalar to the GlobalSolidMesh — a dedicated
+        single-vertex mesh registered at the rotation center. The OpenFOAM
+        adapter reads this value to set the angular velocity of its dynamic
+        mesh (solidBodyMotionFunction), ensuring the CFD mesh rotates at
+        the same ω computed by the structural solver.
+
+        The value is written:
+         - Before every preCICE advance() (including sub-iterations), so the
+           fluid participant always sees a valid ω.
+         - After a converged time window, with ω for the NEXT window start,
+           so that the fluid solver can begin the next window with the
+           correct mesh rotation velocity.
+
+        For dynamic omega (ComputedOmega), this closes the feedback loop:
+           τ_aero → α = (τ - τ_gen)/I → ω^{n+1} → preCICE → OpenFOAM mesh.
+
+        Parameters
+        ----------
+        omega : float
+            Angular velocity to publish [rad/s].
         """
         if getattr(self, "_send_omega_to_precice", True) is False:
             return
