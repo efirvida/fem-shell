@@ -722,7 +722,6 @@ class LinearDynamicFSIRotorSolver(LinearDynamicFSISolver):
                     ksp_array[dof] = -omega_sq * m_node * (1.0 - axis[j] ** 2)
             # Rotational DOFs (3..dofs_per_node-1): leave as 0
 
-        ksp_diag.restoreArray(ksp_array)
         M_diag.destroy()
 
         # Create diagonal matrix
