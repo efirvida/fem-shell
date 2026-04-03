@@ -1391,6 +1391,7 @@ class LinearDynamicFSIRotorSolver(LinearDynamicFSISolver):
         t = self.solver_params.get("start_time", 0.0)
         step = 0
         time_step = int(round(t / self.solver_params.get("time_step", 1.0)))
+        bootstrap_dt = float(self.solver_params.get("time_step", 1.0))
 
         self._print_phase(6, 7, "Initializing preCICE coupling...")
 
@@ -1406,7 +1407,9 @@ class LinearDynamicFSIRotorSolver(LinearDynamicFSISolver):
 
             # Publish the omega that will be used in the first time window
             # (t -> t + dt), so fluid does not start from a stale zero value.
-            initial_omega, _ = self._omega_provider.get_omega(t + self.dt)
+            # preCICE owns the authoritative dt, but before initialize() returns
+            # we only have the configured startup step available.
+            initial_omega, _ = self._omega_provider.get_omega(t + bootstrap_dt)
             initial_data = {"AngularVelocity": initial_omega}
             _logger.info(f"Initial angular velocity for preCICE: {initial_omega:.4f} rad/s")
 
