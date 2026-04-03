@@ -335,7 +335,7 @@ def list_generators() -> None:
 
 def validate_config(config_path: str) -> bool:
     """Validate configuration file without running."""
-    from fem_shell.core.config import FSISimulationConfig
+    from fem_shell.core.config import FSISimulationConfig, SolverType
 
     try:
         config = FSISimulationConfig.from_yaml(config_path)
@@ -349,10 +349,44 @@ def validate_config(config_path: str) -> bool:
             print("\nWarnings:")
             for w in warnings:
                 print(f"  ⚠️  {w}")
-            return False
-        else:
+
+        # Cross-validate against preCICE XML if applicable
+        fsi_types = (SolverType.LINEAR_DYNAMIC_FSI.value, SolverType.LINEAR_DYNAMIC_FSI_ROTOR.value)
+        if config.solver.type in fsi_types:
+            precice_info = config.load_precice_config()
+            if precice_info:
+                precice_time = precice_info.time
+                mismatches = []
+                if precice_time.time_window_size and config.solver.time_step:
+                    yaml_dt = config.solver.time_step
+                    xml_dt = precice_time.time_window_size
+                    if abs(yaml_dt - xml_dt) / max(abs(xml_dt), 1e-30) > 1e-6:
+                        mismatches.append(
+                            f"time_step: YAML={yaml_dt:.2e} vs preCICE={xml_dt:.2e}"
+                        )
+                if precice_time.max_time and config.solver.total_time:
+                    yaml_t = config.solver.total_time
+                    xml_t = precice_time.max_time
+                    if abs(yaml_t - xml_t) / max(abs(xml_t), 1e-30) > 1e-6:
+                        mismatches.append(
+                            f"total_time: YAML={yaml_t:.2e} vs preCICE={xml_t:.2e}"
+                        )
+                if mismatches:
+                    print("\n  ⚠ preCICE time parameter mismatch:")
+                    for m in mismatches:
+                        print(f"    {m}")
+                    warnings.extend(mismatches)
+                else:
+                    print("\n  ✓ YAML ↔ preCICE time parameters match")
+
+                if precice_info.rbf_mappings:
+                    print(f"\n  ℹ {len(precice_info.rbf_mappings)} RBF mapping(s) found"
+                          " — run with --view or full run for radius validation against mesh")
+
+        if not warnings:
             print("\n✓ Configuration is valid")
             return True
+        return False
 
     except Exception as e:
         print(f"\n✗ Validation failed: {e}")

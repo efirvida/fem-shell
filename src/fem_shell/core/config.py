@@ -53,16 +53,29 @@ class PreciceWatchpoint:
 
 
 @dataclass
+class PreciceRBFMapping:
+    """RBF mapping configuration from preCICE config XML."""
+
+    direction: str  # "read" or "write"
+    from_mesh: str
+    to_mesh: str
+    support_radius: float
+    basis_function: str  # e.g. "compact-polynomial-c6"
+
+
+@dataclass
 class PreciceConfigInfo:
     """Information extracted from preCICE configuration XML.
 
     This class parses a preCICE XML configuration file and extracts:
     - Time parameters (max-time, time-window-size)
     - Watch-points for a specific participant
+    - RBF mapping configurations (support-radius values)
     """
 
     time: PreciceTimeConfig
     watchpoints: List[PreciceWatchpoint]
+    rbf_mappings: List[PreciceRBFMapping] = field(default_factory=list)
     participant: Optional[str] = None
 
     @classmethod
@@ -135,7 +148,35 @@ class PreciceConfigInfo:
                     )
                 break
 
-        return cls(time=time_config, watchpoints=watchpoints, participant=participant)
+        # Extract RBF mapping configurations
+        rbf_mappings = []
+        for elem in root.iter():
+            if elem.tag.startswith("mapping-rbf"):
+                direction = elem.get("direction", "")
+                from_mesh = elem.get("from", "")
+                to_mesh = elem.get("to", "")
+                # Find basis-function child with support-radius
+                for child in elem:
+                    sr = child.get("support-radius")
+                    if sr is not None:
+                        # Tag like basis-function-compact-polynomial-c6
+                        bf_name = child.tag.replace("basis-function-", "")
+                        rbf_mappings.append(
+                            PreciceRBFMapping(
+                                direction=direction,
+                                from_mesh=from_mesh,
+                                to_mesh=to_mesh,
+                                support_radius=float(sr),
+                                basis_function=bf_name,
+                            )
+                        )
+
+        return cls(
+            time=time_config,
+            watchpoints=watchpoints,
+            rbf_mappings=rbf_mappings,
+            participant=participant,
+        )
 
     def get_watchpoint_files(self) -> List[str]:
         """Generate list of watchpoint output file names.

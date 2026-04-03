@@ -98,11 +98,13 @@ class FSIRunner:
         self.mesh: Optional[MeshModel] = None
         self.solver = None
         self._material = None
+        self._precice_info = None
 
         # Auto-complete configuration from preCICE XML if available
         # This fills in total_time, time_step, and watchpoint_files
         fsi_types = (SolverType.LINEAR_DYNAMIC_FSI.value, SolverType.LINEAR_DYNAMIC_FSI_ROTOR.value)
         if self.config.solver.type in fsi_types:
+            self._precice_info = self.config.load_precice_config()
             self.config.auto_complete_from_precice()
 
     def run(self) -> Any:
@@ -172,6 +174,45 @@ class FSIRunner:
         if warnings:
             for warning in warnings:
                 logger.warning("Configuration warning: %s", warning)
+
+        # Validate time parameters against preCICE XML
+        self._validate_precice_time()
+
+    def _validate_precice_time(self) -> None:
+        """Check that YAML time params match preCICE XML values."""
+        if not self._precice_info:
+            return
+
+        precice_time = self._precice_info.time
+        solver_cfg = self.config.solver
+
+        mismatches = []
+
+        if precice_time.time_window_size and solver_cfg.time_step:
+            yaml_dt = solver_cfg.time_step
+            xml_dt = precice_time.time_window_size
+            if abs(yaml_dt - xml_dt) / max(abs(xml_dt), 1e-30) > 1e-6:
+                mismatches.append(
+                    f"time_step: YAML={yaml_dt:.2e} vs preCICE={xml_dt:.2e}"
+                )
+
+        if precice_time.max_time and solver_cfg.total_time:
+            yaml_t = solver_cfg.total_time
+            xml_t = precice_time.max_time
+            if abs(yaml_t - xml_t) / max(abs(xml_t), 1e-30) > 1e-6:
+                mismatches.append(
+                    f"total_time: YAML={yaml_t:.2e} vs preCICE={xml_t:.2e}"
+                )
+
+        if mismatches:
+            print("\n" + "!" * 60)
+            print("  WARNING: YAML ↔ preCICE time parameter mismatch")
+            print("!" * 60)
+            for m in mismatches:
+                print(f"  ⚠ {m}")
+            print("  The preCICE XML defines the coupling time window.")
+            print("  Mismatched values may cause unexpected behavior.")
+            print("!" * 60 + "\n")
 
     @staticmethod
     def _is_precice_peer_disconnect(exc: BaseException) -> bool:
@@ -450,7 +491,81 @@ class FSIRunner:
                 print(f"    max = ({bb_max[0]:.6f}, {bb_max[1]:.6f}, "
                       f"{bb_max[2]:.6f})")
 
+        # Validate RBF support-radius from preCICE XML against mesh spacing
+        self._validate_rbf_radius(mesh)
+
         print("=" * 60)
+
+    def _validate_rbf_radius(self, mesh: MeshModel) -> None:
+        """Compare preCICE RBF support-radius against coupling surface spacing."""
+        import numpy as np
+
+        if not self._precice_info or not self._precice_info.rbf_mappings:
+            return
+        if not self.config.coupling or not self.config.coupling.boundaries:
+            return
+
+        # Compute nearest-neighbor spacing on coupling surfaces
+        from scipy.spatial import cKDTree
+
+        boundary_spacings = {}
+        for boundary_name in self.config.coupling.boundaries:
+            ns = mesh.node_sets.get(boundary_name)
+            if ns is None or ns.node_count < 2:
+                continue
+            coords = np.array([mesh.nodes[nid].coords for nid in ns.node_ids])
+            tree = cKDTree(coords)
+            dists, _ = tree.query(coords, k=2)
+            nn_dists = dists[:, 1]
+            boundary_spacings[boundary_name] = {
+                "mean": float(nn_dists.mean()),
+                "max": float(nn_dists.max()),
+            }
+
+        if not boundary_spacings:
+            return
+
+        # Use the first boundary for comparison (primary coupling surface)
+        spacing = next(iter(boundary_spacings.values()))
+        recommended_min = spacing["mean"] * 4
+        recommended_max = spacing["max"] * 3
+
+        # Check each RBF mapping
+        coupling_mesh = self.config.coupling.coupling_mesh or ""
+        warnings = []
+        for rbf in self._precice_info.rbf_mappings:
+            sr = rbf.support_radius
+            label = f"{rbf.direction} {rbf.from_mesh}→{rbf.to_mesh}"
+
+            if sr < spacing["max"]:
+                warnings.append(
+                    f"  ✗ {label}: support-radius={sr:.6f} < max_spacing={spacing['max']:.6f}\n"
+                    f"    Too small — some nodes will have no neighbors in the support region.\n"
+                    f"    Recommended: {recommended_min:.6f} (4×mean) or {recommended_max:.6f} (3×max)"
+                )
+            elif sr < recommended_max * 0.5:
+                warnings.append(
+                    f"  ⚠ {label}: support-radius={sr:.6f} may be marginal\n"
+                    f"    Recommended: {recommended_min:.6f} (4×mean) or {recommended_max:.6f} (3×max)"
+                )
+            elif sr > spacing["mean"] * 10:
+                warnings.append(
+                    f"  ⚠ {label}: support-radius={sr:.6f} >> mean_spacing={spacing['mean']:.6f}\n"
+                    f"    Very large radius — may cause expensive RBF evaluations and smoothing.\n"
+                    f"    Recommended: {recommended_min:.6f} (4×mean) or {recommended_max:.6f} (3×max)"
+                )
+
+        if warnings:
+            print("\n" + "!" * 60)
+            print("  WARNING: RBF support-radius may not be optimal")
+            print("!" * 60)
+            for w in warnings:
+                print(w)
+            print("!" * 60)
+        else:
+            for rbf in self._precice_info.rbf_mappings:
+                print(f"\n  ✓ RBF {rbf.direction} {rbf.from_mesh}→{rbf.to_mesh}: "
+                      f"support-radius={rbf.support_radius:.6f} OK")
 
     def _create_material(self):
         """Create material from configuration."""
