@@ -154,6 +154,10 @@ from petsc4py import PETSc
 
 from fem_shell.core.bc import BoundaryConditionManager
 from fem_shell.core.mesh import MeshModel
+from fem_shell.postprocess.stress_recovery import (
+    StressRecovery,
+    StressType,
+)
 
 from .corotational import (
     ComputedOmega,
@@ -1786,65 +1790,32 @@ class LinearDynamicFSIRotorSolver(LinearDynamicFSISolver):
             include_euler=False,  # No Euler at zero alpha
         )
 
-        # Write initial state checkpoint with all debugging fields
+        # Write initial state checkpoint with the same VTU fields used in
+        # subsequent checkpoints, so visualization data is consistent.
         if (
             self._checkpoint_manager is not None
             and self.solver_params.get("write_initial_state", True)
             and starting_from_zero
             and t == 0
         ):
-            # Prepare nodal mass field for visualization
-            n_mesh_nodes = self.domain.mesh.node_count
-            nodal_mass_field = np.zeros(n_mesh_nodes, dtype=np.float64)
-            interface_node_indices = self.precice_participant.interface_node_indices
-            for i, node_idx in enumerate(interface_node_indices):
-                if node_idx < n_mesh_nodes:
-                    nodal_mass_field[node_idx] = interface_masses[i]
-
-            # Extract element masses from mass matrix diagonal
-            M_diag = self.M.getDiagonal().array
-            element_mass_field = np.zeros(n_mesh_nodes, dtype=np.float64)
-            dofs_per_node = self.domain.dofs_per_node
-            for node_idx in range(n_mesh_nodes):
-                dof_start = node_idx * dofs_per_node
-                if dof_start < len(M_diag):
-                    # Sum mass contributions for this node (first 3 translational DOFs)
-                    element_mass_field[node_idx] = M_diag[dof_start]
-
-            # Reference coordinates for interface nodes
-            ref_coords_field = np.zeros((n_mesh_nodes, 3), dtype=np.float64)
-            for i, node_idx in enumerate(interface_node_indices):
-                if node_idx < n_mesh_nodes:
-                    ref_coords_field[node_idx, :] = interface_coords[i, :]
-
-            # Compute distance to rotation axis for each node
-            distance_to_axis = np.zeros(n_mesh_nodes, dtype=np.float64)
-            for i, node_idx in enumerate(interface_node_indices):
-                if node_idx < n_mesh_nodes:
-                    rel_pos = interface_coords[i, :] - self._coord_transforms.center
-                    axis = self._coord_transforms.axis
-                    parallel = np.dot(rel_pos, axis) * axis
-                    perp = rel_pos - parallel
-                    distance_to_axis[node_idx] = np.linalg.norm(perp)
+            # Keep field names consistent across all checkpoints.
+            zeros_interface = np.zeros_like(F_gravity_global)
+            F_total_initial = F_centrifugal_initial + F_gravity_global
 
             initial_fields = {
-                "NodalMass": nodal_mass_field,
-                "ElementMass": element_mass_field,
-                "F_Gravity_Global": self._expand_interface_forces_to_full(
+                "F_AERO": self._expand_interface_forces_to_full(zeros_interface),
+                "F_INERT": self._expand_interface_forces_to_full(F_centrifugal_initial),
+                "F_GRAV": self._expand_interface_forces_to_full(
                     F_gravity_global.reshape(-1, 3)
                 ),
-                "F_Centrifugal_Initial": self._expand_interface_forces_to_full(
-                    F_centrifugal_initial
-                ),
-                "RefCoords": ref_coords_field,
-                "DistanceToAxis": distance_to_axis,
-                "RotationAxis": np.tile(self._coord_transforms.axis, (n_mesh_nodes, 1)).astype(
-                    np.float64
-                ),
-                "RotationCenter": np.tile(self._coord_transforms.center, (n_mesh_nodes, 1)).astype(
-                    np.float64
-                ),
+                "F_TOTAL": self._expand_interface_forces_to_full(F_total_initial),
             }
+
+            # Stress / strain fields (TOP, MID, BOT for shells; full 3-D for solids)
+            u_full_init = bc_manager.expand_solution(u).array.copy()
+            initial_fields.update(
+                self._compute_stress_fields(u_full_init)
+            )
 
             self._handle_checkpoint(
                 t=0.0,
@@ -1855,7 +1826,7 @@ class LinearDynamicFSIRotorSolver(LinearDynamicFSISolver):
                 u_red=u.array.copy(),
                 v_red=v.array.copy(),
                 a_red=a.array.copy(),
-                u_full=bc_manager.expand_solution(u).array.copy(),
+                u_full=u_full_init,
                 v_full=bc_manager.expand_state_vector(v).array.copy(),
                 a_full=bc_manager.expand_state_vector(a).array.copy(),
                 extra_fields=initial_fields,
@@ -2528,22 +2499,19 @@ class LinearDynamicFSIRotorSolver(LinearDynamicFSISolver):
                     deformed_radius=current_radius,
                 )
 
-                # Prepare force fields for checkpoint visualization
-                # Also add nodal masses for debugging using proper node indices
-                n_mesh_nodes = self.domain.mesh.node_count
-                mass_field = np.zeros(n_mesh_nodes, dtype=np.float64)
-                interface_node_indices = self.precice_participant.interface_node_indices
-                for i, node_idx in enumerate(interface_node_indices):
-                    if node_idx < n_mesh_nodes:
-                        mass_field[node_idx] = interface_masses[i]
-
+                # Prepare consistent force fields for checkpoint visualization.
                 force_fields = {
-                    "Force CFD": self._expand_interface_forces_to_full(data_local_2d),
-                    "Force Inertial": self._expand_interface_forces_to_full(F_inertial),
-                    "Force Gravity": self._expand_interface_forces_to_full(F_gravity_local),
-                    "Force Total": self._expand_interface_forces_to_full(data_combined),
-                    "NodalMass": mass_field,
+                    "F_AERO": self._expand_interface_forces_to_full(data_local_2d),
+                    "F_INERT": self._expand_interface_forces_to_full(F_inertial),
+                    "F_GRAV": self._expand_interface_forces_to_full(F_gravity_local),
+                    "F_TOTAL": self._expand_interface_forces_to_full(data_combined),
                 }
+
+                # Stress / strain fields (TOP, MID, BOT for shells; full 3-D for solids)
+                u_full_ckpt = bc_manager.expand_solution(u).array.copy()
+                force_fields.update(
+                    self._compute_stress_fields(u_full_ckpt)
+                )
 
                 self._handle_checkpoint(
                     t=t,
@@ -2554,13 +2522,67 @@ class LinearDynamicFSIRotorSolver(LinearDynamicFSISolver):
                     u_red=u.array.copy(),
                     v_red=v.array.copy(),
                     a_red=a.array.copy(),
-                    u_full=bc_manager.expand_solution(u).array.copy(),
+                    u_full=u_full_ckpt,
                     v_full=bc_manager.expand_state_vector(v).array.copy(),
                     a_full=bc_manager.expand_state_vector(a).array.copy(),
                     extra_fields=force_fields,
                 )
 
         return t, time_step, step, u, v, a
+
+    # =========================================================================
+    # Stress / Strain Post-Processing for Checkpoint Export
+    # =========================================================================
+
+    def _compute_stress_fields(
+        self,
+        u_full: np.ndarray,
+    ) -> Dict[str, np.ndarray]:
+        """Compute stress fields and return a flat dict for VTU export.
+
+        For **shell** elements the stresses are evaluated at three
+        through-thickness locations (TOP, MID, BOT) and the dictionary
+        keys are prefixed accordingly (e.g. ``TOP_von_mises``).
+
+        For **solid** elements the Gauss-to-Node extrapolated stresses
+        are returned without prefix.
+
+        This method is called *only* when a checkpoint is being written
+        and therefore does **not** impact the Newmark time-integration
+        performance.
+        """
+        sr = StressRecovery(self.domain, u_full)
+
+        # Detect whether we have shell elements
+        has_shell = any(
+            sr._is_shell(e) for e in self.domain._element_map.values()
+        )
+        has_solid = any(
+            sr._is_solid(e) for e in self.domain._element_map.values()
+        )
+
+        out: Dict[str, np.ndarray] = {}
+
+        if has_shell and not has_solid:
+            # Pure shell mesh → export all three layers
+            out.update(
+                sr.compute_nodal_stresses_all_layers_dict(
+                    stress_type=StressType.TOTAL,
+                )
+            )
+        elif has_solid and not has_shell:
+            # Pure solid mesh → single set of results (no layer prefix)
+            result = sr.compute_nodal_stresses()
+            out.update(result.to_dict())
+        else:
+            # Mixed mesh → export shell layers + solid (with prefix)
+            out.update(
+                sr.compute_nodal_stresses_all_layers_dict(
+                    stress_type=StressType.TOTAL,
+                )
+            )
+
+        return out
 
     # =========================================================================
     # Time Step Helper Methods

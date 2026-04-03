@@ -26,6 +26,31 @@ import numpy as np
 logger = logging.getLogger(__name__)
 
 
+_COMPONENT_FIELD_MAP = {
+    "Ux": "UX",
+    "Uy": "UY",
+    "Uz": "UZ",
+    "θx": "ROTX",
+    "θy": "ROTY",
+    "θz": "ROTZ",
+}
+
+_VECTOR_FIELD_MAP = {
+    "U": "U",
+    "θ": "ROT",
+}
+
+
+def _to_commercial_component_field(name: str) -> str:
+    """Map scalar component field names to commercial-style naming."""
+    return _COMPONENT_FIELD_MAP.get(name, name)
+
+
+def _to_commercial_vector_field(name: str) -> str:
+    """Map vector field names to commercial-style naming."""
+    return _VECTOR_FIELD_MAP.get(name, name)
+
+
 @dataclass
 class CheckpointInfo:
     """Information about a checkpoint on disk."""
@@ -322,18 +347,20 @@ class AsyncCheckpointWriter:
 
         # Store individual components as scalar fields
         for i, comp in enumerate(vector_components):
-            point_data[comp] = U[:, i]
+            point_data[_to_commercial_component_field(comp)] = U[:, i]
 
         # Create vector fields and magnitudes
         for vec_name, components in self.vector_form.items():
-            vec_data = np.column_stack([point_data[c] for c in components])
+            mapped_components = [_to_commercial_component_field(c) for c in components]
+            vec_data = np.column_stack([point_data[c] for c in mapped_components])
+            mapped_vec_name = _to_commercial_vector_field(vec_name)
 
             # Ensure 3D for VTK compatibility
             if vec_data.shape[1] == 2:
                 vec_data = np.hstack([vec_data, np.zeros((vec_data.shape[0], 1))])
 
-            point_data[vec_name] = vec_data
-            point_data[f"{vec_name}_magnitude"] = np.linalg.norm(vec_data, axis=1)
+            point_data[mapped_vec_name] = vec_data
+            point_data[f"{mapped_vec_name}MAG"] = np.linalg.norm(vec_data, axis=1)
 
         # Add velocity if provided
         if v_full is not None:
@@ -342,8 +369,8 @@ class AsyncCheckpointWriter:
                 V = np.hstack([V, np.zeros((V.shape[0], 1))])
             elif V.shape[1] < 3:
                 V = np.hstack([V, np.zeros((V.shape[0], 3 - V.shape[1]))])
-            point_data["Velocity"] = V[:, :3]
-            point_data["Velocity_magnitude"] = np.linalg.norm(V[:, :3], axis=1)
+            point_data["VEL"] = V[:, :3]
+            point_data["VELMAG"] = np.linalg.norm(V[:, :3], axis=1)
 
         # Add acceleration if provided
         if a_full is not None:
@@ -352,8 +379,8 @@ class AsyncCheckpointWriter:
                 A = np.hstack([A, np.zeros((A.shape[0], 1))])
             elif A.shape[1] < 3:
                 A = np.hstack([A, np.zeros((A.shape[0], 3 - A.shape[1]))])
-            point_data["Acceleration"] = A[:, :3]
-            point_data["Acceleration_magnitude"] = np.linalg.norm(A[:, :3], axis=1)
+            point_data["ACC"] = A[:, :3]
+            point_data["ACCMAG"] = np.linalg.norm(A[:, :3], axis=1)
         # Add extra fields if provided
         if extra_fields:
             for name, data in extra_fields.items():
@@ -826,18 +853,20 @@ class CheckpointManager:
 
         # Store individual components as scalar fields
         for i, comp in enumerate(vector_components):
-            point_data[comp] = U[:, i]
+            point_data[_to_commercial_component_field(comp)] = U[:, i]
 
         # Create vector fields and magnitudes
         for vec_name, components in self.vector_form.items():
-            vec_data = np.column_stack([point_data[c] for c in components])
+            mapped_components = [_to_commercial_component_field(c) for c in components]
+            vec_data = np.column_stack([point_data[c] for c in mapped_components])
+            mapped_vec_name = _to_commercial_vector_field(vec_name)
 
             # Ensure 3D for VTK compatibility
             if vec_data.shape[1] == 2:
                 vec_data = np.hstack([vec_data, np.zeros((vec_data.shape[0], 1))])
 
-            point_data[vec_name] = vec_data
-            point_data[f"{vec_name}_magnitude"] = np.linalg.norm(vec_data, axis=1)
+            point_data[mapped_vec_name] = vec_data
+            point_data[f"{mapped_vec_name}MAG"] = np.linalg.norm(vec_data, axis=1)
 
         # Add velocity if provided
         if v_full is not None:
@@ -846,8 +875,8 @@ class CheckpointManager:
                 V = np.hstack([V, np.zeros((V.shape[0], 1))])
             elif V.shape[1] < 3:
                 V = np.hstack([V, np.zeros((V.shape[0], 3 - V.shape[1]))])
-            point_data["Velocity"] = V[:, :3]
-            point_data["Velocity_magnitude"] = np.linalg.norm(V[:, :3], axis=1)
+            point_data["VEL"] = V[:, :3]
+            point_data["VELMAG"] = np.linalg.norm(V[:, :3], axis=1)
 
         # Add acceleration if provided
         if a_full is not None:
@@ -856,8 +885,8 @@ class CheckpointManager:
                 A = np.hstack([A, np.zeros((A.shape[0], 1))])
             elif A.shape[1] < 3:
                 A = np.hstack([A, np.zeros((A.shape[0], 3 - A.shape[1]))])
-            point_data["Acceleration"] = A[:, :3]
-            point_data["Acceleration_magnitude"] = np.linalg.norm(A[:, :3], axis=1)
+            point_data["ACC"] = A[:, :3]
+            point_data["ACCMAG"] = np.linalg.norm(A[:, :3], axis=1)
         # Add extra fields if provided
         if extra_fields:
             for name, data in extra_fields.items():
