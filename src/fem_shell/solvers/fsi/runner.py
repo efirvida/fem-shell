@@ -373,6 +373,10 @@ class FSIRunner:
     def _create_node_sets(self, mesh: MeshModel) -> None:
         """Create node sets from geometric criteria defined in configuration."""
         for ns_cfg in self.config.mesh.node_sets:
+            if ns_cfg.name in mesh.node_sets:
+                print(f"      Node set '{ns_cfg.name}': already exists "
+                      f"({mesh.node_sets[ns_cfg.name].node_count} nodes), skipping")
+                continue
             kwargs = ns_cfg.params or {}
             nset = mesh.create_node_set_by_geometry(
                 name=ns_cfg.name,
