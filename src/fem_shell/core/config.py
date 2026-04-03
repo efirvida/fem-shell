@@ -167,6 +167,7 @@ class ElementFamily(str, Enum):
 
     PLANE = "PLANE"
     SHELL = "SHELL"
+    SOLID = "SOLID"
 
 
 class SolverType(str, Enum):
@@ -175,6 +176,7 @@ class SolverType(str, Enum):
     LINEAR_STATIC = "LinearStatic"
     LINEAR_DYNAMIC = "LinearDynamic"
     LINEAR_DYNAMIC_FSI = "LinearDynamicFSI"
+    LINEAR_DYNAMIC_FSI_ROTOR = "LinearDynamicFSIRotor"
 
 
 class MeshGeneratorType(str, Enum):
@@ -182,6 +184,7 @@ class MeshGeneratorType(str, Enum):
 
     SQUARE = "SquareShapeMesh"
     BOX = "BoxSurfaceMesh"
+    BOX_VOLUME = "BoxVolumeMesh"
     MULTIFLAP = "MultiFlapMesh"
     ROTOR = "RotorMesh"
 
@@ -256,6 +259,111 @@ class RotorMeshParams:
 
 
 @dataclass
+class BoxVolumeMeshParams:
+    """Parameters for BoxVolumeMesh generator (solid elements)."""
+
+    center: tuple
+    dims: tuple
+    nx: int
+    ny: int
+    nz: int
+    element_type: str = "hex"  # "hex", "tet", "wedge", "mixed"
+    quadratic: bool = False
+
+
+@dataclass
+class RotorConfig:
+    """Configuration for LinearDynamicFSIRotorSolver rotor physics.
+
+    This maps to the ``solver_params["rotor"]`` dict consumed by
+    ``LinearDynamicFSIRotorSolver._init_rotor_config()``.
+    """
+
+    omega: float = 0.0
+    omega_ramp_time: float = 0.0
+    moment_of_inertia: Optional[Union[float, str]] = None  # float, "auto", or None
+    resistive_torque: float = 0.0
+    rotation_axis: List[float] = field(default_factory=lambda: [1.0, 0.0, 0.0])
+    rotation_center: List[float] = field(default_factory=lambda: [0.0, 0.0, 0.0])
+    include_geometric_stiffness: bool = True
+    include_spin_softening: bool = True
+    include_centrifugal: bool = True
+    include_coriolis: bool = True
+    include_euler: bool = True
+    kg_update_interval: int = 0
+    force_ramp_time: float = 0.0
+    send_omega_to_precice: bool = True
+    force_max_magnitude: Optional[float] = None
+    force_jump_factor: float = 1000.0
+    transform_displacement_to_inertial: bool = True
+    gravity: List[float] = field(default_factory=lambda: [0.0, 0.0, -9.81])
+    fluid_density: float = 1.225
+    flow_velocity: float = 10.0
+    radius: Optional[float] = None
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert to the dict format expected by the rotor solver."""
+        d: Dict[str, Any] = {
+            "omega": self.omega,
+            "omega_ramp_time": self.omega_ramp_time,
+            "resistive_torque": self.resistive_torque,
+            "rotation_axis": self.rotation_axis,
+            "rotation_center": self.rotation_center,
+            "include_geometric_stiffness": self.include_geometric_stiffness,
+            "include_spin_softening": self.include_spin_softening,
+            "include_centrifugal": self.include_centrifugal,
+            "include_coriolis": self.include_coriolis,
+            "include_euler": self.include_euler,
+            "kg_update_interval": self.kg_update_interval,
+            "force_ramp_time": self.force_ramp_time,
+            "send_omega_to_precice": self.send_omega_to_precice,
+            "force_jump_factor": self.force_jump_factor,
+            "transform_displacement_to_inertial": self.transform_displacement_to_inertial,
+            "gravity": self.gravity,
+            "fluid_density": self.fluid_density,
+            "flow_velocity": self.flow_velocity,
+        }
+        if self.moment_of_inertia is not None:
+            d["moment_of_inertia"] = self.moment_of_inertia
+        if self.force_max_magnitude is not None:
+            d["force_max_magnitude"] = self.force_max_magnitude
+        if self.radius is not None:
+            d["radius"] = self.radius
+        return d
+
+
+@dataclass
+class NodeSetConfig:
+    """Configuration for creating a node set by geometric criteria.
+
+    Maps to ``MeshModel.create_node_set_by_geometry()``.
+
+    Examples
+    --------
+    YAML::
+
+        node_sets:
+          - name: "turbine"
+            criteria_type: "all"
+            on_surface: true
+
+          - name: "base_nodes"
+            criteria_type: "direction"
+            params:
+              point: [0, 0, 0]
+              direction: [0, 1, 0]
+              method: "radial"
+              distance: 0.0265
+              mode: "inside"
+    """
+
+    name: str
+    criteria_type: str  # "all", "coordinate", "box", "distance", "direction"
+    on_surface: bool = False
+    params: Optional[Dict[str, Any]] = None
+
+
+@dataclass
 class MeshGeneratorConfig:
     """Configuration for mesh generation."""
 
@@ -267,6 +375,7 @@ class MeshGeneratorConfig:
         mapping = {
             MeshGeneratorType.SQUARE.value: SquareMeshParams,
             MeshGeneratorType.BOX.value: BoxMeshParams,
+            MeshGeneratorType.BOX_VOLUME.value: BoxVolumeMeshParams,
             MeshGeneratorType.MULTIFLAP.value: MultiFlapMeshParams,
             MeshGeneratorType.ROTOR.value: RotorMeshParams,
         }
@@ -290,6 +399,10 @@ class MeshConfig:
     # Output mesh file (format inferred from extension)
     # Supported formats: .vtk, .vtu, .msh, .inp (CalculiX), .h5/.hdf5, .obj, .stl
     output_file: Optional[str] = None
+    # Renumbering algorithm applied after loading/generating ("rcm" or None)
+    renumber: Optional[str] = None
+    # Node sets created by geometric criteria after loading
+    node_sets: Optional[List[NodeSetConfig]] = None
 
     def __post_init__(self):
         if self.source == MeshSource.FILE.value:
@@ -387,7 +500,12 @@ class ElementConfig:
     thickness: Optional[float] = None
 
     def __post_init__(self):
-        if self.family not in (ElementFamily.PLANE.value, ElementFamily.SHELL.value):
+        valid_families = (
+            ElementFamily.PLANE.value,
+            ElementFamily.SHELL.value,
+            ElementFamily.SOLID.value,
+        )
+        if self.family not in valid_families:
             raise ValueError(f"Invalid element family: {self.family}")
         if self.family == ElementFamily.SHELL.value and self.thickness is None:
             raise ValueError("Shell elements require thickness parameter")
@@ -424,6 +542,12 @@ class SolverConfig:
     damping: Optional[DampingConfig] = None
     use_critical_dt: bool = False
     safety_factor: float = 0.8
+    # Linear algebra solver: "auto", "direct", or "iterative"
+    solver_type: str = "auto"
+    # Rotor-specific configuration (for LinearDynamicFSIRotor)
+    rotor: Optional[RotorConfig] = None
+    # Debug interface mode (verbose preCICE data exchange logging)
+    debug_interface: bool = False
 
     def __post_init__(self):
         valid_types = [s.value for s in SolverType]
@@ -673,6 +797,20 @@ class FSISimulationConfig:
                 params=gen_data.get("params", {}),
             )
 
+        # Parse node set definitions
+        node_sets_config = None
+        node_sets_data = mesh_data.get("node_sets")
+        if node_sets_data:
+            node_sets_config = [
+                NodeSetConfig(
+                    name=ns.get("name"),
+                    criteria_type=ns.get("criteria_type"),
+                    on_surface=ns.get("on_surface", False),
+                    params=ns.get("params"),
+                )
+                for ns in node_sets_data
+            ]
+
         mesh_config = MeshConfig(
             source=mesh_data.get("source"),
             file=mesh_file,
@@ -680,6 +818,8 @@ class FSISimulationConfig:
             output_file=mesh_data.get(
                 "output_file", mesh_data.get("output_vtk")
             ),  # backward compat
+            renumber=mesh_data.get("renumber"),
+            node_sets=node_sets_config,
         )
 
         # Parse material configuration
@@ -708,6 +848,12 @@ class FSISimulationConfig:
         newmark_config = NewmarkConfig(**newmark_data) if newmark_data else None
         damping_config = DampingConfig(**damping_data) if damping_data else None
 
+        # Parse rotor configuration (for LinearDynamicFSIRotor)
+        rotor_config = None
+        rotor_data = solver_data.get("rotor")
+        if rotor_data:
+            rotor_config = RotorConfig(**rotor_data)
+
         solver_config = SolverConfig(
             type=solver_data.get("type", "LinearDynamicFSI"),
             total_time=solver_data.get("total_time"),
@@ -716,6 +862,9 @@ class FSISimulationConfig:
             damping=damping_config,
             use_critical_dt=solver_data.get("use_critical_dt", False),
             safety_factor=solver_data.get("safety_factor", 0.8),
+            solver_type=solver_data.get("solver_type", "auto"),
+            rotor=rotor_config,
+            debug_interface=solver_data.get("debug_interface", False),
         )
 
         # Parse boundary conditions
@@ -857,6 +1006,18 @@ class FSISimulationConfig:
                 "type": self.mesh.generator.type,
                 "params": self.mesh.generator.params,
             }
+        if self.mesh.renumber:
+            result["mesh"]["renumber"] = self.mesh.renumber
+        if self.mesh.node_sets:
+            result["mesh"]["node_sets"] = [
+                {
+                    "name": ns.name,
+                    "criteria_type": ns.criteria_type,
+                    "on_surface": ns.on_surface,
+                    **({"params": ns.params} if ns.params else {}),
+                }
+                for ns in self.mesh.node_sets
+            ]
 
         # Add optional configurations
         if self.elements.thickness:
@@ -876,6 +1037,15 @@ class FSISimulationConfig:
                 "eta_m": self.solver.damping.eta_m,
                 "eta_k": self.solver.damping.eta_k,
             }
+
+        if self.solver.solver_type != "auto":
+            result["solver"]["solver_type"] = self.solver.solver_type
+
+        if self.solver.rotor:
+            result["solver"]["rotor"] = self.solver.rotor.to_dict()
+
+        if self.solver.debug_interface:
+            result["solver"]["debug_interface"] = True
 
         if self.coupling:
             result["coupling"] = {
@@ -932,11 +1102,19 @@ class FSISimulationConfig:
         warnings = []
 
         # Check FSI solver requires coupling config
-        if self.solver.type == SolverType.LINEAR_DYNAMIC_FSI.value:
+        fsi_types = (SolverType.LINEAR_DYNAMIC_FSI.value, SolverType.LINEAR_DYNAMIC_FSI_ROTOR.value)
+        if self.solver.type in fsi_types:
             if not self.coupling:
                 warnings.append("FSI solver requires coupling configuration")
             elif not self.coupling.boundaries:
                 warnings.append("FSI coupling requires at least one boundary")
+
+        # Check rotor solver requires rotor config
+        if self.solver.type == SolverType.LINEAR_DYNAMIC_FSI_ROTOR.value:
+            if not self.solver.rotor:
+                warnings.append("LinearDynamicFSIRotor solver requires rotor configuration")
+            if self.elements.family != ElementFamily.SOLID.value:
+                warnings.append("LinearDynamicFSIRotor solver typically uses SOLID elements")
 
         # Check boundary conditions reference valid nodesets
         # (This would need mesh to be loaded to fully validate)
@@ -972,6 +1150,9 @@ class FSISimulationConfig:
 
         if self.coupling:
             lines.append(f"Coupling: {len(self.coupling.boundaries)} boundaries")
+
+        if self.solver.rotor:
+            lines.append(f"Rotor: omega={self.solver.rotor.omega} rad/s")
 
         return "\n".join(lines)
 

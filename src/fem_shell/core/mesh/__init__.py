@@ -50,6 +50,7 @@ from fem_shell.core.mesh.entities import (
 from fem_shell.core.mesh.generators import (
     BladeMesh,
     BoxSurfaceMesh,
+    BoxVolumeMesh,
     CylindricalSurfaceMesh,
     HyperbolicParaboloidMesh,
     MultiFlapMesh,
@@ -99,6 +100,7 @@ __all__ = [
     # Generators
     "SquareShapeMesh",
     "BoxSurfaceMesh",
+    "BoxVolumeMesh",
     "MultiFlapMesh",
     "BladeMesh",
     "RotorMesh",

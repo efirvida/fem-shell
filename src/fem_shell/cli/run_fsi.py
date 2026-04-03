@@ -45,7 +45,8 @@ mesh:
   # Option 2: Generate programmatically
   # source: "generator"
   # generator:
-  #   # Available types: "SquareShapeMesh", "BoxSurfaceMesh", "MultiFlapMesh"
+  #   # Available types: "SquareShapeMesh", "BoxSurfaceMesh", "BoxVolumeMesh",
+  #   #                  "MultiFlapMesh", "RotorMesh"
   #   type: "SquareShapeMesh"
   #   params:
   #     width: 0.1
@@ -58,6 +59,23 @@ mesh:
   # Optional: Write mesh to file for visualization
   # Supported formats: .vtk, .vtu, .msh, .inp (CalculiX), .h5/.hdf5, .obj, .stl
   output_file: "mesh.vtk"
+
+  # Optional: Renumber mesh for better solver performance
+  # renumber: "rcm"  # Reverse Cuthill-McKee reordering
+
+  # Optional: Create node sets by geometric criteria (after loading)
+  # node_sets:
+  #   - name: "coupling_surface"
+  #     criteria_type: "all"       # "all", "coordinate", "box", "distance", "direction"
+  #     on_surface: true           # Only surface nodes
+  #   - name: "fixed_base"
+  #     criteria_type: "direction"
+  #     params:
+  #       point: [0, 0, 0]
+  #       direction: [0, 1, 0]
+  #       method: "radial"
+  #       distance: 0.03
+  #       mode: "inside"
 
 #============================================================================
 # MATERIAL DEFINITION
@@ -80,14 +98,15 @@ material:
 # ELEMENT CONFIGURATION
 #============================================================================
 elements:
-  family: "PLANE"    # "PLANE" for 2D, "SHELL" for 3D shell
+  family: "PLANE"    # "PLANE" for 2D, "SHELL" for 3D shell, "SOLID" for 3D solid
   # thickness: 0.1   # Required only for SHELL elements
 
 #============================================================================
 # SOLVER CONFIGURATION
 #============================================================================
 solver:
-  # Solver type: "LinearStatic", "LinearDynamic", or "LinearDynamicFSI"
+  # Solver type: "LinearStatic", "LinearDynamic", "LinearDynamicFSI",
+  #              or "LinearDynamicFSIRotor"
   type: "LinearDynamicFSI"
   
   # Time parameters
@@ -107,6 +126,31 @@ solver:
   # Advanced options
   use_critical_dt: false  # Auto-calculate critical time step
   safety_factor: 0.8      # Safety factor for critical dt
+  solver_type: "auto"     # Linear algebra solver: "auto", "direct", "iterative"
+  # debug_interface: false  # Verbose preCICE data exchange logging
+
+  # Rotor configuration (required for LinearDynamicFSIRotor solver)
+  # rotor:
+  #   omega: 0.7917           # Angular velocity [rad/s]
+  #   omega_ramp_time: 0.5    # Linear ramp time for omega [s]
+  #   rotation_axis: [1, 0, 0]
+  #   rotation_center: [0, 0, 0]
+  #   include_geometric_stiffness: true
+  #   include_centrifugal: true
+  #   include_coriolis: true
+  #   include_euler: true
+  #   include_spin_softening: true
+  #   send_omega_to_precice: true
+  #   transform_displacement_to_inertial: true
+  #   force_ramp_time: 0.0
+  #   force_max_magnitude: null    # null = disabled
+  #   force_jump_factor: 1000.0
+  #   gravity: [0, 0, -9.81]
+  #   fluid_density: 1.225
+  #   flow_velocity: 10.0
+  #   radius: null                 # Rotor radius [m], null = auto
+  #   moment_of_inertia: null      # null, float, or "auto"
+  #   resistive_torque: 0.0
 
 #============================================================================
 # BOUNDARY CONDITIONS
@@ -229,6 +273,17 @@ GENERATOR_TEMPLATES = {
       element_size: 0.5    # Target element size [m]
       n_samples: 300       # Samples for airfoil discretization
 """,
+    "BoxVolumeMesh": """  generator:
+    type: "BoxVolumeMesh"
+    params:
+      center: [0, 5.0, 0]        # Center coordinates [x, y, z]
+      dims: [1.0, 10.0, 1.0]     # Box dimensions [dx, dy, dz]
+      nx: 4                       # Elements in X direction
+      ny: 20                      # Elements in Y direction
+      nz: 4                       # Elements in Z direction
+      element_type: "hex"         # "hex", "tet", "wedge", "mixed"
+      quadratic: false
+""",
 }
 
 
@@ -270,6 +325,10 @@ def list_generators() -> None:
     print("\n4. RotorMesh")
     print("   Wind turbine rotor mesh from blade YAML definition")
     print("   Node sets: RootNodes_blade_N, allOuterShellNods_blade_N")
+
+    print("\n5. BoxVolumeMesh")
+    print("   3D solid volume mesh with hex/tet/wedge elements")
+    print("   Node sets: left, right, top, bottom, front, back")
 
     print("\nUse --template --generator <name> for example configuration")
 

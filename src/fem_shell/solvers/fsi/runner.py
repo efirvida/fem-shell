@@ -28,7 +28,16 @@ from ...core.config import (
     SolverType,
 )
 from ...core.material import IsotropicMaterial, OrthotropicMaterial
-from ...core.mesh import BoxSurfaceMesh, MeshModel, MultiFlapMesh, RotorMesh, SquareShapeMesh
+from ...core.mesh import (
+    BoxSurfaceMesh,
+    BoxVolumeMesh,
+    MeshModel,
+    MultiFlapMesh,
+    RotorMesh,
+    SquareShapeMesh,
+    check_mesh_quality,
+    verify_solid_element_orientations,
+)
 from ...elements import ElementFamily as ElemFamily
 
 logger = logging.getLogger(__name__)
@@ -92,7 +101,8 @@ class FSIRunner:
 
         # Auto-complete configuration from preCICE XML if available
         # This fills in total_time, time_step, and watchpoint_files
-        if self.config.solver.type == "LinearDynamicFSI":
+        fsi_types = (SolverType.LINEAR_DYNAMIC_FSI.value, SolverType.LINEAR_DYNAMIC_FSI_ROTOR.value)
+        if self.config.solver.type in fsi_types:
             self.config.auto_complete_from_precice()
 
     def run(self) -> Any:
@@ -131,7 +141,14 @@ class FSIRunner:
 
         # Step 6: Run simulation
         logger.info("Starting solver...")
-        self.solver.solve()
+        try:
+            self.solver.solve()
+        except RuntimeError as exc:
+            if self._is_precice_peer_disconnect(exc):
+                logger.error("preCICE peer disconnected: %s", exc)
+                self._print_precice_disconnect_help(exc)
+                raise
+            raise
 
         # Step 7: Post-processing
         self._run_postprocessing()
@@ -156,6 +173,35 @@ class FSIRunner:
             for warning in warnings:
                 logger.warning("Configuration warning: %s", warning)
 
+    @staticmethod
+    def _is_precice_peer_disconnect(exc: BaseException) -> bool:
+        """Detect common preCICE socket EOF when the peer participant crashes."""
+        msg = str(exc)
+        patterns = (
+            "Receiving data from another participant",
+            "End of file [asio.misc:2]",
+            "other participant exited with an error",
+        )
+        return any(p in msg for p in patterns)
+
+    @staticmethod
+    def _print_precice_disconnect_help(exc: BaseException) -> None:
+        """Print a user-friendly message for preCICE peer disconnects."""
+        import os
+
+        print("\n" + "=" * 80)
+        print("PRECICE COUPLING STOPPED (PEER DISCONNECTED)")
+        print("=" * 80)
+        print("  Solid participant received EOF from preCICE socket.")
+        print("  This usually means the fluid participant crashed or exited first.")
+        print("\n  Next checks:")
+        print("    1) Inspect the fluid participant log around the same timestamp")
+        print("    2) Check preCICE adapter messages on the fluid side")
+        print("    3) Verify both participants use matching preCICE XML and data names")
+        if os.environ.get("FEM_SHELL_DEBUG_TRACEBACK") == "1":
+            print(f"\n  Original error: {exc}")
+        print("=" * 80)
+
     def _setup_mesh(self) -> MeshModel:
         """Load or generate the mesh based on configuration."""
         print("\n[1/6] Setting up mesh...", flush=True)
@@ -172,6 +218,21 @@ class FSIRunner:
             else:
                 mesh = self._generate_mesh()
 
+        # Renumber mesh if configured
+        if self.config.mesh.renumber:
+            print(f"      Renumbering mesh (algorithm={self.config.mesh.renumber})...")
+            mesh.renumber_mesh(algorithm=self.config.mesh.renumber, verbose=True)
+
+        # Mesh quality checks for solid elements
+        if self.config.elements.family == ElementFamily.SOLID.value:
+            print("      Running solid element quality checks...")
+            verify_solid_element_orientations(mesh, fix_inplace=True)
+            check_mesh_quality(mesh)
+
+        # Create node sets from geometric criteria
+        if self.config.mesh.node_sets:
+            self._create_node_sets(mesh)
+
         # Write VTK if configured
         if self.config.mesh.output_file:
             mesh.write_mesh(self.config.mesh.output_file)
@@ -180,6 +241,10 @@ class FSIRunner:
         print(f"      Nodes: {len(mesh.nodes)}")
         print(f"      Elements: {len(mesh.elements)}")
         print(f"      Node sets: {list(mesh.node_sets.keys())}")
+
+        # Mesh analysis for FSI coupling (RBF support-radius guidance)
+        if self.config.coupling:
+            self._log_mesh_analysis(mesh)
 
         return mesh
 
@@ -289,10 +354,99 @@ class FSIRunner:
                 n_samples=params.get("n_samples", 300),
             ).generate(renumber="rcm")
 
+        elif gen_type == MeshGeneratorType.BOX_VOLUME.value:
+            mesh = BoxVolumeMesh(
+                center=tuple(params["center"]),
+                dims=tuple(params["dims"]),
+                nx=params["nx"],
+                ny=params["ny"],
+                nz=params["nz"],
+                element_type=params.get("element_type", "hex"),
+                quadratic=params.get("quadratic", False),
+            ).generate()
+
         else:
             raise ValueError(f"Unknown mesh generator type: {gen_type}")
 
         return mesh
+
+    def _create_node_sets(self, mesh: MeshModel) -> None:
+        """Create node sets from geometric criteria defined in configuration."""
+        for ns_cfg in self.config.mesh.node_sets:
+            kwargs = ns_cfg.params or {}
+            nset = mesh.create_node_set_by_geometry(
+                name=ns_cfg.name,
+                criteria_type=ns_cfg.criteria_type,
+                on_surface=ns_cfg.on_surface,
+                **kwargs,
+            )
+            print(f"      Node set '{ns_cfg.name}': {nset.node_count} nodes "
+                  f"(criteria={ns_cfg.criteria_type}, on_surface={ns_cfg.on_surface})")
+
+    def _log_mesh_analysis(self, mesh: MeshModel) -> None:
+        """Log mesh size statistics and RBF support-radius guidance."""
+        import numpy as np
+        from itertools import combinations
+
+        print("\n" + "=" * 60)
+        print("  MESH SIZE STATISTICS (for RBF support-radius)")
+        print("=" * 60)
+
+        # Volume element edge lengths
+        edge_lengths = []
+        for elem in mesh.elements:
+            coords = np.array([n.coords for n in elem.nodes])
+            for i, j in combinations(range(len(coords)), 2):
+                edge_lengths.append(np.linalg.norm(coords[i] - coords[j]))
+        edge_lengths = np.array(edge_lengths)
+
+        print(f"  Volume element edge lengths:")
+        print(f"    Min:    {edge_lengths.min():.6f} m")
+        print(f"    Max:    {edge_lengths.max():.6f} m")
+        print(f"    Mean:   {edge_lengths.mean():.6f} m")
+        print(f"    Median: {np.median(edge_lengths):.6f} m")
+        print(f"    Std:    {edge_lengths.std():.6f} m")
+
+        # Coupling surface nearest-neighbor spacing
+        if self.config.coupling and self.config.coupling.boundaries:
+            for boundary_name in self.config.coupling.boundaries:
+                ns = mesh.node_sets.get(boundary_name)
+                if ns is None or ns.node_count == 0:
+                    print(f"\n  WARNING: Coupling surface '{boundary_name}' "
+                          f"not found for spacing analysis")
+                    continue
+
+                from scipy.spatial import cKDTree
+
+                surface_coords = np.array(
+                    [mesh.nodes[nid].coords for nid in ns.node_ids]
+                )
+                tree = cKDTree(surface_coords)
+                dists, _ = tree.query(surface_coords, k=2)
+                nn_dists = dists[:, 1]
+
+                print(f"\n  Coupling surface '{boundary_name}' "
+                      f"nearest-neighbor spacing:")
+                print(f"    Nodes on surface: {ns.node_count}")
+                print(f"    Min:    {nn_dists.min():.6f} m")
+                print(f"    Max:    {nn_dists.max():.6f} m")
+                print(f"    Mean:   {nn_dists.mean():.6f} m")
+                print(f"    Std:    {nn_dists.std():.6f} m")
+                print(f"\n  >>> Recommended RBF support-radius: "
+                      f"{nn_dists.mean() * 4:.6f} m (4x mean spacing)")
+                print(f"  >>> Conservative estimate:          "
+                      f"{nn_dists.max() * 3:.6f} m (3x max spacing)")
+
+                # Bounding box
+                bb_min = surface_coords.min(axis=0)
+                bb_max = surface_coords.max(axis=0)
+                print(f"\n  Coupling surface bounding box:")
+                print(f"    min = ({bb_min[0]:.6f}, {bb_min[1]:.6f}, "
+                      f"{bb_min[2]:.6f})")
+                print(f"    max = ({bb_max[0]:.6f}, {bb_max[1]:.6f}, "
+                      f"{bb_max[2]:.6f})")
+
+        print("=" * 60)
 
     def _create_material(self):
         """Create material from configuration."""
@@ -348,12 +502,13 @@ class FSIRunner:
         """Build the model configuration dictionary for the solver."""
         print("\n[3/6] Building model configuration...", flush=True)
 
-        # Element family
-        elem_family = (
-            ElemFamily.PLANE
-            if self.config.elements.family == ElementFamily.PLANE.value
-            else ElemFamily.SHELL
-        )
+        # Element family mapping
+        family_map = {
+            ElementFamily.PLANE.value: ElemFamily.PLANE,
+            ElementFamily.SHELL.value: ElemFamily.SHELL,
+            ElementFamily.SOLID.value: ElemFamily.SOLID,
+        }
+        elem_family = family_map[self.config.elements.family]
 
         # Base configuration
         model_config: Dict[str, Any] = {
@@ -362,6 +517,8 @@ class FSIRunner:
                 "time_step": self.config.solver.time_step,
                 "use_critical_dt": self.config.solver.use_critical_dt,
                 "safety_factor": self.config.solver.safety_factor,
+                "solver_type": self.config.solver.solver_type,
+                "debug_interface": self.config.solver.debug_interface,
             },
             "elements": {
                 "material": self._material,
@@ -410,6 +567,10 @@ class FSIRunner:
             model_config["solver"]["deformed_mesh_scale"] = self.config.output.deformed_mesh_scale
             model_config["solver"]["write_initial_state"] = self.config.output.write_initial_state
 
+        # Add rotor configuration (for LinearDynamicFSIRotor)
+        if self.config.solver.rotor:
+            model_config["solver"]["rotor"] = self.config.solver.rotor.to_dict()
+
         print(f"      Solver type: {self.config.solver.type}")
         print(f"      Element family: {self.config.elements.family}")
 
@@ -438,6 +599,11 @@ class FSIRunner:
             from . import LinearDynamicFSISolver
 
             solver = LinearDynamicFSISolver(self.mesh, model_config)
+
+        elif solver_type == SolverType.LINEAR_DYNAMIC_FSI_ROTOR.value:
+            from .rotor import LinearDynamicFSIRotorSolver
+
+            solver = LinearDynamicFSIRotorSolver(self.mesh, model_config)
 
         else:
             raise ValueError(f"Unknown solver type: {solver_type}")
