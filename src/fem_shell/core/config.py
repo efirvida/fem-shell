@@ -562,10 +562,33 @@ class NewmarkConfig:
 
 @dataclass
 class DampingConfig:
-    """Rayleigh damping parameters."""
+    """Rayleigh damping parameters for C = η_k·K + η_m·M.
 
-    eta_m: float = 1.0e-4
-    eta_k: float = 1.0e-4
+    Modes
+    -----
+    Manual  : provide ``eta_m`` and/or ``eta_k`` explicitly.
+    Auto    : set ``enabled=True`` and omit manual coefficients; the solver
+              runs a mini modal analysis on the assembled K and M matrices and
+              computes α (``eta_k``) and β (``eta_m``) from the two-point
+              Rayleigh formula at the user-specified reference modes.
+    Disabled: set ``enabled=False`` to skip the damping matrix entirely.
+    """
+
+    # Manual coefficients – override auto when explicitly given
+    eta_m: Optional[float] = None  # β : mass-proportional coefficient  [1/s]
+    eta_k: Optional[float] = None  # α : stiffness-proportional coeff   [s]
+
+    # Master on/off switch (False → C = 0, no performance cost)
+    enabled: bool = True
+
+    # Auto-computation parameters (used when enabled=True and manual
+    # coefficients are not provided)
+    zeta: float = 0.02          # Target damping ratio at reference modes
+    zeta_1: Optional[float] = None  # ζ at mode_i  (overrides zeta when set)
+    zeta_2: Optional[float] = None  # ζ at mode_j  (overrides zeta when set)
+    mode_i: int = 1             # First reference mode index (1-based)
+    mode_j: int = 2             # Second reference mode index (1-based)
+    num_modes: int = 6          # Total modes to compute in modal solve
 
 
 @dataclass
@@ -1074,10 +1097,29 @@ class FSISimulationConfig:
             }
 
         if self.solver.damping:
-            result["solver"]["damping"] = {
-                "eta_m": self.solver.damping.eta_m,
-                "eta_k": self.solver.damping.eta_k,
-            }
+            d = self.solver.damping
+            damping_dict: Dict = {"enabled": d.enabled}
+            if d.eta_m is not None:
+                damping_dict["eta_m"] = d.eta_m
+            if d.eta_k is not None:
+                damping_dict["eta_k"] = d.eta_k
+            if not d.enabled:
+                result["solver"]["damping"] = damping_dict
+            else:
+                # Include auto-computation parameters
+                damping_dict.update(
+                    {
+                        "zeta": d.zeta,
+                        "mode_i": d.mode_i,
+                        "mode_j": d.mode_j,
+                        "num_modes": d.num_modes,
+                    }
+                )
+                if d.zeta_1 is not None:
+                    damping_dict["zeta_1"] = d.zeta_1
+                if d.zeta_2 is not None:
+                    damping_dict["zeta_2"] = d.zeta_2
+                result["solver"]["damping"] = damping_dict
 
         if self.solver.solver_type != "auto":
             result["solver"]["solver_type"] = self.solver.solver_type

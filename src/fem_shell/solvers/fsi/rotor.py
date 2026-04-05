@@ -146,6 +146,7 @@ from __future__ import annotations
 
 import logging
 import os
+import time
 from dataclasses import dataclass
 from typing import Any, Dict, NamedTuple, Optional, Tuple
 
@@ -513,9 +514,37 @@ class LinearDynamicFSIRotorSolver(LinearDynamicFSISolver):
 
     def _init_solver_config(self) -> None:
         """Initialize solver configuration parameters."""
-        # Damping parameters (defaults to zero if not specified)
-        self._eta_m = self.solver_params.get("eta_m", 0.0)
-        self._eta_k = self.solver_params.get("eta_k", 0.0)
+        damping_cfg = self.solver_params.get("damping") or {}
+
+        self._damping_enabled: bool = damping_cfg.get("enabled", True)
+        # Auto mode: compute coefficients from modal analysis at assembly time
+        self._damping_auto: bool = (
+            self._damping_enabled
+            and damping_cfg.get("eta_m") is None
+            and damping_cfg.get("eta_k") is None
+            and bool(damping_cfg)  # only auto when damping section is present
+        )
+        self._damping_cfg: dict = damping_cfg
+
+        if not self._damping_enabled:
+            self._eta_m = 0.0
+            self._eta_k = 0.0
+        elif self._damping_auto:
+            # Placeholder — will be overwritten in _assemble_system_matrices
+            self._eta_m = 0.0
+            self._eta_k = 0.0
+        else:
+            # Manual mode: read from nested damping dict, fall back to flat keys
+            self._eta_m = float(
+                damping_cfg["eta_m"]
+                if damping_cfg.get("eta_m") is not None
+                else self.solver_params.get("eta_m", 0.0)
+            )
+            self._eta_k = float(
+                damping_cfg["eta_k"]
+                if damping_cfg.get("eta_k") is not None
+                else self.solver_params.get("eta_k", 0.0)
+            )
 
         # Solver type configuration
         self._solver_type = self.solver_params.get("solver_type", "auto")
@@ -617,10 +646,175 @@ class LinearDynamicFSIRotorSolver(LinearDynamicFSISolver):
         if self._eta_m == 0.0 and self._eta_k == 0.0:
             return None
 
-        C = K.duplicate()
+        # copy() preserves values; duplicate() only copies sparsity (values = 0)
+        C = K.copy()
         C.scale(self._eta_k)
         C.axpy(self._eta_m, M)
         return C
+
+    def _compute_rayleigh_auto(self) -> Tuple[float, float]:
+        """Compute Rayleigh damping coefficients α (η_k) and β (η_m) automatically.
+
+        Runs a reduced modal analysis on copies of the assembled K and M matrices
+        and applies the two-point method described in:
+
+            SimScale Knowledge Base — "How to Compute the Coefficients for
+            Rayleigh Damping?" (2022).
+
+        Given damping ratios ζ_i and ζ_j at two natural frequencies ω_i and ω_j
+        (from modal analysis), the system
+
+            ζ = ½ · (α·ω + β/ω)
+
+        is solved at both reference modes:
+
+            α (η_k) = 2·(ζ_i·ω_i − ζ_j·ω_j) / (ω_i² − ω_j²)
+            β (η_m) = 2·ω_i·ω_j·(ζ_j·ω_i − ζ_i·ω_j) / (ω_i² − ω_j²)
+
+        For equal damping ratios ζ_i = ζ_j = ζ this simplifies to:
+
+            α = 2·ζ / (ω_i + ω_j)
+            β = 2·ζ·ω_i·ω_j / (ω_i + ω_j)
+
+        Returns
+        -------
+        Tuple[float, float]
+            (eta_k, eta_m) — stiffness-proportional and mass-proportional
+            Rayleigh coefficients.
+
+        Raises
+        ------
+        RuntimeError
+            If the modal solve does not converge enough modes.
+        ValueError
+            If the two reference modes share the same natural frequency.
+        """
+        from slepc4py import SLEPc  # local import — only needed in auto mode
+
+        cfg = self._damping_cfg
+        zeta = float(cfg.get("zeta", 0.02))
+        zeta_i = float(cfg["zeta_1"]) if cfg.get("zeta_1") is not None else zeta
+        zeta_j = float(cfg["zeta_2"]) if cfg.get("zeta_2") is not None else zeta
+        mode_i = int(cfg.get("mode_i", 1))
+        mode_j = int(cfg.get("mode_j", 2))
+        num_modes = int(cfg.get("num_modes", max(mode_j + 2, 6)))
+
+        if mode_i == mode_j:
+            raise ValueError("mode_i and mode_j must be different for Rayleigh auto-computation.")
+
+        # copy() preserves both sparsity structure AND values (unlike duplicate())
+        K_dup = self.K.copy()
+        M_dup = self.M.copy()
+        F_tmp = K_dup.createVecRight()
+        F_tmp.set(0.0)
+
+        bc_tmp = BoundaryConditionManager(K_dup, F_tmp, M_dup, self.domain.dofs_per_node)
+        bc_tmp.apply_dirichlet(self.dirichlet_conditions)
+        K_red, F_red, M_red = bc_tmp.reduced_system
+
+        # Generalized eigenvalue problem: K·φ = λ·M·φ  (λ = ω²)
+        eps = SLEPc.EPS().create(self.comm)
+        eps.setOperators(K_red, M_red)
+        eps.setProblemType(SLEPc.EPS.ProblemType.GHEP)
+
+        st = eps.getST()
+        st.setType(SLEPc.ST.Type.SINVERT)
+        st.setShift(0.0)
+        ksp_st = st.getKSP()
+        ksp_st.setType("preonly")
+        pc_st = ksp_st.getPC()
+        pc_st.setType("lu")
+        # Use petsc built-in LU — avoid MUMPS (may not be compiled in).
+        # setFactorSolverType returns without error but fails silently at setup.
+        pc_st.setFactorSolverType("petsc")
+
+        eps.setWhichEigenpairs(SLEPc.EPS.Which.TARGET_MAGNITUDE)
+        eps.setTarget(0.0)
+        eps.setDimensions(num_modes, PETSc.DECIDE, PETSc.DECIDE)
+        eps.setTolerances(tol=1e-8, max_it=500)
+        try:
+            eps.solve()
+        except Exception as exc:
+            K_red.destroy()
+            if M_red is not None:
+                M_red.destroy()
+            F_red.destroy()
+            K_dup.destroy()
+            M_dup.destroy()
+            F_tmp.destroy()
+            raise RuntimeError(
+                f"Rayleigh auto: SLEPc eigenvalue solve failed — {exc}. "
+                "Check boundary conditions and that K/M are properly assembled."
+            ) from exc
+
+        nconv = eps.getConverged()
+
+        # Extract and sort positive eigenvalues (λ = ω² > 0)
+        raw_eigs = sorted(eps.getEigenvalue(i).real for i in range(nconv))
+        positive_eigs = [lam for lam in raw_eigs if lam > 1e-8]
+
+        # Cleanup temporary objects
+        K_red.destroy()
+        if M_red is not None:
+            M_red.destroy()
+        F_red.destroy()
+        K_dup.destroy()
+        M_dup.destroy()
+        F_tmp.destroy()
+
+        needed = max(mode_i, mode_j)
+        if len(positive_eigs) < needed:
+            raise RuntimeError(
+                f"Rayleigh auto: modal solve found only {len(positive_eigs)} positive "
+                f"eigenvalues but mode {needed} is required. "
+                f"Increase num_modes (currently {num_modes}) or check boundary conditions."
+            )
+
+        omega_i = float(np.sqrt(positive_eigs[mode_i - 1]))  # rad/s
+        omega_j = float(np.sqrt(positive_eigs[mode_j - 1]))  # rad/s
+
+        denom = omega_i**2 - omega_j**2
+        if abs(denom) < 1e-12:
+            raise ValueError(
+                f"Rayleigh auto: modes {mode_i} and {mode_j} have the same "
+                f"natural frequency (ω ≈ {omega_i:.4e} rad/s). "
+                "Choose two distinct modes."
+            )
+
+        alpha = 2.0 * (zeta_i * omega_i - zeta_j * omega_j) / denom  # η_k
+        beta = 2.0 * omega_i * omega_j * (zeta_j * omega_i - zeta_i * omega_j) / denom  # η_m
+
+        if alpha < 0.0 or beta < 0.0:
+            _logger.warning(
+                "Rayleigh auto produced a negative coefficient: η_k=%.3e, η_m=%.3e. "
+                "The damping ratio may be non-monotone. Verify your mode selection.",
+                alpha,
+                beta,
+            )
+
+        if self._is_primary_rank():
+            f_i = omega_i / (2.0 * np.pi)
+            f_j = omega_j / (2.0 * np.pi)
+            print(
+                f"  [Rayleigh auto] Mode {mode_i}: f={f_i:.3f} Hz "
+                f"(ω={omega_i:.3f} rad/s), ζ={zeta_i:.4f}",
+                flush=True,
+            )
+            print(
+                f"  [Rayleigh auto] Mode {mode_j}: f={f_j:.3f} Hz "
+                f"(ω={omega_j:.3f} rad/s), ζ={zeta_j:.4f}",
+                flush=True,
+            )
+            print(
+                f"  [Rayleigh auto] η_k (stiffness) = {alpha:.4e} s",
+                flush=True,
+            )
+            print(
+                f"  [Rayleigh auto] η_m (mass)      = {beta:.4e} 1/s",
+                flush=True,
+            )
+
+        return alpha, beta  # (eta_k, eta_m)
 
     def _build_effective_stiffness(
         self,
@@ -664,7 +858,9 @@ class LinearDynamicFSIRotorSolver(LinearDynamicFSISolver):
         PETSc.Mat
             Effective stiffness matrix ready for KSP solve.
         """
-        K_eff = K_red.duplicate()
+        # copy() preserves values; duplicate() only copies sparsity (values = 0).
+        # K must be explicitly present in K_eff for the correct Newmark formulation.
+        K_eff = K_red.copy()
         K_eff.axpy(coeffs.a0, M_red)
         if K_G_red is not None:
             K_eff.axpy(1.0, K_G_red)
@@ -672,6 +868,10 @@ class LinearDynamicFSIRotorSolver(LinearDynamicFSISolver):
             K_eff.axpy(1.0, K_SP_red)
         if C_red is not None:
             K_eff.axpy(coeffs.a1, C_red)
+        # Inform GAMG of the per-node block structure (dofs_per_node DOFs per node).
+        # Without this, GAMG aggregates scalar DOFs independently and mishandles the
+        # directional anisotropy introduced by K_SP (negative diagonal in X/Z only).
+        K_eff.setBlockSize(self.domain.dofs_per_node)
         return K_eff
 
     def _build_spin_softening_matrix(self, omega: float) -> PETSc.Mat:
@@ -1231,8 +1431,8 @@ class LinearDynamicFSIRotorSolver(LinearDynamicFSISolver):
         beta: float,
         gamma: float,
         omega_initial: float,
-        K_G_enabled: bool,
-        K_SP_enabled: bool,
+        K_G_assembled: bool,
+        K_SP_assembled: bool,
         C_enabled: bool,
         gravity_force_mag: float,
     ) -> None:
@@ -1246,10 +1446,10 @@ class LinearDynamicFSIRotorSolver(LinearDynamicFSISolver):
             Newmark γ parameter.
         omega_initial : float
             Initial angular velocity [rad/s].
-        K_G_enabled : bool
-            Whether geometric stiffness is active.
-        K_SP_enabled : bool
-            Whether spin softening is active.
+        K_G_assembled : bool
+            Whether geometric stiffness matrix was assembled at startup.
+        K_SP_assembled : bool
+            Whether spin softening matrix was assembled at startup.
         C_enabled : bool
             Whether Rayleigh damping is active.
         gravity_force_mag : float
@@ -1265,12 +1465,19 @@ class LinearDynamicFSIRotorSolver(LinearDynamicFSISolver):
             flush=True,
         )
         print(
-            f"  K_G: {'enabled' if K_G_enabled else 'disabled'}  │  "
-            f"K_SP: {'enabled' if K_SP_enabled else 'disabled'}  │  "
+            f"  K_G: {'enabled' if self._include_geometric_stiffness else 'disabled'}  │  "
+            f"K_SP: {'enabled' if self._include_spin_softening else 'disabled'}  │  "
             f"Damping: {'enabled' if C_enabled else 'disabled'}  │  "
             f"Solver: {self._solver_type}",
             flush=True,
         )
+        if self._include_geometric_stiffness or self._include_spin_softening:
+            print(
+                f"  Startup assembly: K_G={'on' if K_G_assembled else 'off'}  │  "
+                f"K_SP={'on' if K_SP_assembled else 'off'}  │  "
+                f"ω(0) = {omega_initial:.4f} rad/s (zero-valued if ω=0)",
+                flush=True,
+            )
         print(
             f"  Centrifugal: {self._include_centrifugal}  │  Coriolis: {self._include_coriolis}  │  Euler: {self._include_euler}",
             flush=True,
@@ -1320,6 +1527,7 @@ class LinearDynamicFSIRotorSolver(LinearDynamicFSISolver):
         n_nodes: int,
         local_force_mag: float,
         omega: float,
+        alpha: float,
         inertial_diags: Dict[str, Any],
         F_gravity_local: Optional[np.ndarray],
         torque_global: np.ndarray,
@@ -1345,6 +1553,8 @@ class LinearDynamicFSIRotorSolver(LinearDynamicFSISolver):
             Total force magnitude in rotating frame [N].
         omega : float
             Current angular velocity [rad/s].
+        alpha : float
+            Current angular acceleration [rad/s²].
         inertial_diags : Dict[str, Any]
             Diagnostic dict from InertialForcesCalculator with per-force
             magnitudes (centrifugal, coriolis, euler, total_inertial).
@@ -1391,6 +1601,42 @@ class LinearDynamicFSIRotorSolver(LinearDynamicFSISolver):
         print("  ├─ TRANSFORMED TO ROTATING FRAME", flush=True)
         print(f"  │  Total:   |F| = {local_force_mag:12.4e} N", flush=True)
         print("  │", flush=True)
+        # Log omega ramp status if using a ramped provider
+        if isinstance(self._omega_provider, RampedOmega):
+            target = self._omega_provider._target_omega
+            ramp_t = self._omega_provider._ramp_time
+            pct = min(omega / target, 1.0) * 100.0 if target > 0 else 100.0
+            if pct < 100.0:
+                print(
+                    f"  ├─ ► ω RAMP ACTIVE: {pct:5.1f}%  │  "
+                    f"ω={omega:.4f} / {target:.4f} rad/s  │  "
+                    f"α={alpha:.4f} rad/s²  │  Target: {ramp_t:.4f}s",
+                    flush=True,
+                )
+            else:
+                print(
+                    f"  ├─ ✓ ω RAMP COMPLETE  │  ω={omega:.4f} rad/s (target reached)",
+                    flush=True,
+                )
+            print("  │", flush=True)
+        elif isinstance(self._omega_provider, RampedComputedOmega):
+            target = self._omega_provider._target_omega
+            ramp_t = self._omega_provider._ramp_time
+            if not self._omega_provider._ramp_completed:
+                pct = min(omega / target, 1.0) * 100.0 if target > 0 else 100.0
+                print(
+                    f"  ├─ ► ω RAMP ACTIVE: {pct:5.1f}%  │  "
+                    f"ω={omega:.4f} / {target:.4f} rad/s  │  "
+                    f"α={alpha:.4f} rad/s²  │  Target: {ramp_t:.4f}s",
+                    flush=True,
+                )
+            else:
+                print(
+                    f"  ├─ ✓ ω RAMP COMPLETE (dynamic)  │  "
+                    f"ω={omega:.4f} rad/s  │  α={alpha:.4f} rad/s²",
+                    flush=True,
+                )
+            print("  │", flush=True)
         print(f"  ├─ INERTIAL FORCES (ω={omega:.4f} rad/s)", flush=True)
 
         if "centrifugal" in inertial_diags:
@@ -1430,7 +1676,9 @@ class LinearDynamicFSIRotorSolver(LinearDynamicFSISolver):
         )
         print("  └" + "─" * 67, flush=True)
 
-    def _log_solver_response(self, ksp_its: int, ksp_reason: int, max_disp: float) -> None:
+    def _log_solver_response(
+        self, ksp_its: int, ksp_reason: int, max_disp: float, iter_wall_time: float = 0.0
+    ) -> None:
         """Log linear solver response.
 
         Parameters
@@ -1441,6 +1689,8 @@ class LinearDynamicFSIRotorSolver(LinearDynamicFSISolver):
             PETSc convergence reason code (positive = converged).
         max_disp : float
             Maximum displacement magnitude [m].
+        iter_wall_time : float
+            Wall-clock time for this iteration [s].
         """
         if not self._is_primary_rank():
             return
@@ -1448,6 +1698,7 @@ class LinearDynamicFSIRotorSolver(LinearDynamicFSISolver):
         print("  ┌─ SOLVER RESPONSE", flush=True)
         print(f"  │  KSP iterations: {ksp_its}  (reason: {ksp_reason})", flush=True)
         print(f"  │  max|u_new| = {max_disp:.4e} m", flush=True)
+        print(f"  │  ⏱ solve time: {iter_wall_time:.3f} s (read forces + compute + KSP)", flush=True)
         print("  └" + "─" * 67, flush=True)
 
     def _log_time_window_converged(
@@ -1460,6 +1711,8 @@ class LinearDynamicFSIRotorSolver(LinearDynamicFSISolver):
         new_alpha: Optional[float] = None,
         new_omega: Optional[float] = None,
         phase_info: Optional[str] = None,
+        window_wall_time: float = 0.0,
+        window_iters: int = 0,
     ) -> None:
         """Log time window convergence.
 
@@ -1481,6 +1734,10 @@ class LinearDynamicFSIRotorSolver(LinearDynamicFSISolver):
             Updated angular velocity for next window [rad/s].
         phase_info : str, optional
             OmegaProvider phase description (e.g. "ramp", "dynamic").
+        window_wall_time : float
+            Wall-clock time for this time window [s].
+        window_iters : int
+            Number of sub-iterations in this time window.
         """
         if not self._is_primary_rank():
             return
@@ -1494,12 +1751,23 @@ class LinearDynamicFSIRotorSolver(LinearDynamicFSISolver):
             print(f"  │  α = {new_alpha:.4f} rad/s²", flush=True)
             phase_str = f" [{phase_info}]" if phase_info else ""
             print(f"  │  ω_next = {new_omega:.4f} rad/s{phase_str}", flush=True)
+        if window_iters > 0:
+            avg_iter = window_wall_time / window_iters
+            print(
+                f"  │  ⏱ window: {window_wall_time:.3f} s  │  "
+                f"{window_iters} iters  │  avg: {avg_iter:.3f} s/iter",
+                flush=True,
+            )
         print(
             f"  └─ Advanced to t = {t:.6f} s  │  θ = {np.degrees(self._theta):.1f}°",
             flush=True,
         )
 
-    def _log_finalization(self, t: float, time_step: int, step: int) -> None:
+    def _log_finalization(
+        self, t: float, time_step: int, step: int,
+        total_iter_time: float = 0.0, total_window_time: float = 0.0,
+        total_windows: int = 0, total_iters: int = 0,
+    ) -> None:
         """Log simulation finalization.
 
         Parameters
@@ -1510,6 +1778,14 @@ class LinearDynamicFSIRotorSolver(LinearDynamicFSISolver):
             Total number of time windows completed.
         step : int
             Total number of sub-iterations across all time windows.
+        total_iter_time : float
+            Cumulative wall time of all iterations [s].
+        total_window_time : float
+            Cumulative wall time of all time windows [s].
+        total_windows : int
+            Number of completed time windows.
+        total_iters : int
+            Number of completed iterations.
         """
         if not self._is_primary_rank():
             return
@@ -1521,6 +1797,14 @@ class LinearDynamicFSIRotorSolver(LinearDynamicFSISolver):
         print(f"  Total iterations:  {step}", flush=True)
         if time_step > 0:
             print(f"  Avg iters/step:    {step / time_step:.2f}", flush=True)
+        if total_iters > 0:
+            avg_iter_time = total_iter_time / total_iters
+            print(f"  ⏱ Total iter time:  {total_iter_time:.1f} s", flush=True)
+            print(f"  ⏱ Avg iter time:   {avg_iter_time:.3f} s", flush=True)
+        if total_windows > 0:
+            avg_window_time = total_window_time / total_windows
+            print(f"  ⏱ Total window time: {total_window_time:.1f} s", flush=True)
+            print(f"  ⏱ Avg window time:  {avg_window_time:.3f} s", flush=True)
         print("═" * 70 + "\n", flush=True)
 
     # =========================================================================
@@ -1729,7 +2013,7 @@ class LinearDynamicFSIRotorSolver(LinearDynamicFSISolver):
 
         # Build spin softening matrix (ANSYS Eq. 3-74 / 14-55)
         K_SP_red = None
-        if self._include_spin_softening and omega_initial != 0.0:
+        if self._include_spin_softening:
             K_SP = self._build_spin_softening_matrix(omega_initial)
             K_SP_red = bc_manager.reduce_matrix(K_SP)
 
@@ -1843,7 +2127,11 @@ class LinearDynamicFSIRotorSolver(LinearDynamicFSISolver):
         )
 
         # Time stepping loop
-        t, time_step, step, u, v, a = self._time_stepping_loop(
+        (
+            t, time_step, step, u, v, a,
+            _total_iter_time, _total_window_time,
+            _total_windows, _total_iters,
+        ) = self._time_stepping_loop(
             u,
             v,
             a,
@@ -1867,7 +2155,13 @@ class LinearDynamicFSIRotorSolver(LinearDynamicFSISolver):
         )
 
         # Finalization
-        self._log_finalization(t, time_step, step)
+        self._log_finalization(
+            t, time_step, step,
+            total_iter_time=_total_iter_time,
+            total_window_time=_total_window_time,
+            total_windows=_total_windows,
+            total_iters=_total_iters,
+        )
 
         if self._checkpoint_manager is not None:
             self._checkpoint_manager.finalize(timeout=60.0)
@@ -1912,7 +2206,7 @@ class LinearDynamicFSIRotorSolver(LinearDynamicFSISolver):
 
         # Geometric stiffness
         K_G = None
-        if self._include_geometric_stiffness and omega_initial != 0.0:
+        if self._include_geometric_stiffness:
             self._print_phase(3, 7, "Assembling geometric stiffness (centrifugal)...")
             try:
                 K_G = self.domain.assemble_geometric_stiffness(
@@ -1928,7 +2222,16 @@ class LinearDynamicFSIRotorSolver(LinearDynamicFSISolver):
 
         # Damping matrix
         C = None
-        if self._eta_m != 0.0 or self._eta_k != 0.0:
+        if not self._damping_enabled:
+            self._print_phase(4, 7, "Rayleigh damping: disabled (enabled=false)")
+        elif self._damping_auto:
+            self._print_phase(4, 7, "Rayleigh damping: auto-computing from modal analysis...")
+            self._eta_k, self._eta_m = self._compute_rayleigh_auto()
+            self._print_phase(
+                4, 7, f"Creating Rayleigh damping (η_m={self._eta_m:.4e}, η_k={self._eta_k:.4e})..."
+            )
+            C = self._create_damping_matrix(self.K, self.M)
+        elif self._eta_m != 0.0 or self._eta_k != 0.0:
             self._print_phase(
                 4, 7, f"Creating Rayleigh damping (η_m={self._eta_m}, η_k={self._eta_k})..."
             )
@@ -2184,9 +2487,17 @@ class LinearDynamicFSIRotorSolver(LinearDynamicFSISolver):
         omega, alpha = self._omega_provider.get_omega(t + self.dt)
         theta_target = self._theta + omega * self.dt
         omega_initialized_for_window = False
+        window_iter_count = 0
+        window_wall_start = time.perf_counter()
+        total_iter_time = 0.0
+        total_window_time = 0.0
+        total_windows_completed = 0
+        total_iters_completed = 0
 
         while self.precice_participant.is_coupling_ongoing:
             step += 1
+            iter_wall_start = time.perf_counter()
+            window_iter_count += 1
 
             # Handle preCICE checkpointing
             if self.precice_participant.requires_writing_checkpoint:
@@ -2359,6 +2670,7 @@ class LinearDynamicFSIRotorSolver(LinearDynamicFSISolver):
                 n_nodes,
                 local_force_mag,
                 omega,
+                alpha,
                 inertial_diags,
                 F_gravity_local if self._include_gravity else None,
                 torque_global,
@@ -2382,7 +2694,8 @@ class LinearDynamicFSIRotorSolver(LinearDynamicFSISolver):
             )
 
             max_disp_iter = u_new.norm(PETSc.NormType.INFINITY)
-            self._log_solver_response(ksp_its, ksp_reason, max_disp_iter)
+            solve_wall_time = time.perf_counter() - iter_wall_start
+            self._log_solver_response(ksp_its, ksp_reason, max_disp_iter, solve_wall_time)
 
             # Check for divergence to prevent hanging the coupling
             if not np.isfinite(max_disp_iter) or max_disp_iter > 1e10:
@@ -2430,7 +2743,22 @@ class LinearDynamicFSIRotorSolver(LinearDynamicFSISolver):
                 a.array[:] = a_old.array
                 t = t_old
                 self._theta = theta_old
+
+                # Measure full iteration time (includes preCICE advance + wait)
+                iter_wall_time = time.perf_counter() - iter_wall_start
+                total_iter_time += iter_wall_time
+                total_iters_completed += 1
+                if self._is_primary_rank():
+                    print(f"  ⏱ iteration total: {iter_wall_time:.3f} s (sub-iter, restored checkpoint)", flush=True)
             else:
+                # Measure full iteration time (includes preCICE advance + wait)
+                iter_wall_time = time.perf_counter() - iter_wall_start
+                total_iter_time += iter_wall_time
+                total_iters_completed += 1
+
+                window_wall_time = time.perf_counter() - window_wall_start
+                total_window_time += window_wall_time
+                total_windows_completed += 1
                 time_step += 1
                 self._theta += omega * self.dt
                 omega_initialized_for_window = False
@@ -2478,7 +2806,14 @@ class LinearDynamicFSIRotorSolver(LinearDynamicFSISolver):
                 max_vel = v.norm(PETSc.NormType.INFINITY)
                 max_acc = a.norm(PETSc.NormType.INFINITY)
 
-                self._log_time_window_converged(t, max_disp, max_vel, max_acc, *rotor_dynamics_info)
+                self._log_time_window_converged(
+                    t, max_disp, max_vel, max_acc, *rotor_dynamics_info,
+                    window_wall_time=window_wall_time, window_iters=window_iter_count,
+                )
+
+                # Reset window timer for next window
+                window_iter_count = 0
+                window_wall_start = time.perf_counter()
 
                 # Write angular velocity for the NEXT time window start.
                 self._write_angular_velocity_to_precice(omega_next_for_coupling)
@@ -2527,7 +2862,7 @@ class LinearDynamicFSIRotorSolver(LinearDynamicFSISolver):
                     extra_fields=force_fields,
                 )
 
-        return t, time_step, step, u, v, a
+        return t, time_step, step, u, v, a, total_iter_time, total_window_time, total_windows_completed, total_iters_completed
 
     # =========================================================================
     # Stress / Strain Post-Processing for Checkpoint Export
@@ -2635,9 +2970,9 @@ class LinearDynamicFSIRotorSolver(LinearDynamicFSISolver):
         """
         if self._prev_omega is not None and abs(omega - self._prev_omega) > _OMEGA_CHANGE_THRESHOLD:
             rebuild = False
+            reassembled = []
 
-            if self._include_geometric_stiffness and K_G_red is not None:
-                self._print_info(f"Updating K_G (ω changed: {self._prev_omega:.4f} -> {omega:.4f})")
+            if self._include_geometric_stiffness:
                 try:
                     K_G_new = self.domain.assemble_geometric_stiffness(
                         omega=omega,
@@ -2646,20 +2981,33 @@ class LinearDynamicFSIRotorSolver(LinearDynamicFSISolver):
                     )
                     K_G_red = bc_manager.reduce_matrix(K_G_new)
                     rebuild = True
+                    reassembled.append("K_G")
                 except Exception as e:
                     _logger.warning("Failed to update K_G: %s", e)
 
             if self._include_spin_softening:
-                self._print_info(f"Updating K_SP (ω changed: {self._prev_omega:.4f} -> {omega:.4f})")
                 K_SP_new = self._build_spin_softening_matrix(omega)
                 K_SP_red = bc_manager.reduce_matrix(K_SP_new)
                 rebuild = True
+                reassembled.append("K_SP")
 
             if rebuild:
                 K_eff = self._build_effective_stiffness(
                     K_red, M_red, coeffs, K_G_red, C_red, K_SP_red
                 )
                 self._solver.setOperators(K_eff)
+                if self._is_primary_rank():
+                    matrices_str = " + ".join(reassembled)
+                    print(
+                        f"  ┌─ ⟳ REASSEMBLED: {matrices_str}  │  "
+                        f"ω: {self._prev_omega:.4f} → {omega:.4f} rad/s  │  "
+                        f"Δω = {abs(omega - self._prev_omega):.4f} rad/s",
+                        flush=True,
+                    )
+                    print(
+                        f"  └─ K_eff rebuilt and solver operators updated",
+                        flush=True,
+                    )
 
         return K_eff, K_G_red, K_SP_red
 

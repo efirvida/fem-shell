@@ -656,8 +656,25 @@ class FSIRunner:
 
         # Add damping parameters
         if self.config.solver.damping:
-            model_config["solver"]["eta_m"] = self.config.solver.damping.eta_m
-            model_config["solver"]["eta_k"] = self.config.solver.damping.eta_k
+            cfg = self.config.solver.damping
+            damping_dict = {
+                "enabled": cfg.enabled,
+                "eta_m": cfg.eta_m,
+                "eta_k": cfg.eta_k,
+                "zeta": cfg.zeta,
+                "zeta_1": cfg.zeta_1,
+                "zeta_2": cfg.zeta_2,
+                "mode_i": cfg.mode_i,
+                "mode_j": cfg.mode_j,
+                "num_modes": cfg.num_modes,
+            }
+            model_config["solver"]["damping"] = damping_dict
+            # Keep flat keys for backward compatibility with solvers that
+            # still read eta_m / eta_k directly from solver_params
+            if cfg.eta_m is not None:
+                model_config["solver"]["eta_m"] = cfg.eta_m
+            if cfg.eta_k is not None:
+                model_config["solver"]["eta_k"] = cfg.eta_k
 
         # Add coupling configuration for FSI
         if self.config.coupling:
