@@ -868,10 +868,6 @@ class LinearDynamicFSIRotorSolver(LinearDynamicFSISolver):
             K_eff.axpy(1.0, K_SP_red)
         if C_red is not None:
             K_eff.axpy(coeffs.a1, C_red)
-        # Inform GAMG of the per-node block structure (dofs_per_node DOFs per node).
-        # Without this, GAMG aggregates scalar DOFs independently and mishandles the
-        # directional anisotropy introduced by K_SP (negative diagonal in X/Z only).
-        K_eff.setBlockSize(self.domain.dofs_per_node)
         return K_eff
 
     def _build_spin_softening_matrix(self, omega: float) -> PETSc.Mat:
@@ -2008,6 +2004,12 @@ class LinearDynamicFSIRotorSolver(LinearDynamicFSISolver):
         K_red, F_red, M_red = bc_manager.reduced_system
         self.free_dofs = bc_manager.free_dofs
 
+        # Tell GAMG to aggregate at the node level (dofs_per_node DOFs per block).
+        # This must be set on the PRECONDITIONER matrix (K_red), not on K_eff.
+        # K_red is used as the fixed preconditioner for the entire run — its
+        # sparsity/values never change, so GAMG setup runs exactly once.
+        K_red.setBlockSize(self.domain.dofs_per_node)
+
         C_red = bc_manager.reduce_matrix(C) if C is not None else None
         K_G_red = bc_manager.reduce_matrix(K_G) if K_G is not None else None
 
@@ -2028,7 +2030,12 @@ class LinearDynamicFSIRotorSolver(LinearDynamicFSISolver):
             self._setup_solver()
             self._prepared = True
 
-        self._solver.setOperators(K_eff)
+        # Use K_red (pure elastic stiffness, constant) as the GAMG preconditioner
+        # matrix.  K_eff changes every window when ω changes (K_G/K_SP rebuilt),
+        # but K_red never changes.  PETSc only re-runs PCSetUp when the
+        # preconditioner matrix state changes → GAMG hierarchy is built once and
+        # reused throughout the simulation, eliminating the ~90 s spike per window.
+        self._solver.setOperators(K_eff, K_red)
         self._m_solver.setOperators(M_red)
 
         # Phase 5: Initial conditions
@@ -2995,7 +3002,9 @@ class LinearDynamicFSIRotorSolver(LinearDynamicFSISolver):
                 K_eff = self._build_effective_stiffness(
                     K_red, M_red, coeffs, K_G_red, C_red, K_SP_red
                 )
-                self._solver.setOperators(K_eff)
+                # K_red is the fixed preconditioner matrix (never changes).
+                # Passing it explicitly prevents GAMG from re-running PCSetUp.
+                self._solver.setOperators(K_eff, K_red)
                 if self._is_primary_rank():
                     matrices_str = " + ".join(reassembled)
                     print(
