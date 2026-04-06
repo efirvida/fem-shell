@@ -559,6 +559,193 @@ class LinearDynamicFSIRotorSolver(LinearDynamicFSISolver):
         self._v_guess_next: Optional[PETSc.Vec] = None
 
     # =========================================================================
+    # Checkpoint Peeking
+    # =========================================================================
+
+    def _peek_checkpoint_theta(self) -> float:
+        """Read the rotation angle from ``rotor_performance.csv`` for restart.
+
+        The CSV stores the cumulative angle in degrees at every converged
+        time window.  On restart the fluid mesh sits at the position
+        corresponding to the latest time directory in the fluid case, so
+        we look up the angle at that time (or the closest earlier entry)
+        and convert from degrees to radians.
+
+        This approach is robust to non-constant angular velocity because
+        the CSV records the actual integrated angle rather than relying
+        on ``ω × t``.
+
+        Returns
+        -------
+        float
+            Rotation angle [rad] at the fluid restart time, or 0.0 if
+            no checkpoint / no restart / CSV not found.
+        """
+        start_from = self.solver_params.get("start_from", "startTime")
+        if start_from not in ("latestTime", "firstTime"):
+            return 0.0
+
+        if self._checkpoint_manager is None:
+            return 0.0
+
+        if start_from == "firstTime":
+            info = self._checkpoint_manager.find_first()
+        else:
+            info = self._checkpoint_manager.find_latest()
+
+        if info is None:
+            return 0.0
+
+        npz_path = os.path.join(info.path, "state.npz")
+        if not os.path.exists(npz_path):
+            return 0.0
+
+        try:
+            with np.load(npz_path) as data:
+                t_ckpt = float(data["t"]) if "t" in data.files else 0.0
+
+            # Determine the actual fluid restart time
+            t_fluid = self._find_fluid_restart_time(t_ckpt)
+
+            # Read angle from rotor_performance.csv
+            theta_deg = self._read_angle_from_performance_csv(t_fluid)
+            theta_rad = np.radians(theta_deg)
+
+            if self._is_primary_rank():
+                _logger.info(
+                    "Peeked checkpoint: t_solid=%.6f s, t_fluid=%.6f s, "
+                    "θ_csv=%.4f° = %.4f rad",
+                    t_ckpt, t_fluid, theta_deg, theta_rad,
+                )
+            return theta_rad
+        except Exception as e:
+            _logger.warning("Could not peek checkpoint theta: %s", e)
+            return 0.0
+
+    def _read_angle_from_performance_csv(self, t_target: float) -> float:
+        """Read the rotation angle [deg] from ``rotor_performance.csv``.
+
+        Finds the entry whose time is closest to *t_target* without
+        exceeding it (i.e. the last entry at or before *t_target*).
+
+        Parameters
+        ----------
+        t_target : float
+            Target time [s] (typically the fluid restart time).
+
+        Returns
+        -------
+        float
+            Rotation angle in **degrees**, or 0.0 if the CSV is not found
+            or cannot be parsed.
+        """
+        import csv
+
+        output_folder = self.solver_params.get("output_folder", "results")
+        csv_path = os.path.join(output_folder, "rotor_performance.csv")
+
+        if not os.path.exists(csv_path):
+            _logger.warning(
+                "rotor_performance.csv not found at %s", csv_path
+            )
+            return 0.0
+
+        best_time = -1.0
+        best_angle = 0.0
+
+        try:
+            with open(csv_path, "r") as f:
+                reader = csv.reader(f)
+                header = next(reader)  # skip header
+                # Columns: Time [s], RPM, Angle [deg], ...
+                for row in reader:
+                    t_row = float(row[0])
+                    if t_row <= t_target + 1e-12 and t_row > best_time:
+                        best_time = t_row
+                        best_angle = float(row[2])
+        except Exception as e:
+            _logger.warning("Failed to read rotor_performance.csv: %s", e)
+            return 0.0
+
+        if best_time < 0.0:
+            _logger.warning(
+                "No entry found in rotor_performance.csv at or before t=%.6f",
+                t_target,
+            )
+            return 0.0
+
+        if self._is_primary_rank():
+            _logger.info(
+                "Read angle from rotor_performance.csv: "
+                "t_target=%.6f s, t_csv=%.6f s, angle=%.4f°",
+                t_target, best_time, best_angle,
+            )
+        return best_angle
+
+    def _find_fluid_restart_time(self, t_solid: float) -> float:
+        """Find the latest time directory in the fluid case.
+
+        Scans ``processor0/`` (parallel) or top-level time directories
+        in the fluid case to determine what time OpenFOAM will restart from.
+
+        Parameters
+        ----------
+        t_solid : float
+            Solid checkpoint time (fallback if fluid dir is not found).
+
+        Returns
+        -------
+        float
+            Latest available time in the fluid case.
+        """
+        import re
+
+        # Determine fluid case path from config or default convention
+        coupling_cfg = self.model_properties.get("coupling", {})
+        fluid_case_dir = coupling_cfg.get("fluid_case_dir", "../fluid")
+
+        # Resolve relative to the solid working directory
+        if not os.path.isabs(fluid_case_dir):
+            fluid_case_dir = os.path.normpath(
+                os.path.join(os.getcwd(), fluid_case_dir)
+            )
+
+        # Look for time directories in processor0 (parallel) or top level
+        time_pattern = re.compile(r"^(\d+(?:\.\d+)?)$")
+        latest_time = t_solid  # fallback
+
+        for scan_dir in [
+            os.path.join(fluid_case_dir, "processor0"),
+            fluid_case_dir,
+        ]:
+            if not os.path.isdir(scan_dir):
+                continue
+            try:
+                for entry in os.listdir(scan_dir):
+                    if not time_pattern.match(entry):
+                        continue
+                    entry_path = os.path.join(scan_dir, entry)
+                    if not os.path.isdir(entry_path):
+                        continue
+                    t_val = float(entry)
+                    if t_val > latest_time:
+                        latest_time = t_val
+                if latest_time > t_solid:
+                    break  # found times in this directory
+            except OSError as e:
+                _logger.debug("Could not scan %s: %s", scan_dir, e)
+                continue
+
+        if self._is_primary_rank() and abs(latest_time - t_solid) > 1e-12:
+            print(
+                f"  ↳ Fluid restarts from t={latest_time:.6f} s "
+                f"(solid checkpoint at t={t_solid:.6f} s)",
+                flush=True,
+            )
+
+        return latest_time
+
+    # =========================================================================
     # Solver Setup
     # =========================================================================
 
@@ -2268,6 +2455,14 @@ class LinearDynamicFSIRotorSolver(LinearDynamicFSISolver):
     def _initialize_precice(self, bc_manager: BoundaryConditionManager) -> Tuple[float, int, int]:
         """Initialize preCICE coupling and return timing state.
 
+        On restart, the OpenFOAM fluid mesh is read from the saved time
+        directory (``<time>/polyMesh/points``), which contains the **rotated**
+        mesh points.  The solid mesh, however, is loaded from
+        ``deformed_mesh.h5`` in the co-rotating frame (unrotated).  To make
+        the preCICE RBF mapping work, the solid interface coordinates must
+        be rotated by the checkpoint angle θ₀ so that both meshes are in the
+        same (lab) frame.
+
         Parameters
         ----------
         bc_manager : BoundaryConditionManager
@@ -2285,6 +2480,29 @@ class LinearDynamicFSIRotorSolver(LinearDynamicFSISolver):
         bootstrap_dt = float(self.solver_params.get("time_step", 1.0))
 
         self._print_phase(6, 7, "Initializing preCICE coupling...")
+
+        # ── Peek at checkpoint θ so we can rotate the Solid-Mesh vertices ──
+        # This must happen BEFORE preCICE initialize(), because vertex
+        # coordinates are registered during that call and cannot be changed
+        # afterwards.
+        restart_theta = self._peek_checkpoint_theta()
+        precice_coord_transform = None
+        if abs(restart_theta) > 1e-12:
+            R = self._coord_transforms.rotation_matrix(restart_theta)
+            center = self._coord_transforms.center
+
+            def precice_coord_transform(coords: np.ndarray) -> np.ndarray:
+                """Rotate interface coords from co-rotating frame to lab frame."""
+                shifted = coords - center
+                rotated = shifted @ R.T  # (n,3) @ (3,3)^T
+                return rotated + center
+
+            if self._is_primary_rank():
+                print(
+                    f"  ↳ Rotating Solid-Mesh vertices by θ₀ = {np.degrees(restart_theta):.1f}°"
+                    f" to match OpenFOAM rotated mesh",
+                    flush=True,
+                )
 
         custom_meshes = {}
         initial_data = None
@@ -2310,6 +2528,7 @@ class LinearDynamicFSIRotorSolver(LinearDynamicFSISolver):
             tuple(bc_manager.fixed_dofs.keys()),
             custom_mesh_coords=custom_meshes if custom_meshes else None,
             initial_data_values=initial_data,
+            precice_coord_transform=precice_coord_transform,
         )
 
         self.dt = self.precice_participant.dt
@@ -2869,7 +3088,104 @@ class LinearDynamicFSIRotorSolver(LinearDynamicFSISolver):
                     extra_fields=force_fields,
                 )
 
+                # Debug: write interface node positions at this checkpoint
+                self._write_interface_debug(
+                    t, self._theta, u_full_ckpt, interface_coords, interface_dofs,
+                )
+
         return t, time_step, step, u, v, a, total_iter_time, total_window_time, total_windows_completed, total_iters_completed
+
+    # =========================================================================
+    # Interface Debugging
+    # =========================================================================
+
+    def _write_interface_debug(
+        self,
+        t: float,
+        theta: float,
+        u_full: np.ndarray,
+        interface_coords: np.ndarray,
+        interface_dofs: np.ndarray,
+    ) -> None:
+        """Write interface node coordinates at checkpoint time for debugging.
+
+        Saves three sets of coordinates per interface node:
+        1. **Reference (co-rotating)**: X₀ from the FEM mesh
+        2. **Deformed (co-rotating)**: X₀ + u_local (elastic only)
+        3. **Deformed (lab frame)**: R(θ) · (X₀ + u_local)
+
+        This allows diagnosing restart mismatches between the solid mesh
+        (co-rotating) and the OpenFOAM mesh (lab frame).
+
+        Parameters
+        ----------
+        t : float
+            Current physical time [s].
+        theta : float
+            Current cumulative rotation angle [rad].
+        u_full : np.ndarray
+            Full displacement vector (all DOFs).
+        interface_coords : np.ndarray
+            Interface node reference coordinates, shape (n, 3).
+        interface_dofs : np.ndarray
+            Interface DOF indices.
+        """
+        if self._checkpoint_manager is None:
+            return
+        if not self._checkpoint_manager.should_write(t):
+            return
+        if not self._is_primary_rank():
+            return
+
+        try:
+            # Extract interface displacements
+            n_nodes = interface_coords.shape[0]
+            u_interface = np.zeros((n_nodes, 3), dtype=np.float64)
+            for i in range(n_nodes):
+                for j in range(3):
+                    dof = (
+                        interface_dofs[i, j]
+                        if interface_dofs.ndim == 2
+                        else interface_dofs[i * 3 + j]
+                    )
+                    if dof < len(u_full):
+                        u_interface[i, j] = u_full[dof]
+
+            # Deformed positions in co-rotating frame
+            deformed_local = interface_coords + u_interface
+
+            # Deformed positions in lab frame
+            R = self._coord_transforms.rotation_matrix(theta)
+            center = self._coord_transforms.center
+            shifted = deformed_local - center
+            deformed_lab = (shifted @ R.T) + center
+
+            # Write to checkpoint directory
+            time_str = f"{t:.6f}"
+            output_dir = os.path.join(
+                self.solver_params.get("output_folder", "results"), time_str
+            )
+            os.makedirs(output_dir, exist_ok=True)
+
+            node_ids = self.precice_participant.interface_node_ids
+            debug_path = os.path.join(output_dir, "interface_debug.csv")
+            with open(debug_path, "w") as f:
+                f.write(f"# t={t:.6f} theta={theta:.6f} theta_deg={np.degrees(theta):.2f}\n")
+                f.write(
+                    "node_id,"
+                    "ref_x,ref_y,ref_z,"
+                    "def_local_x,def_local_y,def_local_z,"
+                    "def_lab_x,def_lab_y,def_lab_z\n"
+                )
+                for i in range(n_nodes):
+                    f.write(
+                        f"{node_ids[i]},"
+                        f"{interface_coords[i,0]:.8e},{interface_coords[i,1]:.8e},{interface_coords[i,2]:.8e},"
+                        f"{deformed_local[i,0]:.8e},{deformed_local[i,1]:.8e},{deformed_local[i,2]:.8e},"
+                        f"{deformed_lab[i,0]:.8e},{deformed_lab[i,1]:.8e},{deformed_lab[i,2]:.8e}\n"
+                    )
+        except Exception as e:
+            _logger.debug("Could not write interface debug: %s", e)
 
     # =========================================================================
     # Stress / Strain Post-Processing for Checkpoint Export

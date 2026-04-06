@@ -9,7 +9,7 @@ This module contains shared components used by all FSI solvers:
 
 import copy
 import logging
-from typing import Dict, List, Optional, Sequence, Tuple
+from typing import Callable, Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 import precice
@@ -359,6 +359,7 @@ class Adapter:
         extra_meshes: Optional[List[str]] = None,
         custom_mesh_coords: Optional[Dict[str, np.ndarray]] = None,
         initial_data_values: Optional[Dict[str, float]] = None,
+        precice_coord_transform: Optional[Callable[[np.ndarray], np.ndarray]] = None,
     ) -> float:
         """Initialize the coupling and set up the mesh in preCICE.
 
@@ -370,6 +371,19 @@ class Adapter:
             Names of node sets representing the coupling interface.
         fixed_dofs : tuple
             Indices of fixed degrees of freedom.
+        extra_meshes : list of str, optional
+            Additional mesh names to register with the same interface coordinates.
+        custom_mesh_coords : dict, optional
+            Custom mesh names mapped to their coordinate arrays.
+        initial_data_values : dict, optional
+            Initial data values to write before first advance.
+        precice_coord_transform : callable, optional
+            A function ``f(coords) -> coords`` that transforms the interface
+            coordinates before registering them with preCICE.  The internal
+            ``interface_coordinates`` property keeps the **original** (rotating
+            frame) coordinates for FEM computations; only the preCICE vertices
+            are rotated.  Used on restart to align the Solid-Mesh with the
+            OpenFOAM mesh that restarts at a rotated position.
 
         Returns
         -------
@@ -401,8 +415,16 @@ class Adapter:
             self._domain._node_dofs_map[nid] for nid in sorted_node_ids
         ])
 
+        # Compute preCICE vertex coordinates: either transformed (on restart,
+        # to match the rotated OpenFOAM mesh) or identical to the internal
+        # interface coordinates (fresh start).
+        if precice_coord_transform is not None:
+            precice_vertex_coords = precice_coord_transform(self._interface_coords.copy())
+        else:
+            precice_vertex_coords = self._interface_coords
+
         self._precice_vertex_ids = self._interface.set_mesh_vertices(
-            self._coupling_mesh, self._interface_coords
+            self._coupling_mesh, precice_vertex_coords
         )
         self._mesh_vertex_ids[self._coupling_mesh] = self._precice_vertex_ids
 
@@ -410,7 +432,7 @@ class Adapter:
         if extra_meshes:
             for mesh_name in extra_meshes:
                 try:
-                    v_ids = self._interface.set_mesh_vertices(mesh_name, self._interface_coords)
+                    v_ids = self._interface.set_mesh_vertices(mesh_name, precice_vertex_coords)
                     self._mesh_vertex_ids[mesh_name] = v_ids
                 except Exception as e:
                     logging.debug(f"Could not register extra mesh '{mesh_name}': {e}")
@@ -430,6 +452,15 @@ class Adapter:
             header="X,Y,Z" if self._domain.spatial_dim == 3 else "X,Y",
             delimiter=",",
         )
+        # Also save the coordinates actually sent to preCICE (for restart debugging)
+        if precice_coord_transform is not None:
+            np.savetxt(
+                "interface_coords_precice.csv",
+                precice_vertex_coords,
+                header="X,Y,Z (rotated to lab frame for preCICE)"
+                if self._domain.spatial_dim == 3 else "X,Y (rotated)",
+                delimiter=",",
+            )
 
         if self._interface.requires_initial_data():
             # Write initial zero data for all write fields on main coupling mesh
