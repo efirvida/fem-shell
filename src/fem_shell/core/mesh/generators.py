@@ -1202,6 +1202,18 @@ class BladeMesh:
             nodes = {node for element in element_set.elements for node in element.nodes}
             mesh_model.add_node_set(NodeSet(name=name, nodes=nodes))
 
+        # Assign per-element thickness from section layup data
+        if self._numad_mesh.get("sections"):
+            section_thickness = {}
+            for section in self._numad_mesh["sections"]:
+                set_name = section["elementSet"]
+                total = sum(layer[1] for layer in section["layup"])
+                section_thickness[set_name] = total
+            for set_name, thickness in section_thickness.items():
+                if set_name in mesh_model.element_sets:
+                    for elem in mesh_model.element_sets[set_name].elements:
+                        elem.thickness = thickness
+
     @property
     def numad_mesh_data(self):
         """

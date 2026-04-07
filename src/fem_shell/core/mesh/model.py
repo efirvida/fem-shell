@@ -812,9 +812,28 @@ class MeshModel:
     # Visualization
     # =========================================================================
 
-    def view(self) -> None:
-        """Visualize the mesh using the viewer."""
-        plot_mesh(self)
+    def view(self, color_by_sets=False, element_set_colors=None, element_data=None) -> None:
+        """Visualize the mesh using the viewer.
+
+        Parameters
+        ----------
+        color_by_sets : bool, optional
+            If True, all element sets are pre-selected and rendered with
+            distinct colours.  Default is False.
+        element_set_colors : dict[str, str] or None, optional
+            Mapping of element set names to colours (e.g.
+            ``{"shell": "red", "spar": "#00ff00"}``).  When provided, only
+            the listed sets are pre-selected.
+        element_data : dict[str, dict[int, float]] or None, optional
+            Per-element scalar fields for colour mapping.  Keys are field
+            names (e.g. ``"Thickness"``), values map element IDs to scalars.
+        """
+        plot_mesh(
+            self,
+            color_by_sets=color_by_sets,
+            element_set_colors=element_set_colors,
+            element_data=element_data,
+        )
 
     def __repr__(self) -> str:
         return (
