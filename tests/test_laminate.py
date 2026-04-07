@@ -538,7 +538,7 @@ class TestMITC4CompositeElement:
             laminate=laminate,
         )
 
-        K = element.K()
+        K = element.K
         assert np.allclose(K, K.T), "Stiffness matrix should be symmetric"
 
     def test_stiffness_matrix_positive_semidefinite(
@@ -554,7 +554,7 @@ class TestMITC4CompositeElement:
             laminate=laminate,
         )
 
-        K = element.K()
+        K = element.K
         eigenvalues = np.linalg.eigvalsh(K)
 
         # Allow small negative values due to numerical precision
@@ -576,7 +576,7 @@ class TestMITC4CompositeElement:
 
         assert element.has_coupling, "Asymmetric laminate should have coupling"
 
-        K = element.K()
+        K = element.K
         assert np.allclose(K, K.T), "K should still be symmetric"
 
     def test_constitutive_matrices(
@@ -617,7 +617,7 @@ class TestMITC4CompositeElement:
             laminate=laminate,
         )
 
-        M = element.mass()
+        M = element.M
 
         # Check shape and symmetry
         assert M.shape == (24, 24)
@@ -865,7 +865,7 @@ class TestIntegration:
         )
 
         # 4. Compute stiffness matrix
-        K = element.K()
+        K = element.K
         assert K.shape == (24, 24)
 
         # 5. Apply displacement and compute response
