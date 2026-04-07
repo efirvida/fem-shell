@@ -1,5 +1,6 @@
 import numpy as np
 import pyvista as pv
+from matplotlib.colors import to_rgba
 from PySide6.QtCore import Qt, Slot
 from PySide6.QtWidgets import (
     QApplication,
@@ -297,18 +298,34 @@ class MeshViewer(QWidget):
         The PyVista Qt interactor for 3D visualization.
     """
 
-    def __init__(self, mesh) -> None:
+    def __init__(
+        self, mesh, color_by_sets=False, element_set_colors=None, element_data=None
+    ) -> None:
         """Initialize the MeshViewer with given mesh data.
 
         Parameters
         ----------
         mesh : Any
             The mesh object containing nodes, elements, and sets information.
+        color_by_sets : bool, optional
+            If True, all element sets are pre-selected and displayed with
+            distinct colors. Default is False.
+        element_set_colors : dict[str, str] or None, optional
+            Mapping of element set names to colors (any format accepted by
+            PyVista, e.g. ``"red"``, ``"#ff0000"``).  When provided, only the
+            listed sets are pre-selected and coloured accordingly.
+        element_data : dict[str, dict[int, float]] or None, optional
+            Per-element scalar data for colour mapping.  Each key is a field
+            name (e.g. ``"Thickness"``) and each value is a dict mapping
+            element IDs to scalar values.
         """
         super().__init__()
         self.mesh = mesh
         self.current_grid = None
         self.is_2D_mesh = not bool(self.mesh.coords_array[:, 2].sum())
+        self._color_by_sets = color_by_sets
+        self._element_set_colors = element_set_colors or {}
+        self._element_data = element_data or {}
         # Visualization colors (start from plotter defaults later)
         self.background_color = None
         self.mesh_color = (0.83, 0.83, 0.85)
@@ -351,6 +368,18 @@ class MeshViewer(QWidget):
         self.show_base_mesh_chk.setChecked(True)
         self.show_base_mesh_chk.stateChanged.connect(self.update_plot)
         control_layout.addWidget(self.show_base_mesh_chk)
+
+        # Cell data field selector (e.g. Thickness)
+        if self._element_data:
+            control_layout.addWidget(QLabel("Cell Data:"))
+            self.cell_data_combo = QComboBox()
+            self.cell_data_combo.addItem("None")
+            self.cell_data_combo.addItems(sorted(self._element_data.keys()))
+            self.cell_data_combo.setCurrentIndex(1)  # auto-select first field
+            self.cell_data_combo.currentIndexChanged.connect(self.update_plot)
+            control_layout.addWidget(self.cell_data_combo)
+        else:
+            self.cell_data_combo = None
 
         # Sets group box
         self.sets_group = QGroupBox("Sets (Nodes and Elements)")
@@ -765,10 +794,20 @@ class MeshViewer(QWidget):
             self.sets_table.setItem(row, 1, type_item)
             row += 1
         # Add element sets
+        pre_select = self._color_by_sets or bool(self._element_set_colors)
         for set_name in element_sets:
             chk_item = QTableWidgetItem()
             chk_item.setFlags(Qt.ItemIsUserCheckable | Qt.ItemIsEnabled)
-            chk_item.setCheckState(Qt.Unchecked)
+            # Pre-check element sets when color_by_sets is enabled or the set
+            # has an explicit colour mapping.  Skip aggregate sets (containing
+            # "all" in their name) from automatic selection to avoid masking
+            # individual sets.
+            if pre_select and set_name in self._element_set_colors:
+                chk_item.setCheckState(Qt.Checked)
+            elif self._color_by_sets and "all" not in set_name.lower():
+                chk_item.setCheckState(Qt.Checked)
+            else:
+                chk_item.setCheckState(Qt.Unchecked)
             chk_item.setText(set_name)
             type_item = QTableWidgetItem("Element")
             type_item.setFlags(Qt.ItemIsSelectable | Qt.ItemIsEnabled)
@@ -816,7 +855,7 @@ class MeshViewer(QWidget):
 
     def _create_element_grid(
         self, selected_elements: set[int] = None
-    ) -> pv.UnstructuredGrid | None:
+    ) -> tuple[pv.UnstructuredGrid | None, list[int]]:
         """Create PyVista grid from specified element IDs.
 
         Parameters
@@ -829,7 +868,7 @@ class MeshViewer(QWidget):
         pyvista.UnstructuredGrid or None
             Constructed unstructured grid, or None if no valid elements found.
         """
-        cells, cell_types = [], []
+        cells, cell_types, element_ids = [], [], []
         visible_elements = selected_elements or self.mesh.elements
         node_id_to_index = self.mesh.node_id_to_index
         for element in visible_elements:
@@ -862,15 +901,71 @@ class MeshViewer(QWidget):
                 vtk_node_indices = [node_id_to_index[nid] for nid in vtk_node_ids]
                 cells.append([n] + vtk_node_indices)
                 cell_types.append(vtk_type)
-        return (
-            pv.UnstructuredGrid(
+                element_ids.append(element.id)
+        if cells:
+            grid = pv.UnstructuredGrid(
                 np.hstack(cells).astype(np.int32),
                 np.array(cell_types),
                 np.array(self.mesh.coords_array),
             )
-            if cells
-            else None
-        )
+            return grid, element_ids
+        return None, []
+
+    def _create_element_grid_colored(
+        self, element_set_map: dict[int, int]
+    ) -> tuple[pv.UnstructuredGrid | None, np.ndarray | None]:
+        """Create a single PyVista grid for elements belonging to selected sets.
+
+        Only elements whose ``id`` appears in *element_set_map* are included.
+        A parallel array of set indices is returned so the caller can use it as
+        cell data for categorical colouring.
+
+        Parameters
+        ----------
+        element_set_map : dict[int, int]
+            Mapping from ``MeshElement.id`` to a colour/set index.
+
+        Returns
+        -------
+        tuple[pyvista.UnstructuredGrid | None, numpy.ndarray | None]
+            The grid and corresponding per-cell set-index array, or
+            ``(None, None)`` when no valid elements are found.
+        """
+        cells, cell_types, set_ids = [], [], []
+        node_id_to_index = self.mesh.node_id_to_index
+        for element in self.mesh.elements:
+            if element and element.id in element_set_map:
+                et = element.element_type
+                n = len(element.node_ids)
+                if et in (
+                    ElementType.tetra,
+                    ElementType.tetra10,
+                    ElementType.hexahedron,
+                    ElementType.hexahedron20,
+                    ElementType.hexahedron27,
+                    ElementType.wedge,
+                    ElementType.wedge15,
+                    ElementType.pyramid,
+                    ElementType.pyramid13,
+                ):
+                    vtk_type = SOLID_ELEMENTS_NODES_TO_VTK.get(n)
+                else:
+                    vtk_type = ELEMENTS_NODES_TO_VTK.get(n)
+                if vtk_type is None:
+                    continue
+                vtk_node_ids = _to_vtk_order(element)
+                vtk_node_indices = [node_id_to_index[nid] for nid in vtk_node_ids]
+                cells.append([n] + vtk_node_indices)
+                cell_types.append(vtk_type)
+                set_ids.append(element_set_map[element.id])
+        if cells:
+            grid = pv.UnstructuredGrid(
+                np.hstack(cells).astype(np.int32),
+                np.array(cell_types),
+                np.array(self.mesh.coords_array),
+            )
+            return grid, np.array(set_ids, dtype=np.int32)
+        return None, None
 
     def _create_node_points(self, node_ids: set[int]) -> pv.PolyData | None:
         """Create point cloud from specified node IDs.
@@ -924,6 +1019,35 @@ class MeshViewer(QWidget):
             if "edges" in vis_mode:
                 style.update({"show_edges": True, "edge_color": self.edge_color})
 
+        # Check if a cell data field is selected
+        active_field = None
+        if self.cell_data_combo is not None:
+            field_name = self.cell_data_combo.currentText()
+            if field_name != "None":
+                active_field = field_name
+
+        # --- Cell-data scalar colouring mode ---
+        if active_field is not None:
+            data_map = self._element_data[active_field]
+            grid, elem_ids = self._create_element_grid()
+            if grid is not None:
+                scalars = np.array([data_map.get(eid, 0.0) for eid in elem_ids], dtype=np.float64)
+                grid.cell_data[active_field] = scalars
+                scalar_style = {k: v for k, v in style.items() if k != "color"}
+                self.plotter.add_mesh(
+                    grid,
+                    scalars=active_field,
+                    cmap="turbo",
+                    show_scalar_bar=True,
+                    scalar_bar_args={"title": active_field},
+                    name="cell_data_mesh",
+                    **scalar_style,
+                )
+            self._configure_view()
+            self.plotter.render()
+            return
+
+        # --- Set-based colouring mode ---
         # Get selected sets
         node_sets, element_sets = self.get_selected_sets()
 
@@ -945,26 +1069,56 @@ class MeshViewer(QWidget):
         # Base mesh visibility logic
         show_base = self.show_base_mesh_chk.isChecked()
 
-        # Determine if we should show the full mesh as the primary model
-        # (if no element sets are selected OR if explicitly requested)
-        if show_base:
-            if grid := self._create_element_grid():
-                # If there are selected element sets, make the base mesh slightly transparent
-                # to emphasize the sets
-                base_opacity = 0.3 if element_sets else 1.0
-                self.plotter.add_mesh(grid, name="full_mesh", opacity=base_opacity, **style)
-
-        # Process element sets
         if element_sets:
+            # Build element-to-set-index mapping for a single combined grid
+            element_set_map = {}  # element.id -> set_index
+            set_color_list = []
             for s_name in element_sets:
-                element_set = self.mesh.get_element_set(s_name)
-                color = set_colors[color_idx % len(set_colors)]
+                es = self.mesh.get_element_set(s_name)
+                if s_name in self._element_set_colors:
+                    c = self._element_set_colors[s_name]
+                else:
+                    c = set_colors[color_idx % len(set_colors)]
                 color_idx += 1
+                idx = len(set_color_list)
+                set_color_list.append(c)
+                for elem in es.elements:
+                    # First set to claim an element wins; prevents aggregate
+                    # sets from overwriting individual set colours.
+                    if elem.id not in element_set_map:
+                        element_set_map[elem.id] = idx
 
-                if grid := self._create_element_grid(selected_elements=element_set.elements):
-                    set_style = style.copy()
-                    set_style["color"] = color
-                    self.plotter.add_mesh(grid, name=f"element_set_{s_name}", **set_style)
+            # Build a single grid with cell scalars
+            grid, cell_set_ids = self._create_element_grid_colored(element_set_map)
+            if grid is not None:
+                # Build an RGBA array per cell for direct colouring
+                rgba_list = [to_rgba(c) for c in set_color_list]
+                cell_colors = np.array([rgba_list[sid] for sid in cell_set_ids], dtype=np.float32)
+                cell_colors_uint8 = (cell_colors * 255).astype(np.uint8)
+
+                grid.cell_data["SetColor"] = cell_colors_uint8
+                set_style = {k: v for k, v in style.items() if k != "color"}
+                self.plotter.add_mesh(
+                    grid,
+                    scalars="SetColor",
+                    rgba=True,
+                    show_scalar_bar=False,
+                    name="colored_sets",
+                    **set_style,
+                )
+
+            # Show base mesh underneath only if explicitly requested and there
+            # are elements not covered by any set
+            if show_base:
+                uncovered = {e for e in self.mesh.elements if e and e.id not in element_set_map}
+                if uncovered:
+                    grid, _ = self._create_element_grid(selected_elements=uncovered)
+                    if grid is not None:
+                        self.plotter.add_mesh(grid, name="full_mesh", opacity=0.3, **style)
+        elif show_base:
+            grid, _ = self._create_element_grid()
+            if grid is not None:
+                self.plotter.add_mesh(grid, name="full_mesh", **style)
 
         # Process nodes
         if node_sets:
@@ -1001,20 +1155,34 @@ class MeshViewer(QWidget):
         self.plotter.reset_camera()
 
 
-def plot_mesh(mesh):
+def plot_mesh(mesh, color_by_sets=False, element_set_colors=None, element_data=None):
     """Launch the mesh visualization application.
 
     Parameters
     ----------
     mesh : Any
         The mesh object to visualize.
+    color_by_sets : bool, optional
+        If True, all element sets are pre-selected and rendered with
+        distinct colours.  Default is False.
+    element_set_colors : dict[str, str] or None, optional
+        Mapping of element set names to colours.  When provided, only the
+        listed sets are pre-selected.
+    element_data : dict[str, dict[int, float]] or None, optional
+        Per-element scalar fields.  Keys are field names (e.g.
+        ``"Thickness"``), values map element IDs to scalars.
 
     Returns
     -------
     None
     """
     app = QApplication.instance() or QApplication()
-    viewer = MeshViewer(mesh)
+    viewer = MeshViewer(
+        mesh,
+        color_by_sets=color_by_sets,
+        element_set_colors=element_set_colors,
+        element_data=element_data,
+    )
     viewer.update_plot()
     viewer.show()
     app.exec()
@@ -1087,11 +1255,13 @@ class SimulationViewer(MeshViewer):
         self.warp_combo.currentTextChanged.connect(self._update_warp_vector)
         self.warp_slider.valueChanged.connect(self._update_warp_scale)
 
-    def _create_element_grid(self, selected_elements=None) -> pv.UnstructuredGrid | None:
+    def _create_element_grid(
+        self, selected_elements=None
+    ) -> tuple[pv.UnstructuredGrid | None, list]:
         """Create VTK grid with result data and optional warping."""
-        grid = super()._create_element_grid(selected_elements)
-        if not grid:
-            return None
+        grid, element_ids = super()._create_element_grid(selected_elements)
+        if grid is None:
+            return None, []
 
         # Add point data
         for name, data in self.point_data.items():
@@ -1104,8 +1274,8 @@ class SimulationViewer(MeshViewer):
 
             # Preserve original data and update coordinates
             warped_grid.point_data.update(grid.point_data)
-            return warped_grid
-        return grid
+            return warped_grid, element_ids
+        return grid, element_ids
 
     def _add_mesh_with_results(self, grid, style, field, name):
         """Add mesh to plotter with appropriate result visualization."""
@@ -1147,7 +1317,8 @@ class SimulationViewer(MeshViewer):
                 for s in element_sets:
                     element_set = self.mesh.get_element_set(s)
 
-                if grid := self._create_element_grid(element_set.elements):
+                grid, _ = self._create_element_grid(element_set.elements)
+                if grid is not None:
                     self._add_mesh_with_results(grid, style, selected_field, "elements")
 
             # Process node sets
@@ -1166,7 +1337,8 @@ class SimulationViewer(MeshViewer):
 
             # Show full mesh if no selections
             if not element_sets and not node_sets:
-                if grid := self._create_element_grid():
+                grid, _ = self._create_element_grid()
+                if grid is not None:
                     self._add_mesh_with_results(grid, style, selected_field, "surface")
 
             # Configure view
