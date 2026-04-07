@@ -292,23 +292,19 @@ class MITC3(ShellElement):
         df4_dr, df4_ds = self._bubble_derivatives(r, s)
 
         # Enriched derivatives
-        df_dr = np.array(
-            [
-                dh_dr[0] - df4_dr / 3.0,
-                dh_dr[1] - df4_dr / 3.0,
-                dh_dr[2] - df4_dr / 3.0,
-                df4_dr,
-            ]
-        )
+        df_dr = np.array([
+            dh_dr[0] - df4_dr / 3.0,
+            dh_dr[1] - df4_dr / 3.0,
+            dh_dr[2] - df4_dr / 3.0,
+            df4_dr,
+        ])
 
-        df_ds = np.array(
-            [
-                dh_ds[0] - df4_ds / 3.0,
-                dh_ds[1] - df4_ds / 3.0,
-                dh_ds[2] - df4_ds / 3.0,
-                df4_ds,
-            ]
-        )
+        df_ds = np.array([
+            dh_ds[0] - df4_ds / 3.0,
+            dh_ds[1] - df4_ds / 3.0,
+            dh_ds[2] - df4_ds / 3.0,
+            df4_ds,
+        ])
 
         return df_dr, df_ds
 
@@ -611,6 +607,61 @@ class MITC3(ShellElement):
         G = E / (2 * (1 + nu))
         k = self._shear_correction_factor
         return k * G * self.thickness * np.eye(2)
+
+    # =========================================================================
+    # VIRTUAL METHODS FOR MATERIAL ABSTRACTION
+    # =========================================================================
+    # These methods allow composite subclasses to override material-specific
+    # behavior without duplicating the element formulation logic.
+
+    def _drilling_stiffness_factor(self) -> float:
+        """Drilling stabilization factor for θz DOFs.
+
+        Override in composite subclasses to use laminate-derived stiffness.
+        """
+        return self.material.E * (self.thickness**2) * 0.15
+
+    def _mass_per_area(self) -> float:
+        """Translational mass per unit area (ρ·h).
+
+        Override in composite subclasses for ply-integrated mass.
+        """
+        return self.material.rho * self.thickness
+
+    def _rotational_inertia(self) -> float:
+        """Rotational inertia per unit area (ρ·h³/12).
+
+        Override in composite subclasses for ply-integrated inertia.
+        """
+        return self.material.rho * self.thickness**3 / 12.0
+
+    def _membrane_constitutive_raw(self) -> np.ndarray:
+        """Membrane constitutive matrix without thickness (3×3).
+
+        Returns C such that σ = C·ε (stress-strain, not force-strain).
+        For isotropic: E/(1-ν²) * [[1,ν,0],[ν,1,0],[0,0,(1-ν)/2]].
+        Override in composite subclasses with A/h.
+        """
+        E = self.material.E
+        nu = self.material.nu
+        factor = E / (1 - nu**2)
+        return factor * np.array([[1, nu, 0], [nu, 1, 0], [0, 0, (1 - nu) / 2]])
+
+    @property
+    def _has_membrane_bending_coupling(self) -> bool:
+        """Whether the element has membrane-bending coupling (B ≠ 0).
+
+        Always False for isotropic. Override in composite subclasses.
+        """
+        return False
+
+    def _coupling_stiffness(self) -> np.ndarray:
+        """Membrane-bending coupling stiffness contribution (18×18).
+
+        Returns zero for isotropic. Override in composite subclasses to
+        compute ∫[Bm^T·B·Bκ + Bκ^T·B·Bm]dA for asymmetric laminates.
+        """
+        return np.zeros((18, 18))
 
     # =========================================================================
     # STRAIN-DISPLACEMENT MATRICES
@@ -976,7 +1027,7 @@ class MITC3(ShellElement):
         # We use an integrated formulation: K_drill = integral( B_drill.T * k_stab * B_drill ) dA
         # This respects rigid body rotation unlike grounded springs.
         # Tuned to alpha=0.15 consistent with MITC4 fix for Ko 2017 benchmarks
-        k_drill_stab = self.material.E * (self.thickness**2) * 0.15
+        k_drill_stab = self._drilling_stiffness_factor()
         for (r, s), w in zip(self._gauss_points, self._gauss_weights):
             B_drill = self._compute_B_drill(r, s)
             # Use only the 5-th row which corresponds to d_theta_z
@@ -1038,6 +1089,10 @@ class MITC3(ShellElement):
         # condensed at element level.
         K_local = self.k_m() + self._k_bs_condensed()
 
+        # Add membrane-bending coupling for asymmetric laminates
+        if self._has_membrane_bending_coupling:
+            K_local += self._coupling_stiffness()
+
         # Transform to global
         T = self.T()
         K_global = T.T @ K_local @ T
@@ -1057,14 +1112,12 @@ class MITC3(ShellElement):
         np.ndarray
             18×18 element mass matrix in global coordinates
         """
-        rho = self.material.rho
-        h = self.thickness
         M = np.zeros((18, 18))
         area = self.area()
 
         # Translational and rotational inertia
-        m_trans = rho * h
-        m_rot = rho * h**3 / 12.0
+        m_trans = self._mass_per_area()
+        m_rot = self._rotational_inertia()
 
         for (r, s), w in zip(self._gauss_points, self._gauss_weights):
             N = self._compute_N(r, s)
@@ -1227,16 +1280,14 @@ class MITC3(ShellElement):
         """
         E = self.compute_green_lagrange_strain(r, s)
 
-        return np.array(
-            [
-                E[0, 0],  # E_xx
-                E[1, 1],  # E_yy
-                E[2, 2],  # E_zz
-                2 * E[0, 1],  # γ_xy = 2*E_xy
-                2 * E[1, 2],  # γ_yz = 2*E_yz
-                2 * E[0, 2],  # γ_xz = 2*E_xz
-            ]
-        )
+        return np.array([
+            E[0, 0],  # E_xx
+            E[1, 1],  # E_yy
+            E[2, 2],  # E_zz
+            2 * E[0, 1],  # γ_xy = 2*E_xy
+            2 * E[1, 2],  # γ_yz = 2*E_yz
+            2 * E[0, 2],  # γ_xz = 2*E_xz
+        ])
 
     def _compute_G_matrix(self, r: float, s: float) -> np.ndarray:
         """
@@ -1499,12 +1550,10 @@ class MITC3(ShellElement):
 
         # Build 2x2 membrane stress block
         S_m = (
-            np.array(
-                [
-                    [sigma[0], sigma[2]],  # [σ_xx, σ_xy]
-                    [sigma[2], sigma[1]],  # [σ_xy, σ_yy]
-                ]
-            )
+            np.array([
+                [sigma[0], sigma[2]],  # [σ_xx, σ_xy]
+                [sigma[2], sigma[1]],  # [σ_xy, σ_yy]
+            ])
             * self.thickness
         )
 
@@ -1574,12 +1623,8 @@ class MITC3(ShellElement):
         # Membrane strain
         epsilon_m = B_m[:, mem_dofs] @ u_mem
 
-        # Stress from constitutive relation
-        # Note: Cm already includes thickness for stiffness, need raw C
-        E = self.material.E
-        nu = self.material.nu
-        factor = E / (1 - nu**2)
-        C_m = factor * np.array([[1, nu, 0], [nu, 1, 0], [0, 0, (1 - nu) / 2]])
+        # Stress from constitutive relation (raw C without thickness)
+        C_m = self._membrane_constitutive_raw()
 
         sigma_m = C_m @ epsilon_m
 
@@ -1701,10 +1746,7 @@ class MITC3(ShellElement):
 
         # Initial displacement stiffness K_L
         K_L = np.zeros((18, 18))
-        E_mat = self.material.E
-        nu = self.material.nu
-        factor = E_mat / (1 - nu**2)
-        Cm_raw = factor * np.array([[1, nu, 0], [nu, 1, 0], [0, 0, (1 - nu) / 2]])
+        Cm_raw = self._membrane_constitutive_raw()
         area = self.area()
 
         for (r, s), w in zip(self._gauss_points, self._gauss_weights):
@@ -1747,10 +1789,7 @@ class MITC3(ShellElement):
         f_int = np.zeros(18)
 
         # Consistent integration for all components
-        E_mat = self.material.E
-        nu = self.material.nu
-        factor = E_mat / (1 - nu**2)
-        Cm_raw = factor * np.array([[1, nu, 0], [nu, 1, 0], [0, 0, (1 - nu) / 2]])
+        Cm_raw = self._membrane_constitutive_raw()
 
         area = self.area()
 

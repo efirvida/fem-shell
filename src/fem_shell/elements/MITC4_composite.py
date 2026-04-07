@@ -1,5 +1,5 @@
 """
-MITC4 Composite Shell Element Implementation.
+MITC4+ Composite Shell Element Implementation.
 
 This module extends the MITC4+ shell element for laminated composite materials
 using Classical Lamination Theory (CLT). The element supports:
@@ -10,6 +10,10 @@ using Classical Lamination Theory (CLT). The element supports:
 - Layer-by-layer stress recovery
 - Failure criteria evaluation (Tsai-Wu, Hashin)
 
+The composite element inherits the full MITC4+ formulation (bubble enrichment,
+MITC shear interpolation, static condensation) from the parent class, overriding
+only the constitutive and material-abstraction methods.
+
 References
 ----------
 - Ko, Y., Lee, P.S., and Bathe, K.J. (2016). "A new MITC4+ shell element."
@@ -17,7 +21,7 @@ References
 - Reddy, J.N. (2004). Mechanics of Laminated Composite Plates and Shells.
 """
 
-from typing import Dict, List, Tuple
+from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 
@@ -64,33 +68,13 @@ class MITC4Composite(MITC4):
 
     Notes
     -----
-    **Key Differences from MITC4:**
+    The element inherits the full MITC4+ formulation with bubble enrichment
+    and static condensation for shear locking prevention.
 
-    1. Constitutive matrices (Cm, Cb, Cs) are derived from ABD matrices
-    2. Coupling between membrane and bending (B matrix) is supported
-    3. Layer-by-layer stress recovery is available
-    4. Failure criteria can be evaluated per ply
-
-    **Stiffness Matrix:**
-
-    For laminates with coupling (B ≠ 0):
-    K = ∫[Bm^T·A·Bm + Bm^T·B·Bκ + Bκ^T·B·Bm + Bκ^T·D·Bκ + Bγ^T·Cs·Bγ]dA
+    For laminates with coupling (B != 0):
+    K = int[Bm^T*A*Bm + Bm^T*B*Bk + Bk^T*B*Bm + Bk^T*D*Bk + Bg^T*Cs*Bg]dA
 
     For symmetric laminates (B = 0), the coupling terms vanish.
-
-    Examples
-    --------
-    >>> # Create quasi-isotropic laminate
-    >>> material = OrthotropicMaterial(
-    ...     name="Carbon/Epoxy",
-    ...     E=(140e9, 10e9, 10e9),
-    ...     G=(5e9, 4e9, 5e9),
-    ...     nu=(0.3, 0.3, 0.3),
-    ...     rho=1600
-    ... )
-    >>> plies = [Ply(material, 0.125e-3, angle) for angle in [0, 45, -45, 90, 90, -45, 45, 0]]
-    >>> laminate = Laminate(plies)
-    >>> element = MITC4Composite(coords, node_ids, laminate)
     """
 
     def __init__(
@@ -140,23 +124,12 @@ class MITC4Composite(MITC4):
         laminate: Laminate,
         equiv_props: dict,
     ) -> OrthotropicMaterial:
-        """
-        Create equivalent orthotropic material for parent class.
-
-        This is used for geometric calculations and provides approximate
-        properties when needed. The actual constitutive behavior uses
-        the ABD matrices.
-        """
-        # Use first ply material as reference for density
+        """Create equivalent orthotropic material for parent class."""
         ref_material = laminate.plies[0].material
-
-        # Compute average/equivalent properties
         Ex = equiv_props["Ex_membrane"]
         Ey = equiv_props["Ey_membrane"]
         Gxy = equiv_props["Gxy_membrane"]
         nuxy = equiv_props["nuxy_membrane"]
-
-        # Use reference material for out-of-plane properties
         _, G23, G13 = ref_material.G
 
         return OrthotropicMaterial(
@@ -167,6 +140,10 @@ class MITC4Composite(MITC4):
             rho=ref_material.rho,
             shear_correction_factor=laminate.shear_correction_factor,
         )
+
+    # =========================================================================
+    # ABD MATRIX PROPERTIES
+    # =========================================================================
 
     @property
     def A(self) -> np.ndarray:
@@ -180,180 +157,74 @@ class MITC4Composite(MITC4):
 
     @property
     def D(self) -> np.ndarray:
-        """Bending stiffness matrix (3x3) [N·m]."""
+        """Bending stiffness matrix (3x3) [N*m]."""
         return self._D_matrix
 
     @property
     def has_coupling(self) -> bool:
-        """True if laminate has membrane-bending coupling (B ≠ 0)."""
+        """True if laminate has membrane-bending coupling (B != 0)."""
         return self._has_coupling
 
+    # =========================================================================
+    # CONSTITUTIVE MATRIX OVERRIDES
+    # =========================================================================
+
     def Cm(self) -> np.ndarray:
-        """
-        Membrane constitutive matrix from CLT.
-
-        Returns the A matrix normalized by thickness for compatibility
-        with the standard shell formulation:
-        Cm = A / h
-
-        Returns
-        -------
-        np.ndarray
-            3x3 membrane stiffness matrix
-        """
-        return self._A_matrix / self.thickness
+        """Membrane constitutive matrix from CLT (A matrix)."""
+        return self._A_matrix
 
     def Cb(self) -> np.ndarray:
-        """
-        Bending constitutive matrix from CLT.
-
-        Returns the D matrix directly. Note that for CLT:
-        M = D @ κ (moments per unit length)
-
-        Returns
-        -------
-        np.ndarray
-            3x3 bending stiffness matrix [N·m]
-        """
+        """Bending constitutive matrix from CLT (D matrix)."""
         return self._D_matrix
 
     def Cs(self) -> np.ndarray:
-        """
-        Transverse shear constitutive matrix from CLT.
-
-        Returns the integrated transverse shear stiffness with
-        correction factor applied.
-
-        Returns
-        -------
-        np.ndarray
-            2x2 shear stiffness matrix [N/m]
-        """
+        """Transverse shear constitutive matrix from CLT."""
         return self._Cs_matrix
 
-    def K(self) -> np.ndarray:
-        """
-        Compute element stiffness matrix for laminated composite.
+    # =========================================================================
+    # VIRTUAL METHOD OVERRIDES FOR MATERIAL ABSTRACTION
+    # =========================================================================
 
-        This overrides the parent method to include membrane-bending
-        coupling when the laminate is asymmetric (B ≠ 0).
+    def _drilling_stiffness_factor(self) -> float:
+        """Drilling stabilization using laminate A matrix trace."""
+        return np.trace(self._A_matrix) / 3.0 * self.thickness * 0.15
 
-        Returns
-        -------
-        np.ndarray
-            24x24 element stiffness matrix
-        """
-        # Always use laminate-specific computation
-        # (parent assumes thickness multiplication which is not correct for CLT)
-        if self._has_coupling:
-            K_local = self._K_with_coupling()
-        else:
-            K_local = self._K_symmetric_laminate()
+    def _mass_per_area(self) -> float:
+        """Ply-integrated mass per unit area."""
+        return sum(ply.material.rho * ply.thickness for ply in self.laminate.plies)
 
-        # Transform to global coordinates
-        T = self.T()
-        K = T.T @ K_local @ T
+    def _rotational_inertia(self) -> float:
+        """Ply-integrated rotational inertia per unit area."""
+        return sum(
+            ply.material.rho * (ply.z_top ** 3 - ply.z_bottom ** 3) / 3
+            for ply in self.laminate.plies
+        )
 
-        # Symmetrize and stabilize
-        K = 0.5 * (K + K.T)
-        K += 1e-10 * np.eye(self.dofs_count)
+    def _membrane_constitutive_raw(self) -> np.ndarray:
+        """Membrane stress-strain matrix (A / h) for nonlinear methods."""
+        return self._A_matrix / self.thickness
 
-        return K
+    @property
+    def _has_membrane_bending_coupling(self) -> bool:
+        return self._has_coupling
 
-    def _K_symmetric_laminate(self) -> np.ndarray:
-        """
-        Compute stiffness matrix for symmetric laminate (B = 0).
-
-        Uses ABD matrices directly without thickness multiplication
-        since CLT already integrates through thickness.
-        """
-        K = np.zeros((24, 24))
-
-        # Constitutive matrices (already integrated through thickness)
-        A_mat = self._A_matrix
-        D_mat = self._D_matrix
-        Cs_mat = self._Cs_matrix
-
-        # Gauss integration
-        for r, s in self._gauss_points:
-            _, detJ = self.J(r, s)
-
-            # Strain-displacement matrices (all 24-DOF format)
-            B_m = self.B_m(r, s)  # 3x24
-            B_kappa = self.B_kappa(r, s)  # 3x24
-            B_gamma = self.B_gamma_MITC4(r, s)  # 2x24
-
-            # Membrane stiffness: Bm^T @ A @ Bm (A already includes thickness integration)
-            K += B_m.T @ A_mat @ B_m * detJ
-
-            # Bending stiffness: Bκ^T @ D @ Bκ (D already includes h³/12 factor)
-            K += B_kappa.T @ D_mat @ B_kappa * detJ
-
-            # Shear stiffness: Bγ^T @ Cs @ Bγ
-            K += B_gamma.T @ Cs_mat @ B_gamma * detJ
-
-        # Apply drilling stiffness
-        K = self._add_drilling_stiffness(K)
-
-        return K
-
-    def _K_with_coupling(self) -> np.ndarray:
-        """
-        Compute stiffness matrix with membrane-bending coupling.
-
-        For asymmetric laminates:
-        K = ∫[Bm^T·A·Bm + Bm^T·B·Bκ + Bκ^T·B·Bm + Bκ^T·D·Bκ + Bγ^T·Cs·Bγ]dA
-
-        Returns local stiffness matrix (transformation to global is done in K()).
-        """
-        K = np.zeros((24, 24))
-
-        # Constitutive matrices
-        A_mat = self._A_matrix
+    def _coupling_stiffness(self) -> np.ndarray:
+        """Membrane-bending coupling stiffness: int[Bm^T*B*Bk + Bk^T*B*Bm]dA."""
         B_mat = self._B_matrix
-        D_mat = self._D_matrix
-        Cs_mat = self._Cs_matrix
+        K_coup = np.zeros((24, 24))
 
-        # Gauss integration
-        for r, s in self._gauss_points:
-            _, detJ = self.J(r, s)
+        for (xi, eta), w in zip(self._gauss_points, self._gauss_weights):
+            _, detJ = self.J(xi, eta)
+            Bm = self.B_m_MITC4_plus(xi, eta)
+            Bk = self.B_kappa(xi, eta)
+            K_mb = Bm.T @ B_mat @ Bk * w * detJ
+            K_coup += K_mb + K_mb.T
 
-            # Strain-displacement matrices (all 24-DOF format)
-            B_m = self.B_m(r, s)  # 3x24
-            B_kappa = self.B_kappa(r, s)  # 3x24
-            B_gamma = self.B_gamma_MITC4(r, s)  # 2x24
+        return K_coup
 
-            # Membrane stiffness: Bm^T @ A @ Bm
-            K += B_m.T @ A_mat @ B_m * detJ
-
-            # Bending stiffness: Bκ^T @ D @ Bκ
-            K += B_kappa.T @ D_mat @ B_kappa * detJ
-
-            # Shear stiffness: Bγ^T @ Cs @ Bγ
-            K += B_gamma.T @ Cs_mat @ B_gamma * detJ
-
-            # Coupling terms: Bm^T @ B @ Bκ and Bκ^T @ B @ Bm
-            K_mb = B_m.T @ B_mat @ B_kappa * detJ
-            K += K_mb
-            K += K_mb.T
-
-        # Apply drilling stiffness
-        K = self._add_drilling_stiffness(K)
-
-        return K
-
-    def _add_drilling_stiffness(self, K: np.ndarray) -> np.ndarray:
-        """Add small drilling stiffness to θz DOFs."""
-        # Get representative stiffness value
-        diag_avg = np.mean(np.abs(np.diag(K)[np.diag(K) != 0]))
-        drilling_stiffness = 1e-6 * diag_avg if diag_avg > 0 else 1e-3
-
-        # Drilling DOFs: θz at each node (positions 5, 11, 17, 23)
-        drilling_dofs = [5, 11, 17, 23]
-        for dof in drilling_dofs:
-            K[dof, dof] += drilling_stiffness
-
-        return K
+    # =========================================================================
+    # STRESS RECOVERY (COMPOSITE-SPECIFIC)
+    # =========================================================================
 
     def compute_midplane_strains(
         self,
@@ -361,28 +232,11 @@ class MITC4Composite(MITC4):
         r: float = 0.0,
         s: float = 0.0,
     ) -> Tuple[np.ndarray, np.ndarray]:
-        """
-        Compute mid-plane strains and curvatures at a point.
-
-        Parameters
-        ----------
-        u_local : np.ndarray
-            Local element displacement vector (24,)
-        r, s : float
-            Parametric coordinates [-1, 1]
-
-        Returns
-        -------
-        epsilon_0 : np.ndarray
-            Mid-plane strains [εxx, εyy, γxy]
-        kappa : np.ndarray
-            Curvatures [κxx, κyy, κxy]
-        """
-        # Compute strains using full 24-DOF B matrices
-        B_m = self.B_m(r, s)  # 3x24
+        """Compute mid-plane strains and curvatures at a point."""
+        B_m = self.B_m(r, s)
         epsilon_0 = B_m @ u_local
 
-        B_kappa = self.B_kappa(r, s)  # 3x24
+        B_kappa = self.B_kappa(r, s)
         kappa = B_kappa @ u_local
 
         return epsilon_0, kappa
@@ -394,34 +248,11 @@ class MITC4Composite(MITC4):
         s: float = 0.0,
         z_positions: str = "mid",
     ) -> List[Dict]:
-        """
-        Compute strains in each ply at specified through-thickness positions.
-
-        Parameters
-        ----------
-        u_local : np.ndarray
-            Local element displacement vector (24,)
-        r, s : float
-            Parametric coordinates [-1, 1]
-        z_positions : str
-            Position within each ply: "mid", "top", "bottom", or "all"
-
-        Returns
-        -------
-        List[Dict]
-            List of dictionaries for each ply containing:
-            - 'ply_index': int
-            - 'angle': float (degrees)
-            - 'z': float (distance from mid-plane)
-            - 'epsilon_laminate': np.ndarray [εxx, εyy, γxy]
-            - 'epsilon_ply': np.ndarray [ε1, ε2, γ12]
-        """
+        """Compute strains in each ply at specified through-thickness positions."""
         epsilon_0, kappa = self.compute_midplane_strains(u_local, r, s)
-
         results = []
 
         for k, ply in enumerate(self.laminate.plies):
-            # Determine z-positions to evaluate
             if z_positions == "mid":
                 z_list = [(ply.z_bottom + ply.z_top) / 2]
             elif z_positions == "top":
@@ -434,22 +265,14 @@ class MITC4Composite(MITC4):
                 raise ValueError(f"Unknown z_positions: {z_positions}")
 
             for z in z_list:
-                # Total strain at z: ε = ε⁰ + z·κ
                 epsilon_lam = epsilon_0 + z * kappa
-
-                # Transform to ply coordinates
                 T_eps = self._strain_transformation_matrix(ply.angle)
                 epsilon_ply = T_eps @ epsilon_lam
-
-                results.append(
-                    {
-                        "ply_index": k,
-                        "angle": ply.angle,
-                        "z": z,
-                        "epsilon_laminate": epsilon_lam.copy(),
-                        "epsilon_ply": epsilon_ply.copy(),
-                    }
-                )
+                results.append({
+                    "ply_index": k, "angle": ply.angle, "z": z,
+                    "epsilon_laminate": epsilon_lam.copy(),
+                    "epsilon_ply": epsilon_ply.copy(),
+                })
 
         return results
 
@@ -460,37 +283,13 @@ class MITC4Composite(MITC4):
         s: float = 0.0,
         z_positions: str = "mid",
     ) -> List[Dict]:
-        """
-        Compute stresses in each ply at specified through-thickness positions.
-
-        Parameters
-        ----------
-        u_local : np.ndarray
-            Local element displacement vector (24,)
-        r, s : float
-            Parametric coordinates [-1, 1]
-        z_positions : str
-            Position within each ply: "mid", "top", "bottom", or "all"
-
-        Returns
-        -------
-        List[Dict]
-            List of dictionaries for each ply containing:
-            - 'ply_index': int
-            - 'angle': float (degrees)
-            - 'z': float
-            - 'sigma_laminate': np.ndarray [σxx, σyy, τxy]
-            - 'sigma_ply': np.ndarray [σ1, σ2, τ12]
-        """
+        """Compute stresses in each ply at specified through-thickness positions."""
         epsilon_0, kappa = self.compute_midplane_strains(u_local, r, s)
-
         results = []
 
         for k, ply in enumerate(self.laminate.plies):
-            # Get transformed stiffness matrix for this ply
             Qbar = compute_Qbar(ply.material, ply.angle)
 
-            # Determine z-positions
             if z_positions == "mid":
                 z_list = [(ply.z_bottom + ply.z_top) / 2]
             elif z_positions == "top":
@@ -503,44 +302,111 @@ class MITC4Composite(MITC4):
                 raise ValueError(f"Unknown z_positions: {z_positions}")
 
             for z in z_list:
-                # Total strain at z
                 epsilon_lam = epsilon_0 + z * kappa
-
-                # Stress in laminate coordinates: σ = Qbar @ ε
                 sigma_lam = Qbar @ epsilon_lam
-
-                # Transform stress to ply coordinates
                 T_stress = stress_transformation_matrix(ply.angle)
                 sigma_ply = T_stress @ sigma_lam
-
-                results.append(
-                    {
-                        "ply_index": k,
-                        "angle": ply.angle,
-                        "z": z,
-                        "sigma_laminate": sigma_lam.copy(),
-                        "sigma_ply": sigma_ply.copy(),
-                    }
-                )
+                results.append({
+                    "ply_index": k, "angle": ply.angle, "z": z,
+                    "sigma_laminate": sigma_lam.copy(),
+                    "sigma_ply": sigma_ply.copy(),
+                })
 
         return results
 
     def _strain_transformation_matrix(self, theta_deg: float) -> np.ndarray:
-        """
-        Compute strain transformation matrix from laminate to ply coordinates.
-
-        For engineering strains [εxx, εyy, γxy] -> [ε1, ε2, γ12]:
-
-        T = [c²    s²     sc   ]
-            [s²    c²    -sc   ]
-            [-2sc  2sc   c²-s²]
-        """
+        """Strain transformation matrix: laminate -> ply coordinates."""
         theta = np.radians(theta_deg)
         c = np.cos(theta)
         s = np.sin(theta)
         c2, s2 = c**2, s**2
+        return np.array([
+            [c2, s2, s * c],
+            [s2, c2, -s * c],
+            [-2 * s * c, 2 * s * c, c2 - s2],
+        ])
 
-        return np.array([[c2, s2, s * c], [s2, c2, -s * c], [-2 * s * c, 2 * s * c, c2 - s2]])
+    def compute_transverse_shear_stresses(
+        self,
+        u_local: np.ndarray,
+        r: float = 0.0,
+        s: float = 0.0,
+        z_positions: str = "mid",
+    ) -> List[Dict]:
+        """Recover transverse shear stresses through the thickness via equilibrium.
+
+        Uses 3D equilibrium integration of in-plane bending stresses to obtain
+        the piecewise-quadratic distribution of tau_xz and tau_yz. This satisfies
+        traction-free boundary conditions at the top and bottom surfaces.
+
+        Parameters
+        ----------
+        u_local : np.ndarray
+            Local displacement vector.
+        r, s : float
+            Parametric coordinates for evaluation.
+        z_positions : str
+            Which z-positions per ply: 'mid', 'top', 'bottom', or 'all'.
+
+        Returns
+        -------
+        List[Dict]
+            Per-ply results with keys: ply_index, angle, z, tau_xz, tau_yz.
+        """
+        # Transverse shear strains and resultants from FSDT
+        B_g = self.B_gamma_MITC4(r, s)
+        gamma = B_g @ u_local  # [gamma_xz, gamma_yz]
+        V = self.laminate.Cs @ gamma  # [V_xz, V_yz]
+
+        D_11 = self.laminate.D[0, 0]
+        D_22 = self.laminate.D[1, 1]
+
+        # Build cumulative Phi function for each ply
+        cum_11 = 0.0
+        cum_22 = 0.0
+        ply_data = []
+        for ply in self.laminate.plies:
+            Qbar = compute_Qbar(ply.material, ply.angle)
+            Q11 = Qbar[0, 0]
+            Q22 = Qbar[1, 1]
+            z_bot = ply.z_bottom
+            z_top = ply.z_top
+
+            ply_data.append((cum_11, Q11, cum_22, Q22, z_bot, z_top))
+            cum_11 += Q11 * (z_top**2 - z_bot**2) / 2
+            cum_22 += Q22 * (z_top**2 - z_bot**2) / 2
+
+        results = []
+        for k, ply in enumerate(self.laminate.plies):
+            c11, Q11, c22, Q22, z_bot, z_top = ply_data[k]
+
+            if z_positions == "mid":
+                z_list = [(z_bot + z_top) / 2]
+            elif z_positions == "top":
+                z_list = [z_top]
+            elif z_positions == "bottom":
+                z_list = [z_bot]
+            elif z_positions == "all":
+                z_list = [z_bot, (z_bot + z_top) / 2, z_top]
+            else:
+                raise ValueError(f"Unknown z_positions: {z_positions}")
+
+            for z in z_list:
+                Phi_11 = c11 + Q11 / 2 * (z**2 - z_bot**2)
+                Phi_22 = c22 + Q22 / 2 * (z**2 - z_bot**2)
+
+                tau_xz = -Phi_11 / D_11 * V[0] if D_11 > 0 else 0.0
+                tau_yz = -Phi_22 / D_22 * V[1] if D_22 > 0 else 0.0
+
+                results.append({
+                    "ply_index": k,
+                    "angle": ply.angle,
+                    "z": z,
+                    "tau_xz": float(tau_xz),
+                    "tau_yz": float(tau_yz),
+                })
+
+        return results
 
     def evaluate_failure(
         self,
@@ -549,39 +415,8 @@ class MITC4Composite(MITC4):
         s: float = 0.0,
         criterion: str = "tsai-wu",
     ) -> List[Dict]:
-        """
-        Evaluate failure criteria for all plies.
-
-        Parameters
-        ----------
-        u_local : np.ndarray
-            Local element displacement vector (24,)
-        r, s : float
-            Parametric coordinates [-1, 1]
-        criterion : str
-            Failure criterion: "tsai-wu", "hashin", or "max-stress"
-
-        Returns
-        -------
-        List[Dict]
-            List of failure results for each ply containing:
-            - 'ply_index': int
-            - 'angle': float
-            - 'z': float
-            - 'sigma_ply': np.ndarray
-            - 'failure_result': FailureResult
-            - 'failed': bool
-            - 'failure_index': float
-            - 'mode': FailureMode
-
-        Raises
-        ------
-        ValueError
-            If a ply has no strength properties defined
-        """
-        # Get stresses at ply mid-thickness
+        """Evaluate failure criteria for all plies."""
         stresses = self.compute_ply_stresses(u_local, r, s, z_positions="mid")
-
         results = []
 
         for stress_data in stresses:
@@ -590,27 +425,20 @@ class MITC4Composite(MITC4):
 
             if ply.strength is None:
                 raise ValueError(
-                    f"Ply {k} (angle={ply.angle}°) has no strength properties. "
+                    f"Ply {k} (angle={ply.angle}) has no strength properties. "
                     "Define StrengthProperties for failure analysis."
                 )
 
             sigma_ply = stress_data["sigma_ply"]
-
-            # Evaluate failure criterion
             failure_result = evaluate_ply_failure(sigma_ply, ply.strength, criterion)
-
-            results.append(
-                {
-                    "ply_index": k,
-                    "angle": ply.angle,
-                    "z": stress_data["z"],
-                    "sigma_ply": sigma_ply.copy(),
-                    "failure_result": failure_result,
-                    "failed": failure_result.failed,
-                    "failure_index": failure_result.failure_index,
-                    "mode": failure_result.mode,
-                }
-            )
+            results.append({
+                "ply_index": k, "angle": ply.angle,
+                "z": stress_data["z"], "sigma_ply": sigma_ply.copy(),
+                "failure_result": failure_result,
+                "failed": failure_result.failed,
+                "failure_index": failure_result.failure_index,
+                "mode": failure_result.mode,
+            })
 
         return results
 
@@ -621,25 +449,8 @@ class MITC4Composite(MITC4):
         s: float = 0.0,
         criterion: str = "tsai-wu",
     ) -> Dict:
-        """
-        Find the ply with the highest failure index.
-
-        Parameters
-        ----------
-        u_local : np.ndarray
-            Local element displacement vector (24,)
-        r, s : float
-            Parametric coordinates [-1, 1]
-        criterion : str
-            Failure criterion
-
-        Returns
-        -------
-        Dict
-            Failure data for the critical ply
-        """
+        """Find the ply with the highest failure index."""
         failure_results = self.evaluate_failure(u_local, r, s, criterion)
-
         return max(failure_results, key=lambda x: x["failure_index"])
 
     def compute_stress_resultants(
@@ -648,80 +459,169 @@ class MITC4Composite(MITC4):
         r: float = 0.0,
         s: float = 0.0,
     ) -> Tuple[np.ndarray, np.ndarray]:
-        """
-        Compute membrane forces and bending moments per unit length.
-
-        Parameters
-        ----------
-        u_local : np.ndarray
-            Local element displacement vector (24,)
-        r, s : float
-            Parametric coordinates [-1, 1]
-
-        Returns
-        -------
-        N : np.ndarray
-            Membrane force resultants [Nxx, Nyy, Nxy] (N/m)
-        M : np.ndarray
-            Moment resultants [Mxx, Myy, Mxy] (N)
-        """
+        """Compute membrane forces and bending moments per unit length."""
         epsilon_0, kappa = self.compute_midplane_strains(u_local, r, s)
-
-        # Using ABD relation: [N; M] = [A B; B D] @ [ε⁰; κ]
         N = self._A_matrix @ epsilon_0 + self._B_matrix @ kappa
         M = self._B_matrix @ epsilon_0 + self._D_matrix @ kappa
-
         return N, M
 
-    def mass(self) -> np.ndarray:
+    def compute_membrane_stress_from_displacement(
+        self,
+        u_local: np.ndarray,
+        r: float = 0.0,
+        s: float = 0.0,
+    ) -> np.ndarray:
+        """Compute average membrane stress using ABD relation."""
+        epsilon_0, kappa = self.compute_midplane_strains(u_local, r, s)
+        N = self._A_matrix @ epsilon_0 + self._B_matrix @ kappa
+        return N / self.thickness
+
+    # =========================================================================
+    # NONLINEAR ANALYSIS OVERRIDES (coupling-aware)
+    # =========================================================================
+
+    def _get_local_stiffness(self) -> np.ndarray:
+        """Local stiffness including membrane-bending coupling for asymmetric laminates."""
+        K = self.k_m() + self._k_bending_shear() + self.k_drill()
+        if self._has_membrane_bending_coupling:
+            K += self._coupling_stiffness()
+        return K
+
+    def compute_tangent_stiffness(
+        self,
+        sigma: Optional[np.ndarray] = None,
+        transform_to_global: bool = True,
+    ) -> np.ndarray:
+        """Tangent stiffness with coupling for asymmetric composite laminates.
+
+        For Total Lagrangian formulation:
+            K_T = K_0 + K_L + K_sigma
+        where K_L is the initial displacement stiffness from GL strain nonlinearity.
         """
-        Compute element mass matrix for laminate.
+        K0 = self._get_local_stiffness()
 
-        The mass is computed by integrating the density through
-        the thickness of each ply. Uses the same approach as the parent
-        MITC4 class but with laminate-specific mass properties.
+        if not self.nonlinear:
+            if transform_to_global:
+                T = self.T()
+                return T.T @ K0 @ T
+            return K0
 
-        Returns
-        -------
-        np.ndarray
-            24x24 consistent mass matrix
+        if sigma is None:
+            T = self.T()
+            u_local = T @ self._current_displacements
+            sigma = self.compute_membrane_stress_from_displacement(u_local)
+
+        # Initial displacement stiffness K_L (membrane contribution)
+        K_L = np.zeros((24, 24))
+        Cm_raw = self._membrane_constitutive_raw()
+
+        for (xi, eta), w in zip(self._gauss_points, self._gauss_weights):
+            _, detJ = self.J(xi, eta)
+            B_L = self._compute_B_L(xi, eta)
+            B_NL = self._compute_B_NL(xi, eta)
+            B_m_L = B_L[[0, 1, 3], :]
+            B_m_NL = B_NL[[0, 1, 3], :]
+
+            K_L += (
+                (
+                    B_m_L.T @ Cm_raw @ B_m_NL
+                    + B_m_NL.T @ Cm_raw @ B_m_L
+                    + B_m_NL.T @ Cm_raw @ B_m_NL
+                )
+                * w * detJ * self.thickness
+            )
+
+        K_sigma = self.compute_geometric_stiffness(sigma, transform_to_global=False)
+        K_T = K0 + K_L + K_sigma
+        K_T = 0.5 * (K_T + K_T.T)
+
+        if transform_to_global:
+            T = self.T()
+            K_T = T.T @ K_T @ T
+
+        return K_T
+
+    def compute_internal_forces(
+        self,
+        transform_to_global: bool = True,
+    ) -> np.ndarray:
+        """Internal forces with coupling for asymmetric composite laminates.
+
+        Uses the same strategy as MITC3Composite:
+        - Bending/shear: linear (bubble-condensed)
+        - Membrane: GL strain integration when nonlinear
+        - Coupling: linear (B matrix couples membrane and bending)
+        - Drilling: stabilization restoring force
         """
-        # Compute total mass per unit area (ρ*h equivalent)
-        mass_per_area = sum(ply.material.rho * ply.thickness for ply in self.laminate.plies)
-
-        # Compute rotational inertia (ρ*h³/12 equivalent for laminate)
-        rotational_inertia = sum(
-            ply.material.rho * (ply.z_top**3 - ply.z_bottom**3) / 3 for ply in self.laminate.plies
-        )
-
-        M_local = np.zeros((24, 24))
-
-        # Use same approach as parent class
-        for r, s in self._gauss_points:
-            _, detJ = self.J(r, s)
-
-            # Build shape function matrix (6x24) for mass matrix
-            N_vals = self._shape_functions(r, s)  # [N0, N1, N2, N3]
-            N = np.zeros((6, 24))
-            for i in range(4):
-                for dof in range(6):
-                    N[dof, 6 * i + dof] = N_vals[i]
-
-            # Translational mass (u, v, w)
-            M_trans = mass_per_area * (N[:3].T @ N[:3]) * detJ
-
-            # Rotational inertia contributions
-            M_rot = np.zeros((24, 24))
-            for dof in [3, 4, 5]:  # θx, θy, θz
-                M_rot += rotational_inertia * np.outer(N[dof], N[dof]) * detJ
-
-            M_local += M_trans + M_rot
-
-        # Transform to global coordinates
         T = self.T()
-        M = T.T @ M_local @ T
+        u_local = T @ self._current_displacements
 
-        return M
+        if not self.nonlinear:
+            K_local = self._get_local_stiffness()
+            f_int = K_local @ u_local
+        else:
+            f_int = np.zeros(24)
+
+            # Bending + shear (linear, bubble-condensed)
+            f_int += self._k_bending_shear() @ u_local
+
+            # Drilling (linear)
+            f_int += self.k_drill() @ u_local
+
+            # Coupling contribution (linear)
+            if self._has_membrane_bending_coupling:
+                f_int += self._coupling_stiffness() @ u_local
+
+            # Membrane (GL strain integration)
+            Cm_raw = self._membrane_constitutive_raw()
+            for (xi, eta), w in zip(self._gauss_points, self._gauss_weights):
+                _, detJ = self.J(xi, eta)
+                E_GL = self.compute_green_lagrange_strain(xi, eta)
+                eps_m = np.array([E_GL[0, 0], E_GL[1, 1], 2 * E_GL[0, 1]])
+                sigma_m = Cm_raw @ eps_m
+
+                B_L = self._compute_B_L(xi, eta)
+                B_NL = self._compute_B_NL(xi, eta)
+                B_total = B_L[[0, 1, 3], :] + B_NL[[0, 1, 3], :]
+
+                f_int += B_total.T @ sigma_m * w * detJ * self.thickness
+
+        if transform_to_global:
+            f_int = T.T @ f_int
+
+        return f_int
+
+    def compute_strain_energy(self) -> float:
+        """Strain energy with coupling for asymmetric composite laminates.
+
+        For nonlinear analysis, uses Green-Lagrange strains for membrane energy.
+        Bending/shear and coupling remain linear in the local frame.
+        """
+        T = self.T()
+        u_local = T @ self._current_displacements
+
+        # Bending + shear energy (linear, bubble-condensed)
+        U = 0.5 * u_local @ (self._k_bending_shear() + self.k_drill()) @ u_local
+
+        # Coupling energy (linear)
+        if self._has_membrane_bending_coupling:
+            U += 0.5 * u_local @ self._coupling_stiffness() @ u_local
+
+        # Membrane energy — GL strains when nonlinear
+        Cm_raw = self._membrane_constitutive_raw()
+
+        for (xi, eta), w in zip(self._gauss_points, self._gauss_weights):
+            _, detJ = self.J(xi, eta)
+            if self.nonlinear:
+                E_GL = self.compute_green_lagrange_strain(xi, eta)
+                eps_m = np.array([E_GL[0, 0], E_GL[1, 1], 2 * E_GL[0, 1]])
+            else:
+                Bm = self.B_m(xi, eta)
+                eps_m = Bm @ u_local
+
+            U += 0.5 * eps_m @ Cm_raw @ eps_m * w * detJ * self.thickness
+
+        return float(U)
 
     def __repr__(self) -> str:
         return (

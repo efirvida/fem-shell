@@ -357,23 +357,99 @@ class Laminate:
 
     def _compute_shear_stiffness(self) -> None:
         """
-        Compute transverse shear stiffness matrix.
+        Compute transverse shear stiffness matrix using energy equivalence.
 
-        Integrates transformed shear moduli through thickness and
-        applies shear correction factor.
+        For multi-ply laminates, uses equilibrium-based shear stress distribution
+        through the thickness to compute energy-equivalent correction factors
+        per direction (diagonal approach). For single-ply laminates, falls back
+        to scalar shear_correction_factor.
+
+        The method computes the actual piecewise-quadratic shear stress profile
+        from 3D equilibrium of bending stresses and equates the complementary
+        shear strain energy to that of FSDT. This yields k = 5/6 for homogeneous
+        plates and proper anisotropic corrections for layered composites.
         """
+        # Zeroth-moment components (uncorrected)
         A44, A45, A55 = 0.0, 0.0, 0.0
-
         for ply in self.plies:
             Cbar = compute_shear_Cbar(ply.material, ply.angle)
             t = ply.thickness
-
             A55 += Cbar[0, 0] * t
             A45 += Cbar[0, 1] * t
             A44 += Cbar[1, 1] * t
 
-        k = self.shear_correction_factor
-        self.Cs = k * np.array([[A55, A45], [A45, A44]])
+        # Single ply: energy-equiv reduces to scalar correction
+        if len(self.plies) == 1:
+            k = self.shear_correction_factor
+            self.Cs = k * np.array([[A55, A45], [A45, A44]])
+            return
+
+        D_11 = self.D[0, 0]
+        D_22 = self.D[1, 1]
+
+        # Compliance-weighted integral of shear stress shape function squared
+        # Phi_aa(z) = integral from -h/2 to z of Q_aa(z') * z' dz'
+        # In ply j: Phi(z) = cum + Q_aa^j/2 * (z^2 - z_bot^2) = A_j + B_j * z^2
+        flex_55 = 0.0
+        flex_44 = 0.0
+        cum_55 = 0.0
+        cum_44 = 0.0
+
+        for ply in self.plies:
+            Qbar = compute_Qbar(ply.material, ply.angle)
+            Cbar_s = compute_shear_Cbar(ply.material, ply.angle)
+
+            Q11 = Qbar[0, 0]
+            Q22 = Qbar[1, 1]
+            C55_k = Cbar_s[0, 0]
+            C44_k = Cbar_s[1, 1]
+
+            z_bot = ply.z_bottom
+            z_top = ply.z_top
+            t = ply.thickness
+
+            # Phi(z) = A + B * z^2 within this ply
+            A_55 = cum_55 - Q11 / 2 * z_bot**2
+            B_55 = Q11 / 2
+            A_44 = cum_44 - Q22 / 2 * z_bot**2
+            B_44 = Q22 / 2
+
+            # integral (A + B*z^2)^2 dz from z_bot to z_top
+            dz3 = (z_top**3 - z_bot**3) / 3
+            dz5 = (z_top**5 - z_bot**5) / 5
+
+            I_55 = A_55**2 * t + 2 * A_55 * B_55 * dz3 + B_55**2 * dz5
+            I_44 = A_44**2 * t + 2 * A_44 * B_44 * dz3 + B_44**2 * dz5
+
+            if C55_k > 0:
+                flex_55 += I_55 / C55_k
+            if C44_k > 0:
+                flex_44 += I_44 / C44_k
+
+            # Update cumulative for next ply
+            cum_55 += Q11 * (z_top**2 - z_bot**2) / 2
+            cum_44 += Q22 * (z_top**2 - z_bot**2) / 2
+
+        # Corrected diagonal stiffnesses: Cs_aa = D_aa^2 / flex_aa
+        if flex_55 > 0 and D_11 > 0:
+            Cs_55 = D_11**2 / flex_55
+        else:
+            Cs_55 = self.shear_correction_factor * A55
+
+        if flex_44 > 0 and D_22 > 0:
+            Cs_44 = D_22**2 / flex_44
+        else:
+            Cs_44 = self.shear_correction_factor * A44
+
+        # Off-diagonal: geometric mean of per-direction correction factors
+        if A55 > 0 and A44 > 0:
+            k_55 = Cs_55 / A55
+            k_44 = Cs_44 / A44
+            Cs_45 = np.sqrt(k_55 * k_44) * A45
+        else:
+            Cs_45 = self.shear_correction_factor * A45
+
+        self.Cs = np.array([[Cs_55, Cs_45], [Cs_45, Cs_44]])
 
     @property
     def is_symmetric(self) -> bool:

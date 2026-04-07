@@ -140,22 +140,18 @@ class MITC4(ShellElement):
 
     def _shape_function_derivatives(self, xi: float, eta: float) -> Tuple[np.ndarray, np.ndarray]:
         """Compute shape function derivatives (dN/dxi, dN/deta)."""
-        dN_dxi = np.array(
-            [
-                -0.25 * (1.0 - eta),
-                +0.25 * (1.0 - eta),
-                +0.25 * (1.0 + eta),
-                -0.25 * (1.0 + eta),
-            ]
-        )
-        dN_deta = np.array(
-            [
-                -0.25 * (1.0 - xi),
-                -0.25 * (1.0 + xi),
-                +0.25 * (1.0 + xi),
-                +0.25 * (1.0 - xi),
-            ]
-        )
+        dN_dxi = np.array([
+            -0.25 * (1.0 - eta),
+            +0.25 * (1.0 - eta),
+            +0.25 * (1.0 + eta),
+            -0.25 * (1.0 + eta),
+        ])
+        dN_deta = np.array([
+            -0.25 * (1.0 - xi),
+            -0.25 * (1.0 + xi),
+            +0.25 * (1.0 + xi),
+            +0.25 * (1.0 - xi),
+        ])
         return dN_dxi, dN_deta
 
     def _compute_characteristic_vectors(self) -> None:
@@ -173,21 +169,19 @@ class MITC4(ShellElement):
             norm_n = np.linalg.norm(n_vec)
         self._n = n_vec / norm_n
 
-        A = np.array(
+        A = np.array([
             [
-                [
-                    np.dot(self._x_r, self._x_r),
-                    np.dot(self._x_r, self._x_s),
-                    np.dot(self._x_r, self._n),
-                ],
-                [
-                    np.dot(self._x_s, self._x_r),
-                    np.dot(self._x_s, self._x_s),
-                    np.dot(self._x_s, self._n),
-                ],
-                [np.dot(self._n, self._x_r), np.dot(self._n, self._x_s), np.dot(self._n, self._n)],
-            ]
-        )
+                np.dot(self._x_r, self._x_r),
+                np.dot(self._x_r, self._x_s),
+                np.dot(self._x_r, self._n),
+            ],
+            [
+                np.dot(self._x_s, self._x_r),
+                np.dot(self._x_s, self._x_s),
+                np.dot(self._x_s, self._n),
+            ],
+            [np.dot(self._n, self._x_r), np.dot(self._n, self._x_s), np.dot(self._n, self._n)],
+        ])
 
         try:
             coeff_r = np.linalg.solve(A, np.array([1, 0, 0]))
@@ -290,20 +284,16 @@ class MITC4(ShellElement):
 
         # Project 3D tangent vectors to local coordinate system
         # The local system has basis vectors e1, e2, e3
-        g_r_local = np.array(
-            [
-                np.dot(g_r_3D, self._e1),
-                np.dot(g_r_3D, self._e2),
-                np.dot(g_r_3D, self._e3),
-            ]
-        )
-        g_s_local = np.array(
-            [
-                np.dot(g_s_3D, self._e1),
-                np.dot(g_s_3D, self._e2),
-                np.dot(g_s_3D, self._e3),
-            ]
-        )
+        g_r_local = np.array([
+            np.dot(g_r_3D, self._e1),
+            np.dot(g_r_3D, self._e2),
+            np.dot(g_r_3D, self._e3),
+        ])
+        g_s_local = np.array([
+            np.dot(g_s_3D, self._e1),
+            np.dot(g_s_3D, self._e2),
+            np.dot(g_s_3D, self._e3),
+        ])
 
         B_row = np.zeros(24)
 
@@ -346,17 +336,15 @@ class MITC4(ShellElement):
         deta_dx = J_inv[1, 0]
         deta_dy = J_inv[1, 1]
 
-        T = np.array(
+        T = np.array([
+            [dxi_dx**2, deta_dx**2, dxi_dx * deta_dx],
+            [dxi_dy**2, deta_dy**2, dxi_dy * deta_dy],
             [
-                [dxi_dx**2, deta_dx**2, dxi_dx * deta_dx],
-                [dxi_dy**2, deta_dy**2, dxi_dy * deta_dy],
-                [
-                    2.0 * dxi_dx * dxi_dy,
-                    2.0 * deta_dx * deta_dy,
-                    dxi_dx * deta_dy + dxi_dy * deta_dx,
-                ],
-            ]
-        )
+                2.0 * dxi_dx * dxi_dy,
+                2.0 * deta_dx * deta_dy,
+                dxi_dx * deta_dy + dxi_dy * deta_dx,
+            ],
+        ])
 
         return T
 
@@ -707,6 +695,61 @@ class MITC4(ShellElement):
         return k * G * self.thickness * np.eye(2)
 
     # =========================================================================
+    # VIRTUAL METHODS FOR MATERIAL ABSTRACTION
+    # =========================================================================
+    # These methods allow composite subclasses to override material-specific
+    # behavior without duplicating the element formulation logic.
+
+    def _drilling_stiffness_factor(self) -> float:
+        """Drilling stabilization factor for θz DOFs.
+
+        Override in composite subclasses to use laminate-derived stiffness.
+        """
+        return self.material.E * (self.thickness**2) * 0.15
+
+    def _mass_per_area(self) -> float:
+        """Translational mass per unit area (ρ·h).
+
+        Override in composite subclasses for ply-integrated mass.
+        """
+        return self.material.rho * self.thickness
+
+    def _rotational_inertia(self) -> float:
+        """Rotational inertia per unit area (ρ·h³/12).
+
+        Override in composite subclasses for ply-integrated inertia.
+        """
+        return self.material.rho * self.thickness**3 / 12.0
+
+    def _membrane_constitutive_raw(self) -> np.ndarray:
+        """Membrane constitutive matrix without thickness (3×3).
+
+        Returns C such that σ = C·ε (stress-strain, not force-strain).
+        For isotropic: E/(1-ν²) * [[1,ν,0],[ν,1,0],[0,0,(1-ν)/2]].
+        Override in composite subclasses with A/h.
+        """
+        E = self.material.E
+        nu = self.material.nu
+        factor = E / (1 - nu**2)
+        return factor * np.array([[1, nu, 0], [nu, 1, 0], [0, 0, (1 - nu) / 2]])
+
+    @property
+    def _has_membrane_bending_coupling(self) -> bool:
+        """Whether the element has membrane-bending coupling (B ≠ 0).
+
+        Always False for isotropic. Override in composite subclasses.
+        """
+        return False
+
+    def _coupling_stiffness(self) -> np.ndarray:
+        """Membrane-bending coupling stiffness contribution (24×24).
+
+        Returns zero for isotropic. Override in composite subclasses to
+        compute ∫[Bm^T·B·Bκ + Bκ^T·B·Bm]dA for asymmetric laminates.
+        """
+        return np.zeros((24, 24))
+
+    # =========================================================================
     # STRAIN-DISPLACEMENT MATRICES
     # =========================================================================
 
@@ -801,12 +844,10 @@ class MITC4(ShellElement):
         alph = np.arctan2(Ay, Ax)
         beta = np.pi / 2.0 - np.arctan2(Cx, Cy)
 
-        Rot = np.array(
-            [
-                [np.sin(beta), -np.sin(alph)],
-                [-np.cos(beta), np.cos(alph)],
-            ]
-        )
+        Rot = np.array([
+            [np.sin(beta), -np.sin(alph)],
+            [-np.cos(beta), np.cos(alph)],
+        ])
 
         Ms = np.zeros((2, 4))
         Ms[1, 0] = 1.0 - xi
@@ -963,7 +1004,7 @@ class MITC4(ShellElement):
         # Stabilization factor (small compared to membrane stiffness)
         # Scaled with t^2 to be consistent with rotational stiffness dimensions (Force*Length)
         # alpha=0.15 works well for both Twisted Beam (t=0.32) and Hook (t=2.0)
-        k_drill_stab = self.material.E * (self.thickness**2) * 0.15
+        k_drill_stab = self._drilling_stiffness_factor()
 
         K_drill = np.zeros((24, 24))
 
@@ -984,6 +1025,10 @@ class MITC4(ShellElement):
         """
         K_local = self.k_m() + self._k_bending_shear() + self.k_drill()
 
+        # Add membrane-bending coupling for asymmetric laminates
+        if self._has_membrane_bending_coupling:
+            K_local += self._coupling_stiffness()
+
         T = self.T()
         K_global = T.T @ K_local @ T
         K_global = 0.5 * (K_global + K_global.T)
@@ -993,12 +1038,10 @@ class MITC4(ShellElement):
     @cached_property
     def M(self) -> np.ndarray:
         """Consistent mass matrix (24x24)."""
-        rho = self.material.rho
-        h = self.thickness
         M = np.zeros((24, 24))
 
-        m_trans = rho * h
-        m_rot = rho * h**3 / 12.0
+        m_trans = self._mass_per_area()
+        m_rot = self._rotational_inertia()
 
         for (xi, eta), w in zip(self._gauss_points, self._gauss_weights):
             _, detJ = self.J(xi, eta)
@@ -1068,6 +1111,57 @@ class MITC4(ShellElement):
         H = self.get_displacement_gradient(xi, eta)
         return 0.5 * (H + H.T + H.T @ H)
 
+    def _compute_B_L(self, xi: float, eta: float) -> np.ndarray:
+        """Linear part of strain-displacement matrix for TL formulation (6×24).
+
+        Strain order: [ε_xx, ε_yy, ε_zz, γ_xy, γ_yz, γ_xz]
+        """
+        dH = self._get_dH(xi, eta)
+        B_L = np.zeros((6, 24))
+
+        for i in range(4):
+            col = 6 * i
+            dNi_dx = dH[0, i]
+            dNi_dy = dH[1, i]
+
+            B_L[0, col] = dNi_dx          # ε_xx = ∂u/∂x
+            B_L[1, col + 1] = dNi_dy      # ε_yy = ∂v/∂y
+            B_L[3, col] = dNi_dy          # γ_xy = ∂u/∂y
+            B_L[3, col + 1] = dNi_dx      # γ_xy += ∂v/∂x
+
+        return B_L
+
+    def _compute_B_NL(self, xi: float, eta: float) -> np.ndarray:
+        """Nonlinear part of strain-displacement matrix (6×24).
+
+        Displacement-dependent; must be recomputed after configuration update.
+        """
+        dH_shape = self._get_dH(xi, eta)
+        H = self.get_displacement_gradient(xi, eta)
+        B_NL = np.zeros((6, 24))
+
+        for i in range(4):
+            col = 6 * i
+            dNi_dx = dH_shape[0, i]
+            dNi_dy = dH_shape[1, i]
+
+            # E_xx nonlinear
+            B_NL[0, col] = H[0, 0] * dNi_dx
+            B_NL[0, col + 1] = H[1, 0] * dNi_dx
+            B_NL[0, col + 2] = H[2, 0] * dNi_dx
+
+            # E_yy nonlinear
+            B_NL[1, col] = H[0, 1] * dNi_dy
+            B_NL[1, col + 1] = H[1, 1] * dNi_dy
+            B_NL[1, col + 2] = H[2, 1] * dNi_dy
+
+            # 2*E_xy nonlinear
+            B_NL[3, col] = H[0, 0] * dNi_dy + H[0, 1] * dNi_dx
+            B_NL[3, col + 1] = H[1, 0] * dNi_dy + H[1, 1] * dNi_dx
+            B_NL[3, col + 2] = H[2, 0] * dNi_dy + H[2, 1] * dNi_dx
+
+        return B_NL
+
     def _compute_B_geometric(self, xi: float, eta: float) -> np.ndarray:
         """Compute geometric B matrix for geometric stiffness."""
         dH = self._get_dH(xi, eta)
@@ -1098,12 +1192,10 @@ class MITC4(ShellElement):
         sigma = np.asarray(sigma_membrane)
 
         S_m = (
-            np.array(
-                [
-                    [sigma[0], sigma[2]],
-                    [sigma[2], sigma[1]],
-                ]
-            )
+            np.array([
+                [sigma[0], sigma[2]],
+                [sigma[2], sigma[1]],
+            ])
             * self.thickness
         )
 
@@ -1135,10 +1227,7 @@ class MITC4(ShellElement):
         eta: float = 0.0,
     ) -> np.ndarray:
         """Compute membrane stress from local displacement vector."""
-        E = self.material.E
-        nu = self.material.nu
-        factor = E / (1 - nu**2)
-        C_m = factor * np.array([[1, nu, 0], [nu, 1, 0], [0, 0, (1 - nu) / 2]])
+        C_m = self._membrane_constitutive_raw()
 
         Bm = self.B_m(xi, eta)
         epsilon_m = Bm @ u_local
@@ -1155,7 +1244,12 @@ class MITC4(ShellElement):
         sigma: Optional[np.ndarray] = None,
         transform_to_global: bool = True,
     ) -> np.ndarray:
-        """Compute tangent stiffness matrix for nonlinear analysis."""
+        """Compute tangent stiffness matrix for nonlinear analysis.
+
+        For Total Lagrangian formulation:
+            K_T = K_0 + K_L + K_sigma
+        where K_L is the initial displacement stiffness from GL strain nonlinearity.
+        """
         K0 = self._get_local_stiffness()
 
         if not self.nonlinear:
@@ -1169,8 +1263,28 @@ class MITC4(ShellElement):
             u_local = T @ self._current_displacements
             sigma = self.compute_membrane_stress_from_displacement(u_local)
 
+        # Initial displacement stiffness K_L
+        K_L = np.zeros((24, 24))
+        Cm_raw = self._membrane_constitutive_raw()
+
+        for (xi, eta), w in zip(self._gauss_points, self._gauss_weights):
+            _, detJ = self.J(xi, eta)
+            B_L = self._compute_B_L(xi, eta)
+            B_NL = self._compute_B_NL(xi, eta)
+            B_m_L = B_L[[0, 1, 3], :]
+            B_m_NL = B_NL[[0, 1, 3], :]
+
+            K_L += (
+                (
+                    B_m_L.T @ Cm_raw @ B_m_NL
+                    + B_m_NL.T @ Cm_raw @ B_m_L
+                    + B_m_NL.T @ Cm_raw @ B_m_NL
+                )
+                * w * detJ * self.thickness
+            )
+
         K_sigma = self.compute_geometric_stiffness(sigma, transform_to_global=False)
-        K_T = K0 + K_sigma
+        K_T = K0 + K_L + K_sigma
         K_T = 0.5 * (K_T + K_T.T)
 
         if transform_to_global:
@@ -1183,12 +1297,39 @@ class MITC4(ShellElement):
         self,
         transform_to_global: bool = True,
     ) -> np.ndarray:
-        """Compute internal force vector."""
+        """Compute internal force vector.
+
+        For nonlinear analysis, membrane forces use Green-Lagrange strains.
+        Bending/shear and drilling remain linear in the local frame.
+        """
         T = self.T()
         u_local = T @ self._current_displacements
 
-        K_local = self._get_local_stiffness()
-        f_int = K_local @ u_local
+        if not self.nonlinear:
+            K_local = self._get_local_stiffness()
+            f_int = K_local @ u_local
+        else:
+            f_int = np.zeros(24)
+
+            # Bending + shear (linear, bubble-condensed)
+            f_int += self._k_bending_shear() @ u_local
+
+            # Drilling (linear)
+            f_int += self.k_drill() @ u_local
+
+            # Membrane (GL strain integration)
+            Cm_raw = self._membrane_constitutive_raw()
+            for (xi, eta), w in zip(self._gauss_points, self._gauss_weights):
+                _, detJ = self.J(xi, eta)
+                E_GL = self.compute_green_lagrange_strain(xi, eta)
+                eps_m = np.array([E_GL[0, 0], E_GL[1, 1], 2 * E_GL[0, 1]])
+                sigma_m = Cm_raw @ eps_m
+
+                B_L = self._compute_B_L(xi, eta)
+                B_NL = self._compute_B_NL(xi, eta)
+                B_total = B_L[[0, 1, 3], :] + B_NL[[0, 1, 3], :]
+
+                f_int += B_total.T @ sigma_m * w * detJ * self.thickness
 
         if transform_to_global:
             f_int = T.T @ f_int
@@ -1208,63 +1349,25 @@ class MITC4(ShellElement):
         """Compute total strain energy stored in the element."""
         T = self.T()
         u_local = T @ self._current_displacements
-        K_local = self._get_local_stiffness()
-        return 0.5 * float(u_local @ K_local @ u_local)
 
-    # =========================================================================
-    # STRESS AND STRAIN OUTPUT
-    # =========================================================================
+        # Bending/shear + drilling energy (linear)
+        U = 0.5 * u_local @ (self._k_bending_shear() + self.k_drill()) @ u_local
 
-    def compute_strains(
-        self,
-        u_global: np.ndarray,
-        xi: float = 0.0,
-        eta: float = 0.0,
-    ) -> dict:
-        """Compute strains at a parametric point."""
-        T = self.T()
-        u_local = T @ u_global
+        # Membrane energy — GL strains when nonlinear
+        Cm_raw = self._membrane_constitutive_raw()
 
-        eps_membrane = self.B_m(xi, eta) @ u_local
-        kappa = self.B_kappa(xi, eta) @ u_local
-        gamma = self.B_gamma_MITC4(xi, eta) @ u_local
+        for (xi, eta), w in zip(self._gauss_points, self._gauss_weights):
+            _, detJ = self.J(xi, eta)
+            if self.nonlinear:
+                E_GL = self.compute_green_lagrange_strain(xi, eta)
+                eps_m = np.array([E_GL[0, 0], E_GL[1, 1], 2 * E_GL[0, 1]])
+            else:
+                Bm = self.B_m(xi, eta)
+                eps_m = Bm @ u_local
 
-        return {
-            "membrane": eps_membrane,
-            "curvature": kappa,
-            "shear": gamma,
-        }
+            U += 0.5 * eps_m @ Cm_raw @ eps_m * w * detJ * self.thickness
 
-    def compute_stresses(
-        self,
-        u_global: np.ndarray,
-        xi: float = 0.0,
-        eta: float = 0.0,
-    ) -> dict:
-        """Compute stresses at a parametric point."""
-        strains = self.compute_strains(u_global, xi, eta)
-
-        Cm = self.Cm()
-        Cb = self.Cb()
-        Cs = self.Cs()
-
-        sigma_membrane = Cm @ strains["membrane"]
-        moments = Cb @ strains["curvature"]
-        shear = Cs @ strains["shear"]
-
-        return {
-            "membrane": sigma_membrane,
-            "moments": moments,
-            "shear": shear,
-        }
-        return f_ext - f_int
-
-    def compute_strain_energy(self) -> float:
-        """Compute total strain energy stored in the element."""
-        T = self.T()
-        u_local = T @ self._current_displacements
-        K_local = self._get_local_stiffness()
-        return 0.5 * float(u_local @ K_local @ u_local)
+        return float(U)
 
     # =========================================================================
     # STRESS AND STRAIN OUTPUT
