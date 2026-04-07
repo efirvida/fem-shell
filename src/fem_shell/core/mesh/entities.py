@@ -9,7 +9,7 @@ This module contains the fundamental building blocks for mesh representation:
 """
 
 from enum import IntEnum
-from typing import Iterable, List, Sequence, Set, Tuple, Union
+from typing import Iterable, List, Optional, Sequence, Set, Tuple, Union
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -155,6 +155,7 @@ class MeshElement:
         self.id = MeshElement._id_counter
         self.nodes = nodes
         self.element_type = element_type
+        self.thickness: Optional[float] = None
         MeshElement._id_counter += 1
 
     @property
