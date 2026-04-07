@@ -202,18 +202,42 @@ class MITC3Composite(MITC3):
         return self._has_coupling
 
     def _coupling_stiffness(self) -> np.ndarray:
-        """Membrane-bending coupling stiffness: int[Bm^T*B*Bk + Bk^T*B*Bm]dA."""
+        """Membrane-bending coupling stiffness with bubble condensation.
+
+        Assembles in the extended 20-DOF space (18 nodal + 2 bubble rotations)
+        so the bubble-enriched bending field is properly coupled to the membrane,
+        then statically condenses back to 18 DOFs.
+        """
         B_mat = self._B_matrix
-        K_coup = np.zeros((18, 18))
         area = self.area()
 
-        for (r, s), w in zip(self._gauss_points, self._gauss_weights):
-            Bm = self.B_m(r, s)
-            Bk = self.B_kappa(r, s)
-            K_mb = Bm.T @ B_mat @ Bk * w * area
-            K_coup += K_mb + K_mb.T
+        # Extended coupling: K_mb_ext is 20×20 (membrane DOFs have zero bubble cols)
+        K_ext = np.zeros((20, 20))
 
-        return K_coup
+        for (r, s), w in zip(self._gauss_points, self._gauss_weights):
+            # Membrane B-matrix extended to 20 DOFs (zero bubble columns)
+            Bm_18 = self.B_m(r, s)  # 3×18
+            Bm_ext = np.zeros((3, 20))
+            Bm_ext[:, :18] = Bm_18
+
+            # Extended bending B-matrix including bubble (3×20)
+            Bk_ext = self._B_kappa_ext(r, s)
+
+            K_mb = Bm_ext.T @ B_mat @ Bk_ext * w * area
+            K_ext += K_mb + K_mb.T
+
+        # Static condensation of bubble DOFs (last 2)
+        K_uu = K_ext[:18, :18]
+        K_uq = K_ext[:18, 18:]
+        K_qq = K_ext[18:, 18:]
+
+        if np.linalg.matrix_rank(K_qq) == K_qq.shape[0]:
+            K_cond = K_uu - K_uq @ np.linalg.solve(K_qq, K_uq.T)
+        else:
+            # Bubble-membrane coupling vanishes (symmetric laminate or similar)
+            K_cond = K_uu
+
+        return K_cond
 
     # =========================================================================
     # STRESS RECOVERY (COMPOSITE-SPECIFIC)
