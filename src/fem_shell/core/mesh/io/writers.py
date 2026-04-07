@@ -117,12 +117,68 @@ def write_mesh(mesh: "MeshModel", filename: str, **kwargs) -> None:
 
 def write_meshio(mesh: "MeshModel", filename: str, **kwargs) -> None:
     """Write mesh using meshio library (geometry only, no metadata)."""
-    points = mesh.coords_array
+    from collections import defaultdict
 
+    points = mesh.coords_array
     cells = []
-    for el in mesh.elements:
-        indices = tuple(mesh.node_id_to_index[nid] for nid in el.node_ids)
-        cells.append((el.element_type.name, np.array([indices])))
+    ext = Path(filename).suffix.lower()
+
+    if ext == ".stl":
+        # Check if mesh has volume elements
+        has_volume = any(
+            el.element_type.name in ('tetra', 'tetra10', 'hexahedron', 'hexahedron20', 'hexahedron27', 'wedge', 'wedge15', 'pyramid', 'pyramid13')
+            for el in mesh.elements
+        )
+        
+        if has_volume:
+            face_count = defaultdict(int)
+            for element in mesh.elements:
+                faces = mesh._get_element_faces(element)
+                if not faces:
+                    continue
+                for face in faces:
+                    face_key = tuple(sorted(face))
+                    face_count[face_key] += 1
+            
+            boundary_faces = []
+            for element in mesh.elements:
+                faces = mesh._get_element_faces(element)
+                if not faces:
+                    continue
+                for face in faces:
+                    face_key = tuple(sorted(face))
+                    if face_count[face_key] == 1:
+                        # Convert node IDs to indices
+                        indices = [mesh.node_id_to_index[nid] for nid in face]
+                        if len(indices) == 3:
+                            boundary_faces.append(indices)
+                        elif len(indices) == 4:
+                            # Triangulate quad
+                            boundary_faces.append([indices[0], indices[1], indices[2]])
+                            boundary_faces.append([indices[0], indices[2], indices[3]])
+            
+            if boundary_faces:
+                cells = [("triangle", np.array(boundary_faces))]
+        else:
+            # Extract surface triangles or triangulate quads
+            triangles = []
+            for el in mesh.elements:
+                indices = tuple(mesh.node_id_to_index[nid] for nid in el.node_ids)
+                if len(indices) == 3:
+                    triangles.append(indices)
+                elif len(indices) == 4:
+                    triangles.append([indices[0], indices[1], indices[2]])
+                    triangles.append([indices[0], indices[2], indices[3]])
+            if triangles:
+                cells = [("triangle", np.array(triangles))]
+
+    # Default grouping for non-STL or if STL didn't yield bound cells
+    if not cells:
+        cells_dict = defaultdict(list)
+        for el in mesh.elements:
+            indices = tuple(mesh.node_id_to_index[nid] for nid in el.node_ids)
+            cells_dict[el.element_type.name].append(indices)
+        cells = [(el_type, np.array(el_list)) for el_type, el_list in cells_dict.items()]
 
     mesh_io = meshio.Mesh(points=points, cells=cells)
     meshio.write(filename, mesh_io, **kwargs)
