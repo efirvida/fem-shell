@@ -114,7 +114,19 @@ class MeshAssembler:
                     end="",
                     flush=True,
                 )
-            fem_element = ElementFactory.get_element(mesh_element=element, **self.model)
+            # Per-element thickness override: if the mesh element carries its
+            # own thickness (set by the mesh generator), use it instead of the
+            # model-level default.  This allows each shell element to have a
+            # distinct thickness while keeping backward compatibility with a
+            # single model-level value as fallback.
+            element_model = self.model
+            if (
+                element.thickness is not None
+                and element_model.get("element_family") == ElementFamily.SHELL
+            ):
+                element_model = {**self.model, "thickness": element.thickness}
+
+            fem_element = ElementFactory.get_element(mesh_element=element, **element_model)
             if not fem_element:
                 continue
 

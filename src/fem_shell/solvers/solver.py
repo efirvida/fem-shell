@@ -68,11 +68,16 @@ class Solver(ABC):
 
         # Additional validation for SHELL elements
         if self.element_family == ElementFamily.SHELL:
-            if "thickness" not in fem_model_properties["elements"]:
+            has_mesh_thickness = any(
+                e.thickness is not None for e in mesh.elements
+            )
+            if "thickness" not in fem_model_properties["elements"] and not has_mesh_thickness:
                 raise KeyError(
-                    "The key 'thickness' is missing in fem_model_properties. It is required for SHELL elements."
+                    "The key 'thickness' is missing in fem_model_properties and no "
+                    "per-element thickness is defined on the mesh. At least one source "
+                    "of thickness is required for SHELL elements."
                 )
-            self.thickness = fem_model_properties["elements"]["thickness"]
+            self.thickness = fem_model_properties["elements"].get("thickness")
 
         self.mesh_obj = mesh
         self.model_properties = fem_model_properties
