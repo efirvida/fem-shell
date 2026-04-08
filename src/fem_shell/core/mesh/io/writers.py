@@ -25,6 +25,108 @@ if TYPE_CHECKING:
 from fem_shell.core.mesh.entities import ElementType
 
 # ============================================================================
+# Boundary loop utilities for STL tip closing
+# ============================================================================
+
+
+def _find_boundary_loops(mesh: "MeshModel") -> list[list[int]]:
+    """
+    Find closed loops of boundary edges in a shell mesh.
+
+    Boundary edges are those shared by exactly one element.
+
+    Parameters
+    ----------
+    mesh : MeshModel
+        The mesh model (expected to contain shell elements).
+
+    Returns
+    -------
+    list of list of int
+        Each inner list is an ordered sequence of node IDs forming a closed loop.
+    """
+    from collections import defaultdict
+
+    edge_count: dict[tuple[int, int], int] = defaultdict(int)
+    for el in mesh.elements:
+        nids = el.node_ids
+        n = len(nids)
+        for i in range(n):
+            edge = tuple(sorted([nids[i], nids[(i + 1) % n]]))
+            edge_count[edge] += 1
+
+    boundary_edges = [e for e, count in edge_count.items() if count == 1]
+    if not boundary_edges:
+        return []
+
+    # Build adjacency from boundary edges
+    adj: dict[int, list[int]] = defaultdict(list)
+    for a, b in boundary_edges:
+        adj[a].append(b)
+        adj[b].append(a)
+
+    # Trace connected loops
+    visited: set[int] = set()
+    loops: list[list[int]] = []
+    for start in adj:
+        if start in visited:
+            continue
+        loop: list[int] = []
+        current = start
+        prev = None
+        while current not in visited:
+            visited.add(current)
+            loop.append(current)
+            next_node = None
+            for nb in adj[current]:
+                if nb != prev:
+                    next_node = nb
+                    break
+            if next_node is None:
+                break
+            prev = current
+            current = next_node
+        if len(loop) > 2:
+            loops.append(loop)
+    return loops
+
+
+def _cap_tip_loop(
+    loop_node_ids: list[int],
+    points: np.ndarray,
+    node_id_to_index: dict[int, int],
+) -> list[list[int]]:
+    """
+    Triangulate a boundary loop using a fan from its centroid.
+
+    A new point is appended to *points* (via resize) and fan triangles
+    referencing point indices are returned.
+
+    Parameters
+    ----------
+    loop_node_ids : list of int
+        Ordered node IDs forming the boundary loop.
+    points : np.ndarray
+        (N, 3) coordinate array — will be extended in-place with the centroid.
+    node_id_to_index : dict
+        Maps node IDs to indices into *points*.
+
+    Returns
+    -------
+    list of list[int]
+        Triangle connectivity (point indices) that caps the loop.
+    """
+    indices = [node_id_to_index[nid] for nid in loop_node_ids]
+    centroid = points[indices].mean(axis=0)
+    centroid_idx = len(points)  # will be appended later
+    triangles = []
+    n = len(indices)
+    for i in range(n):
+        triangles.append([centroid_idx, indices[i], indices[(i + 1) % n]])
+    return triangles, centroid
+
+
+# ============================================================================
 # Element type mappings for different formats
 # ============================================================================
 
@@ -115,8 +217,22 @@ def write_mesh(mesh: "MeshModel", filename: str, **kwargs) -> None:
 # ============================================================================
 
 
-def write_meshio(mesh: "MeshModel", filename: str, **kwargs) -> None:
-    """Write mesh using meshio library (geometry only, no metadata)."""
+def write_meshio(mesh: "MeshModel", filename: str, close_tip: bool = False, **kwargs) -> None:
+    """Write mesh using meshio library (geometry only, no metadata).
+
+    Parameters
+    ----------
+    mesh : MeshModel
+        The mesh to export.
+    filename : str
+        Output file path.  Format is inferred from extension.
+    close_tip : bool, optional
+        When *True* and the output format is STL, boundary loops at the
+        blade tip (maximum spanwise coordinate) are capped with fan
+        triangles so the resulting STL is watertight.  Default is *False*.
+    **kwargs
+        Extra arguments forwarded to :func:`meshio.write`.
+    """
     from collections import defaultdict
 
     points = mesh.coords_array
@@ -169,6 +285,28 @@ def write_meshio(mesh: "MeshModel", filename: str, **kwargs) -> None:
                 elif len(indices) == 4:
                     triangles.append([indices[0], indices[1], indices[2]])
                     triangles.append([indices[0], indices[2], indices[3]])
+
+            # Close blade tip boundary loops
+            if close_tip and triangles:
+                loops = _find_boundary_loops(mesh)
+                if loops:
+                    # Identify the tip loop: highest average spanwise coord (Z)
+                    coords = mesh.coords_array
+                    id_to_idx = mesh.node_id_to_index
+                    loop_avg_z = []
+                    for loop in loops:
+                        avg_z = np.mean([coords[id_to_idx[nid], 2] for nid in loop])
+                        loop_avg_z.append(avg_z)
+                    tip_loop_idx = int(np.argmax(loop_avg_z))
+                    tip_loop = loops[tip_loop_idx]
+
+                    cap_tris, centroid = _cap_tip_loop(
+                        tip_loop, points, id_to_idx
+                    )
+                    # Append centroid to points array
+                    points = np.vstack([points, centroid.reshape(1, 3)])
+                    triangles.extend(cap_tris)
+
             if triangles:
                 cells = [("triangle", np.array(triangles))]
 
