@@ -91,6 +91,7 @@ select = [
 [project.scripts]
 fem-shell-fsi = "fem_shell.cli.run_fsi:main"
 fem-shell-monitor = "fem_shell.cli.fsi_monitor:main"
+fem-shell-reconstruct-csv = "fem_shell.cli.reconstruct_rotor_csv:main"
 
 [project.optional-dependencies]
 dev = [
