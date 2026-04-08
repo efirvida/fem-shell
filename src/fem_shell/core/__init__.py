@@ -17,7 +17,7 @@ from .laminate import (
     cross_ply_layup,
     angle_ply_layup,
 )
-from .properties import CompositeShellProperty, ShellProperty, ShellPropertyType
+from .properties import CompositeShellProperty, ShellProperty, ShellPropertyType, build_element_data
 
 __all__ = [
     "FSISimulationConfig",
@@ -34,4 +34,5 @@ __all__ = [
     "ShellProperty",
     "CompositeShellProperty",
     "ShellPropertyType",
+    "build_element_data",
 ]

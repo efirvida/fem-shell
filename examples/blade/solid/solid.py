@@ -1,6 +1,7 @@
 import os
 
 from fem_shell.core.bc import DirichletCondition
+from fem_shell.core.properties import build_element_data
 from fem_shell.elements import ElementFamily
 from fem_shell.models.blade.model import Blade
 from fem_shell.postprocess.precice import FSIDataVisualizer
@@ -29,14 +30,9 @@ model_config = {
     },
 }
 
-# Visualize thickness distribution from properties
-thickness_map = {
-    elem.id: prop.total_thickness
-    for set_name, prop in properties.items()
-    if set_name in mesh.element_sets
-    for elem in mesh.element_sets[set_name].elements
-}
-mesh.view(element_data={"Thickness": thickness_map})
+# Visualize element properties (thickness, stiffness, plies, etc.)
+element_data = build_element_data(properties, mesh)
+mesh.view(element_data=element_data)
 
 exit()
 
