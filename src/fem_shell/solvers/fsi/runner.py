@@ -707,6 +707,16 @@ class FSIRunner:
         if self.config.solver.rotor:
             model_config["solver"]["rotor"] = self.config.solver.rotor.to_dict()
 
+        # Forward postprocess performance parameters to solver
+        if self.config.postprocess:
+            perf = {}
+            if self.config.postprocess.fluid_density is not None:
+                perf["fluid_density"] = self.config.postprocess.fluid_density
+            if self.config.postprocess.flow_velocity is not None:
+                perf["flow_velocity"] = self.config.postprocess.flow_velocity
+            if perf:
+                model_config["solver"]["performance"] = perf
+
         print(f"      Solver type: {self.config.solver.type}")
         print(f"      Element family: {self.config.elements.family}")
 

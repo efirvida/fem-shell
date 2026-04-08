@@ -338,8 +338,10 @@ class RotorConfig:
     force_jump_factor: float = 1000.0
     transform_displacement_to_inertial: bool = True
     gravity: List[float] = field(default_factory=lambda: [0.0, 0.0, -9.81])
-    fluid_density: float = 1.225
-    flow_velocity: float = 10.0
+    # DEPRECATED: use postprocess.fluid_density / postprocess.flow_velocity instead.
+    # Kept for backward compatibility only.
+    fluid_density: Optional[float] = None
+    flow_velocity: Optional[float] = None
     radius: Optional[float] = None
 
     def to_dict(self) -> Dict[str, Any]:
@@ -361,8 +363,6 @@ class RotorConfig:
             "force_jump_factor": self.force_jump_factor,
             "transform_displacement_to_inertial": self.transform_displacement_to_inertial,
             "gravity": self.gravity,
-            "fluid_density": self.fluid_density,
-            "flow_velocity": self.flow_velocity,
         }
         if self.moment_of_inertia is not None:
             d["moment_of_inertia"] = self.moment_of_inertia
@@ -370,6 +370,11 @@ class RotorConfig:
             d["force_max_magnitude"] = self.force_max_magnitude
         if self.radius is not None:
             d["radius"] = self.radius
+        # Deprecated location — only forward if explicitly set
+        if self.fluid_density is not None:
+            d["fluid_density"] = self.fluid_density
+        if self.flow_velocity is not None:
+            d["flow_velocity"] = self.flow_velocity
         return d
 
 
@@ -749,6 +754,11 @@ class PostprocessConfig:
     # Multiple watchpoint files (auto-populated from preCICE config)
     watchpoint_files: Optional[List[str]] = None
     plots: Optional[Dict[str, str]] = None
+
+    # Freestream parameters for non-dimensional performance coefficients (Cp, Cq, Ct, TSR).
+    # These do NOT affect the simulation — only post-processing metrics.
+    fluid_density: Optional[float] = None
+    flow_velocity: Optional[float] = None
 
     def get_all_watchpoint_files(self) -> List[str]:
         """Get list of all watchpoint files.

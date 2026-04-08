@@ -130,13 +130,20 @@ reads this value to drive its dynamic mesh rotation.
 
 Performance Coefficients
 ------------------------
-At each converged time window, the solver computes:
+At each converged time window, the solver computes (using **aerodynamic**
+forces/power only, consistent with standard wind energy definitions):
 
-    Thrust = F_aero · n̂   (aerodynamic force projected on rotation axis)
-    Power  = τ_power · ω   (τ_power = torque projected on rotation axis)
+    Thrust    = F_aero · n̂      (aerodynamic force projected on rotation axis)
+    P_aero    = τ_aero · ω      (aerodynamic torque × angular velocity)
     Ct = Thrust / (½ · ρ · V∞² · π · R²)
-    Cp = Power  / (½ · ρ · V∞³ · π · R²)
+    Cp = P_aero / (½ · ρ · V∞³ · π · R²)
+    Cq = τ_aero / (½ · ρ · V∞² · π · R² · R)
     TSR = ω · R / V∞
+
+Additionally, the solver reports a torque breakdown (aerodynamic, inertial,
+gravitational, total), two power columns (aero and total), and structural
+efficiency η = P_total / P_aero.  Freestream parameters (ρ, V∞) are
+configured under the ``postprocess:`` YAML key.
 
 where R is the deformed rotor radius (max perpendicular distance from
 rotation axis, updated each step with elastic deformation).
@@ -510,9 +517,28 @@ class LinearDynamicFSIRotorSolver(LinearDynamicFSISolver):
         self._gravity = np.array(rotor_cfg.get("gravity", list(_DEFAULT_GRAVITY)), dtype=np.float64)
         self._include_gravity = np.linalg.norm(self._gravity) > _GRAVITY_THRESHOLD
 
-        # Aerodynamic performance parameters
-        self._fluid_density = float(rotor_cfg.get("fluid_density", _DEFAULT_FLUID_DENSITY))
-        self._flow_velocity = float(rotor_cfg.get("flow_velocity", _DEFAULT_FLOW_VELOCITY))
+        # Aerodynamic performance parameters (for Cp, Cq, Ct, TSR — no effect on physics).
+        # Preferred location: postprocess.fluid_density / postprocess.flow_velocity
+        # Deprecated location: rotor.fluid_density / rotor.flow_velocity
+        perf_cfg = self.solver_params.get("performance", {})
+        self._fluid_density = float(
+            perf_cfg.get("fluid_density")
+            or rotor_cfg.get("fluid_density")
+            or _DEFAULT_FLUID_DENSITY
+        )
+        self._flow_velocity = float(
+            perf_cfg.get("flow_velocity")
+            or rotor_cfg.get("flow_velocity")
+            or _DEFAULT_FLOW_VELOCITY
+        )
+        if not perf_cfg and (
+            rotor_cfg.get("fluid_density") is not None
+            or rotor_cfg.get("flow_velocity") is not None
+        ):
+            _logger.warning(
+                "fluid_density / flow_velocity under 'rotor:' is deprecated. "
+                "Move them to 'postprocess:' in your simulation YAML."
+            )
         self._rotor_radius: Optional[float] = rotor_cfg.get("radius")
         if self._rotor_radius is not None:
             self._rotor_radius = float(self._rotor_radius)
@@ -716,13 +742,14 @@ class LinearDynamicFSIRotorSolver(LinearDynamicFSISolver):
         try:
             with open(csv_path, "r") as f:
                 reader = csv.reader(f)
-                header = next(reader)  # skip header
-                # Columns: Time [s], RPM, Angle [deg], ...
+                header = next(reader)
+                time_idx = header.index("Time [s]")
+                angle_idx = header.index("Angle [deg]")
                 for row in reader:
-                    t_row = float(row[0])
+                    t_row = float(row[time_idx])
                     if t_row <= t_target + 1e-12 and t_row > best_time:
                         best_time = t_row
-                        best_angle = float(row[2])
+                        best_angle = float(row[angle_idx])
         except Exception as e:
             _logger.warning("Failed to read rotor_performance.csv: %s", e)
             return 0.0
@@ -1494,28 +1521,35 @@ class LinearDynamicFSIRotorSolver(LinearDynamicFSISolver):
     def _compute_performance_coefficients(
         self,
         thrust: float,
-        power_watts: float,
+        power_aero: float,
+        torque_aero: float,
         omega: float,
         radius: Optional[float] = None,
-    ) -> Tuple[float, float, float]:
+    ) -> Tuple[float, float, float, float]:
         """Compute non-dimensional rotor performance coefficients.
 
         Standard wind turbine / propeller aerodynamic coefficients:
 
             Ct  = Thrust / (½ · ρ · V∞² · A)
-            Cp  = Power  / (½ · ρ · V∞³ · A)
+            Cp  = P_aero / (½ · ρ · V∞³ · A)
+            Cq  = Q_aero / (½ · ρ · V∞² · A · R)
             TSR = |ω| · R / V∞
 
         where A = π·R² is the rotor swept area, ρ is the fluid density,
         V∞ is the freestream velocity, and R is the rotor radius
         (deformed if provided, else reference).
 
+        All coefficients use **aerodynamic** forces/power only (not total),
+        consistent with standard wind energy definitions.
+
         Parameters
         ----------
         thrust : float
             Axial thrust force [N] (aerodynamic force projected on rotation axis).
-        power_watts : float
-            Rotor power [W] = τ_power · ω.
+        power_aero : float
+            Aerodynamic power [W] = τ_aero · ω.
+        torque_aero : float
+            Aerodynamic torque [N·m] (CFD forces only, projected on rotation axis).
         omega : float
             Angular velocity [rad/s].
         radius : float, optional
@@ -1524,8 +1558,8 @@ class LinearDynamicFSIRotorSolver(LinearDynamicFSISolver):
 
         Returns
         -------
-        Tuple[float, float, float]
-            (Ct, Cp, TSR).
+        Tuple[float, float, float, float]
+            (Ct, Cp, Cq, TSR).
         """
         # Use provided radius (deformed) or fall back to stored radius
         effective_radius = radius if radius is not None else self._rotor_radius
@@ -1537,16 +1571,18 @@ class LinearDynamicFSIRotorSolver(LinearDynamicFSISolver):
 
         denom_force = q_dynamic * area
         denom_power = q_dynamic * area * self._flow_velocity
+        denom_torque = q_dynamic * area * effective_radius
 
         ct = thrust / denom_force if abs(denom_force) > _MIN_DENOMINATOR else 0.0
-        cp = power_watts / denom_power if abs(denom_power) > _MIN_DENOMINATOR else 0.0
+        cp = power_aero / denom_power if abs(denom_power) > _MIN_DENOMINATOR else 0.0
+        cq = torque_aero / denom_torque if abs(denom_torque) > _MIN_DENOMINATOR else 0.0
         tsr = (
             (abs(omega) * effective_radius) / self._flow_velocity
             if abs(self._flow_velocity) > _MIN_DENOMINATOR
             else 0.0
         )
 
-        return ct, cp, tsr
+        return ct, cp, cq, tsr
 
     # =========================================================================
     # Logging and Output
@@ -1604,18 +1640,40 @@ class LinearDynamicFSIRotorSolver(LinearDynamicFSISolver):
         self,
         t: float,
         omega_rpm: float,
+        omega_rad: float,
+        alpha: float,
         angle_deg: float,
-        driving_torque: float,
-        torque_vector: np.ndarray,
         thrust: float,
-        power: float,
+        torque_aero: float,
+        torque_inertial: float,
+        torque_gravity: float,
+        torque_total: float,
+        power_aero: float,
+        power_total: float,
+        structural_efficiency: float,
         cp: float,
+        cq: float,
         ct: float,
         tsr: float,
+        torque_aero_global: np.ndarray,
+        torque_total_global: np.ndarray,
+        max_displacement: float,
         deformed_radius: Optional[float] = None,
     ) -> None:
-        """
-        Write rotor performance metrics to CSV log (rank 0 only).
+        """Write rotor performance metrics to CSV log (rank 0 only).
+
+        Columns are grouped conceptually:
+
+        1. Time & kinematics: time, angle, speed, omega, alpha
+        2. Axial force: aerodynamic thrust
+        3. Torque breakdown (scalar projections on rotation axis):
+           aerodynamic, inertial, gravitational, total
+        4. Power: aerodynamic (extracted from wind), total (net after
+           structural losses), structural efficiency (η = P_total / P_aero)
+        5. Performance coefficients (aero-based): Cp, Cq, Ct, TSR
+        6. Torque vector components in the **global (inertial) frame**:
+           aerodynamic and total (X, Y, Z)
+        7. Structural response: max displacement, deformed radius
 
         Parameters
         ----------
@@ -1623,22 +1681,42 @@ class LinearDynamicFSIRotorSolver(LinearDynamicFSISolver):
             Current time [s].
         omega_rpm : float
             Angular velocity [RPM].
+        omega_rad : float
+            Angular velocity [rad/s].
+        alpha : float
+            Angular acceleration [rad/s²].
         angle_deg : float
-            Rotation angle [°].
-        driving_torque : float
-            Driving torque [N·m].
-        torque_vector : np.ndarray
-            Full torque vector [Tx, Ty, Tz] [N·m].
+            Cumulative rotation angle [°].
         thrust : float
-            Axial thrust force [N].
-        power : float
-            Rotor power [W].
+            Aerodynamic thrust (axial CFD force) [N].
+        torque_aero : float
+            Aerodynamic torque (CFD forces only) on rotation axis [N·m].
+        torque_inertial : float
+            Inertial torque (centrifugal + Coriolis + Euler) on axis [N·m].
+        torque_gravity : float
+            Gravitational torque on rotation axis [N·m].
+        torque_total : float
+            Total torque on rotation axis [N·m].
+        power_aero : float
+            Aerodynamic power = τ_aero × ω [W].
+        power_total : float
+            Total power = τ_total × ω [W].
+        structural_efficiency : float
+            η = P_total / P_aero [-].
         cp : float
-            Power coefficient [-].
+            Power coefficient (aero) [-].
+        cq : float
+            Torque coefficient (aero) [-].
         ct : float
             Thrust coefficient [-].
         tsr : float
             Tip speed ratio [-].
+        torque_aero_global : np.ndarray, shape (3,)
+            Aerodynamic torque vector in global frame [N·m].
+        torque_total_global : np.ndarray, shape (3,)
+            Total torque vector in global frame [N·m].
+        max_displacement : float
+            Maximum nodal displacement magnitude [m].
         deformed_radius : float, optional
             Current deformed rotor radius [m].
         """
@@ -1652,18 +1730,32 @@ class LinearDynamicFSIRotorSolver(LinearDynamicFSISolver):
             with open(log_path, "a") as f:
                 if not file_exists:
                     header = (
-                        "Time [s],RPM,Angle [deg],Driving Torque [Nm],Thrust [N],"
-                        "Power [W],Cp,Ct,TSR,Torque X [Nm],Torque Y [Nm],Torque Z [Nm],"
-                        "Deformed Radius [m]\n"
+                        "Time [s],Angle [deg],Speed [RPM],Omega [rad/s],Alpha [rad/s2],"
+                        "Aero Thrust [N],"
+                        "Aero Torque [Nm],Inertial Torque [Nm],"
+                        "Gravity Torque [Nm],Total Torque [Nm],"
+                        "Aero Power [W],Total Power [W],Structural Efficiency,"
+                        "Cp,Cq,Ct,TSR,"
+                        "Aero Torque X [Nm],Aero Torque Y [Nm],Aero Torque Z [Nm],"
+                        "Total Torque X [Nm],Total Torque Y [Nm],Total Torque Z [Nm],"
+                        "Max Displacement [m],Deformed Radius [m]\n"
                     )
                     f.write(header)
 
                 radius_str = f"{deformed_radius:.6f}" if deformed_radius is not None else ""
                 line = (
-                    f"{t:.6f},{omega_rpm:.4f},{angle_deg:.4f},{driving_torque:.6e},"
-                    f"{thrust:.6e},{power:.6e},{cp:.6f},{ct:.6f},{tsr:.6f},"
-                    f"{torque_vector[0]:.6e},{torque_vector[1]:.6e},{torque_vector[2]:.6e},"
-                    f"{radius_str}\n"
+                    f"{t:.6f},{angle_deg:.4f},{omega_rpm:.4f},"
+                    f"{omega_rad:.4f},{alpha:.6e},"
+                    f"{thrust:.6e},"
+                    f"{torque_aero:.6e},{torque_inertial:.6e},"
+                    f"{torque_gravity:.6e},{torque_total:.6e},"
+                    f"{power_aero:.6e},{power_total:.6e},{structural_efficiency:.6f},"
+                    f"{cp:.6f},{cq:.6f},{ct:.6f},{tsr:.6f},"
+                    f"{torque_aero_global[0]:.6e},{torque_aero_global[1]:.6e},"
+                    f"{torque_aero_global[2]:.6e},"
+                    f"{torque_total_global[0]:.6e},{torque_total_global[1]:.6e},"
+                    f"{torque_total_global[2]:.6e},"
+                    f"{max_displacement:.6e},{radius_str}\n"
                 )
                 f.write(line)
         except Exception as e:
@@ -3031,18 +3123,44 @@ class LinearDynamicFSIRotorSolver(LinearDynamicFSISolver):
             else:
                 driving_torque_mag = 0.0
 
-            # Compute torque and performance metrics (includes all forces for reporting)
-            torque_global, torque_power = self._compute_rotor_torque(
+            # --- Torque breakdown per force component ---
+            # Total torque (all forces: aero + inertial + gravity)
+            torque_total_local, torque_total_scalar = self._compute_rotor_torque(
                 interface_coords, interface_disps, data_combined
             )
+            # Aerodynamic torque (CFD surface forces only)
+            torque_aero_local, torque_aero_scalar = self._compute_rotor_torque(
+                interface_coords, interface_disps, data_local_2d
+            )
+            # Inertial torque (centrifugal + Coriolis + Euler)
+            torque_inertial_local, torque_inertial_scalar = self._compute_rotor_torque(
+                interface_coords, interface_disps, F_inertial
+            )
+            # Gravitational torque
+            torque_gravity_local, torque_gravity_scalar = self._compute_rotor_torque(
+                interface_coords, interface_disps, F_gravity_local
+            )
+
+            # Transform torque vectors to global (inertial) frame: τ_global = R(θ) · τ_local
+            R_theta = self._coord_transforms.rotation_matrix(theta_target)
+            torque_aero_global = R_theta @ torque_aero_local
+            torque_total_global = R_theta @ torque_total_local
 
             # Update rotor radius with deformation for accurate performance coefficients
             current_radius = self._compute_rotor_radius(interface_coords, interface_disps)
 
+            # Power: aero (extracted from wind) vs total (net after structural losses)
             thrust = np.dot(applied_force, self._coord_transforms.axis)
-            power_watts = torque_power * omega
-            ct, cp, tsr = self._compute_performance_coefficients(
-                thrust, power_watts, omega, radius=current_radius
+            power_aero = torque_aero_scalar * omega
+            power_total = torque_total_scalar * omega
+            structural_efficiency = (
+                power_total / power_aero
+                if abs(power_aero) > _MIN_DENOMINATOR
+                else 0.0
+            )
+
+            ct, cp, cq, tsr = self._compute_performance_coefficients(
+                thrust, power_aero, torque_aero_scalar, omega, radius=current_radius
             )
 
             # Log time step info
@@ -3058,8 +3176,8 @@ class LinearDynamicFSIRotorSolver(LinearDynamicFSISolver):
                 alpha,
                 inertial_diags,
                 F_gravity_local if self._include_gravity else None,
-                torque_global,
-                torque_power,
+                torque_total_local,
+                torque_total_scalar,
                 ramp_factor=ramp_factor if ramp_factor < 1.0 else None,
                 force_ramp_time=self._force_ramp_time,
             )
@@ -3211,14 +3329,24 @@ class LinearDynamicFSIRotorSolver(LinearDynamicFSISolver):
                 self._log_rotor_performance(
                     t,
                     omega * 30.0 / np.pi,
+                    omega,
+                    alpha,
                     np.degrees(self._theta),
-                    torque_power,
-                    torque_global,
                     thrust,
-                    power_watts,
+                    torque_aero_scalar,
+                    torque_inertial_scalar,
+                    torque_gravity_scalar,
+                    torque_total_scalar,
+                    power_aero,
+                    power_total,
+                    structural_efficiency,
                     cp,
+                    cq,
                     ct,
                     tsr,
+                    torque_aero_global,
+                    torque_total_global,
+                    max_disp,
                     deformed_radius=current_radius,
                 )
 
