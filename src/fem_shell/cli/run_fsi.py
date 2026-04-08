@@ -46,7 +46,7 @@ mesh:
   # source: "generator"
   # generator:
   #   # Available types: "SquareShapeMesh", "BoxSurfaceMesh", "BoxVolumeMesh",
-  #   #                  "MultiFlapMesh", "RotorMesh"
+  #   #                  "MultiFlapMesh", "RotorMesh", "BladeMesh"
   #   type: "SquareShapeMesh"
   #   params:
   #     width: 0.1
@@ -106,7 +106,7 @@ elements:
 #============================================================================
 solver:
   # Solver type: "LinearStatic", "LinearDynamic", "LinearDynamicFSI",
-  #              or "LinearDynamicFSIRotor"
+  #              "LinearDynamicFSIRotor", or "Modal"
   type: "LinearDynamicFSI"
   
   # Time parameters
@@ -128,6 +128,7 @@ solver:
   safety_factor: 0.8      # Safety factor for critical dt
   solver_type: "auto"     # Linear algebra solver: "auto", "direct", "iterative"
   # debug_interface: false  # Verbose preCICE data exchange logging
+  # num_modes: 6            # Number of modes to extract (Modal solver only)
 
   # Rotor configuration (required for LinearDynamicFSIRotor solver)
   # rotor:
