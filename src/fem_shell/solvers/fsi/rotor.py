@@ -638,17 +638,18 @@ class LinearDynamicFSIRotorSolver(LinearDynamicFSISolver):
             with np.load(npz_path) as data:
                 t_ckpt = float(data["t"]) if "t" in data.files else 0.0
                 if "theta" not in data.files:
-                    _logger.warning("theta not found in checkpoint NPZ, defaulting to 0.0 rad")
+                    if self._is_primary_rank():
+                        print("  ↳ WARNING: theta not found in checkpoint NPZ, defaulting to 0.0 rad", flush=True)
                     return 0.0
                 theta_rad = float(data["theta"])
 
             t_fluid = self._find_fluid_restart_time(t_ckpt)
 
             if self._is_primary_rank():
-                _logger.info(
-                    "Peeked checkpoint: t_solid=%.6f s, t_fluid=%.6f s, "
-                    "θ_npz=%.4f° = %.4f rad",
-                    t_ckpt, t_fluid, np.degrees(theta_rad), theta_rad,
+                print(
+                    f"  ↳ Checkpoint θ: t_solid={t_ckpt:.6f} s, t_fluid={t_fluid:.6f} s, "
+                    f"θ = {np.degrees(theta_rad):.4f}° = {theta_rad:.4f} rad",
+                    flush=True,
                 )
             return theta_rad
         except Exception as e:
@@ -693,9 +694,7 @@ class LinearDynamicFSIRotorSolver(LinearDynamicFSISolver):
                 if "omega" in data.files:
                     omega_val = float(data["omega"])
                     if self._is_primary_rank():
-                        _logger.info(
-                            "Peeked checkpoint omega: %.4f rad/s", omega_val
-                        )
+                        print(f"  ↳ Checkpoint ω: {omega_val:.4f} rad/s", flush=True)
                     return omega_val
             return None
         except Exception as e:
@@ -2317,7 +2316,8 @@ class LinearDynamicFSIRotorSolver(LinearDynamicFSISolver):
         # Auto-compute inertia if requested
         if getattr(self, "_auto_inertia", False):
             estimated_inertia = self._compute_estimated_inertia()
-            _logger.info("Auto-computed Moment of Inertia: %.4e kg·m²", estimated_inertia)
+            if self._is_primary_rank():
+                print(f"  ↳ Auto-computed Moment of Inertia: {estimated_inertia:.4e} kg·m²", flush=True)
 
             # Re-initialize provider with computed inertia
             ramp_time = self._auto_inertia_params.get("ramp_time", 0.0)
@@ -2332,11 +2332,11 @@ class LinearDynamicFSIRotorSolver(LinearDynamicFSISolver):
                     moment_of_inertia=estimated_inertia,
                     resistive_torque=resistive_torque,
                 )
-                _logger.info(
-                    "Omega mode: Ramp (%.3f s) → Dynamic (I=%.4e kg·m²)",
-                    ramp_time,
-                    estimated_inertia,
-                )
+                if self._is_primary_rank():
+                    print(
+                        f"  ↳ Omega mode: Ramp ({ramp_time:.3f} s) → Dynamic (I={estimated_inertia:.4e} kg·m²)",
+                        flush=True,
+                    )
             else:
                 # Pure dynamic mode from start
                 self._omega_provider = ComputedOmega(
@@ -2344,7 +2344,8 @@ class LinearDynamicFSIRotorSolver(LinearDynamicFSISolver):
                     initial_omega=target_omega,
                     resistive_torque=resistive_torque,
                 )
-                _logger.info("Omega mode: Dynamic (I=%.4e kg·m²)", estimated_inertia)
+                if self._is_primary_rank():
+                    print(f"  ↳ Omega mode: Dynamic (I={estimated_inertia:.4e} kg·m²)", flush=True)
 
         # Phase 2: preCICE Initialization
         t, step, time_step = self._initialize_precice(bc_manager)
@@ -2690,7 +2691,8 @@ class LinearDynamicFSIRotorSolver(LinearDynamicFSISolver):
             else:
                 initial_omega, _ = self._omega_provider.get_omega(t + bootstrap_dt)
             initial_data = {"AngularVelocity": initial_omega}
-            _logger.info(f"Initial angular velocity for preCICE: {initial_omega:.4f} rad/s")
+            if self._is_primary_rank():
+                print(f"  ↳ Initial ω for preCICE: {initial_omega:.4f} rad/s", flush=True)
 
         self.precice_participant.initialize(
             self.domain,
