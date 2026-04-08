@@ -601,19 +601,83 @@ class LinearDynamicFSIRotorSolver(LinearDynamicFSISolver):
     # Checkpoint Peeking
     # =========================================================================
 
-    def _peek_checkpoint_theta(self) -> float:
-        """Read the rotation angle from the latest checkpoint NPZ for restart.
+    def _read_restart_state(self, t_target: float) -> Optional[Tuple[float, float, float]]:
+        """Look up (theta, omega, alpha) at *t_target* from ``rotor_restart_state.csv``.
 
-        The cumulative angle ``theta`` is saved directly in the checkpoint
-        state file, so there is no need to rely on ``rotor_performance.csv``.
-        On restart the solid mesh is aligned to the checkpoint angle, which
-        corresponds to the fluid mesh position at the fluid restart time.
+        Finds the last row with ``time <= t_target`` and extrapolates forward
+        using the second-order kinematics:
+
+            theta(t) ≈ theta_0 + omega_0 · Δt + ½ · alpha_0 · Δt²
+
+        Parameters
+        ----------
+        t_target : float
+            Target time to recover kinematics for [s].
+
+        Returns
+        -------
+        tuple of (theta_rad, omega, alpha) or None if file absent / unreadable.
+        """
+        import csv as _csv
+
+        output_folder = self.solver_params.get("output_folder", "results")
+        csv_path = os.path.join(output_folder, "rotor_restart_state.csv")
+
+        if not os.path.exists(csv_path):
+            return None
+
+        try:
+            best: Optional[Tuple[float, float, float, float]] = None  # (t, theta, omega, alpha)
+            with open(csv_path, newline="") as fh:
+                reader = _csv.reader(fh)
+                header = next(reader)
+                t_idx = header.index("Time [s]")
+                th_idx = header.index("Theta [rad]")
+                om_idx = header.index("Omega [rad/s]")
+                al_idx = header.index("Alpha [rad/s2]")
+                for row in reader:
+                    try:
+                        t_row = float(row[t_idx])
+                    except (ValueError, IndexError):
+                        continue
+                    if t_row <= t_target + 1e-12:
+                        if best is None or t_row > best[0]:
+                            best = (
+                                t_row,
+                                float(row[th_idx]),
+                                float(row[om_idx]),
+                                float(row[al_idx]),
+                            )
+
+            if best is None:
+                return None
+
+            t0, theta0, omega0, alpha0 = best
+            dt = t_target - t0
+            theta_t = theta0 + omega0 * dt + 0.5 * alpha0 * dt * dt
+            omega_t = omega0 + alpha0 * dt
+            return theta_t, omega_t, alpha0
+        except Exception as e:
+            _logger.warning("Could not read rotor_restart_state.csv: %s", e)
+            return None
+
+    def _peek_checkpoint_theta(self) -> float:
+        """Read the rotation angle at the fluid restart time.
+
+        Strategy (in order of preference):
+
+        1. Read ``theta_ckpt`` and ``t_ckpt`` from the latest checkpoint NPZ.
+        2. Find ``t_fluid`` (the actual OpenFOAM restart time).
+        3. If ``t_fluid == t_ckpt`` → use NPZ theta directly.
+        4. If ``t_fluid > t_ckpt`` → look up exact/interpolated theta in
+           ``rotor_restart_state.csv`` (written every converged window).
+        5. If the restart state is missing → extrapolate with NPZ omega and warn.
+        6. Guard: if the gap exceeds ``max_time_gap`` (default 5·dt) abort early.
 
         Returns
         -------
         float
-            Rotation angle [rad] at the checkpoint time, or 0.0 if
-            no checkpoint / no restart / theta not found in NPZ.
+            Rotation angle [rad] aligned to ``t_fluid``, or 0.0 on failure.
         """
         start_from = self.solver_params.get("start_from", "startTime")
         if start_from not in ("latestTime", "firstTime"):
@@ -641,16 +705,76 @@ class LinearDynamicFSIRotorSolver(LinearDynamicFSISolver):
                     if self._is_primary_rank():
                         print("  ↳ WARNING: theta not found in checkpoint NPZ, defaulting to 0.0 rad", flush=True)
                     return 0.0
-                theta_rad = float(data["theta"])
+                theta_ckpt = float(data["theta"])
+                omega_ckpt = float(data["omega"]) if "omega" in data.files else 0.0
+                alpha_ckpt = float(data["alpha"]) if "alpha" in data.files else 0.0
 
             t_fluid = self._find_fluid_restart_time(t_ckpt)
+            dt_gap = t_fluid - t_ckpt
+
+            # ── Determine theta at t_fluid ──────────────────────────────────
+            source = "npz"
+            theta_rad = theta_ckpt
+
+            if dt_gap > 1e-12:
+                # Try exact lookup from restart state history
+                state = self._read_restart_state(t_fluid)
+                if state is not None:
+                    theta_rad, _, _ = state
+                    source = "restart_state"
+                else:
+                    # Fallback: second-order extrapolation from NPZ
+                    theta_rad = theta_ckpt + omega_ckpt * dt_gap + 0.5 * alpha_ckpt * dt_gap ** 2
+                    source = "extrapolated"
+
+                # ── Guard: abort if gap is large and no restart state ───────
+                # Compute the tangential mesh offset this gap would cause.
+                # Even without the blade radius we can flag implausible gaps.
+                coupling_cfg = self.model_properties.get("coupling", {})
+                max_time_gap = coupling_cfg.get(
+                    "restart_max_time_gap",
+                    None,
+                )
+                if max_time_gap is None:
+                    # Default: allow at most 2·writeInterval (reasonable for a
+                    # single-step overshoot after a clean crash).
+                    dt_solid = self.solver_params.get("time_step", 1e-4)
+                    write_interval = coupling_cfg.get("fluid_write_interval", dt_solid * 10)
+                    max_time_gap = 2.0 * float(write_interval)
+
+                if source == "extrapolated" and dt_gap > float(max_time_gap) + 1e-12:
+                    raise RuntimeError(
+                        f"Restart temporal gap too large to recover safely:\n"
+                        f"  t_solid  = {t_ckpt:.6f} s (solid checkpoint)\n"
+                        f"  t_fluid  = {t_fluid:.6f} s (fluid latest time)\n"
+                        f"  Δt_gap   = {dt_gap:.6f} s  (limit = {max_time_gap:.6f} s)\n"
+                        f"  Δθ_est   = {np.degrees(omega_ckpt * dt_gap):.2f}°\n"
+                        f"\n"
+                        f"  rotor_restart_state.csv is absent or does not cover t_fluid.\n"
+                        f"  Options:\n"
+                        f"  1. Delete fluid time directories beyond t={t_ckpt:.6f} s and re-restart.\n"
+                        f"  2. Increase 'coupling.restart_max_time_gap' to suppress this check\n"
+                        f"     (only if the angular offset is within the RBF support radius)."
+                    )
 
             if self._is_primary_rank():
                 print(
-                    f"  ↳ Checkpoint θ: t_solid={t_ckpt:.6f} s, t_fluid={t_fluid:.6f} s, "
-                    f"θ = {np.degrees(theta_rad):.4f}° = {theta_rad:.4f} rad",
+                    f"  ↳ Checkpoint θ: t_solid={t_ckpt:.6f} s, t_fluid={t_fluid:.6f} s"
+                    f"  [gap={dt_gap:.6f} s, src={source}]",
                     flush=True,
                 )
+                print(
+                    f"  ↳ θ(t_fluid) = {np.degrees(theta_rad):.4f}° = {theta_rad:.4f} rad",
+                    flush=True,
+                )
+                if source == "extrapolated":
+                    print(
+                        "  ↳ WARNING: rotor_restart_state.csv absent — using kinematic"
+                        f" extrapolation (Δt={dt_gap:.4f} s). Delete fluid times"
+                        f" beyond t={t_ckpt:.6f} s for an exact restart.",
+                        flush=True,
+                    )
+
             return theta_rad
         except Exception as e:
             _logger.warning("Could not peek checkpoint theta: %s", e)
@@ -763,58 +887,121 @@ class LinearDynamicFSIRotorSolver(LinearDynamicFSISolver):
         return best_angle
 
     def _find_fluid_restart_time(self, t_solid: float) -> float:
-        """Find the latest time directory in the fluid case.
+        """Find the latest *valid* time directory in the fluid case.
 
-        Scans ``processor0/`` (parallel) or top-level time directories
-        in the fluid case to determine what time OpenFOAM will restart from.
+        Handles both serial (top-level time dirs) and parallel (``processorN/``)
+        OpenFOAM cases.  A time directory is considered **valid** only if it
+        appears in ALL processor sub-directories (for parallel cases) or if it
+        contains at least one field file for serial cases.  This avoids picking
+        up the last, possibly incomplete time directory written right before a
+        crash.
 
         Parameters
         ----------
         t_solid : float
-            Solid checkpoint time (fallback if fluid dir is not found).
+            Solid checkpoint time used as a lower bound and fallback [s].
 
         Returns
         -------
         float
-            Latest available time in the fluid case.
+            Latest valid time found in the fluid case, or ``t_solid`` if
+            nothing better was found.
         """
         import re
 
-        # Determine fluid case path from config or default convention
         coupling_cfg = self.model_properties.get("coupling", {})
         fluid_case_dir = coupling_cfg.get("fluid_case_dir", "../fluid")
 
-        # Resolve relative to the solid working directory
         if not os.path.isabs(fluid_case_dir):
-            fluid_case_dir = os.path.normpath(
-                os.path.join(os.getcwd(), fluid_case_dir)
-            )
+            fluid_case_dir = os.path.normpath(os.path.join(os.getcwd(), fluid_case_dir))
 
-        # Look for time directories in processor0 (parallel) or top level
-        time_pattern = re.compile(r"^(\d+(?:\.\d+)?)$")
+        time_pattern = re.compile(r"^\d+(?:\.\d+)?$")
         latest_time = t_solid  # fallback
 
-        for scan_dir in [
-            os.path.join(fluid_case_dir, "processor0"),
-            fluid_case_dir,
-        ]:
-            if not os.path.isdir(scan_dir):
-                continue
-            try:
-                for entry in os.listdir(scan_dir):
-                    if not time_pattern.match(entry):
+        # ── Detect decomposed vs serial ──────────────────────────────────────
+        proc_dirs = sorted(
+            d for d in os.listdir(fluid_case_dir)
+            if re.match(r"^processor\d+$", d)
+            and os.path.isdir(os.path.join(fluid_case_dir, d))
+        ) if os.path.isdir(fluid_case_dir) else []
+
+        if proc_dirs:
+            # ── Parallel case ────────────────────────────────────────────────
+            # Collect times that exist in ALL processor directories
+            time_sets = []
+            for proc in proc_dirs:
+                proc_path = os.path.join(fluid_case_dir, proc)
+                try:
+                    times = {
+                        float(e)
+                        for e in os.listdir(proc_path)
+                        if time_pattern.match(e)
+                        and os.path.isdir(os.path.join(proc_path, e))
+                    }
+                    time_sets.append(times)
+                except OSError:
+                    pass
+
+            if time_sets:
+                # Only times present in every processor directory are complete
+                common_times = time_sets[0]
+                for ts in time_sets[1:]:
+                    common_times = common_times & ts
+
+                # Validate each candidate: at least one field file in proc0
+                # Use the name map so we don't have to reconstruct the dir name
+                proc0_path = os.path.join(fluid_case_dir, proc_dirs[0])
+                proc0_name_map: dict[float, str] = {}
+                try:
+                    for e in os.listdir(proc0_path):
+                        if time_pattern.match(e) and os.path.isdir(os.path.join(proc0_path, e)):
+                            proc0_name_map[float(e)] = e
+                except OSError:
+                    pass
+
+                for t_val in sorted(common_times, reverse=True):
+                    if t_val <= t_solid - 1e-12:
+                        break
+                    dir_name = proc0_name_map.get(t_val)
+                    if dir_name is None:
                         continue
-                    entry_path = os.path.join(scan_dir, entry)
-                    if not os.path.isdir(entry_path):
-                        continue
-                    t_val = float(entry)
-                    if t_val > latest_time:
+                    t_dir = os.path.join(proc0_path, dir_name)
+                    try:
+                        has_fields = any(
+                            os.path.isfile(os.path.join(t_dir, f))
+                            for f in os.listdir(t_dir)
+                            if not f.startswith(".")
+                        )
+                    except OSError:
+                        has_fields = False
+                    if has_fields and t_val > latest_time:
                         latest_time = t_val
-                if latest_time > t_solid:
-                    break  # found times in this directory
-            except OSError as e:
-                _logger.debug("Could not scan %s: %s", scan_dir, e)
-                continue
+                        break  # first valid in descending order is the latest
+
+        else:
+            # ── Serial case ──────────────────────────────────────────────────
+            if os.path.isdir(fluid_case_dir):
+                try:
+                    for entry in os.listdir(fluid_case_dir):
+                        if not time_pattern.match(entry):
+                            continue
+                        t_val = float(entry)
+                        if t_val <= t_solid - 1e-12 or t_val <= latest_time:
+                            continue
+                        t_dir = os.path.join(fluid_case_dir, entry)
+                        # Validate: must have at least one field file
+                        try:
+                            has_fields = any(
+                                os.path.isfile(os.path.join(t_dir, f))
+                                for f in os.listdir(t_dir)
+                                if not f.startswith(".")
+                            )
+                        except OSError:
+                            has_fields = False
+                        if has_fields:
+                            latest_time = t_val
+                except OSError as e:
+                    _logger.debug("Could not scan fluid case dir %s: %s", fluid_case_dir, e)
 
         if self._is_primary_rank() and abs(latest_time - t_solid) > 1e-12:
             print(
@@ -1628,6 +1815,48 @@ class LinearDynamicFSIRotorSolver(LinearDynamicFSISolver):
         """
         if self._is_primary_rank():
             print(f"  [Info] {message}", flush=True)
+
+    def _write_restart_state(
+        self,
+        t: float,
+        theta: float,
+        omega: float,
+        alpha: float,
+    ) -> None:
+        """Append one row to ``rotor_restart_state.csv``.
+
+        This file is the authoritative kinematic history for restart: it records
+        the cumulative angle, angular velocity, and angular acceleration at every
+        *converged* time window so that, on restart, ``_peek_checkpoint_theta``
+        can recover the exact rotor pose at the fluid's ``latestTime``, which may
+        differ from the solid checkpoint time.
+
+        Unlike ``rotor_performance.csv`` (a reporting artefact), this file is
+        deliberately minimal and always written regardless of ``postprocess``
+        configuration.
+
+        Parameters
+        ----------
+        t     : float  Current time after the converged window [s].
+        theta : float  Cumulative rotation angle [rad].
+        omega : float  Angular velocity [rad/s].
+        alpha : float  Angular acceleration [rad/s²].
+        """
+        if not self._is_primary_rank():
+            return
+
+        import csv as _csv
+
+        output_folder = self.solver_params.get("output_folder", "results")
+        csv_path = os.path.join(output_folder, "rotor_restart_state.csv")
+        os.makedirs(output_folder, exist_ok=True)
+
+        write_header = not os.path.exists(csv_path)
+        with open(csv_path, "a", newline="") as fh:
+            writer = _csv.writer(fh)
+            if write_header:
+                writer.writerow(["Time [s]", "Theta [rad]", "Omega [rad/s]", "Alpha [rad/s2]"])
+            writer.writerow([f"{t:.9f}", f"{theta:.9f}", f"{omega:.9f}", f"{alpha:.9f}"])
 
     def _log_rotor_performance(
         self,
@@ -3365,6 +3594,9 @@ class LinearDynamicFSIRotorSolver(LinearDynamicFSISolver):
                     max_disp,
                     deformed_radius=current_radius,
                 )
+
+                # Write lightweight kinematic state for restart alignment
+                self._write_restart_state(t, self._theta, omega, alpha)
 
                 # Prepare consistent force fields for checkpoint visualization.
                 force_fields = {
