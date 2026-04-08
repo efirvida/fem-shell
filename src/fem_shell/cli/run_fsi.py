@@ -273,6 +273,15 @@ GENERATOR_TEMPLATES = {
       element_size: 0.5    # Target element size [m]
       n_samples: 300       # Samples for airfoil discretization
 """,
+    "BladeMesh": """  generator:
+    type: "BladeMesh"
+    params:
+      yaml_file: "IEA-15-240-RWT.yaml"  # Path to blade YAML (WindIO format)
+      element_size: 0.15   # Target element size [m]
+      n_samples: 300       # Samples for airfoil discretization
+# Note: When using BladeMesh, the 'material' section can be omitted.
+# Composite properties are extracted automatically from the blade YAML sections.
+""",
     "BoxVolumeMesh": """  generator:
     type: "BoxVolumeMesh"
     params:
@@ -326,7 +335,12 @@ def list_generators() -> None:
     print("   Wind turbine rotor mesh from blade YAML definition")
     print("   Node sets: RootNodes_blade_N, allOuterShellNods_blade_N")
 
-    print("\n5. BoxVolumeMesh")
+    print("\n5. BladeMesh")
+    print("   Single wind turbine blade mesh from WindIO YAML definition")
+    print("   Node sets: RootNodes, allOuterShellNods")
+    print("   Material: auto-extracted composite properties from YAML sections")
+
+    print("\n6. BoxVolumeMesh")
     print("   3D solid volume mesh with hex/tet/wedge elements")
     print("   Node sets: left, right, top, bottom, front, back")
 
