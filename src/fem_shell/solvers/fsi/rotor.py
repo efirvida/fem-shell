@@ -602,23 +602,18 @@ class LinearDynamicFSIRotorSolver(LinearDynamicFSISolver):
     # =========================================================================
 
     def _peek_checkpoint_theta(self) -> float:
-        """Read the rotation angle from ``rotor_performance.csv`` for restart.
+        """Read the rotation angle from the latest checkpoint NPZ for restart.
 
-        The CSV stores the cumulative angle in degrees at every converged
-        time window.  On restart the fluid mesh sits at the position
-        corresponding to the latest time directory in the fluid case, so
-        we look up the angle at that time (or the closest earlier entry)
-        and convert from degrees to radians.
-
-        This approach is robust to non-constant angular velocity because
-        the CSV records the actual integrated angle rather than relying
-        on ``ω × t``.
+        The cumulative angle ``theta`` is saved directly in the checkpoint
+        state file, so there is no need to rely on ``rotor_performance.csv``.
+        On restart the solid mesh is aligned to the checkpoint angle, which
+        corresponds to the fluid mesh position at the fluid restart time.
 
         Returns
         -------
         float
-            Rotation angle [rad] at the fluid restart time, or 0.0 if
-            no checkpoint / no restart / CSV not found.
+            Rotation angle [rad] at the checkpoint time, or 0.0 if
+            no checkpoint / no restart / theta not found in NPZ.
         """
         start_from = self.solver_params.get("start_from", "startTime")
         if start_from not in ("latestTime", "firstTime"):
@@ -642,19 +637,18 @@ class LinearDynamicFSIRotorSolver(LinearDynamicFSISolver):
         try:
             with np.load(npz_path) as data:
                 t_ckpt = float(data["t"]) if "t" in data.files else 0.0
+                if "theta" not in data.files:
+                    _logger.warning("theta not found in checkpoint NPZ, defaulting to 0.0 rad")
+                    return 0.0
+                theta_rad = float(data["theta"])
 
-            # Determine the actual fluid restart time
             t_fluid = self._find_fluid_restart_time(t_ckpt)
-
-            # Read angle from rotor_performance.csv
-            theta_deg = self._read_angle_from_performance_csv(t_fluid)
-            theta_rad = np.radians(theta_deg)
 
             if self._is_primary_rank():
                 _logger.info(
                     "Peeked checkpoint: t_solid=%.6f s, t_fluid=%.6f s, "
-                    "θ_csv=%.4f° = %.4f rad",
-                    t_ckpt, t_fluid, theta_deg, theta_rad,
+                    "θ_npz=%.4f° = %.4f rad",
+                    t_ckpt, t_fluid, np.degrees(theta_rad), theta_rad,
                 )
             return theta_rad
         except Exception as e:
@@ -1865,8 +1859,11 @@ class LinearDynamicFSIRotorSolver(LinearDynamicFSISolver):
         alpha: float,
         inertial_diags: Dict[str, Any],
         F_gravity_local: Optional[np.ndarray],
-        torque_global: np.ndarray,
-        torque_power: float,
+        torque_total_vec: np.ndarray,
+        torque_aero: float,
+        torque_inertial: float,
+        torque_gravity: float,
+        torque_total: float,
         ramp_factor: Optional[float] = None,
         force_ramp_time: Optional[float] = None,
     ) -> None:
@@ -1895,10 +1892,16 @@ class LinearDynamicFSIRotorSolver(LinearDynamicFSISolver):
             magnitudes (centrifugal, coriolis, euler, total_inertial).
         F_gravity_local : np.ndarray or None
             Gravity forces in rotating frame, shape (n_nodes, 3).
-        torque_global : np.ndarray
-            Total torque vector [N·m], shape (3,).
-        torque_power : float
-            Driving torque projected on rotation axis [N·m].
+        torque_total_vec : np.ndarray
+            Total torque vector in rotating frame [N·m], shape (3,).
+        torque_aero : float
+            Aerodynamic torque projected on rotation axis [N·m].
+        torque_inertial : float
+            Inertial torque projected on rotation axis [N·m].
+        torque_gravity : float
+            Gravitational torque projected on rotation axis [N·m].
+        torque_total : float
+            Total torque projected on rotation axis [N·m].
         ramp_factor : float, optional
             Current force ramp factor in [0, 1].
         force_ramp_time : float, optional
@@ -2001,14 +2004,14 @@ class LinearDynamicFSIRotorSolver(LinearDynamicFSISolver):
         print("  │", flush=True)
         print("  ├─ ROTOR TORQUE (Rotating Frame)", flush=True)
         print(
-            f"  │  Total Vector: [{torque_global[0]:.4e}, "
-            f"{torque_global[1]:.4e}, {torque_global[2]:.4e}] N·m",
+            f"  │  Vector: [{torque_total_vec[0]:.4e}, "
+            f"{torque_total_vec[1]:.4e}, {torque_total_vec[2]:.4e}] N·m",
             flush=True,
         )
-        print(
-            f"  │  Driving Torque: {torque_power:.4e} N·m (Projected on axis)",
-            flush=True,
-        )
+        print(f"  │  Aero:       {torque_aero:+.4e} N·m", flush=True)
+        print(f"  │  Inertial:   {torque_inertial:+.4e} N·m", flush=True)
+        print(f"  │  Gravity:    {torque_gravity:+.4e} N·m", flush=True)
+        print(f"  │  Total:      {torque_total:+.4e} N·m  (on axis)", flush=True)
         print("  └" + "─" * 67, flush=True)
 
     def _log_solver_response(
@@ -3177,6 +3180,9 @@ class LinearDynamicFSIRotorSolver(LinearDynamicFSISolver):
                 inertial_diags,
                 F_gravity_local if self._include_gravity else None,
                 torque_total_local,
+                torque_aero_scalar,
+                torque_inertial_scalar,
+                torque_gravity_scalar,
                 torque_total_scalar,
                 ramp_factor=ramp_factor if ramp_factor < 1.0 else None,
                 force_ramp_time=self._force_ramp_time,
