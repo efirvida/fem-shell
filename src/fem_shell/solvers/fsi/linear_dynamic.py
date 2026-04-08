@@ -7,7 +7,7 @@ problems using preCICE coupling.
 
 import logging
 from pathlib import Path
-from typing import Dict, Optional
+from typing import Dict, Optional, Tuple
 
 import meshio
 import numpy as np
@@ -17,7 +17,23 @@ from fem_shell.core.bc import BoundaryConditionManager
 from fem_shell.core.mesh import MeshModel
 from fem_shell.solvers.linear import LinearDynamicSolver
 
-from .base import Adapter, ForceClipper
+from .base import Adapter, ForceClipper, NewmarkCoefficients
+
+# =============================================================================
+# Module Constants
+# =============================================================================
+
+# Solver configuration thresholds
+_DOF_THRESHOLD_DIRECT_SOLVER = 20_000
+
+# Solver tolerances
+_DIRECT_SOLVER_RTOL = 1e-12
+_DIRECT_SOLVER_ATOL = 1e-14
+_ITERATIVE_SOLVER_RTOL = 1e-5
+_ITERATIVE_SOLVER_ATOL = 1e-8
+_ITERATIVE_SOLVER_MAX_IT = 1000
+
+_logger = logging.getLogger(__name__)
 
 
 class LinearDynamicFSISolver(LinearDynamicSolver):
@@ -53,6 +69,24 @@ class LinearDynamicFSISolver(LinearDynamicSolver):
             Maximum force magnitude per node (for clipping).
         solver.force_ramp_time : float, optional
             Time over which to ramp forces from 0 to 1.
+        solver.solver_type : str, optional
+            Linear solver type: "auto", "direct", "iterative". Default: "auto".
+        solver.damping.enabled : bool, optional
+            Enable Rayleigh damping. Default: True.
+        solver.damping.eta_m : float, optional
+            Mass-proportional Rayleigh damping coefficient.
+        solver.damping.eta_k : float, optional
+            Stiffness-proportional Rayleigh damping coefficient.
+        solver.damping.zeta : float, optional
+            Target damping ratio for auto-computation. Default: 0.02.
+        solver.damping.mode_i : int, optional
+            First reference mode for auto-computation. Default: 1.
+        solver.damping.mode_j : int, optional
+            Second reference mode for auto-computation. Default: 2.
+        solver.force_max_magnitude : float, optional
+            Absolute upper bound on total force magnitude (divergence check).
+        solver.force_jump_factor : float, optional
+            Relative spike detector threshold. Default: 1000.
     """
 
     def __init__(self, mesh: MeshModel, fem_model_properties: Dict):
@@ -69,52 +103,125 @@ class LinearDynamicFSISolver(LinearDynamicSolver):
             read_data=coupling_cfg["read_data"],
         )
         self._prepared = False
+        self._init_solver_config()
 
-    def _setup_solver(self):
-        """Configure PETSc linear solver with residual monitoring support."""
+    # =========================================================================
+    # Initialization
+    # =========================================================================
+
+    def _init_solver_config(self) -> None:
+        """Initialize solver configuration parameters.
+
+        Reads damping configuration from a nested ``damping`` dict with
+        fallback to flat ``eta_m``/``eta_k`` keys for backward compatibility.
+        Also reads ``solver_type`` and force sanity-check parameters.
+        """
+        # --- Damping configuration ---
+        damping_cfg = self.solver_params.get("damping") or {}
+
+        self._damping_enabled: bool = damping_cfg.get("enabled", True)
+        # Auto mode: compute coefficients from modal analysis at assembly time
+        self._damping_auto: bool = (
+            self._damping_enabled
+            and damping_cfg.get("eta_m") is None
+            and damping_cfg.get("eta_k") is None
+            and bool(damping_cfg)  # only auto when damping section is present
+        )
+        self._damping_cfg: dict = damping_cfg
+
+        if not self._damping_enabled:
+            self._eta_m = 0.0
+            self._eta_k = 0.0
+        elif self._damping_auto:
+            # Placeholder — will be overwritten in solve() via _compute_rayleigh_auto
+            self._eta_m = 0.0
+            self._eta_k = 0.0
+        else:
+            # Manual mode: read from nested damping dict, fall back to flat keys
+            self._eta_m = float(
+                damping_cfg["eta_m"]
+                if damping_cfg.get("eta_m") is not None
+                else self.solver_params.get("eta_m", 0.0)
+            )
+            self._eta_k = float(
+                damping_cfg["eta_k"]
+                if damping_cfg.get("eta_k") is not None
+                else self.solver_params.get("eta_k", 0.0)
+            )
+
+        # --- Solver type configuration ---
+        self._solver_type = self.solver_params.get("solver_type", "auto")
+
+        # --- Force sanity checks ---
+        self._force_ramp_time = float(self.solver_params.get("force_ramp_time", 0.0))
+
+        _fmax = self.solver_params.get("force_max_magnitude", None)
+        self._force_max_magnitude: Optional[float] = float(_fmax) if _fmax is not None else None
+        self._force_jump_factor: float = float(self.solver_params.get("force_jump_factor", 1000.0))
+        self._max_force_seen: float = 0.0
+
+    # =========================================================================
+    # Solver Setup
+    # =========================================================================
+
+    def _setup_solver(self) -> None:
+        """Configure PETSc linear solver based on solver_type and problem size."""
         self._solver = PETSc.KSP().create(self.comm)
-        self._solver.setType("cg")
-
-        # Configure preconditioner for main solver
         pc = self._solver.getPC()
-
         opts = PETSc.Options()
 
-        # For medium and large problems, use GAMG (PETSc's algebraic multigrid)
-        # GAMG is more robust and always available in PETSc
-        if self.domain.dofs_count > 1e4:
-            pc.setType("gamg")
-            opts["pc_gamg_type"] = "agg"
-            opts["pc_gamg_agg_nsmooths"] = 1
-            opts["pc_gamg_threshold"] = 0.02
-            opts["pc_gamg_square_graph"] = 1
-            opts["pc_gamg_sym_graph"] = True
-            # Smoothers at each level
-            opts["mg_levels_ksp_type"] = "chebyshev"
-            opts["mg_levels_pc_type"] = "jacobi"
-            opts["mg_levels_ksp_max_it"] = 3
-            # Coarsest level solver
-            opts["mg_coarse_ksp_type"] = "preonly"
-            opts["mg_coarse_pc_type"] = "lu"
-            # More relaxed tolerances for FSI (preCICE iterates)
-            self._solver.setTolerances(rtol=1e-5, atol=1e-8, max_it=1000)
+        dof_count = self.domain.dofs_count
+        solver_type = self._solver_type
+
+        # Auto-select solver based on problem size
+        if solver_type == "auto":
+            solver_type = "direct" if dof_count < _DOF_THRESHOLD_DIRECT_SOLVER else "iterative"
+
+        if solver_type == "direct":
+            self._configure_direct_solver(pc)
         else:
-            # For small problems, ILU with better numerical stability
-            pc.setType("ilu")
-            opts["pc_factor_mat_ordering_type"] = "rcm"  # Reduce bandwidth
-            opts["pc_factor_shift_type"] = "positive_definite"  # Ensure positivity
-            opts["pc_factor_shift_amount"] = 1e-10  # Small shift for stability
-            opts["pc_factor_levels"] = 1  # ILU(1) for better approximation
-            self._solver.setTolerances(rtol=1e-8, atol=1e-12, max_it=500)
+            self._configure_iterative_solver(pc, opts)
 
         self._solver.setFromOptions()
+        self._setup_mass_solver()
 
-        # Configure solver for M_red (simple preconditioner)
+    def _configure_direct_solver(self, pc: PETSc.PC) -> None:
+        """Configure direct LU solver - best for small/medium problems."""
+        self._solver.setType("preonly")
+        pc.setType("lu")
+        try:
+            pc.setFactorSolverType("mumps")
+        except Exception:
+            pass
+        self._solver.setTolerances(rtol=_DIRECT_SOLVER_RTOL, atol=_DIRECT_SOLVER_ATOL, max_it=1)
+
+    def _configure_iterative_solver(self, pc: PETSc.PC, opts: PETSc.Options) -> None:
+        """Configure iterative solver with GAMG preconditioner."""
+        self._solver.setType("cg")
+        pc.setType("gamg")
+        opts["pc_gamg_type"] = "agg"
+        opts["pc_gamg_agg_nsmooths"] = 1
+        opts["pc_gamg_threshold"] = 0.02
+        opts["pc_gamg_square_graph"] = 1
+        opts["pc_gamg_sym_graph"] = True
+        opts["mg_levels_ksp_type"] = "chebyshev"
+        opts["mg_levels_pc_type"] = "jacobi"
+        opts["mg_levels_ksp_max_it"] = 3
+        opts["mg_coarse_ksp_type"] = "preonly"
+        opts["mg_coarse_pc_type"] = "lu"
+        self._solver.setTolerances(
+            rtol=_ITERATIVE_SOLVER_RTOL,
+            atol=_ITERATIVE_SOLVER_ATOL,
+            max_it=_ITERATIVE_SOLVER_MAX_IT,
+        )
+
+    def _setup_mass_solver(self) -> None:
+        """Setup mass solver with diagonal preconditioner for lumped mass."""
         self._m_solver = PETSc.KSP().create(self.comm)
         self._m_solver.setType("preonly")
         m_pc = self._m_solver.getPC()
-        m_pc.setType("jacobi")  # Fast preconditioner for well-conditioned matrix
-        self._m_solver.setTolerances(rtol=1e-12, max_it=1)
+        m_pc.setType("jacobi")
+        self._m_solver.setTolerances(rtol=_DIRECT_SOLVER_RTOL, max_it=1)
         self._m_solver.setFromOptions()
 
     def lump_mass_matrix(self, M: PETSc.Mat) -> PETSc.Mat:
@@ -125,6 +232,258 @@ class LinearDynamicFSISolver(LinearDynamicSolver):
         M_lumped.setDiagonal(diag)
         M_lumped.assemble()
         return M_lumped
+
+    # =========================================================================
+    # Matrix Assembly Helpers
+    # =========================================================================
+
+    def _create_damping_matrix(self, K: PETSc.Mat, M: PETSc.Mat) -> Optional[PETSc.Mat]:
+        """Create Rayleigh damping matrix C = η_m·M + η_k·K.
+
+        Returns None if both coefficients are zero.
+        """
+        if self._eta_m == 0.0 and self._eta_k == 0.0:
+            return None
+
+        C = K.copy()
+        C.scale(self._eta_k)
+        C.axpy(self._eta_m, M)
+        return C
+
+    def _build_effective_stiffness(
+        self,
+        K_red: PETSc.Mat,
+        M_red: PETSc.Mat,
+        coeffs: NewmarkCoefficients,
+        C_red: Optional[PETSc.Mat] = None,
+    ) -> PETSc.Mat:
+        """Build the Newmark effective stiffness matrix.
+
+        Assembles K_eff for the implicit Newmark-β scheme:
+
+            K_eff = [K] + a₀·[M] + a₁·[C]
+
+        where a₀ = 1/(β·dt²) and a₁ = γ/(β·dt).
+
+        Parameters
+        ----------
+        K_red : PETSc.Mat
+            Reduced elastic stiffness matrix.
+        M_red : PETSc.Mat
+            Reduced lumped mass matrix.
+        coeffs : NewmarkCoefficients
+            Precomputed Newmark integration coefficients.
+        C_red : PETSc.Mat, optional
+            Reduced Rayleigh damping matrix.
+
+        Returns
+        -------
+        PETSc.Mat
+            Effective stiffness matrix ready for KSP solve.
+        """
+        K_eff = K_red.copy()
+        K_eff.axpy(coeffs.a0, M_red)
+        if C_red is not None:
+            K_eff.axpy(coeffs.a1, C_red)
+        return K_eff
+
+    def _compute_effective_force(
+        self,
+        F_new_red: PETSc.Vec,
+        u: PETSc.Vec,
+        v: PETSc.Vec,
+        a: PETSc.Vec,
+        M_red: PETSc.Mat,
+        C_red: Optional[PETSc.Mat],
+        coeffs: NewmarkCoefficients,
+    ) -> PETSc.Vec:
+        """Compute the Newmark effective force vector.
+
+        Assembles the RHS of the Newmark implicit system:
+
+            F_eff = {F_new} + [M]·(a₀·u + a₂·v + a₃·a) + [C]·(a₁·u + a₄·v + a₅·a)
+
+        Parameters
+        ----------
+        F_new_red : PETSc.Vec
+            Reduced external force vector at time t+dt.
+        u, v, a : PETSc.Vec
+            Current displacement, velocity, acceleration (reduced).
+        M_red : PETSc.Mat
+            Reduced lumped mass matrix.
+        C_red : PETSc.Mat, optional
+            Reduced damping matrix.
+        coeffs : NewmarkCoefficients
+            Precomputed integration coefficients.
+
+        Returns
+        -------
+        PETSc.Vec
+            Effective force vector for the Newmark solve.
+        """
+        # Mass contribution: M·(a₀·u + a₂·v + a₃·a)
+        temp_vec = u.duplicate()
+        u.copy(temp_vec)
+        temp_vec.scale(coeffs.a0)
+        temp_vec.axpy(coeffs.a2, v)
+        temp_vec.axpy(coeffs.a3, a)
+
+        temp_result = M_red.createVecRight()
+        M_red.mult(temp_vec, temp_result)
+
+        F_eff = F_new_red.duplicate()
+        F_new_red.copy(F_eff)
+        F_eff.axpy(1.0, temp_result)
+
+        # Damping contribution: C·(a₁·u + a₄·v + a₅·a)
+        if C_red is not None:
+            temp_vec_c = u.duplicate()
+            u.copy(temp_vec_c)
+            temp_vec_c.scale(coeffs.a1)
+            temp_vec_c.axpy(coeffs.a4, v)
+            temp_vec_c.axpy(coeffs.a5, a)
+
+            temp_result_c = C_red.createVecRight()
+            C_red.mult(temp_vec_c, temp_result_c)
+            F_eff.axpy(1.0, temp_result_c)
+
+            temp_vec_c.destroy()
+            temp_result_c.destroy()
+
+        temp_vec.destroy()
+        temp_result.destroy()
+
+        return F_eff
+
+    def _compute_rayleigh_auto(self) -> Tuple[float, float]:
+        """Compute Rayleigh damping coefficients automatically from modal analysis.
+
+        Uses the two-point method: given damping ratios ζ_i, ζ_j at two
+        natural frequencies ω_i, ω_j, solves the system:
+
+            α (η_k) = 2·(ζ_i·ω_i − ζ_j·ω_j) / (ω_i² − ω_j²)
+            β (η_m) = 2·ω_i·ω_j·(ζ_j·ω_i − ζ_i·ω_j) / (ω_i² − ω_j²)
+
+        Returns
+        -------
+        Tuple[float, float]
+            (eta_k, eta_m)
+        """
+        from slepc4py import SLEPc
+
+        cfg = self._damping_cfg
+        zeta = float(cfg.get("zeta", 0.02))
+        zeta_i = float(cfg["zeta_1"]) if cfg.get("zeta_1") is not None else zeta
+        zeta_j = float(cfg["zeta_2"]) if cfg.get("zeta_2") is not None else zeta
+        mode_i = int(cfg.get("mode_i", 1))
+        mode_j = int(cfg.get("mode_j", 2))
+        num_modes = int(cfg.get("num_modes", max(mode_j + 2, 6)))
+
+        if mode_i == mode_j:
+            raise ValueError("mode_i and mode_j must be different for Rayleigh auto-computation.")
+
+        K_dup = self.K.copy()
+        M_dup = self.M.copy()
+        F_tmp = K_dup.createVecRight()
+        F_tmp.set(0.0)
+
+        bc_tmp = BoundaryConditionManager(K_dup, F_tmp, M_dup, self.domain.dofs_per_node)
+        bc_tmp.apply_dirichlet(self.dirichlet_conditions)
+        K_red, F_red, M_red = bc_tmp.reduced_system
+
+        eps = SLEPc.EPS().create(self.comm)
+        eps.setOperators(K_red, M_red)
+        eps.setProblemType(SLEPc.EPS.ProblemType.GHEP)
+
+        st = eps.getST()
+        st.setType(SLEPc.ST.Type.SINVERT)
+        st.setShift(0.0)
+        ksp_st = st.getKSP()
+        ksp_st.setType("preonly")
+        pc_st = ksp_st.getPC()
+        pc_st.setType("lu")
+        pc_st.setFactorSolverType("petsc")
+
+        eps.setWhichEigenpairs(SLEPc.EPS.Which.TARGET_MAGNITUDE)
+        eps.setTarget(0.0)
+        eps.setDimensions(num_modes, PETSc.DECIDE, PETSc.DECIDE)
+        eps.setTolerances(tol=1e-8, max_it=500)
+        try:
+            eps.solve()
+        except Exception as exc:
+            K_red.destroy()
+            if M_red is not None:
+                M_red.destroy()
+            F_red.destroy()
+            K_dup.destroy()
+            M_dup.destroy()
+            F_tmp.destroy()
+            raise RuntimeError(f"Rayleigh auto: SLEPc eigenvalue solve failed — {exc}.") from exc
+
+        nconv = eps.getConverged()
+        raw_eigs = sorted(eps.getEigenvalue(i).real for i in range(nconv))
+        positive_eigs = [lam for lam in raw_eigs if lam > 1e-8]
+
+        K_red.destroy()
+        if M_red is not None:
+            M_red.destroy()
+        F_red.destroy()
+        K_dup.destroy()
+        M_dup.destroy()
+        F_tmp.destroy()
+
+        needed = max(mode_i, mode_j)
+        if len(positive_eigs) < needed:
+            raise RuntimeError(
+                f"Rayleigh auto: modal solve found only {len(positive_eigs)} "
+                f"positive eigenvalues but mode {needed} is required."
+            )
+
+        omega_i = float(np.sqrt(positive_eigs[mode_i - 1]))
+        omega_j = float(np.sqrt(positive_eigs[mode_j - 1]))
+
+        denom = omega_i**2 - omega_j**2
+        if abs(denom) < 1e-12:
+            raise ValueError(
+                f"Rayleigh auto: modes {mode_i} and {mode_j} share the same "
+                f"natural frequency (ω ≈ {omega_i:.4e} rad/s)."
+            )
+
+        alpha = 2.0 * (zeta_i * omega_i - zeta_j * omega_j) / denom  # η_k
+        beta = 2.0 * omega_i * omega_j * (zeta_j * omega_i - zeta_i * omega_j) / denom  # η_m
+
+        if alpha < 0.0 or beta < 0.0:
+            _logger.warning(
+                "Rayleigh auto produced a negative coefficient: η_k=%.3e, η_m=%.3e.",
+                alpha,
+                beta,
+            )
+
+        if self._is_primary_rank():
+            f_i = omega_i / (2.0 * np.pi)
+            f_j = omega_j / (2.0 * np.pi)
+            print(
+                f"  [Rayleigh auto] Mode {mode_i}: f={f_i:.3f} Hz "
+                f"(ω={omega_i:.3f} rad/s), ζ={zeta_i:.4f}",
+                flush=True,
+            )
+            print(
+                f"  [Rayleigh auto] Mode {mode_j}: f={f_j:.3f} Hz "
+                f"(ω={omega_j:.3f} rad/s), ζ={zeta_j:.4f}",
+                flush=True,
+            )
+            print(f"  [Rayleigh auto] η_k (stiffness) = {alpha:.4e} s", flush=True)
+            print(f"  [Rayleigh auto] η_m (mass)      = {beta:.4e} 1/s", flush=True)
+
+        return alpha, beta
+
+    # =========================================================================
+    # Utility
+    # =========================================================================
+
+    def _is_primary_rank(self) -> bool:
+        """Always True in serial."""
+        return True
 
     def _export_interface_debug_data(
         self,
@@ -251,18 +610,47 @@ class LinearDynamicFSISolver(LinearDynamicSolver):
         print("  FSI DYNAMIC ANALYSIS - STRUCTURAL SOLVER", flush=True)
         print("═" * 70, flush=True)
 
-        print("  [1/6] Assembling stiffness matrix...", flush=True)
+        # =====================================================================
+        # Phase 1: Matrix assembly
+        # =====================================================================
+        print("  [1/7] Assembling stiffness matrix...", flush=True)
         self.K = self.domain.assemble_stiffness_matrix()
 
-        print("  [2/6] Assembling mass matrix...", flush=True)
+        print("  [2/7] Assembling mass matrix...", flush=True)
         self.M = self.domain.assemble_mass_matrix()
         self.M = self.lump_mass_matrix(self.M)
+
+        # =====================================================================
+        # Phase 2: Damping matrix
+        # =====================================================================
+        C = None
+        if not self._damping_enabled:
+            print("  [3/7] Rayleigh damping: disabled", flush=True)
+        elif self._damping_auto:
+            print("  [3/7] Rayleigh damping: auto-computing from modal analysis...", flush=True)
+            self._eta_k, self._eta_m = self._compute_rayleigh_auto()
+            print(
+                f"        Creating Rayleigh damping (η_m={self._eta_m:.4e}, η_k={self._eta_k:.4e})...",
+                flush=True,
+            )
+            C = self._create_damping_matrix(self.K, self.M)
+        elif self._eta_m != 0.0 or self._eta_k != 0.0:
+            print(
+                f"  [3/7] Creating Rayleigh damping (η_m={self._eta_m}, η_k={self._eta_k})...",
+                flush=True,
+            )
+            C = self._create_damping_matrix(self.K, self.M)
+        else:
+            print("  [3/7] Rayleigh damping: disabled (zero coefficients)", flush=True)
 
         force_temp = PETSc.Vec().createMPI(self.domain.dofs_count, comm=self.comm)
         force_temp.set(0.0)
         self.F = force_temp
 
-        print("  [3/6] Applying boundary conditions...", flush=True)
+        # =====================================================================
+        # Phase 3: Boundary conditions
+        # =====================================================================
+        print("  [4/7] Applying boundary conditions...", flush=True)
         bc_manager = BoundaryConditionManager(self.K, self.F, self.M, self.domain.dofs_per_node)
         bc_manager.apply_dirichlet(self.dirichlet_conditions)
         print(
@@ -274,7 +662,10 @@ class LinearDynamicFSISolver(LinearDynamicSolver):
         step = 0
         time_step = int(round(t / self.solver_params.get("time_step", 1.0)))
 
-        print("  [4/6] Initializing preCICE coupling...", flush=True)
+        # =====================================================================
+        # Phase 4: preCICE initialization
+        # =====================================================================
+        print("  [5/7] Initializing preCICE coupling...", flush=True)
         self.precice_participant.initialize(
             self.domain,
             self.model_properties["solver"]["coupling_boundaries"],
@@ -283,28 +674,29 @@ class LinearDynamicFSISolver(LinearDynamicSolver):
 
         self.dt = self.precice_participant.dt
         K_red, F_red, M_red = bc_manager.reduced_system
+        C_red = bc_manager.reduce_matrix(C) if C is not None else None
 
         self.free_dofs = bc_manager.free_dofs
 
-        print("  [5/6] Setting up linear solver...", flush=True)
+        # =====================================================================
+        # Phase 5: Solver setup + effective stiffness
+        # =====================================================================
+        print("  [6/7] Setting up linear solver...", flush=True)
         if not self._prepared:
             self._setup_solver()
-            self._solver.setOperators(K_red)
             self._prepared = True
 
-        # Newmark-β coefficients
         beta = self.solver_params["beta"]
         gamma = self.solver_params["gamma"]
+        coeffs = NewmarkCoefficients.from_newmark_params(beta, gamma, self.dt)
 
-        a0 = 1.0 / (beta * self.dt**2)
-        a2 = 1.0 / (beta * self.dt)
-        a3 = 1.0 / (2 * beta) - 1.0
-
-        # Effective stiffness matrix
-        K_eff = K_red + a0 * M_red
+        K_eff = self._build_effective_stiffness(K_red, M_red, coeffs, C_red)
         self._solver.setOperators(K_eff)
 
-        print("  [6/6] Setting initial conditions...", flush=True)
+        # =====================================================================
+        # Phase 6: Initial conditions
+        # =====================================================================
+        print("  [7/7] Setting initial conditions...", flush=True)
         u = K_red.createVecRight()
         v = K_red.createVecRight()
 
@@ -320,7 +712,7 @@ class LinearDynamicFSISolver(LinearDynamicSolver):
 
         # Try to restore from checkpoint if start_from='latestTime'
         checkpoint_state = self._try_restore_checkpoint()
-        starting_from_zero = True  # Flag to track if we're starting fresh
+        starting_from_zero = True
 
         # Validate checkpoint dimensionality if present
         if checkpoint_state is not None and "u_red" in checkpoint_state:
@@ -339,7 +731,6 @@ class LinearDynamicFSISolver(LinearDynamicSolver):
             print(f"  ✓ Restored from checkpoint at t = {checkpoint_state['t']:.6f} s", flush=True)
             t = checkpoint_state["t"]
             time_step = checkpoint_state["time_step"]
-            # Restore reduced vectors if present; otherwise start with zeros
             if "u_red" in checkpoint_state:
                 u.array[:] = checkpoint_state["u_red"]
                 v.array[:] = checkpoint_state["v_red"]
@@ -354,7 +745,6 @@ class LinearDynamicFSISolver(LinearDynamicSolver):
                 )
 
             if self.solver_params.get("reset_state_on_restart", False):
-                # Keep temporal continuity but reset state vectors to avoid double-loading
                 u.array[:] = 0.0
                 v.array[:] = 0.0
                 a.array[:] = 0.0
@@ -363,8 +753,7 @@ class LinearDynamicFSISolver(LinearDynamicSolver):
                     flush=True,
                 )
 
-        # Write initial state at t=0 with undeformed mesh if configured (OpenFOAM-like)
-        # Only write if we're actually starting from t=0 (no checkpoint restored)
+        # Write initial state at t=0 with undeformed mesh if configured
         if (
             self._checkpoint_manager is not None
             and self.solver_params.get("write_initial_state", True)
@@ -383,17 +772,24 @@ class LinearDynamicFSISolver(LinearDynamicSolver):
                 a_full=bc_manager.expand_state_vector(a).array.copy(),
             )
 
-        # Force clipping and ramping configuration
+        # =====================================================================
+        # Force configuration
+        # =====================================================================
         force_max_cap = self.solver_params.get("force_max_cap", None)
         force_clipper = ForceClipper(force_max_cap=force_max_cap)
-        ramp_time = self.solver_params.get("force_ramp_time", 0.0)
+        ramp_time = self._force_ramp_time
 
         print("═" * 70, flush=True)
         print(f"  dt = {self.dt:.6f} s  │  Newmark β={beta:.2f}, γ={gamma:.2f}", flush=True)
+        if self._eta_m != 0.0 or self._eta_k != 0.0:
+            print(f"  Damping: η_m={self._eta_m:.4e}, η_k={self._eta_k:.4e}", flush=True)
+        print(f"  Solver type: {self._solver_type}", flush=True)
         if force_max_cap:
             print(f"  Force cap: {force_max_cap:.2e} N", flush=True)
         if ramp_time > 0:
             print(f"  Ramp time: {ramp_time:.4f} s", flush=True)
+        if self._force_max_magnitude is not None:
+            print(f"  Force divergence limit: {self._force_max_magnitude:.2e} N", flush=True)
         print("═" * 70, flush=True)
 
         # Store interface DOFs reference for checkpoint handling
@@ -402,6 +798,9 @@ class LinearDynamicFSISolver(LinearDynamicSolver):
         # Get interface mesh dimensions
         mesh_dim = self.precice_participant.mesh_dimensions
 
+        # =====================================================================
+        # Main coupling loop
+        # =====================================================================
         while self.precice_participant.is_coupling_ongoing:
             step += 1
 
@@ -415,9 +814,9 @@ class LinearDynamicFSISolver(LinearDynamicSolver):
             data_raw = data.copy() if data is not None else None
             interface_dofs = self.precice_participant.interface_dofs
 
-            # ==============================================================================
-            # FORCE ANALYSIS: Compute statistics on raw CFD forces (before any processing)
-            # ==============================================================================
+            # ==================================================================
+            # Force analysis: raw CFD forces
+            # ==================================================================
             if data.ndim == 2:
                 n_nodes = data.shape[0]
                 raw_force_x = np.sum(data[:, 0])
@@ -434,19 +833,39 @@ class LinearDynamicFSISolver(LinearDynamicSolver):
                 raw_force_mag = np.sqrt(raw_force_x**2 + raw_force_y**2 + raw_force_z**2)
                 raw_max_nodal = np.max(np.linalg.norm(data_2d, axis=1))
 
-            # ==============================================================================
-            # Apply conservative force clipping: only clip excessive magnitudes
-            # ==============================================================================
+            # ==================================================================
+            # Force sanity checks: detect CFD divergence
+            # ==================================================================
+            force_total_mag = raw_force_mag
+            if (
+                self._max_force_seen > 0.0
+                and force_total_mag > self._force_jump_factor * self._max_force_seen
+            ):
+                raise RuntimeError(
+                    f"Diverged force detected: |F| = {force_total_mag:.3e} N is "
+                    f"{force_total_mag / self._max_force_seen:.1f}× the running "
+                    f"max. CFD likely diverged."
+                )
+            if (
+                self._force_max_magnitude is not None
+                and force_total_mag > self._force_max_magnitude
+            ):
+                raise RuntimeError(
+                    f"Force exceeds limit: |F| = {force_total_mag:.3e} N > "
+                    f"{self._force_max_magnitude:.3e} N"
+                )
+            self._max_force_seen = max(self._max_force_seen, force_total_mag)
+
+            # ==================================================================
+            # Force clipping
+            # ==================================================================
             data_clipped, clip_diags = force_clipper.apply(data)
 
-            # ==============================================================================
-            # Apply force ramping based on PHYSICAL TIME (not iteration count)
-            # This ensures consistent ramping regardless of preCICE sub-iterations
-            # Use t_target (end of current time step) to match OpenFOAM convention
-            # ==============================================================================
-            t_target = t + self.dt  # Time at end of current step (matches OpenFOAM)
+            # ==================================================================
+            # Force ramping (physical time based)
+            # ==================================================================
+            t_target = t + self.dt
             if ramp_time > 0 and t_target < ramp_time:
-                # Smooth sine ramp: small value at t=dt, 1 at t=ramp_time
                 ramp_factor = 0.5 * (1.0 - np.cos(np.pi * t_target / ramp_time))
             elif ramp_time > 0 and t_target >= ramp_time:
                 ramp_factor = 1.0
@@ -455,9 +874,9 @@ class LinearDynamicFSISolver(LinearDynamicSolver):
 
             data_ramped = data_clipped * ramp_factor
 
-            # ==============================================================================
-            # Compute final applied forces (after clipping + ramping)
-            # ==============================================================================
+            # ==================================================================
+            # Applied forces (after clipping + ramping)
+            # ==================================================================
             if data_ramped.ndim == 2:
                 applied_force_x = np.sum(data_ramped[:, 0])
                 applied_force_y = np.sum(data_ramped[:, 1])
@@ -476,9 +895,9 @@ class LinearDynamicFSISolver(LinearDynamicSolver):
                 )
                 applied_max_nodal = np.max(np.linalg.norm(data_2d, axis=1))
 
-            # ==============================================================================
-            # DETAILED LOGGING OUTPUT WITH BOX FORMAT
-            # ==============================================================================
+            # ==================================================================
+            # Logging
+            # ==================================================================
             print(f"\n{'─' * 70}", flush=True)
             print(
                 f"  TIME WINDOW {time_step + 1:4d}  │  ITER {step:4d}  │  t → {t_target:.6f} s",
@@ -486,7 +905,6 @@ class LinearDynamicFSISolver(LinearDynamicSolver):
             )
             print(f"{'─' * 70}", flush=True)
 
-            # CFD Forces section (raw data from fluid solver)
             print("  ┌─ CFD FORCES (mapped from fluid solver)", flush=True)
             print(f"  │  Total:   |F| = {raw_force_mag:12.4e} N", flush=True)
             print(
@@ -496,7 +914,6 @@ class LinearDynamicFSISolver(LinearDynamicSolver):
             print(f"  │  Max nodal:  {raw_max_nodal:.4e} N  ({n_nodes} nodes)", flush=True)
             print("  │", flush=True)
 
-            # Processing section
             if force_max_cap is not None or ramp_time > 0:
                 print("  ├─ PROCESSING", flush=True)
                 if force_max_cap is not None:
@@ -518,7 +935,6 @@ class LinearDynamicFSISolver(LinearDynamicSolver):
                     )
                 print("  │", flush=True)
 
-            # Applied Forces section (after all processing)
             print("  └─ APPLIED FORCES (after clipping + ramping)", flush=True)
             print(f"     Total:   |F| = {applied_force_mag:12.4e} N", flush=True)
             print(
@@ -536,24 +952,10 @@ class LinearDynamicFSISolver(LinearDynamicSolver):
             F_new.setValues(interface_dofs, data)
             F_new_red = bc_manager.reduce_vector(F_new)
 
-            # ==============================================================================
-            # Compute effective force with Rayleigh damping effects
-            # F_eff = F_external + a0*M*u + a2*M*v + a3*M*a + a1_c*C*v
-            # where C = eta_m*M + eta_k*K (damping matrix)
-            # ==============================================================================
-
-            # Optimization: avoid redundant operations
-            # Contribution from mass and initial conditions
-            temp_vec = a0 * u  # Precalculate terms
-            temp_vec.axpy(a2, v)  # temp_vec += a2 * v
-            temp_vec.axpy(a3, a)  # temp_vec += a3 * a
-
-            # Create output vector for multiplication
-            temp_result = M_red.createVecRight()
-            M_red.mult(temp_vec, temp_result)  # temp_result = M_red @ temp_vec
-
-            # Effective force (use PETSc + operator)
-            F_eff = F_new_red + temp_result
+            # ==================================================================
+            # Effective force (with damping contribution)
+            # ==================================================================
+            F_eff = self._compute_effective_force(F_new_red, u, v, a, M_red, C_red, coeffs)
 
             # Solve for displacement
             logger.debug("Step %d: Solving linear system...", step)
@@ -567,7 +969,6 @@ class LinearDynamicFSISolver(LinearDynamicSolver):
             # Compute solution response for this iteration
             max_disp_iter = u_new.norm(PETSc.NormType.INFINITY)
 
-            # Show structural response for EVERY iteration
             print("  ┌─ SOLVER RESPONSE (this iteration)", flush=True)
             print(f"  │  KSP iterations: {ksp_its}  (reason: {ksp_reason})", flush=True)
             print(f"  │  max|u_new| = {max_disp_iter:.4e} m", flush=True)
@@ -588,12 +989,9 @@ class LinearDynamicFSISolver(LinearDynamicSolver):
                 # Time window completed - increment physical time step counter
                 time_step += 1
 
-                # Update acceleration and velocity
-                delta_u = u_new - u
-                a_new = (delta_u - self.dt * v - (0.5 - beta) * self.dt**2 * a) / (
-                    beta * self.dt**2
-                )
-                v_new = v + self.dt * ((1 - gamma) * a + gamma * a_new)
+                # Update acceleration and velocity using Newmark coefficients
+                a_new = coeffs.a0 * (u_new - u) - coeffs.a2 * v - coeffs.a3 * a
+                v_new = v + coeffs.a6 * a + coeffs.a7 * a_new
                 u, v, a = u_new, v_new, a_new
                 t += self.dt
 
