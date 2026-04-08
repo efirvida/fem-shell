@@ -1163,23 +1163,28 @@ class MITC4(ShellElement):
         return B_NL
 
     def _compute_B_geometric(self, xi: float, eta: float) -> np.ndarray:
-        """Compute geometric B matrix for geometric stiffness."""
+        """Compute geometric B matrix for geometric stiffness (6×24).
+
+        Only translational DOF gradients (u,v,w) contribute to the
+        geometric stiffness, consistent with the standard TL formulation.
+        """
         dH = self._get_dH(xi, eta)
-        B_G = np.zeros((8, 24))
+        B_G = np.zeros((6, 24))
 
         for i in range(4):
             col = 6 * i
             dNi_dx = dH[0, i]
             dNi_dy = dH[1, i]
 
+            # ∂u/∂x, ∂u/∂y
             B_G[0, col] = dNi_dx
             B_G[1, col] = dNi_dy
+            # ∂v/∂x, ∂v/∂y
             B_G[2, col + 1] = dNi_dx
             B_G[3, col + 1] = dNi_dy
+            # ∂w/∂x, ∂w/∂y
             B_G[4, col + 2] = dNi_dx
             B_G[5, col + 2] = dNi_dy
-            B_G[6, col + 3] = dNi_dx
-            B_G[7, col + 3] = dNi_dy
 
         return B_G
 
@@ -1199,11 +1204,10 @@ class MITC4(ShellElement):
             * self.thickness
         )
 
-        S_tilde = np.zeros((8, 8))
+        S_tilde = np.zeros((6, 6))
         S_tilde[0:2, 0:2] = S_m
         S_tilde[2:4, 2:4] = S_m
         S_tilde[4:6, 4:6] = S_m
-        S_tilde[6:8, 6:8] = S_m
 
         K_sigma = np.zeros((24, 24))
 

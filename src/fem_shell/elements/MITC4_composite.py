@@ -196,8 +196,7 @@ class MITC4Composite(MITC4):
     def _rotational_inertia(self) -> float:
         """Ply-integrated rotational inertia per unit area."""
         return sum(
-            ply.material.rho * (ply.z_top ** 3 - ply.z_bottom ** 3) / 3
-            for ply in self.laminate.plies
+            ply.material.rho * (ply.z_top**3 - ply.z_bottom**3) / 3 for ply in self.laminate.plies
         )
 
     def _membrane_constitutive_raw(self) -> np.ndarray:
@@ -295,7 +294,9 @@ class MITC4Composite(MITC4):
                 T_eps = self._strain_transformation_matrix(ply.angle)
                 epsilon_ply = T_eps @ epsilon_lam
                 results.append({
-                    "ply_index": k, "angle": ply.angle, "z": z,
+                    "ply_index": k,
+                    "angle": ply.angle,
+                    "z": z,
                     "epsilon_laminate": epsilon_lam.copy(),
                     "epsilon_ply": epsilon_ply.copy(),
                 })
@@ -333,7 +334,9 @@ class MITC4Composite(MITC4):
                 T_stress = stress_transformation_matrix(ply.angle)
                 sigma_ply = T_stress @ sigma_lam
                 results.append({
-                    "ply_index": k, "angle": ply.angle, "z": z,
+                    "ply_index": k,
+                    "angle": ply.angle,
+                    "z": z,
                     "sigma_laminate": sigma_lam.copy(),
                     "sigma_ply": sigma_ply.copy(),
                 })
@@ -458,8 +461,10 @@ class MITC4Composite(MITC4):
             sigma_ply = stress_data["sigma_ply"]
             failure_result = evaluate_ply_failure(sigma_ply, ply.strength, criterion)
             results.append({
-                "ply_index": k, "angle": ply.angle,
-                "z": stress_data["z"], "sigma_ply": sigma_ply.copy(),
+                "ply_index": k,
+                "angle": ply.angle,
+                "z": stress_data["z"],
+                "sigma_ply": sigma_ply.copy(),
                 "failure_result": failure_result,
                 "failed": failure_result.failed,
                 "failure_index": failure_result.failure_index,
@@ -549,12 +554,10 @@ class MITC4Composite(MITC4):
             B_m_NL = B_NL[[0, 1, 3], :]
 
             K_L += (
-                (
-                    B_m_L.T @ Cm_raw @ B_m_NL
-                    + B_m_NL.T @ Cm_raw @ B_m_L
-                    + B_m_NL.T @ Cm_raw @ B_m_NL
-                )
-                * w * detJ * self.thickness
+                (B_m_L.T @ Cm_raw @ B_m_NL + B_m_NL.T @ Cm_raw @ B_m_L + B_m_NL.T @ Cm_raw @ B_m_NL)
+                * w
+                * detJ
+                * self.thickness
             )
 
         K_sigma = self.compute_geometric_stiffness(sigma, transform_to_global=False)
