@@ -558,6 +558,11 @@ class LinearDynamicFSIRotorSolver(LinearDynamicFSISolver):
         self._prev_omega: Optional[float] = None
         self._v_guess_next: Optional[PETSc.Vec] = None
 
+        # On restart, ramps must NOT be re-applied — the simulation
+        # continues from the checkpoint state where ramps already completed.
+        # Explicit is better than implicit (PEP 20).
+        self._skip_ramps = False
+
     # =========================================================================
     # Checkpoint Peeking
     # =========================================================================
@@ -621,6 +626,53 @@ class LinearDynamicFSIRotorSolver(LinearDynamicFSISolver):
         except Exception as e:
             _logger.warning("Could not peek checkpoint theta: %s", e)
             return 0.0
+
+    def _peek_checkpoint_omega(self) -> Optional[float]:
+        """Read the angular velocity from the latest checkpoint NPZ.
+
+        On restart, the omega provider is freshly created and has no knowledge
+        of the dynamic omega that evolved during the previous run.  This method
+        reads the saved ``omega`` field from the checkpoint so it can be used
+        as the initial value for preCICE and for restoring the provider state.
+
+        Returns
+        -------
+        float or None
+            Angular velocity [rad/s] at the checkpoint time, or None if
+            no checkpoint / no restart / omega not found in NPZ.
+        """
+        start_from = self.solver_params.get("start_from", "startTime")
+        if start_from not in ("latestTime", "firstTime"):
+            return None
+
+        if self._checkpoint_manager is None:
+            return None
+
+        if start_from == "firstTime":
+            info = self._checkpoint_manager.find_first()
+        else:
+            info = self._checkpoint_manager.find_latest()
+
+        if info is None:
+            return None
+
+        npz_path = os.path.join(info.path, "state.npz")
+        if not os.path.exists(npz_path):
+            return None
+
+        try:
+            with np.load(npz_path) as data:
+                if "omega" in data.files:
+                    omega_val = float(data["omega"])
+                    if self._is_primary_rank():
+                        _logger.info(
+                            "Peeked checkpoint omega: %.4f rad/s", omega_val
+                        )
+                    return omega_val
+            return None
+        except Exception as e:
+            _logger.warning("Could not peek checkpoint omega: %s", e)
+            return None
 
     def _read_angle_from_performance_csv(self, t_target: float) -> float:
         """Read the rotation angle [deg] from ``rotor_performance.csv``.
@@ -2518,7 +2570,15 @@ class LinearDynamicFSIRotorSolver(LinearDynamicFSISolver):
             # (t -> t + dt), so fluid does not start from a stale zero value.
             # preCICE owns the authoritative dt, but before initialize() returns
             # we only have the configured startup step available.
-            initial_omega, _ = self._omega_provider.get_omega(t + bootstrap_dt)
+            #
+            # On restart, the omega provider is freshly created and get_omega(0+dt)
+            # returns a ramped value near zero instead of the actual omega at the
+            # checkpoint time.  Use the checkpoint omega directly if available.
+            restart_omega = self._peek_checkpoint_omega()
+            if restart_omega is not None:
+                initial_omega = restart_omega
+            else:
+                initial_omega, _ = self._omega_provider.get_omega(t + bootstrap_dt)
             initial_data = {"AngularVelocity": initial_omega}
             _logger.info(f"Initial angular velocity for preCICE: {initial_omega:.4f} rad/s")
 
@@ -2615,6 +2675,43 @@ class LinearDynamicFSIRotorSolver(LinearDynamicFSISolver):
                 a.array[:] = 0.0
                 if self._is_primary_rank():
                     print("  ↳ State vectors reset to zero", flush=True)
+
+            # Restore omega provider state from checkpoint so that ramps are
+            # not re-applied and the dynamic omega evolution is preserved.
+            ckpt_omega = checkpoint_state.get("omega", None)
+            if ckpt_omega is not None:
+                ckpt_omega = float(ckpt_omega)
+                if isinstance(self._omega_provider, RampedComputedOmega):
+                    self._omega_provider.set_state(
+                        (ckpt_omega, 0.0, True, t)
+                    )
+                    if self._is_primary_rank():
+                        print(
+                            f"  ↳ Omega provider restored: ω = {ckpt_omega:.4f} rad/s"
+                            f" (ramp completed)",
+                            flush=True,
+                        )
+                elif isinstance(self._omega_provider, ComputedOmega):
+                    self._omega_provider.set_state((ckpt_omega, 0.0))
+                    if self._is_primary_rank():
+                        print(
+                            f"  ↳ Omega provider restored: ω = {ckpt_omega:.4f} rad/s",
+                            flush=True,
+                        )
+                elif isinstance(self._omega_provider, RampedOmega):
+                    # RampedOmega uses absolute time, so no state to restore,
+                    # but if t > ramp_time the ramp is already complete.
+                    if self._is_primary_rank():
+                        print(
+                            f"  ↳ Omega provider (RampedOmega): checkpoint ω = {ckpt_omega:.4f} rad/s",
+                            flush=True,
+                        )
+
+            # Explicitly skip ramps on restart — simulation continues from
+            # checkpoint state where ramps already completed.
+            self._skip_ramps = True
+            if self._is_primary_rank():
+                print("  ↳ Ramps bypassed (restart from checkpoint)", flush=True)
 
         # Note: Initial state checkpoint is written in solve() after computing
         # all debugging fields (gravity, masses, etc.)
@@ -2784,9 +2881,9 @@ class LinearDynamicFSIRotorSolver(LinearDynamicFSISolver):
             self._max_force_seen = max(self._max_force_seen, force_total_mag)
             # -------------------------------------------------------------------------
 
-            # Apply force ramp if configured
+            # Apply force ramp if configured (skip on restart)
             ramp_factor = 1.0
-            if self._force_ramp_time > 1e-12:
+            if self._force_ramp_time > 1e-12 and not self._skip_ramps:
                 ramp_check = min(t_target / self._force_ramp_time, 1.0)
                 if ramp_check < 1.0:
                     ramp_factor = ramp_check
