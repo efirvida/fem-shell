@@ -1800,6 +1800,13 @@ class MITC3(ShellElement):
         f_bs = self._k_bs_condensed() @ u_local
         f_int += f_bs
 
+        # Drilling stabilization restoring force (consistent with k_m drilling)
+        k_drill_stab = self._drilling_stiffness_factor()
+        for (r, s), w in zip(self._gauss_points, self._gauss_weights):
+            B_drill = self._compute_B_drill(r, s)
+            B_d = B_drill[5:6, :]
+            f_int += k_drill_stab * (B_d.T @ (B_d @ u_local)) * w * area
+
         # Membrane integration (with GL strain if nonlinear)
         for (r, s), w in zip(self._gauss_points, self._gauss_weights):
             if self.nonlinear:
@@ -1862,6 +1869,15 @@ class MITC3(ShellElement):
 
         # Bending and Shear energy (using condensed stiffness)
         U = 0.5 * u_local @ self._k_bs_condensed() @ u_local
+
+        # Drilling energy (consistent with k_m drilling)
+        k_drill_stab = self._drilling_stiffness_factor()
+        area = self.area()
+        for (r, s), w in zip(self._gauss_points, self._gauss_weights):
+            B_drill = self._compute_B_drill(r, s)
+            B_d = B_drill[5:6, :]
+            drill_strain = B_d @ u_local
+            U += 0.5 * k_drill_stab * float(drill_strain @ drill_strain.T) * w * area
 
         # Membrane energy
         E_mat = self.material.E
