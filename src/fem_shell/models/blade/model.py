@@ -1,14 +1,17 @@
 from dataclasses import dataclass
 from typing import Dict, Iterable, List, Optional, Tuple, Union
+import warnings
 
 import matplotlib.pyplot as plt
 import numpy as np
 import shapely as shp
 from scipy.interpolate import CubicSpline
 
+from fem_shell.core.laminate import Laminate, Ply
 from fem_shell.core.material import Material, OrthotropicMaterial
 from fem_shell.core.mesh import MeshModel
 from fem_shell.core.mesh.generators import BladeMesh, RotorMesh
+from fem_shell.core.properties import CompositeShellProperty, ShellProperty, ShellPropertyType
 from fem_shell.core.viewer import BladeGeometryVisualizer
 from fem_shell.elements import ElementFamily
 
@@ -71,11 +74,21 @@ class Blade:
     def element_thickness_map(self) -> Dict[int, float]:
         """Compute total shell thickness per element from section layup data.
 
+        .. deprecated::
+            Use :meth:`get_element_properties` instead, which returns full
+            material definitions (including laminate stacking) per element set.
+
         Returns
         -------
         dict[int, float]
             Mapping of element ID to total laminate thickness.
         """
+        warnings.warn(
+            "element_thickness_map is deprecated. "
+            "Use get_element_properties() instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
         if self.mesh is None:
             raise RuntimeError("Mesh has not been generated yet. Call generate_mesh() first.")
 
@@ -84,6 +97,83 @@ class Blade:
             for elem in self.mesh.elements
             if elem.thickness is not None
         }
+
+    def get_element_properties(self) -> Dict[str, ShellPropertyType]:
+        """Build shell property definitions per element set from section layup data.
+
+        Uses the WindIO/numad section and material data to construct
+        ``CompositeShellProperty`` (multi-ply laminates) or ``ShellProperty``
+        (single-layer isotropic) objects for each element set in the mesh.
+
+        Returns
+        -------
+        dict[str, ShellPropertyType]
+            Mapping of element-set name to the corresponding property.
+            Suitable for passing as ``model_config["elements"]["properties"]``.
+
+        Raises
+        ------
+        RuntimeError
+            If the mesh has not been generated yet.
+        KeyError
+            If a layer references a material name not present in the
+            numad material database.
+        """
+        if self.mesh is None or not self._numad_mesh:
+            raise RuntimeError("Mesh has not been generated yet. Call generate_mesh() first.")
+
+        # Build material lookup: name -> IsotropicMaterial | OrthotropicMaterial
+        mat_db: Dict[str, Union[Material, OrthotropicMaterial]] = {}
+        for mat_data in self._numad_mesh["materials"]:
+            mat_obj = material_factory(mat_data)
+            mat_db[mat_obj.name] = mat_obj
+
+        properties: Dict[str, ShellPropertyType] = {}
+
+        for section in self._numad_mesh["sections"]:
+            set_name = section["elementSet"]
+            layup = section["layup"]  # [[mat_name, thickness, angle], ...]
+
+            plies: List[Ply] = []
+            for mat_name, thickness, angle in layup:
+                mat = mat_db.get(mat_name)
+                if mat is None:
+                    raise KeyError(
+                        f"Material '{mat_name}' referenced in section '{set_name}' "
+                        f"not found in numad material database."
+                    )
+
+                # Ply requires an OrthotropicMaterial. If the material is
+                # isotropic we need to promote it.
+                if isinstance(mat, OrthotropicMaterial):
+                    ply_mat = mat
+                else:
+                    # IsotropicMaterial -> OrthotropicMaterial with G derived
+                    G = mat.E / (2.0 * (1.0 + mat.nu))
+                    ply_mat = OrthotropicMaterial(
+                        name=mat.name,
+                        E=(mat.E, mat.E, mat.E),
+                        G=(G, G, G),
+                        nu=(mat.nu, mat.nu, mat.nu),
+                        rho=mat.rho,
+                    )
+                plies.append(Ply(material=ply_mat, thickness=thickness, angle=angle))
+
+            if len(plies) == 1 and plies[0].angle == 0.0:
+                # Single layer with 0° angle: check if original material is isotropic
+                original_mat = mat_db[layup[0][0]]
+                from fem_shell.core.material import IsotropicMaterial
+                if isinstance(original_mat, IsotropicMaterial):
+                    properties[set_name] = ShellProperty(
+                        material=original_mat,
+                        thickness=plies[0].thickness,
+                    )
+                    continue
+
+            laminate = Laminate(plies=plies)
+            properties[set_name] = CompositeShellProperty(laminate=laminate)
+
+        return properties
 
     def show_plots(self) -> None:
         """Display blade geometry plots."""

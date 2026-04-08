@@ -54,30 +54,34 @@ class Solver(ABC):
         if "elements" not in fem_model_properties:
             raise KeyError("Missing 'elements' settings in fem_model_properties.")
 
-        if "material" not in fem_model_properties["elements"]:
+        elements_cfg = fem_model_properties["elements"]
+        has_properties = "properties" in elements_cfg
+
+        if not has_properties and "material" not in elements_cfg:
             raise KeyError(
-                "The key 'material' is missing in fem_model_properties. It is required to define the material properties."
+                "The key 'material' or 'properties' is missing in "
+                "fem_model_properties['elements']. At least one is required."
             )
-        if "element_family" not in fem_model_properties["elements"]:
+        if "element_family" not in elements_cfg:
             raise KeyError(
                 "The key 'element_family' is missing in fem_model_properties. It is required to define the element family."
             )
 
-        self.material = fem_model_properties["elements"]["material"]
-        self.element_family = fem_model_properties["elements"]["element_family"]
+        self.material = elements_cfg.get("material")
+        self.element_family = elements_cfg["element_family"]
 
         # Additional validation for SHELL elements
-        if self.element_family == ElementFamily.SHELL:
+        if self.element_family == ElementFamily.SHELL and not has_properties:
             has_mesh_thickness = any(
                 e.thickness is not None for e in mesh.elements
             )
-            if "thickness" not in fem_model_properties["elements"] and not has_mesh_thickness:
+            if "thickness" not in elements_cfg and not has_mesh_thickness:
                 raise KeyError(
                     "The key 'thickness' is missing in fem_model_properties and no "
                     "per-element thickness is defined on the mesh. At least one source "
-                    "of thickness is required for SHELL elements."
+                    "of thickness is required for SHELL elements (or use 'properties')."
                 )
-            self.thickness = fem_model_properties["elements"].get("thickness")
+            self.thickness = elements_cfg.get("thickness")
 
         self.mesh_obj = mesh
         self.model_properties = fem_model_properties

@@ -155,8 +155,33 @@ class MeshElement:
         self.id = MeshElement._id_counter
         self.nodes = nodes
         self.element_type = element_type
-        self.thickness: Optional[float] = None
+        self._thickness: Optional[float] = None
         MeshElement._id_counter += 1
+
+    @property
+    def thickness(self) -> Optional[float]:
+        """Shell thickness.
+
+        .. deprecated::
+            Storing thickness on the mesh element is deprecated. Use
+            ``ShellProperty`` / ``CompositeShellProperty`` via a properties
+            map in the model configuration instead.
+        """
+        return self._thickness
+
+    @thickness.setter
+    def thickness(self, value: Optional[float]) -> None:
+        if value is not None:
+            import warnings
+
+            warnings.warn(
+                "Setting thickness on MeshElement is deprecated. "
+                "Use a 'properties' dict mapping element-set names to "
+                "ShellProperty / CompositeShellProperty instead.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+        self._thickness = value
 
     @property
     def node_ids(self) -> Tuple:

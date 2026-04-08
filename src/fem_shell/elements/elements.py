@@ -1,10 +1,11 @@
 from enum import IntEnum
-from typing import Dict, Iterable, List, Literal, Sequence, Tuple, Union
+from typing import Dict, Iterable, List, Literal, Optional, Sequence, Tuple, Union
 
 import numpy as np
 
 from fem_shell.core.material import MaterialType as Material
 from fem_shell.core.mesh import MeshElement
+from fem_shell.core.properties import CompositeShellProperty, ShellPropertyType
 
 
 class ElementFamily(IntEnum):
@@ -123,7 +124,16 @@ class ElementFactory:
     ...     thickness=0.01
     ... )
 
-    >>> # Composite shell element (auto-detected from laminate)
+    >>> # Composite shell element (via ShellPropertyType - preferred)
+    >>> from fem_shell.core.properties import CompositeShellProperty
+    >>> prop = CompositeShellProperty(laminate=laminate)
+    >>> elem = ElementFactory.get_element(
+    ...     element_family=ElementFamily.SHELL,
+    ...     mesh_element=mesh_elem,
+    ...     shell_property=prop
+    ... )
+
+    >>> # Composite shell element (legacy: auto-detected from laminate kwarg)
     >>> elem = ElementFactory.get_element(
     ...     element_family=ElementFamily.SHELL,
     ...     mesh_element=mesh_elem,
@@ -149,7 +159,10 @@ class ElementFactory:
 
     @staticmethod
     def get_element(
-        element_family: ElementFamily, mesh_element: MeshElement, **kwargs
+        element_family: ElementFamily,
+        mesh_element: MeshElement,
+        shell_property: Optional[ShellPropertyType] = None,
+        **kwargs,
     ) -> FemElement | bool:
         """
         Create a finite element instance for the given mesh element.
@@ -160,63 +173,22 @@ class ElementFactory:
             The element family (SHELL, PLANE, or SOLID)
         mesh_element : MeshElement
             The mesh element containing node coordinates and IDs
+        shell_property : ShellPropertyType, optional
+            A ``ShellProperty`` or ``CompositeShellProperty`` instance.
+            When provided the factory uses ``isinstance`` dispatch to select
+            the correct element class (isotropic vs composite) and extracts
+            the constructor kwargs from the property object.  This is the
+            preferred path for new code.  Legacy ``laminate`` / ``material``
+            kwargs are still supported for backward compatibility.
         **kwargs : dict
-            Additional parameters passed to element constructor:
-
-            For isotropic shell elements:
-            - material : Material
-                Isotropic material properties
-            - thickness : float
-                Shell thickness
-            - nonlinear : bool, optional
-                Enable geometric nonlinear analysis (default False)
-
-            For composite shell elements:
-            - laminate : Laminate
-                Laminate definition (auto-selects composite element)
-            - nonlinear : bool, optional
-                Enable geometric nonlinear analysis (default False)
-
-            For plane elements:
-            - material : Material
-                Material properties
-
-            For solid elements:
-            - material : Material
-                Isotropic or Orthotropic material properties
-            - orientation : np.ndarray, optional
-                3×3 rotation matrix for orthotropic material orientation
+            Additional parameters passed to element constructor.
+            Legacy shell kwargs (``material``, ``thickness``, ``laminate``)
+            are still accepted when *shell_property* is ``None``.
 
         Returns
         -------
         FemElement or False
             The created element instance, or False if element type not supported
-
-        Notes
-        -----
-        Element selection logic:
-
-        **Shell Elements (by node count):**
-        - 3 nodes: MITC3 (isotropic) or MITC3Composite (laminate)
-        - 4 nodes: MITC4 (isotropic) or MITC4Composite (laminate)
-
-        **Plane Elements (by node count):**
-        - 4 nodes: QUAD4
-        - 8 nodes: QUAD8
-        - 9 nodes: QUAD9
-
-        **Solid Elements (by node count):**
-        - 4 nodes: TETRA4
-        - 5 nodes: PYRAMID5
-        - 6 nodes: WEDGE6
-        - 8 nodes: HEXA8
-        - 10 nodes: TETRA10
-        - 13 nodes: PYRAMID13
-        - 15 nodes: WEDGE15
-        - 20 nodes: HEXA20
-
-        The composite variant is automatically selected when `laminate`
-        parameter is provided instead of `material` + `thickness`.
         """
         from .MITC3 import MITC3
         from .MITC3_composite import MITC3Composite
@@ -225,9 +197,17 @@ class ElementFactory:
         from .QUAD import QUAD4, QUAD8, QUAD9
         from .SOLID import HEXA8, HEXA20, PYRAMID5, PYRAMID13, TETRA4, TETRA10, WEDGE6, WEDGE15
 
-        # Check if this is a composite element (laminate provided)
-        laminate = kwargs.pop("laminate", None)
-        is_composite = laminate is not None
+        # --- Resolve shell property into composite flag + constructor kwargs ---
+        if shell_property is not None:
+            # Type-safe dispatch via ShellPropertyType
+            prop_kwargs = shell_property.to_element_kwargs()
+            is_composite = isinstance(shell_property, CompositeShellProperty)
+            laminate = prop_kwargs.pop("laminate", None)
+            kwargs.update(prop_kwargs)
+        else:
+            # Legacy path: inspect kwargs directly
+            laminate = kwargs.pop("laminate", None)
+            is_composite = laminate is not None
 
         # Shell element maps
         SHELL_ELEMENT_MAP = {3: MITC3, 4: MITC4}

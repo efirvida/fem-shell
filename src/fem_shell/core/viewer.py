@@ -432,26 +432,26 @@ class MeshViewer(QWidget):
         toolbar_widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         toolbar_widget.setMaximumHeight(52)
 
-        # View buttons group
+        # View buttons group (ParaView-style ±axis views)
         view_label = QLabel("View:")
         toolbar_layout.addWidget(view_label)
 
-        xy_btn = QPushButton("XY (Top)")
-        xy_btn.setToolTip("View from top (XY plane)")
-        xy_btn.clicked.connect(self._view_xy_plane)
-        toolbar_layout.addWidget(xy_btn)
+        for label, slot in [
+            ("+X", self._view_pos_x),
+            ("-X", self._view_neg_x),
+            ("+Y", self._view_pos_y),
+            ("-Y", self._view_neg_y),
+            ("+Z", self._view_pos_z),
+            ("-Z", self._view_neg_z),
+        ]:
+            btn = QPushButton(label)
+            btn.setFixedWidth(36)
+            btn.setToolTip(f"Look along {label} axis")
+            btn.clicked.connect(slot)
+            toolbar_layout.addWidget(btn)
 
-        xz_btn = QPushButton("XZ (Front)")
-        xz_btn.setToolTip("View from front (XZ plane)")
-        xz_btn.clicked.connect(self._view_xz_plane)
-        toolbar_layout.addWidget(xz_btn)
-
-        yz_btn = QPushButton("YZ (Side)")
-        yz_btn.setToolTip("View from side (YZ plane)")
-        yz_btn.clicked.connect(self._view_yz_plane)
-        toolbar_layout.addWidget(yz_btn)
-
-        iso_btn = QPushButton("Isometric")
+        iso_btn = QPushButton("Iso")
+        iso_btn.setFixedWidth(36)
         iso_btn.setToolTip("Isometric view")
         iso_btn.clicked.connect(self._view_isometric)
         toolbar_layout.addWidget(iso_btn)
@@ -747,19 +747,34 @@ class MeshViewer(QWidget):
 
         self.update_plot()
 
-    def _view_xy_plane(self):
-        """Set camera view to XY plane (top)."""
-        self.plotter.view_xy()
+    def _view_pos_x(self):
+        """Look along +X (camera on +X side, looking toward origin)."""
+        self.plotter.view_yz()
         self.plotter.render()
 
-    def _view_xz_plane(self):
-        """Set camera view to XZ plane (front)."""
+    def _view_neg_x(self):
+        """Look along -X (camera on -X side)."""
+        self.plotter.view_yz(negative=True)
+        self.plotter.render()
+
+    def _view_pos_y(self):
+        """Look along +Y (camera on +Y side, looking toward origin)."""
         self.plotter.view_xz()
         self.plotter.render()
 
-    def _view_yz_plane(self):
-        """Set camera view to YZ plane (side)."""
-        self.plotter.view_yz()
+    def _view_neg_y(self):
+        """Look along -Y (camera on -Y side)."""
+        self.plotter.view_xz(negative=True)
+        self.plotter.render()
+
+    def _view_pos_z(self):
+        """Look along +Z (camera on +Z side, top-down)."""
+        self.plotter.view_xy()
+        self.plotter.render()
+
+    def _view_neg_z(self):
+        """Look along -Z (camera on -Z side, bottom-up)."""
+        self.plotter.view_xy(negative=True)
         self.plotter.render()
 
     def _view_isometric(self):
@@ -988,14 +1003,11 @@ class MeshViewer(QWidget):
         return pv.PolyData(nodes[valid_ids]) if valid_ids else None
 
     def _add_custom_axes(self, label_size=20):
-        """Add customized axes to the plotter.
-
-        Parameters
-        ----------
-        label_size : int, optional
-            Font size for axis labels, by default 20
-        """
-        self.plotter.show_axes()
+        """Add a ParaView-style interactive orientation widget to the plotter."""
+        self.plotter.add_axes(
+            interactive=True,
+            line_width=2,
+        )
 
     @Slot()
     def update_plot(self):
@@ -1039,7 +1051,18 @@ class MeshViewer(QWidget):
                     scalars=active_field,
                     cmap="turbo",
                     show_scalar_bar=True,
-                    scalar_bar_args={"title": active_field},
+                    scalar_bar_args={
+                        "title": active_field.replace("_", " "),
+                        "title_font_size": 16,
+                        "label_font_size": 12,
+                        "n_labels": 5,
+                        "fmt": "%.4g",
+                        "position_x": 0.25,
+                        "position_y": 0.02,
+                        "width": 0.5,
+                        "height": 0.06,
+                        "vertical": False,
+                    },
                     name="cell_data_mesh",
                     **scalar_style,
                 )

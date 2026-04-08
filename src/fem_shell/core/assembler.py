@@ -5,6 +5,7 @@ from mpi4py import MPI
 from petsc4py import PETSc
 
 from fem_shell.core.mesh import MeshModel
+from fem_shell.core.properties import ShellPropertyType
 from fem_shell.elements import ElementFactory, ElementFamily, FemElement
 
 
@@ -84,12 +85,13 @@ class MeshAssembler:
             max_dofs_per_node = 0
             max_spatial_dim = 0
             seen_node_counts = set()
+            probe_model = {k: v for k, v in self.model.items() if k != "properties"}
             for element in elements:
                 nc = element.node_count
                 if nc in seen_node_counts:
                     continue
                 seen_node_counts.add(nc)
-                temp_elem = ElementFactory.get_element(mesh_element=element, **self.model)
+                temp_elem = ElementFactory.get_element(mesh_element=element, **probe_model)
                 if temp_elem:
                     max_dofs_per_node = max(max_dofs_per_node, temp_elem.dofs_per_node)
                     max_spatial_dim = max(max_spatial_dim, temp_elem.spatial_dimmension)
@@ -106,6 +108,16 @@ class MeshAssembler:
         n_elements = len(elements)
         progress_interval = max(n_elements // 10, 1)
 
+        # Build per-element property lookup from properties map (if provided).
+        # Maps element_id -> ShellPropertyType for O(1) access in the loop.
+        properties_map: Optional[Dict[str, ShellPropertyType]] = self.model.get("properties")
+        element_property_lookup: Dict[int, ShellPropertyType] = {}
+        if properties_map is not None:
+            for set_name, prop in properties_map.items():
+                if set_name in self.mesh.element_sets:
+                    for elem in self.mesh.element_sets[set_name].elements:
+                        element_property_lookup[elem.id] = prop
+
         for idx, element in enumerate(elements):
             if idx % progress_interval == 0:
                 print(
@@ -114,19 +126,40 @@ class MeshAssembler:
                     end="",
                     flush=True,
                 )
-            # Per-element thickness override: if the mesh element carries its
-            # own thickness (set by the mesh generator), use it instead of the
-            # model-level default.  This allows each shell element to have a
-            # distinct thickness while keeping backward compatibility with a
-            # single model-level value as fallback.
-            element_model = self.model
-            if (
+
+            shell_property = None
+            # Base model for the factory: always strip the 'properties' key
+            # since it is consumed by the assembler, not the element constructor.
+            element_model = {k: v for k, v in self.model.items() if k != "properties"}
+
+            if element.id in element_property_lookup:
+                # New path: per-element-set property via ShellPropertyType
+                shell_property = element_property_lookup[element.id]
+                # Strip legacy keys that conflict with shell_property kwargs
+                element_model = {
+                    k: v
+                    for k, v in element_model.items()
+                    if k not in ("material", "thickness", "laminate")
+                }
+            elif (
                 element.thickness is not None
                 and element_model.get("element_family") == ElementFamily.SHELL
             ):
-                element_model = {**self.model, "thickness": element.thickness}
+                # Deprecated path: per-element thickness override from mesh
+                import warnings
 
-            fem_element = ElementFactory.get_element(mesh_element=element, **element_model)
+                warnings.warn(
+                    "Per-element thickness via MeshElement.thickness is deprecated. "
+                    "Use a 'properties' dict mapping element-set names to "
+                    "ShellProperty / CompositeShellProperty instead.",
+                    DeprecationWarning,
+                    stacklevel=1,
+                )
+                element_model = {**element_model, "thickness": element.thickness}
+
+            fem_element = ElementFactory.get_element(
+                mesh_element=element, shell_property=shell_property, **element_model
+            )
             if not fem_element:
                 continue
 
