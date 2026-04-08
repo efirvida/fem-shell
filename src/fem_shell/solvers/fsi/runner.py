@@ -110,6 +110,10 @@ class FSIRunner:
             self._precice_info = self.config.load_precice_config()
             self.config.auto_complete_from_precice()
 
+    @property
+    def _is_modal(self) -> bool:
+        return self.config.solver.type == SolverType.MODAL.value
+
     def run(self) -> Any:
         """
         Execute the complete FSI simulation pipeline.
@@ -147,16 +151,19 @@ class FSIRunner:
         # Step 6: Run simulation
         logger.info("Starting solver...")
         try:
-            self.solver.solve()
+            result = self.solver.solve()
         except RuntimeError as exc:
-            if self._is_precice_peer_disconnect(exc):
+            if not self._is_modal and self._is_precice_peer_disconnect(exc):
                 logger.error("preCICE peer disconnected: %s", exc)
                 self._print_precice_disconnect_help(exc)
                 raise
             raise
 
         # Step 7: Post-processing
-        self._run_postprocessing()
+        if self._is_modal:
+            self._print_modal_results(result)
+        else:
+            self._run_postprocessing()
 
         logger.info("Simulation completed successfully!")
         return self.solver
@@ -740,6 +747,7 @@ class FSIRunner:
                 "safety_factor": self.config.solver.safety_factor,
                 "solver_type": self.config.solver.solver_type,
                 "debug_interface": self.config.solver.debug_interface,
+                "num_modes": self.config.solver.num_modes,
             },
             "elements": {
                 "element_family": elem_family,
@@ -859,6 +867,11 @@ class FSIRunner:
 
             solver = LinearDynamicFSIRotorSolver(self.mesh, model_config)
 
+        elif solver_type == SolverType.MODAL.value:
+            from ..modal import ModalSolver
+
+            solver = ModalSolver(self.mesh, model_config)
+
         else:
             raise ValueError(f"Unknown solver type: {solver_type}")
 
@@ -901,6 +914,42 @@ class FSIRunner:
 
         print(f"      Total Dirichlet BCs: {len(dirichlet_conditions)}")
         print(f"      Total body forces: {len(body_forces)}")
+
+    def _print_modal_results(self, result) -> None:
+        """Print modal analysis results (frequencies and mode shapes)."""
+        import numpy as np
+
+        frequencies, mode_shapes = result
+        n = len(frequencies)
+
+        print("\n" + "=" * 60)
+        print("  MODAL ANALYSIS RESULTS")
+        print("=" * 60)
+        print(f"  {'Mode':>4}  {'Frequency [Hz]':>16}  {'Period [s]':>12}  {'ω [rad/s]':>12}")
+        print("  " + "-" * 50)
+
+        for i in range(n):
+            f = frequencies[i]
+            omega = 2.0 * np.pi * f
+            period = 1.0 / f if f > 0 else float("inf")
+            print(f"  {i + 1:4d}  {f:16.6f}  {period:12.6f}  {omega:12.4f}")
+
+        print("=" * 60 + "\n")
+
+        # Write results to CSV
+        csv_path = self.working_dir / "modal_frequencies.csv"
+        with open(csv_path, "w") as fh:
+            fh.write("mode,frequency_hz,period_s,omega_rad_s\n")
+            for i, f in enumerate(frequencies):
+                omega = 2.0 * np.pi * f
+                period = 1.0 / f if f > 0 else float("inf")
+                fh.write(f"{i + 1},{f:.8e},{period:.8e},{omega:.8e}\n")
+        print(f"  Frequencies saved: {csv_path}")
+
+        # Write mode shapes
+        np_path = self.working_dir / "modal_modes.npy"
+        np.save(str(np_path), mode_shapes)
+        print(f"  Mode shapes saved: {np_path}")
 
     def _run_postprocessing(self) -> None:
         """Run post-processing if configured."""
