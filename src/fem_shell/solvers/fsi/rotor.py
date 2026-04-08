@@ -713,54 +713,59 @@ class LinearDynamicFSIRotorSolver(LinearDynamicFSISolver):
             dt_gap = t_fluid - t_ckpt
 
             # ── Determine theta at t_fluid ──────────────────────────────────
+            # dt_gap can be positive (fluid ahead) OR negative (fluid behind).
+            # Both cases require angular correction.
             source = "npz"
             theta_rad = theta_ckpt
+            abs_gap = abs(dt_gap)
 
-            if dt_gap > 1e-12:
+            if abs_gap > 1e-12:
                 # Try exact lookup from restart state history
                 state = self._read_restart_state(t_fluid)
                 if state is not None:
                     theta_rad, _, _ = state
                     source = "restart_state"
                 else:
-                    # Fallback: second-order extrapolation from NPZ
+                    # Fallback: second-order extrapolation from NPZ.
+                    # Works correctly for both signs of dt_gap:
+                    #   dt_gap > 0 → extrapolate forward
+                    #   dt_gap < 0 → interpolate backward
                     theta_rad = theta_ckpt + omega_ckpt * dt_gap + 0.5 * alpha_ckpt * dt_gap ** 2
                     source = "extrapolated"
 
                 # ── Guard: abort if gap is large and no restart state ───────
-                # Compute the tangential mesh offset this gap would cause.
-                # Even without the blade radius we can flag implausible gaps.
                 coupling_cfg = self.model_properties.get("coupling", {})
                 max_time_gap = coupling_cfg.get(
                     "restart_max_time_gap",
                     None,
                 )
                 if max_time_gap is None:
-                    # Default: allow at most 2·writeInterval (reasonable for a
-                    # single-step overshoot after a clean crash).
                     dt_solid = self.solver_params.get("time_step", 1e-4)
                     write_interval = coupling_cfg.get("fluid_write_interval", dt_solid * 10)
                     max_time_gap = 2.0 * float(write_interval)
 
-                if source == "extrapolated" and dt_gap > float(max_time_gap) + 1e-12:
+                if source == "extrapolated" and abs_gap > float(max_time_gap) + 1e-12:
+                    direction = "ahead of" if dt_gap > 0 else "behind"
                     raise RuntimeError(
                         f"Restart temporal gap too large to recover safely:\n"
                         f"  t_solid  = {t_ckpt:.6f} s (solid checkpoint)\n"
-                        f"  t_fluid  = {t_fluid:.6f} s (fluid latest time)\n"
-                        f"  Δt_gap   = {dt_gap:.6f} s  (limit = {max_time_gap:.6f} s)\n"
-                        f"  Δθ_est   = {np.degrees(omega_ckpt * dt_gap):.2f}°\n"
+                        f"  t_fluid  = {t_fluid:.6f} s (fluid latest time, {direction} solid)\n"
+                        f"  |Δt_gap| = {abs_gap:.6f} s  (limit = {float(max_time_gap):.6f} s)\n"
+                        f"  Δθ_est   = {np.degrees(omega_ckpt * abs_gap):.2f}°\n"
                         f"\n"
                         f"  rotor_restart_state.csv is absent or does not cover t_fluid.\n"
+                        f"  The solid and fluid checkpoints are not temporally aligned.\n"
                         f"  Options:\n"
-                        f"  1. Delete fluid time directories beyond t={t_ckpt:.6f} s and re-restart.\n"
-                        f"  2. Increase 'coupling.restart_max_time_gap' to suppress this check\n"
+                        f"  1. Align fluid time to solid: keep only fluid times ≤ t={t_ckpt:.6f} s.\n"
+                        f"  2. Align solid to fluid: re-run solid checkpoint at t={t_fluid:.6f} s.\n"
+                        f"  3. Increase 'coupling.restart_max_time_gap' to suppress this check\n"
                         f"     (only if the angular offset is within the RBF support radius)."
                     )
 
             if self._is_primary_rank():
                 print(
                     f"  ↳ Checkpoint θ: t_solid={t_ckpt:.6f} s, t_fluid={t_fluid:.6f} s"
-                    f"  [gap={dt_gap:.6f} s, src={source}]",
+                    f"  [gap={dt_gap:+.6f} s, src={source}]",
                     flush=True,
                 )
                 print(
@@ -770,8 +775,7 @@ class LinearDynamicFSIRotorSolver(LinearDynamicFSISolver):
                 if source == "extrapolated":
                     print(
                         "  ↳ WARNING: rotor_restart_state.csv absent — using kinematic"
-                        f" extrapolation (Δt={dt_gap:.4f} s). Delete fluid times"
-                        f" beyond t={t_ckpt:.6f} s for an exact restart.",
+                        f" extrapolation (Δt={dt_gap:+.4f} s).",
                         flush=True,
                     )
 
@@ -887,25 +891,36 @@ class LinearDynamicFSIRotorSolver(LinearDynamicFSISolver):
         return best_angle
 
     def _find_fluid_restart_time(self, t_solid: float) -> float:
-        """Find the latest *valid* time directory in the fluid case.
+        """Find the latest *valid* time directory in the fluid case on disk.
 
-        Handles both serial (top-level time dirs) and parallel (``processorN/``)
-        OpenFOAM cases.  A time directory is considered **valid** only if it
-        appears in ALL processor sub-directories (for parallel cases) or if it
-        contains at least one field file for serial cases.  This avoids picking
-        up the last, possibly incomplete time directory written right before a
-        crash.
+        This method trusts ONLY what exists on the filesystem — it does NOT
+        use ``t_solid`` as a lower bound or fallback.  The fluid may be ahead
+        of, behind, or exactly at the solid checkpoint time; all three cases
+        are legitimate.
+
+        Handles both serial (top-level time dirs) and parallel
+        (``processorN/``) OpenFOAM layouts.  A time directory is considered
+        **valid** only when:
+
+        * **Parallel** — it exists in ALL ``processorN/`` directories AND
+          contains at least one non-hidden regular file in ``processor0``.
+        * **Serial** — it contains at least one non-hidden regular file.
+
+        This rejects incomplete last-write directories produced by mid-crash
+        I/O.
 
         Parameters
         ----------
         t_solid : float
-            Solid checkpoint time used as a lower bound and fallback [s].
+            Solid checkpoint time [s].  Used only for diagnostic printing;
+            does NOT influence which fluid time is selected.
 
         Returns
         -------
         float
-            Latest valid time found in the fluid case, or ``t_solid`` if
-            nothing better was found.
+            Latest valid fluid time found on disk, or ``t_solid`` only if
+            the fluid case directory does not exist or contains no valid
+            time directories at all (with a warning).
         """
         import re
 
@@ -915,19 +930,27 @@ class LinearDynamicFSIRotorSolver(LinearDynamicFSISolver):
         if not os.path.isabs(fluid_case_dir):
             fluid_case_dir = os.path.normpath(os.path.join(os.getcwd(), fluid_case_dir))
 
+        if not os.path.isdir(fluid_case_dir):
+            if self._is_primary_rank():
+                print(
+                    f"  ↳ WARNING: fluid case dir not found ({fluid_case_dir}), "
+                    f"assuming t_fluid = t_solid = {t_solid:.6f} s",
+                    flush=True,
+                )
+            return t_solid
+
         time_pattern = re.compile(r"^\d+(?:\.\d+)?$")
-        latest_time = t_solid  # fallback
+        latest_time: Optional[float] = None
 
         # ── Detect decomposed vs serial ──────────────────────────────────────
         proc_dirs = sorted(
             d for d in os.listdir(fluid_case_dir)
             if re.match(r"^processor\d+$", d)
             and os.path.isdir(os.path.join(fluid_case_dir, d))
-        ) if os.path.isdir(fluid_case_dir) else []
+        )
 
         if proc_dirs:
             # ── Parallel case ────────────────────────────────────────────────
-            # Collect times that exist in ALL processor directories
             time_sets = []
             for proc in proc_dirs:
                 proc_path = os.path.join(fluid_case_dir, proc)
@@ -943,13 +966,10 @@ class LinearDynamicFSIRotorSolver(LinearDynamicFSISolver):
                     pass
 
             if time_sets:
-                # Only times present in every processor directory are complete
                 common_times = time_sets[0]
                 for ts in time_sets[1:]:
                     common_times = common_times & ts
 
-                # Validate each candidate: at least one field file in proc0
-                # Use the name map so we don't have to reconstruct the dir name
                 proc0_path = os.path.join(fluid_case_dir, proc_dirs[0])
                 proc0_name_map: dict[float, str] = {}
                 try:
@@ -960,8 +980,6 @@ class LinearDynamicFSIRotorSolver(LinearDynamicFSISolver):
                     pass
 
                 for t_val in sorted(common_times, reverse=True):
-                    if t_val <= t_solid - 1e-12:
-                        break
                     dir_name = proc0_name_map.get(t_val)
                     if dir_name is None:
                         continue
@@ -974,39 +992,47 @@ class LinearDynamicFSIRotorSolver(LinearDynamicFSISolver):
                         )
                     except OSError:
                         has_fields = False
-                    if has_fields and t_val > latest_time:
+                    if has_fields:
                         latest_time = t_val
-                        break  # first valid in descending order is the latest
+                        break
 
         else:
             # ── Serial case ──────────────────────────────────────────────────
-            if os.path.isdir(fluid_case_dir):
-                try:
-                    for entry in os.listdir(fluid_case_dir):
-                        if not time_pattern.match(entry):
-                            continue
-                        t_val = float(entry)
-                        if t_val <= t_solid - 1e-12 or t_val <= latest_time:
-                            continue
-                        t_dir = os.path.join(fluid_case_dir, entry)
-                        # Validate: must have at least one field file
-                        try:
-                            has_fields = any(
-                                os.path.isfile(os.path.join(t_dir, f))
-                                for f in os.listdir(t_dir)
-                                if not f.startswith(".")
-                            )
-                        except OSError:
-                            has_fields = False
-                        if has_fields:
-                            latest_time = t_val
-                except OSError as e:
-                    _logger.debug("Could not scan fluid case dir %s: %s", fluid_case_dir, e)
+            try:
+                for entry in os.listdir(fluid_case_dir):
+                    if not time_pattern.match(entry):
+                        continue
+                    t_val = float(entry)
+                    t_dir = os.path.join(fluid_case_dir, entry)
+                    try:
+                        has_fields = any(
+                            os.path.isfile(os.path.join(t_dir, f))
+                            for f in os.listdir(t_dir)
+                            if not f.startswith(".")
+                        )
+                    except OSError:
+                        has_fields = False
+                    if has_fields and (latest_time is None or t_val > latest_time):
+                        latest_time = t_val
+            except OSError as e:
+                _logger.debug("Could not scan fluid case dir %s: %s", fluid_case_dir, e)
 
-        if self._is_primary_rank() and abs(latest_time - t_solid) > 1e-12:
+        # ── Fallback when no valid fluid time was found ──────────────────────
+        if latest_time is None:
+            if self._is_primary_rank():
+                print(
+                    f"  ↳ WARNING: no valid fluid time directory found in {fluid_case_dir}, "
+                    f"assuming t_fluid = t_solid = {t_solid:.6f} s",
+                    flush=True,
+                )
+            return t_solid
+
+        if self._is_primary_rank():
+            dt_gap = latest_time - t_solid
+            direction = "ahead" if dt_gap > 1e-12 else "behind" if dt_gap < -1e-12 else "aligned"
             print(
-                f"  ↳ Fluid restarts from t={latest_time:.6f} s "
-                f"(solid checkpoint at t={t_solid:.6f} s)",
+                f"  ↳ Fluid restart time: t_fluid={latest_time:.6f} s  "
+                f"(t_solid={t_solid:.6f} s, {direction}, Δt={dt_gap:+.6f} s)",
                 flush=True,
             )
 
