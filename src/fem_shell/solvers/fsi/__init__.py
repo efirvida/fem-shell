@@ -4,7 +4,7 @@ FSI (Fluid-Structure Interaction) solvers module.
 This module provides solvers for FSI problems using preCICE coupling.
 """
 
-from .base import Adapter, ForceClipper, SolverState
+from .base import Adapter, ForceClipper, NewmarkCoefficients, SolverState
 from .corotational import (
     ComputedOmega,
     ConstantOmega,
@@ -22,6 +22,7 @@ __all__ = [
     # Base classes
     "Adapter",
     "ForceClipper",
+    "NewmarkCoefficients",
     "SolverState",
     # Solvers
     "LinearDynamicFSISolver",

@@ -147,7 +147,6 @@ from __future__ import annotations
 import logging
 import os
 import time
-from dataclasses import dataclass
 from typing import Any, Dict, NamedTuple, Optional, Tuple
 
 import numpy as np
@@ -155,11 +154,9 @@ from petsc4py import PETSc
 
 from fem_shell.core.bc import BoundaryConditionManager
 from fem_shell.core.mesh import MeshModel
-from fem_shell.postprocess.stress_recovery import (
-    StressRecovery,
-    StressType,
-)
+from fem_shell.postprocess.stress_recovery import StressRecovery, StressType
 
+from .base import NewmarkCoefficients
 from .corotational import (
     ComputedOmega,
     ConstantOmega,
@@ -208,50 +205,6 @@ _logger = logging.getLogger(__name__)
 # =============================================================================
 # Data Classes
 # =============================================================================
-
-
-@dataclass(frozen=True, slots=True)
-class NewmarkCoefficients:
-    """
-    Newmark-β time integration coefficients.
-
-    These coefficients are derived from the Newmark parameters (beta, gamma)
-    and the time step (dt). They are used in the effective stiffness formulation
-    and the state update equations.
-
-    Attributes:
-        a0: 1 / (β·dt²) - Mass coefficient for K_eff
-        a1: γ / (β·dt) - Damping coefficient for K_eff
-        a2: 1 / (β·dt) - Velocity coefficient for F_eff
-        a3: 1/(2β) - 1 - Acceleration coefficient for F_eff
-        a4: γ/β - 1 - Velocity coefficient for damping contribution
-        a5: dt·(γ/(2β) - 1) - Acceleration coefficient for damping
-        a6: dt·(1 - γ) - Previous acceleration coefficient for velocity update
-        a7: γ·dt - New acceleration coefficient for velocity update
-    """
-
-    a0: float
-    a1: float
-    a2: float
-    a3: float
-    a4: float
-    a5: float
-    a6: float
-    a7: float
-
-    @classmethod
-    def from_newmark_params(cls, beta: float, gamma: float, dt: float) -> NewmarkCoefficients:
-        """Create coefficients from Newmark parameters and time step."""
-        return cls(
-            a0=1.0 / (beta * dt**2),
-            a1=gamma / (beta * dt),
-            a2=1.0 / (beta * dt),
-            a3=1.0 / (2 * beta) - 1.0,
-            a4=gamma / beta - 1.0,
-            a5=dt * (gamma / (2 * beta) - 1.0),
-            a6=dt * (1 - gamma),
-            a7=gamma * dt,
-        )
 
 
 class SolverMatrices(NamedTuple):
@@ -613,9 +566,11 @@ class LinearDynamicFSIRotorSolver(LinearDynamicFSISolver):
 
             if self._is_primary_rank():
                 _logger.info(
-                    "Peeked checkpoint: t_solid=%.6f s, t_fluid=%.6f s, "
-                    "θ_csv=%.4f° = %.4f rad",
-                    t_ckpt, t_fluid, theta_deg, theta_rad,
+                    "Peeked checkpoint: t_solid=%.6f s, t_fluid=%.6f s, θ_csv=%.4f° = %.4f rad",
+                    t_ckpt,
+                    t_fluid,
+                    theta_deg,
+                    theta_rad,
                 )
             return theta_rad
         except Exception as e:
@@ -645,9 +600,7 @@ class LinearDynamicFSIRotorSolver(LinearDynamicFSISolver):
         csv_path = os.path.join(output_folder, "rotor_performance.csv")
 
         if not os.path.exists(csv_path):
-            _logger.warning(
-                "rotor_performance.csv not found at %s", csv_path
-            )
+            _logger.warning("rotor_performance.csv not found at %s", csv_path)
             return 0.0
 
         best_time = -1.0
@@ -676,9 +629,10 @@ class LinearDynamicFSIRotorSolver(LinearDynamicFSISolver):
 
         if self._is_primary_rank():
             _logger.info(
-                "Read angle from rotor_performance.csv: "
-                "t_target=%.6f s, t_csv=%.6f s, angle=%.4f°",
-                t_target, best_time, best_angle,
+                "Read angle from rotor_performance.csv: t_target=%.6f s, t_csv=%.6f s, angle=%.4f°",
+                t_target,
+                best_time,
+                best_angle,
             )
         return best_angle
 
@@ -706,9 +660,7 @@ class LinearDynamicFSIRotorSolver(LinearDynamicFSISolver):
 
         # Resolve relative to the solid working directory
         if not os.path.isabs(fluid_case_dir):
-            fluid_case_dir = os.path.normpath(
-                os.path.join(os.getcwd(), fluid_case_dir)
-            )
+            fluid_case_dir = os.path.normpath(os.path.join(os.getcwd(), fluid_case_dir))
 
         # Look for time directories in processor0 (parallel) or top level
         time_pattern = re.compile(r"^(\d+(?:\.\d+)?)$")
@@ -1881,7 +1833,9 @@ class LinearDynamicFSIRotorSolver(LinearDynamicFSISolver):
         print("  ┌─ SOLVER RESPONSE", flush=True)
         print(f"  │  KSP iterations: {ksp_its}  (reason: {ksp_reason})", flush=True)
         print(f"  │  max|u_new| = {max_disp:.4e} m", flush=True)
-        print(f"  │  ⏱ solve time: {iter_wall_time:.3f} s (read forces + compute + KSP)", flush=True)
+        print(
+            f"  │  ⏱ solve time: {iter_wall_time:.3f} s (read forces + compute + KSP)", flush=True
+        )
         print("  └" + "─" * 67, flush=True)
 
     def _log_time_window_converged(
@@ -1947,9 +1901,14 @@ class LinearDynamicFSIRotorSolver(LinearDynamicFSISolver):
         )
 
     def _log_finalization(
-        self, t: float, time_step: int, step: int,
-        total_iter_time: float = 0.0, total_window_time: float = 0.0,
-        total_windows: int = 0, total_iters: int = 0,
+        self,
+        t: float,
+        time_step: int,
+        step: int,
+        total_iter_time: float = 0.0,
+        total_window_time: float = 0.0,
+        total_windows: int = 0,
+        total_iters: int = 0,
     ) -> None:
         """Log simulation finalization.
 
@@ -2282,17 +2241,13 @@ class LinearDynamicFSIRotorSolver(LinearDynamicFSISolver):
             initial_fields = {
                 "F_AERO": self._expand_interface_forces_to_full(zeros_interface),
                 "F_INERT": self._expand_interface_forces_to_full(F_centrifugal_initial),
-                "F_GRAV": self._expand_interface_forces_to_full(
-                    F_gravity_global.reshape(-1, 3)
-                ),
+                "F_GRAV": self._expand_interface_forces_to_full(F_gravity_global.reshape(-1, 3)),
                 "F_TOTAL": self._expand_interface_forces_to_full(F_total_initial),
             }
 
             # Stress / strain fields (TOP, MID, BOT for shells; full 3-D for solids)
             u_full_init = bc_manager.expand_solution(u).array.copy()
-            initial_fields.update(
-                self._compute_stress_fields(u_full_init)
-            )
+            initial_fields.update(self._compute_stress_fields(u_full_init))
 
             self._handle_checkpoint(
                 t=0.0,
@@ -2322,9 +2277,16 @@ class LinearDynamicFSIRotorSolver(LinearDynamicFSISolver):
 
         # Time stepping loop
         (
-            t, time_step, step, u, v, a,
-            _total_iter_time, _total_window_time,
-            _total_windows, _total_iters,
+            t,
+            time_step,
+            step,
+            u,
+            v,
+            a,
+            _total_iter_time,
+            _total_window_time,
+            _total_windows,
+            _total_iters,
         ) = self._time_stepping_loop(
             u,
             v,
@@ -2350,7 +2312,9 @@ class LinearDynamicFSIRotorSolver(LinearDynamicFSISolver):
 
         # Finalization
         self._log_finalization(
-            t, time_step, step,
+            t,
+            time_step,
+            step,
             total_iter_time=_total_iter_time,
             total_window_time=_total_window_time,
             total_windows=_total_windows,
@@ -2758,7 +2722,6 @@ class LinearDynamicFSIRotorSolver(LinearDynamicFSISolver):
             # Rotating the CSM mesh in PreCICE would cause mesh drift vs OpenFOAM's static interface.
             # We rely on the Static-to-Static mapping and send Global Displacements (R·u).
 
-
             # Read and process forces
             data_global, applied_force, applied_max_nodal, n_nodes = self._read_and_reduce_forces()
             raw_force = applied_force.copy()
@@ -2766,7 +2729,10 @@ class LinearDynamicFSIRotorSolver(LinearDynamicFSISolver):
 
             # --- Force sanity: detect CFD divergence before it contaminates the solve ---
             force_total_mag = float(np.linalg.norm(applied_force))
-            if self._max_force_seen > 0.0 and force_total_mag > self._force_jump_factor * self._max_force_seen:
+            if (
+                self._max_force_seen > 0.0
+                and force_total_mag > self._force_jump_factor * self._max_force_seen
+            ):
                 raise RuntimeError(
                     f"Diverged force from fluid solver detected at t={t_target:.6f} s: "
                     f"|F| = {force_total_mag:.3e} N is "
@@ -2775,7 +2741,10 @@ class LinearDynamicFSIRotorSolver(LinearDynamicFSISolver):
                     f"CFD solver likely diverged (Courant blow-up or PIMPLE non-convergence). "
                     "Aborting to prevent FSI hang."
                 )
-            if self._force_max_magnitude is not None and force_total_mag > self._force_max_magnitude:
+            if (
+                self._force_max_magnitude is not None
+                and force_total_mag > self._force_max_magnitude
+            ):
                 raise RuntimeError(
                     f"Force exceeds configured limit at t={t_target:.6f} s: "
                     f"|F| = {force_total_mag:.3e} N > {self._force_max_magnitude:.3e} N. Aborting."
@@ -2975,7 +2944,10 @@ class LinearDynamicFSIRotorSolver(LinearDynamicFSISolver):
                 total_iter_time += iter_wall_time
                 total_iters_completed += 1
                 if self._is_primary_rank():
-                    print(f"  ⏱ iteration total: {iter_wall_time:.3f} s (sub-iter, restored checkpoint)", flush=True)
+                    print(
+                        f"  ⏱ iteration total: {iter_wall_time:.3f} s (sub-iter, restored checkpoint)",
+                        flush=True,
+                    )
             else:
                 # Measure full iteration time (includes preCICE advance + wait)
                 iter_wall_time = time.perf_counter() - iter_wall_start
@@ -3033,8 +3005,13 @@ class LinearDynamicFSIRotorSolver(LinearDynamicFSISolver):
                 max_acc = a.norm(PETSc.NormType.INFINITY)
 
                 self._log_time_window_converged(
-                    t, max_disp, max_vel, max_acc, *rotor_dynamics_info,
-                    window_wall_time=window_wall_time, window_iters=window_iter_count,
+                    t,
+                    max_disp,
+                    max_vel,
+                    max_acc,
+                    *rotor_dynamics_info,
+                    window_wall_time=window_wall_time,
+                    window_iters=window_iter_count,
                 )
 
                 # Reset window timer for next window
@@ -3069,9 +3046,7 @@ class LinearDynamicFSIRotorSolver(LinearDynamicFSISolver):
 
                 # Stress / strain fields (TOP, MID, BOT for shells; full 3-D for solids)
                 u_full_ckpt = bc_manager.expand_solution(u).array.copy()
-                force_fields.update(
-                    self._compute_stress_fields(u_full_ckpt)
-                )
+                force_fields.update(self._compute_stress_fields(u_full_ckpt))
 
                 self._handle_checkpoint(
                     t=t,
@@ -3090,10 +3065,25 @@ class LinearDynamicFSIRotorSolver(LinearDynamicFSISolver):
 
                 # Debug: write interface node positions at this checkpoint
                 self._write_interface_debug(
-                    t, self._theta, u_full_ckpt, interface_coords, interface_dofs,
+                    t,
+                    self._theta,
+                    u_full_ckpt,
+                    interface_coords,
+                    interface_dofs,
                 )
 
-        return t, time_step, step, u, v, a, total_iter_time, total_window_time, total_windows_completed, total_iters_completed
+        return (
+            t,
+            time_step,
+            step,
+            u,
+            v,
+            a,
+            total_iter_time,
+            total_window_time,
+            total_windows_completed,
+            total_iters_completed,
+        )
 
     # =========================================================================
     # Interface Debugging
@@ -3162,9 +3152,7 @@ class LinearDynamicFSIRotorSolver(LinearDynamicFSISolver):
 
             # Write to checkpoint directory
             time_str = f"{t:.6f}"
-            output_dir = os.path.join(
-                self.solver_params.get("output_folder", "results"), time_str
-            )
+            output_dir = os.path.join(self.solver_params.get("output_folder", "results"), time_str)
             os.makedirs(output_dir, exist_ok=True)
 
             node_ids = self.precice_participant.interface_node_ids
@@ -3180,9 +3168,9 @@ class LinearDynamicFSIRotorSolver(LinearDynamicFSISolver):
                 for i in range(n_nodes):
                     f.write(
                         f"{node_ids[i]},"
-                        f"{interface_coords[i,0]:.8e},{interface_coords[i,1]:.8e},{interface_coords[i,2]:.8e},"
-                        f"{deformed_local[i,0]:.8e},{deformed_local[i,1]:.8e},{deformed_local[i,2]:.8e},"
-                        f"{deformed_lab[i,0]:.8e},{deformed_lab[i,1]:.8e},{deformed_lab[i,2]:.8e}\n"
+                        f"{interface_coords[i, 0]:.8e},{interface_coords[i, 1]:.8e},{interface_coords[i, 2]:.8e},"
+                        f"{deformed_local[i, 0]:.8e},{deformed_local[i, 1]:.8e},{deformed_local[i, 2]:.8e},"
+                        f"{deformed_lab[i, 0]:.8e},{deformed_lab[i, 1]:.8e},{deformed_lab[i, 2]:.8e}\n"
                     )
         except Exception as e:
             _logger.debug("Could not write interface debug: %s", e)
@@ -3211,12 +3199,8 @@ class LinearDynamicFSIRotorSolver(LinearDynamicFSISolver):
         sr = StressRecovery(self.domain, u_full)
 
         # Detect whether we have shell elements
-        has_shell = any(
-            sr._is_shell(e) for e in self.domain._element_map.values()
-        )
-        has_solid = any(
-            sr._is_solid(e) for e in self.domain._element_map.values()
-        )
+        has_shell = any(sr._is_shell(e) for e in self.domain._element_map.values())
+        has_solid = any(sr._is_solid(e) for e in self.domain._element_map.values())
 
         out: Dict[str, np.ndarray] = {}
 
@@ -3330,7 +3314,7 @@ class LinearDynamicFSIRotorSolver(LinearDynamicFSISolver):
                         flush=True,
                     )
                     print(
-                        f"  └─ K_eff rebuilt and solver operators updated",
+                        "  └─ K_eff rebuilt and solver operators updated",
                         flush=True,
                     )
 
@@ -3634,16 +3618,21 @@ class LinearDynamicFSIRotorSolver(LinearDynamicFSISolver):
             u_local_max = np.max(np.abs(u_interface_local))
             u_output_max = np.max(np.abs(u_interface_output))
             transform_str = "R·u" if self._transform_displacement else "u (no transform)"
-            
+
             # FSI DEBUG: Displacement
             u_local_norm_max = np.max(np.linalg.norm(u_interface_local, axis=1))
             u_output_norm_max = np.max(np.linalg.norm(u_interface_output, axis=1))
-            
-            print(f"  ┌─ DISPLACEMENT (Sending to preCICE)", flush=True)
+
+            print("  ┌─ DISPLACEMENT (Sending to preCICE)", flush=True)
             print(f"  │  Elastic Disp (Local) Max Norm:   {u_local_norm_max:.4e} m", flush=True)
-            print(f"  │  Output Disp ({transform_str}) Max Norm: {u_output_norm_max:.4e} m", flush=True)
-            print(f"  │  (Should be small elastic deforms, NOT rigid rotation magnitude)", flush=True)
-            print(f"  └" + "─" * 40, flush=True)
+            print(
+                f"  │  Output Disp ({transform_str}) Max Norm: {u_output_norm_max:.4e} m",
+                flush=True,
+            )
+            print(
+                "  │  (Should be small elastic deforms, NOT rigid rotation magnitude)", flush=True
+            )
+            print("  └" + "─" * 40, flush=True)
 
         u_full_output[interface_dofs.flatten()] = u_interface_output.flatten()
         self.precice_participant.write_data(u_full_output)
