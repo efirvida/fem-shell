@@ -1864,6 +1864,10 @@ class LinearDynamicFSIRotorSolver(LinearDynamicFSISolver):
         torque_inertial: float,
         torque_gravity: float,
         torque_total: float,
+        ct: float = 0.0,
+        cp: float = 0.0,
+        cq: float = 0.0,
+        tsr: float = 0.0,
         ramp_factor: Optional[float] = None,
         force_ramp_time: Optional[float] = None,
     ) -> None:
@@ -2012,6 +2016,9 @@ class LinearDynamicFSIRotorSolver(LinearDynamicFSISolver):
         print(f"  │  Inertial:   {torque_inertial:+.4e} N·m", flush=True)
         print(f"  │  Gravity:    {torque_gravity:+.4e} N·m", flush=True)
         print(f"  │  Total:      {torque_total:+.4e} N·m  (on axis)", flush=True)
+        print("  │", flush=True)
+        print("  ├─ PERFORMANCE COEFFICIENTS", flush=True)
+        print(f"  │  Ct = {ct:.4f}  │  Cp = {cp:.4f}  │  Cq = {cq:.4f}  │  TSR = {tsr:.4f}", flush=True)
         print("  └" + "─" * 67, flush=True)
 
     def _log_solver_response(
@@ -3184,6 +3191,7 @@ class LinearDynamicFSIRotorSolver(LinearDynamicFSISolver):
                 torque_inertial_scalar,
                 torque_gravity_scalar,
                 torque_total_scalar,
+                ct=ct, cp=cp, cq=cq, tsr=tsr,
                 ramp_factor=ramp_factor if ramp_factor < 1.0 else None,
                 force_ramp_time=self._force_ramp_time,
             )
