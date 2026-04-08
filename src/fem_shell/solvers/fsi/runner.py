@@ -29,6 +29,7 @@ from ...core.config import (
 )
 from ...core.material import IsotropicMaterial, OrthotropicMaterial
 from ...core.mesh import (
+    BladeMesh,
     BoxSurfaceMesh,
     BoxVolumeMesh,
     MeshModel,
@@ -98,6 +99,8 @@ class FSIRunner:
         self.mesh: Optional[MeshModel] = None
         self.solver = None
         self._material = None
+        self._blade_properties = None  # Composite properties from blade YAML
+        self._mesh_generator = None  # Stored for property extraction
         self._precice_info = None
 
         # Auto-complete configuration from preCICE XML if available
@@ -387,13 +390,29 @@ class FSIRunner:
                 # Path relative to config file
                 yaml_file = str(self.config_path.parent / yaml_file)
 
-            mesh = RotorMesh(
+            generator = RotorMesh(
                 yaml_file=yaml_file,
                 n_blades=params.get("n_blades", 3),
                 hub_radius=params.get("hub_radius"),
                 element_size=params.get("element_size", 0.5),
                 n_samples=params.get("n_samples", 300),
-            ).generate(renumber="rcm")
+            )
+            mesh = generator.generate(renumber="rcm")
+            self._mesh_generator = generator
+
+        elif gen_type == MeshGeneratorType.BLADE.value:
+            # Single blade mesh from WindIO YAML definition
+            yaml_file = params["yaml_file"]
+            if self.config_path and not Path(yaml_file).is_absolute():
+                yaml_file = str(self.config_path.parent / yaml_file)
+
+            generator = BladeMesh(
+                yaml_file=yaml_file,
+                element_size=params.get("element_size", 0.15),
+                n_samples=params.get("n_samples", 300),
+            )
+            mesh = generator.generate(renumber=None)
+            self._mesh_generator = generator
 
         elif gen_type == MeshGeneratorType.BOX_VOLUME.value:
             mesh = BoxVolumeMesh(
@@ -568,10 +587,26 @@ class FSIRunner:
                       f"support-radius={rbf.support_radius:.6f} OK")
 
     def _create_material(self):
-        """Create material from configuration."""
+        """Create material from configuration.
+
+        For blade/rotor generators without explicit material section,
+        extracts composite properties from the blade YAML sections.
+        """
         print("\n[2/6] Creating material...", flush=True)
 
+        # Check if blade/rotor generator provides composite properties
+        if self._mesh_generator is not None and self.config.material is None:
+            self._blade_properties = self._extract_blade_properties()
+            print(f"      Composite properties from blade YAML: "
+                  f"{len(self._blade_properties)} element sets")
+            return None
+
         mat_config = self.config.material
+        if mat_config is None:
+            raise ValueError(
+                "Material configuration is required unless using "
+                "BladeMesh or RotorMesh generator."
+            )
 
         if mat_config.type == MaterialType.ISOTROPIC.value:
             if mat_config.E is None or mat_config.nu is None or mat_config.rho is None:
@@ -617,6 +652,73 @@ class FSIRunner:
 
         return material
 
+    def _extract_blade_properties(self) -> Dict[str, Any]:
+        """Extract per-element-set composite properties from blade YAML.
+
+        Uses the same logic as ``Blade.get_element_properties()`` but
+        operates on the ``BladeMesh`` or ``RotorMesh`` generator's
+        numad mesh data.
+
+        Returns
+        -------
+        dict[str, ShellPropertyType]
+            Mapping of element-set name to composite shell property.
+        """
+        from ...core.laminate import Laminate, Ply
+        from ...core.properties import (
+            CompositeShellProperty,
+            ShellProperty,
+        )
+        from ...models.blade.model import material_factory
+
+        numad_data = self._mesh_generator.numad_mesh_data
+
+        # Build material lookup from blade YAML materials
+        mat_db = {}
+        for mat_data in numad_data["materials"]:
+            mat_obj = material_factory(mat_data)
+            mat_db[mat_obj.name] = mat_obj
+
+        properties = {}
+        for section in numad_data["sections"]:
+            set_name = section["elementSet"]
+            layup = section["layup"]
+
+            plies = []
+            for mat_name, thickness, angle in layup:
+                mat = mat_db.get(mat_name)
+                if mat is None:
+                    raise KeyError(
+                        f"Material '{mat_name}' referenced in section "
+                        f"'{set_name}' not found in blade material database."
+                    )
+                if isinstance(mat, OrthotropicMaterial):
+                    ply_mat = mat
+                else:
+                    G = mat.E / (2.0 * (1.0 + mat.nu))
+                    ply_mat = OrthotropicMaterial(
+                        name=mat.name,
+                        E=(mat.E, mat.E, mat.E),
+                        G=(G, G, G),
+                        nu=(mat.nu, mat.nu, mat.nu),
+                        rho=mat.rho,
+                    )
+                plies.append(Ply(material=ply_mat, thickness=thickness, angle=angle))
+
+            if len(plies) == 1 and plies[0].angle == 0.0:
+                original_mat = mat_db[layup[0][0]]
+                if isinstance(original_mat, IsotropicMaterial):
+                    properties[set_name] = ShellProperty(
+                        material=original_mat,
+                        thickness=plies[0].thickness,
+                    )
+                    continue
+
+            laminate = Laminate(plies=plies)
+            properties[set_name] = CompositeShellProperty(laminate=laminate)
+
+        return properties
+
     def _build_model_config(self) -> Dict[str, Any]:
         """Build the model configuration dictionary for the solver."""
         print("\n[3/6] Building model configuration...", flush=True)
@@ -640,10 +742,16 @@ class FSIRunner:
                 "debug_interface": self.config.solver.debug_interface,
             },
             "elements": {
-                "material": self._material,
                 "element_family": elem_family,
             },
         }
+
+        # Use composite properties from blade YAML when available,
+        # otherwise use the single material
+        if self._blade_properties is not None:
+            model_config["elements"]["properties"] = self._blade_properties
+        else:
+            model_config["elements"]["material"] = self._material
 
         # Add thickness for shell elements
         if self.config.elements.thickness:
