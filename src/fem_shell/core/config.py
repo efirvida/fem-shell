@@ -227,6 +227,7 @@ class MeshGeneratorType(str, Enum):
     BOX = "BoxSurfaceMesh"
     BOX_VOLUME = "BoxVolumeMesh"
     MULTIFLAP = "MultiFlapMesh"
+    BLADE = "BladeMesh"
     ROTOR = "RotorMesh"
 
 
@@ -286,6 +287,15 @@ class MultiFlapMeshParams:
     nx_base_segment: int = 10
     ny_base: int = 2
     quadratic: bool = False
+
+
+@dataclass
+class BladeMeshParams:
+    """Parameters for BladeMesh generator (single blade)."""
+
+    yaml_file: str  # Path to blade YAML definition (WindIO format)
+    element_size: float = 0.15
+    n_samples: int = 300
 
 
 @dataclass
@@ -423,6 +433,7 @@ class MeshGeneratorConfig:
             MeshGeneratorType.BOX.value: BoxMeshParams,
             MeshGeneratorType.BOX_VOLUME.value: BoxVolumeMeshParams,
             MeshGeneratorType.MULTIFLAP.value: MultiFlapMeshParams,
+            MeshGeneratorType.BLADE.value: BladeMeshParams,
             MeshGeneratorType.ROTOR.value: RotorMeshParams,
         }
         return mapping.get(self.type)
@@ -553,8 +564,6 @@ class ElementConfig:
         )
         if self.family not in valid_families:
             raise ValueError(f"Invalid element family: {self.family}")
-        if self.family == ElementFamily.SHELL.value and self.thickness is None:
-            raise ValueError("Shell elements require thickness parameter")
 
 
 @dataclass
@@ -797,10 +806,10 @@ class FSISimulationConfig:
     """Complete FSI simulation configuration."""
 
     mesh: MeshConfig
-    material: MaterialConfig
-    elements: ElementConfig
     solver: SolverConfig
     boundary_conditions: BoundaryConditionsConfig
+    material: Optional[MaterialConfig] = None
+    elements: ElementConfig = field(default_factory=lambda: ElementConfig(family="SHELL"))
     coupling: Optional[CouplingConfig] = None
     output: Optional[OutputConfig] = None
     postprocess: Optional[PostprocessConfig] = None
@@ -896,16 +905,18 @@ class FSISimulationConfig:
             node_sets=node_sets_config,
         )
 
-        # Parse material configuration
-        mat_data = data.get("material", {})
-        material_config = MaterialConfig(
-            type=mat_data.get("type", "isotropic"),
-            name=mat_data.get("name", "Material"),
-            E=mat_data.get("E"),
-            nu=mat_data.get("nu"),
-            rho=mat_data.get("rho"),
-            G=mat_data.get("G"),
-        )
+        # Parse material configuration (optional for blade/rotor generators)
+        mat_data = data.get("material")
+        material_config = None
+        if mat_data:
+            material_config = MaterialConfig(
+                type=mat_data.get("type", "isotropic"),
+                name=mat_data.get("name", "Material"),
+                E=mat_data.get("E"),
+                nu=mat_data.get("nu"),
+                rho=mat_data.get("rho"),
+                G=mat_data.get("G"),
+            )
 
         # Parse element configuration
         elem_data = data.get("elements", {})
@@ -1046,13 +1057,6 @@ class FSISimulationConfig:
             "mesh": {
                 "source": self.mesh.source,
             },
-            "material": {
-                "type": self.material.type,
-                "name": self.material.name,
-                "E": self.material.E,
-                "nu": self.material.nu,
-                "rho": self.material.rho,
-            },
             "elements": {
                 "family": self.elements.family,
             },
@@ -1092,6 +1096,16 @@ class FSISimulationConfig:
                 }
                 for ns in self.mesh.node_sets
             ]
+
+        # Add material if present
+        if self.material is not None:
+            result["material"] = {
+                "type": self.material.type,
+                "name": self.material.name,
+                "E": self.material.E,
+                "nu": self.material.nu,
+                "rho": self.material.rho,
+            }
 
         # Add optional configurations
         if self.elements.thickness:
@@ -1226,10 +1240,18 @@ class FSISimulationConfig:
         if self.mesh.generator:
             lines.append(f"  Generator: {self.mesh.generator.type}")
 
+        if self.material is not None:
+            lines.extend(
+                [
+                    f"Material: {self.material.type} ({self.material.name})",
+                    f"  E={self.material.E}, nu={self.material.nu}, rho={self.material.rho}",
+                ]
+            )
+        else:
+            lines.append("Material: from blade/rotor YAML (composite)")
+
         lines.extend(
             [
-                f"Material: {self.material.type} ({self.material.name})",
-                f"  E={self.material.E}, nu={self.material.nu}, rho={self.material.rho}",
                 f"Elements: {self.elements.family}",
                 f"Solver: {self.solver.type}",
             ]
