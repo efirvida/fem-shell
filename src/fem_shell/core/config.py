@@ -218,6 +218,7 @@ class SolverType(str, Enum):
     LINEAR_DYNAMIC = "LinearDynamic"
     LINEAR_DYNAMIC_FSI = "LinearDynamicFSI"
     LINEAR_DYNAMIC_FSI_ROTOR = "LinearDynamicFSIRotor"
+    MODAL = "Modal"
 
 
 class MeshGeneratorType(str, Enum):
@@ -624,6 +625,8 @@ class SolverConfig:
     solver_type: str = "auto"
     # Rotor-specific configuration (for LinearDynamicFSIRotor)
     rotor: Optional[RotorConfig] = None
+    # Modal analysis settings
+    num_modes: int = 6
     # Debug interface mode (verbose preCICE data exchange logging)
     debug_interface: bool = False
 
@@ -659,6 +662,8 @@ class SolverConfig:
         ValueError
             If required parameters are missing.
         """
+        if self.type == SolverType.MODAL.value:
+            return  # Modal analysis does not require time parameters
         if self.total_time is None:
             raise ValueError(
                 "total_time not set. Provide in YAML or ensure preCICE config has max-time."
@@ -949,6 +954,7 @@ class FSISimulationConfig:
             safety_factor=solver_data.get("safety_factor", 0.8),
             solver_type=solver_data.get("solver_type", "auto"),
             rotor=rotor_config,
+            num_modes=solver_data.get("num_modes", 6),
             debug_interface=solver_data.get("debug_interface", False),
         )
 
@@ -1258,9 +1264,12 @@ class FSISimulationConfig:
         )
 
         # Handle optional time parameters
-        total_time = self.solver.total_time or "auto (from preCICE)"
-        time_step = self.solver.time_step or "auto (from preCICE)"
-        lines.append(f"  Time: 0 → {total_time}s (dt={time_step}s)")
+        if self.solver.type == SolverType.MODAL.value:
+            lines.append(f"  Modes: {self.solver.num_modes}")
+        else:
+            total_time = self.solver.total_time or "auto (from preCICE)"
+            time_step = self.solver.time_step or "auto (from preCICE)"
+            lines.append(f"  Time: 0 → {total_time}s (dt={time_step}s)")
         lines.append(f"Boundary Conditions: {len(self.boundary_conditions.dirichlet)} Dirichlet")
 
         if self.coupling:
