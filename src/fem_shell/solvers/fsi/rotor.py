@@ -130,13 +130,20 @@ reads this value to drive its dynamic mesh rotation.
 
 Performance Coefficients
 ------------------------
-At each converged time window, the solver computes:
+At each converged time window, the solver computes (using **aerodynamic**
+forces/power only, consistent with standard wind energy definitions):
 
-    Thrust = F_aero · n̂   (aerodynamic force projected on rotation axis)
-    Power  = τ_power · ω   (τ_power = torque projected on rotation axis)
+    Thrust    = F_aero · n̂      (aerodynamic force projected on rotation axis)
+    P_aero    = τ_aero · ω      (aerodynamic torque × angular velocity)
     Ct = Thrust / (½ · ρ · V∞² · π · R²)
-    Cp = Power  / (½ · ρ · V∞³ · π · R²)
+    Cp = P_aero / (½ · ρ · V∞³ · π · R²)
+    Cq = τ_aero / (½ · ρ · V∞² · π · R² · R)
     TSR = ω · R / V∞
+
+Additionally, the solver reports a torque breakdown (aerodynamic, inertial,
+gravitational, total), two power columns (aero and total), and structural
+efficiency η = P_total / P_aero.  Freestream parameters (ρ, V∞) are
+configured under the ``postprocess:`` YAML key.
 
 where R is the deformed rotor radius (max perpendicular distance from
 rotation axis, updated each step with elastic deformation).
@@ -439,6 +446,14 @@ class LinearDynamicFSIRotorSolver(LinearDynamicFSISolver):
         self._force_jump_factor: float = float(rotor_cfg.get("force_jump_factor", 1000.0))
         self._max_force_seen: float = 0.0  # running maximum |F_total| observed
 
+        # On restart, CFD may produce transient force spikes while it re-stabilizes.
+        # During the grace period, forces that exceed the jump factor are clamped
+        # to the last known maximum instead of aborting the simulation.
+        self._restart_force_grace_windows: int = int(
+            rotor_cfg.get("restart_force_grace_windows", 5)
+        )
+        self._restart_grace_remaining: int = 0
+
         # Coordinate transformation options for preCICE data exchange
         # transform_displacement_to_inertial: If True, transforms displacement
         # from rotating frame to inertial frame using R(θ)·u before sending to preCICE.
@@ -455,9 +470,28 @@ class LinearDynamicFSIRotorSolver(LinearDynamicFSISolver):
         self._gravity = np.array(rotor_cfg.get("gravity", list(_DEFAULT_GRAVITY)), dtype=np.float64)
         self._include_gravity = np.linalg.norm(self._gravity) > _GRAVITY_THRESHOLD
 
-        # Aerodynamic performance parameters
-        self._fluid_density = float(rotor_cfg.get("fluid_density", _DEFAULT_FLUID_DENSITY))
-        self._flow_velocity = float(rotor_cfg.get("flow_velocity", _DEFAULT_FLOW_VELOCITY))
+        # Aerodynamic performance parameters (for Cp, Cq, Ct, TSR — no effect on physics).
+        # Preferred location: postprocess.fluid_density / postprocess.flow_velocity
+        # Deprecated location: rotor.fluid_density / rotor.flow_velocity
+        perf_cfg = self.solver_params.get("performance", {})
+        self._fluid_density = float(
+            perf_cfg.get("fluid_density")
+            or rotor_cfg.get("fluid_density")
+            or _DEFAULT_FLUID_DENSITY
+        )
+        self._flow_velocity = float(
+            perf_cfg.get("flow_velocity")
+            or rotor_cfg.get("flow_velocity")
+            or _DEFAULT_FLOW_VELOCITY
+        )
+        if not perf_cfg and (
+            rotor_cfg.get("fluid_density") is not None
+            or rotor_cfg.get("flow_velocity") is not None
+        ):
+            _logger.warning(
+                "fluid_density / flow_velocity under 'rotor:' is deprecated. "
+                "Move them to 'postprocess:' in your simulation YAML."
+            )
         self._rotor_radius: Optional[float] = rotor_cfg.get("radius")
         if self._rotor_radius is not None:
             self._rotor_radius = float(self._rotor_radius)
@@ -511,28 +545,92 @@ class LinearDynamicFSIRotorSolver(LinearDynamicFSISolver):
         self._prev_omega: Optional[float] = None
         self._v_guess_next: Optional[PETSc.Vec] = None
 
+        # On restart, ramps must NOT be re-applied — the simulation
+        # continues from the checkpoint state where ramps already completed.
+        # Explicit is better than implicit (PEP 20).
+        self._skip_ramps = False
+
     # =========================================================================
     # Checkpoint Peeking
     # =========================================================================
 
+    def _read_restart_state(self, t_target: float) -> Optional[Tuple[float, float, float]]:
+        """Look up (theta, omega, alpha) at *t_target* from ``rotor_restart_state.csv``.
+
+        Finds the last row with ``time <= t_target`` and extrapolates forward
+        using the second-order kinematics:
+
+            theta(t) ≈ theta_0 + omega_0 · Δt + ½ · alpha_0 · Δt²
+
+        Parameters
+        ----------
+        t_target : float
+            Target time to recover kinematics for [s].
+
+        Returns
+        -------
+        tuple of (theta_rad, omega, alpha) or None if file absent / unreadable.
+        """
+        import csv as _csv
+
+        output_folder = self.solver_params.get("output_folder", "results")
+        csv_path = os.path.join(output_folder, "rotor_restart_state.csv")
+
+        if not os.path.exists(csv_path):
+            return None
+
+        try:
+            best: Optional[Tuple[float, float, float, float]] = None  # (t, theta, omega, alpha)
+            with open(csv_path, newline="") as fh:
+                reader = _csv.reader(fh)
+                header = next(reader)
+                t_idx = header.index("Time [s]")
+                th_idx = header.index("Theta [rad]")
+                om_idx = header.index("Omega [rad/s]")
+                al_idx = header.index("Alpha [rad/s2]")
+                for row in reader:
+                    try:
+                        t_row = float(row[t_idx])
+                    except (ValueError, IndexError):
+                        continue
+                    if t_row <= t_target + 1e-12:
+                        if best is None or t_row > best[0]:
+                            best = (
+                                t_row,
+                                float(row[th_idx]),
+                                float(row[om_idx]),
+                                float(row[al_idx]),
+                            )
+
+            if best is None:
+                return None
+
+            t0, theta0, omega0, alpha0 = best
+            dt = t_target - t0
+            theta_t = theta0 + omega0 * dt + 0.5 * alpha0 * dt * dt
+            omega_t = omega0 + alpha0 * dt
+            return theta_t, omega_t, alpha0
+        except Exception as e:
+            _logger.warning("Could not read rotor_restart_state.csv: %s", e)
+            return None
+
     def _peek_checkpoint_theta(self) -> float:
-        """Read the rotation angle from ``rotor_performance.csv`` for restart.
+        """Read the rotation angle at the fluid restart time.
 
-        The CSV stores the cumulative angle in degrees at every converged
-        time window.  On restart the fluid mesh sits at the position
-        corresponding to the latest time directory in the fluid case, so
-        we look up the angle at that time (or the closest earlier entry)
-        and convert from degrees to radians.
+        Strategy (in order of preference):
 
-        This approach is robust to non-constant angular velocity because
-        the CSV records the actual integrated angle rather than relying
-        on ``ω × t``.
+        1. Read ``theta_ckpt`` and ``t_ckpt`` from the latest checkpoint NPZ.
+        2. Find ``t_fluid`` (the actual OpenFOAM restart time).
+        3. If ``t_fluid == t_ckpt`` → use NPZ theta directly.
+        4. If ``t_fluid > t_ckpt`` → look up exact/interpolated theta in
+           ``rotor_restart_state.csv`` (written every converged window).
+        5. If the restart state is missing → extrapolate with NPZ omega and warn.
+        6. Guard: if the gap exceeds ``max_time_gap`` (default 5·dt) abort early.
 
         Returns
         -------
         float
-            Rotation angle [rad] at the fluid restart time, or 0.0 if
-            no checkpoint / no restart / CSV not found.
+            Rotation angle [rad] aligned to ``t_fluid``, or 0.0 on failure.
         """
         start_from = self.solver_params.get("start_from", "startTime")
         if start_from not in ("latestTime", "firstTime"):
@@ -556,26 +654,133 @@ class LinearDynamicFSIRotorSolver(LinearDynamicFSISolver):
         try:
             with np.load(npz_path) as data:
                 t_ckpt = float(data["t"]) if "t" in data.files else 0.0
+                if "theta" not in data.files:
+                    if self._is_primary_rank():
+                        print("  ↳ WARNING: theta not found in checkpoint NPZ, defaulting to 0.0 rad", flush=True)
+                    return 0.0
+                theta_ckpt = float(data["theta"])
+                omega_ckpt = float(data["omega"]) if "omega" in data.files else 0.0
+                alpha_ckpt = float(data["alpha"]) if "alpha" in data.files else 0.0
 
-            # Determine the actual fluid restart time
             t_fluid = self._find_fluid_restart_time(t_ckpt)
+            dt_gap = t_fluid - t_ckpt
 
-            # Read angle from rotor_performance.csv
-            theta_deg = self._read_angle_from_performance_csv(t_fluid)
-            theta_rad = np.radians(theta_deg)
+            # ── Determine theta at t_fluid ──────────────────────────────────
+            # dt_gap can be positive (fluid ahead) OR negative (fluid behind).
+            # Both cases require angular correction.
+            source = "npz"
+            theta_rad = theta_ckpt
+            abs_gap = abs(dt_gap)
+
+            if abs_gap > 1e-12:
+                # Try exact lookup from restart state history
+                state = self._read_restart_state(t_fluid)
+                if state is not None:
+                    theta_rad, _, _ = state
+                    source = "restart_state"
+                else:
+                    # Fallback: second-order extrapolation from NPZ.
+                    # Works correctly for both signs of dt_gap:
+                    #   dt_gap > 0 → extrapolate forward
+                    #   dt_gap < 0 → interpolate backward
+                    theta_rad = theta_ckpt + omega_ckpt * dt_gap + 0.5 * alpha_ckpt * dt_gap ** 2
+                    source = "extrapolated"
+
+                # ── Guard: abort if gap is large and no restart state ───────
+                coupling_cfg = self.model_properties.get("coupling", {})
+                max_time_gap = coupling_cfg.get(
+                    "restart_max_time_gap",
+                    None,
+                )
+                if max_time_gap is None:
+                    dt_solid = self.solver_params.get("time_step", 1e-4)
+                    write_interval = coupling_cfg.get("fluid_write_interval", dt_solid * 10)
+                    max_time_gap = 2.0 * float(write_interval)
+
+                if source == "extrapolated" and abs_gap > float(max_time_gap) + 1e-12:
+                    direction = "ahead of" if dt_gap > 0 else "behind"
+                    raise RuntimeError(
+                        f"Restart temporal gap too large to recover safely:\n"
+                        f"  t_solid  = {t_ckpt:.6f} s (solid checkpoint)\n"
+                        f"  t_fluid  = {t_fluid:.6f} s (fluid latest time, {direction} solid)\n"
+                        f"  |Δt_gap| = {abs_gap:.6f} s  (limit = {float(max_time_gap):.6f} s)\n"
+                        f"  Δθ_est   = {np.degrees(omega_ckpt * abs_gap):.2f}°\n"
+                        f"\n"
+                        f"  rotor_restart_state.csv is absent or does not cover t_fluid.\n"
+                        f"  The solid and fluid checkpoints are not temporally aligned.\n"
+                        f"  Options:\n"
+                        f"  1. Align fluid time to solid: keep only fluid times ≤ t={t_ckpt:.6f} s.\n"
+                        f"  2. Align solid to fluid: re-run solid checkpoint at t={t_fluid:.6f} s.\n"
+                        f"  3. Increase 'coupling.restart_max_time_gap' to suppress this check\n"
+                        f"     (only if the angular offset is within the RBF support radius)."
+                    )
 
             if self._is_primary_rank():
-                _logger.info(
-                    "Peeked checkpoint: t_solid=%.6f s, t_fluid=%.6f s, θ_csv=%.4f° = %.4f rad",
-                    t_ckpt,
-                    t_fluid,
-                    theta_deg,
-                    theta_rad,
+                print(
+                    f"  ↳ Checkpoint θ: t_solid={t_ckpt:.6f} s, t_fluid={t_fluid:.6f} s"
+                    f"  [gap={dt_gap:+.6f} s, src={source}]",
+                    flush=True,
                 )
+                print(
+                    f"  ↳ θ(t_fluid) = {np.degrees(theta_rad):.4f}° = {theta_rad:.4f} rad",
+                    flush=True,
+                )
+                if source == "extrapolated":
+                    print(
+                        "  ↳ WARNING: rotor_restart_state.csv absent — using kinematic"
+                        f" extrapolation (Δt={dt_gap:+.4f} s).",
+                        flush=True,
+                    )
+
             return theta_rad
         except Exception as e:
             _logger.warning("Could not peek checkpoint theta: %s", e)
             return 0.0
+
+    def _peek_checkpoint_omega(self) -> Optional[float]:
+        """Read the angular velocity from the latest checkpoint NPZ.
+
+        On restart, the omega provider is freshly created and has no knowledge
+        of the dynamic omega that evolved during the previous run.  This method
+        reads the saved ``omega`` field from the checkpoint so it can be used
+        as the initial value for preCICE and for restoring the provider state.
+
+        Returns
+        -------
+        float or None
+            Angular velocity [rad/s] at the checkpoint time, or None if
+            no checkpoint / no restart / omega not found in NPZ.
+        """
+        start_from = self.solver_params.get("start_from", "startTime")
+        if start_from not in ("latestTime", "firstTime"):
+            return None
+
+        if self._checkpoint_manager is None:
+            return None
+
+        if start_from == "firstTime":
+            info = self._checkpoint_manager.find_first()
+        else:
+            info = self._checkpoint_manager.find_latest()
+
+        if info is None:
+            return None
+
+        npz_path = os.path.join(info.path, "state.npz")
+        if not os.path.exists(npz_path):
+            return None
+
+        try:
+            with np.load(npz_path) as data:
+                if "omega" in data.files:
+                    omega_val = float(data["omega"])
+                    if self._is_primary_rank():
+                        print(f"  ↳ Checkpoint ω: {omega_val:.4f} rad/s", flush=True)
+                    return omega_val
+            return None
+        except Exception as e:
+            _logger.warning("Could not peek checkpoint omega: %s", e)
+            return None
 
     def _read_angle_from_performance_csv(self, t_target: float) -> float:
         """Read the rotation angle [deg] from ``rotor_performance.csv``.
@@ -609,13 +814,14 @@ class LinearDynamicFSIRotorSolver(LinearDynamicFSISolver):
         try:
             with open(csv_path, "r") as f:
                 reader = csv.reader(f)
-                header = next(reader)  # skip header
-                # Columns: Time [s], RPM, Angle [deg], ...
+                header = next(reader)
+                time_idx = header.index("Time [s]")
+                angle_idx = header.index("Angle [deg]")
                 for row in reader:
-                    t_row = float(row[0])
+                    t_row = float(row[time_idx])
                     if t_row <= t_target + 1e-12 and t_row > best_time:
                         best_time = t_row
-                        best_angle = float(row[2])
+                        best_angle = float(row[angle_idx])
         except Exception as e:
             _logger.warning("Failed to read rotor_performance.csv: %s", e)
             return 0.0
@@ -637,61 +843,148 @@ class LinearDynamicFSIRotorSolver(LinearDynamicFSISolver):
         return best_angle
 
     def _find_fluid_restart_time(self, t_solid: float) -> float:
-        """Find the latest time directory in the fluid case.
+        """Find the latest *valid* time directory in the fluid case on disk.
 
-        Scans ``processor0/`` (parallel) or top-level time directories
-        in the fluid case to determine what time OpenFOAM will restart from.
+        This method trusts ONLY what exists on the filesystem — it does NOT
+        use ``t_solid`` as a lower bound or fallback.  The fluid may be ahead
+        of, behind, or exactly at the solid checkpoint time; all three cases
+        are legitimate.
+
+        Handles both serial (top-level time dirs) and parallel
+        (``processorN/``) OpenFOAM layouts.  A time directory is considered
+        **valid** only when:
+
+        * **Parallel** — it exists in ALL ``processorN/`` directories AND
+          contains at least one non-hidden regular file in ``processor0``.
+        * **Serial** — it contains at least one non-hidden regular file.
+
+        This rejects incomplete last-write directories produced by mid-crash
+        I/O.
 
         Parameters
         ----------
         t_solid : float
-            Solid checkpoint time (fallback if fluid dir is not found).
+            Solid checkpoint time [s].  Used only for diagnostic printing;
+            does NOT influence which fluid time is selected.
 
         Returns
         -------
         float
-            Latest available time in the fluid case.
+            Latest valid fluid time found on disk, or ``t_solid`` only if
+            the fluid case directory does not exist or contains no valid
+            time directories at all (with a warning).
         """
         import re
 
-        # Determine fluid case path from config or default convention
         coupling_cfg = self.model_properties.get("coupling", {})
         fluid_case_dir = coupling_cfg.get("fluid_case_dir", "../fluid")
 
-        # Resolve relative to the solid working directory
         if not os.path.isabs(fluid_case_dir):
             fluid_case_dir = os.path.normpath(os.path.join(os.getcwd(), fluid_case_dir))
 
-        # Look for time directories in processor0 (parallel) or top level
-        time_pattern = re.compile(r"^(\d+(?:\.\d+)?)$")
-        latest_time = t_solid  # fallback
+        if not os.path.isdir(fluid_case_dir):
+            if self._is_primary_rank():
+                print(
+                    f"  ↳ WARNING: fluid case dir not found ({fluid_case_dir}), "
+                    f"assuming t_fluid = t_solid = {t_solid:.6f} s",
+                    flush=True,
+                )
+            return t_solid
 
-        for scan_dir in [
-            os.path.join(fluid_case_dir, "processor0"),
-            fluid_case_dir,
-        ]:
-            if not os.path.isdir(scan_dir):
-                continue
+        time_pattern = re.compile(r"^\d+(?:\.\d+)?$")
+        latest_time: Optional[float] = None
+
+        # ── Detect decomposed vs serial ──────────────────────────────────────
+        proc_dirs = sorted(
+            d for d in os.listdir(fluid_case_dir)
+            if re.match(r"^processor\d+$", d)
+            and os.path.isdir(os.path.join(fluid_case_dir, d))
+        )
+
+        if proc_dirs:
+            # ── Parallel case ────────────────────────────────────────────────
+            time_sets = []
+            for proc in proc_dirs:
+                proc_path = os.path.join(fluid_case_dir, proc)
+                try:
+                    times = {
+                        float(e)
+                        for e in os.listdir(proc_path)
+                        if time_pattern.match(e)
+                        and os.path.isdir(os.path.join(proc_path, e))
+                    }
+                    time_sets.append(times)
+                except OSError:
+                    pass
+
+            if time_sets:
+                common_times = time_sets[0]
+                for ts in time_sets[1:]:
+                    common_times = common_times & ts
+
+                proc0_path = os.path.join(fluid_case_dir, proc_dirs[0])
+                proc0_name_map: dict[float, str] = {}
+                try:
+                    for e in os.listdir(proc0_path):
+                        if time_pattern.match(e) and os.path.isdir(os.path.join(proc0_path, e)):
+                            proc0_name_map[float(e)] = e
+                except OSError:
+                    pass
+
+                for t_val in sorted(common_times, reverse=True):
+                    dir_name = proc0_name_map.get(t_val)
+                    if dir_name is None:
+                        continue
+                    t_dir = os.path.join(proc0_path, dir_name)
+                    try:
+                        has_fields = any(
+                            os.path.isfile(os.path.join(t_dir, f))
+                            for f in os.listdir(t_dir)
+                            if not f.startswith(".")
+                        )
+                    except OSError:
+                        has_fields = False
+                    if has_fields:
+                        latest_time = t_val
+                        break
+
+        else:
+            # ── Serial case ──────────────────────────────────────────────────
             try:
-                for entry in os.listdir(scan_dir):
+                for entry in os.listdir(fluid_case_dir):
                     if not time_pattern.match(entry):
                         continue
-                    entry_path = os.path.join(scan_dir, entry)
-                    if not os.path.isdir(entry_path):
-                        continue
                     t_val = float(entry)
-                    if t_val > latest_time:
+                    t_dir = os.path.join(fluid_case_dir, entry)
+                    try:
+                        has_fields = any(
+                            os.path.isfile(os.path.join(t_dir, f))
+                            for f in os.listdir(t_dir)
+                            if not f.startswith(".")
+                        )
+                    except OSError:
+                        has_fields = False
+                    if has_fields and (latest_time is None or t_val > latest_time):
                         latest_time = t_val
-                if latest_time > t_solid:
-                    break  # found times in this directory
             except OSError as e:
-                _logger.debug("Could not scan %s: %s", scan_dir, e)
-                continue
+                _logger.debug("Could not scan fluid case dir %s: %s", fluid_case_dir, e)
 
-        if self._is_primary_rank() and abs(latest_time - t_solid) > 1e-12:
+        # ── Fallback when no valid fluid time was found ──────────────────────
+        if latest_time is None:
+            if self._is_primary_rank():
+                print(
+                    f"  ↳ WARNING: no valid fluid time directory found in {fluid_case_dir}, "
+                    f"assuming t_fluid = t_solid = {t_solid:.6f} s",
+                    flush=True,
+                )
+            return t_solid
+
+        if self._is_primary_rank():
+            dt_gap = latest_time - t_solid
+            direction = "ahead" if dt_gap > 1e-12 else "behind" if dt_gap < -1e-12 else "aligned"
             print(
-                f"  ↳ Fluid restarts from t={latest_time:.6f} s "
-                f"(solid checkpoint at t={t_solid:.6f} s)",
+                f"  ↳ Fluid restart time: t_fluid={latest_time:.6f} s  "
+                f"(t_solid={t_solid:.6f} s, {direction}, Δt={dt_gap:+.6f} s)",
                 flush=True,
             )
 
@@ -1386,28 +1679,35 @@ class LinearDynamicFSIRotorSolver(LinearDynamicFSISolver):
     def _compute_performance_coefficients(
         self,
         thrust: float,
-        power_watts: float,
+        power_aero: float,
+        torque_aero: float,
         omega: float,
         radius: Optional[float] = None,
-    ) -> Tuple[float, float, float]:
+    ) -> Tuple[float, float, float, float]:
         """Compute non-dimensional rotor performance coefficients.
 
         Standard wind turbine / propeller aerodynamic coefficients:
 
             Ct  = Thrust / (½ · ρ · V∞² · A)
-            Cp  = Power  / (½ · ρ · V∞³ · A)
+            Cp  = P_aero / (½ · ρ · V∞³ · A)
+            Cq  = Q_aero / (½ · ρ · V∞² · A · R)
             TSR = |ω| · R / V∞
 
         where A = π·R² is the rotor swept area, ρ is the fluid density,
         V∞ is the freestream velocity, and R is the rotor radius
         (deformed if provided, else reference).
 
+        All coefficients use **aerodynamic** forces/power only (not total),
+        consistent with standard wind energy definitions.
+
         Parameters
         ----------
         thrust : float
             Axial thrust force [N] (aerodynamic force projected on rotation axis).
-        power_watts : float
-            Rotor power [W] = τ_power · ω.
+        power_aero : float
+            Aerodynamic power [W] = τ_aero · ω.
+        torque_aero : float
+            Aerodynamic torque [N·m] (CFD forces only, projected on rotation axis).
         omega : float
             Angular velocity [rad/s].
         radius : float, optional
@@ -1416,8 +1716,8 @@ class LinearDynamicFSIRotorSolver(LinearDynamicFSISolver):
 
         Returns
         -------
-        Tuple[float, float, float]
-            (Ct, Cp, TSR).
+        Tuple[float, float, float, float]
+            (Ct, Cp, Cq, TSR).
         """
         # Use provided radius (deformed) or fall back to stored radius
         effective_radius = radius if radius is not None else self._rotor_radius
@@ -1429,16 +1729,18 @@ class LinearDynamicFSIRotorSolver(LinearDynamicFSISolver):
 
         denom_force = q_dynamic * area
         denom_power = q_dynamic * area * self._flow_velocity
+        denom_torque = q_dynamic * area * effective_radius
 
         ct = thrust / denom_force if abs(denom_force) > _MIN_DENOMINATOR else 0.0
-        cp = power_watts / denom_power if abs(denom_power) > _MIN_DENOMINATOR else 0.0
+        cp = power_aero / denom_power if abs(denom_power) > _MIN_DENOMINATOR else 0.0
+        cq = torque_aero / denom_torque if abs(denom_torque) > _MIN_DENOMINATOR else 0.0
         tsr = (
             (abs(omega) * effective_radius) / self._flow_velocity
             if abs(self._flow_velocity) > _MIN_DENOMINATOR
             else 0.0
         )
 
-        return ct, cp, tsr
+        return ct, cp, cq, tsr
 
     # =========================================================================
     # Logging and Output
@@ -1492,22 +1794,86 @@ class LinearDynamicFSIRotorSolver(LinearDynamicFSISolver):
         if self._is_primary_rank():
             print(f"  [Info] {message}", flush=True)
 
+    def _write_restart_state(
+        self,
+        t: float,
+        theta: float,
+        omega: float,
+        alpha: float,
+    ) -> None:
+        """Append one row to ``rotor_restart_state.csv``.
+
+        This file is the authoritative kinematic history for restart: it records
+        the cumulative angle, angular velocity, and angular acceleration at every
+        *converged* time window so that, on restart, ``_peek_checkpoint_theta``
+        can recover the exact rotor pose at the fluid's ``latestTime``, which may
+        differ from the solid checkpoint time.
+
+        Unlike ``rotor_performance.csv`` (a reporting artefact), this file is
+        deliberately minimal and always written regardless of ``postprocess``
+        configuration.
+
+        Parameters
+        ----------
+        t     : float  Current time after the converged window [s].
+        theta : float  Cumulative rotation angle [rad].
+        omega : float  Angular velocity [rad/s].
+        alpha : float  Angular acceleration [rad/s²].
+        """
+        if not self._is_primary_rank():
+            return
+
+        import csv as _csv
+
+        output_folder = self.solver_params.get("output_folder", "results")
+        csv_path = os.path.join(output_folder, "rotor_restart_state.csv")
+        os.makedirs(output_folder, exist_ok=True)
+
+        write_header = not os.path.exists(csv_path)
+        with open(csv_path, "a", newline="") as fh:
+            writer = _csv.writer(fh)
+            if write_header:
+                writer.writerow(["Time [s]", "Theta [rad]", "Omega [rad/s]", "Alpha [rad/s2]"])
+            writer.writerow([f"{t:.9f}", f"{theta:.9f}", f"{omega:.9f}", f"{alpha:.9f}"])
+
     def _log_rotor_performance(
         self,
         t: float,
         omega_rpm: float,
+        omega_rad: float,
+        alpha: float,
         angle_deg: float,
-        driving_torque: float,
-        torque_vector: np.ndarray,
         thrust: float,
-        power: float,
+        torque_aero: float,
+        torque_inertial: float,
+        torque_gravity: float,
+        torque_total: float,
+        power_aero: float,
+        power_total: float,
+        structural_efficiency: float,
         cp: float,
+        cq: float,
         ct: float,
         tsr: float,
+        torque_aero_global: np.ndarray,
+        torque_total_global: np.ndarray,
+        max_displacement: float,
         deformed_radius: Optional[float] = None,
     ) -> None:
-        """
-        Write rotor performance metrics to CSV log (rank 0 only).
+        """Write rotor performance metrics to CSV log (rank 0 only).
+
+        Columns are grouped conceptually:
+
+        1. Time & kinematics: time, angle, speed, omega, alpha
+        2. Axial force: aerodynamic thrust
+        3. Torque breakdown (scalar projections on rotation axis):
+           aerodynamic, inertial, gravitational, total
+        4. Power: aerodynamic (extracted from wind), total (net after
+           structural losses), structural efficiency (η = P_total / P_aero)
+        5. Performance coefficients (aero-based): Cp, Cq, Ct, TSR
+        6. Torque vector components in the **global (inertial) frame**:
+           aerodynamic and total (X, Y, Z)
+        7. Structural response: max displacement, deformed radius
 
         Parameters
         ----------
@@ -1515,22 +1881,42 @@ class LinearDynamicFSIRotorSolver(LinearDynamicFSISolver):
             Current time [s].
         omega_rpm : float
             Angular velocity [RPM].
+        omega_rad : float
+            Angular velocity [rad/s].
+        alpha : float
+            Angular acceleration [rad/s²].
         angle_deg : float
-            Rotation angle [°].
-        driving_torque : float
-            Driving torque [N·m].
-        torque_vector : np.ndarray
-            Full torque vector [Tx, Ty, Tz] [N·m].
+            Cumulative rotation angle [°].
         thrust : float
-            Axial thrust force [N].
-        power : float
-            Rotor power [W].
+            Aerodynamic thrust (axial CFD force) [N].
+        torque_aero : float
+            Aerodynamic torque (CFD forces only) on rotation axis [N·m].
+        torque_inertial : float
+            Inertial torque (centrifugal + Coriolis + Euler) on axis [N·m].
+        torque_gravity : float
+            Gravitational torque on rotation axis [N·m].
+        torque_total : float
+            Total torque on rotation axis [N·m].
+        power_aero : float
+            Aerodynamic power = τ_aero × ω [W].
+        power_total : float
+            Total power = τ_total × ω [W].
+        structural_efficiency : float
+            η = P_total / P_aero [-].
         cp : float
-            Power coefficient [-].
+            Power coefficient (aero) [-].
+        cq : float
+            Torque coefficient (aero) [-].
         ct : float
             Thrust coefficient [-].
         tsr : float
             Tip speed ratio [-].
+        torque_aero_global : np.ndarray, shape (3,)
+            Aerodynamic torque vector in global frame [N·m].
+        torque_total_global : np.ndarray, shape (3,)
+            Total torque vector in global frame [N·m].
+        max_displacement : float
+            Maximum nodal displacement magnitude [m].
         deformed_radius : float, optional
             Current deformed rotor radius [m].
         """
@@ -1544,18 +1930,32 @@ class LinearDynamicFSIRotorSolver(LinearDynamicFSISolver):
             with open(log_path, "a") as f:
                 if not file_exists:
                     header = (
-                        "Time [s],RPM,Angle [deg],Driving Torque [Nm],Thrust [N],"
-                        "Power [W],Cp,Ct,TSR,Torque X [Nm],Torque Y [Nm],Torque Z [Nm],"
-                        "Deformed Radius [m]\n"
+                        "Time [s],Angle [deg],Speed [RPM],Omega [rad/s],Alpha [rad/s2],"
+                        "Aero Thrust [N],"
+                        "Aero Torque [Nm],Inertial Torque [Nm],"
+                        "Gravity Torque [Nm],Total Torque [Nm],"
+                        "Aero Power [W],Total Power [W],Structural Efficiency,"
+                        "Cp,Cq,Ct,TSR,"
+                        "Aero Torque X [Nm],Aero Torque Y [Nm],Aero Torque Z [Nm],"
+                        "Total Torque X [Nm],Total Torque Y [Nm],Total Torque Z [Nm],"
+                        "Max Displacement [m],Deformed Radius [m]\n"
                     )
                     f.write(header)
 
                 radius_str = f"{deformed_radius:.6f}" if deformed_radius is not None else ""
                 line = (
-                    f"{t:.6f},{omega_rpm:.4f},{angle_deg:.4f},{driving_torque:.6e},"
-                    f"{thrust:.6e},{power:.6e},{cp:.6f},{ct:.6f},{tsr:.6f},"
-                    f"{torque_vector[0]:.6e},{torque_vector[1]:.6e},{torque_vector[2]:.6e},"
-                    f"{radius_str}\n"
+                    f"{t:.6f},{angle_deg:.4f},{omega_rpm:.4f},"
+                    f"{omega_rad:.4f},{alpha:.6e},"
+                    f"{thrust:.6e},"
+                    f"{torque_aero:.6e},{torque_inertial:.6e},"
+                    f"{torque_gravity:.6e},{torque_total:.6e},"
+                    f"{power_aero:.6e},{power_total:.6e},{structural_efficiency:.6f},"
+                    f"{cp:.6f},{cq:.6f},{ct:.6f},{tsr:.6f},"
+                    f"{torque_aero_global[0]:.6e},{torque_aero_global[1]:.6e},"
+                    f"{torque_aero_global[2]:.6e},"
+                    f"{torque_total_global[0]:.6e},{torque_total_global[1]:.6e},"
+                    f"{torque_total_global[2]:.6e},"
+                    f"{max_displacement:.6e},{radius_str}\n"
                 )
                 f.write(line)
         except Exception as e:
@@ -1665,8 +2065,15 @@ class LinearDynamicFSIRotorSolver(LinearDynamicFSISolver):
         alpha: float,
         inertial_diags: Dict[str, Any],
         F_gravity_local: Optional[np.ndarray],
-        torque_global: np.ndarray,
-        torque_power: float,
+        torque_total_vec: np.ndarray,
+        torque_aero: float,
+        torque_inertial: float,
+        torque_gravity: float,
+        torque_total: float,
+        ct: float = 0.0,
+        cp: float = 0.0,
+        cq: float = 0.0,
+        tsr: float = 0.0,
         ramp_factor: Optional[float] = None,
         force_ramp_time: Optional[float] = None,
     ) -> None:
@@ -1695,10 +2102,16 @@ class LinearDynamicFSIRotorSolver(LinearDynamicFSISolver):
             magnitudes (centrifugal, coriolis, euler, total_inertial).
         F_gravity_local : np.ndarray or None
             Gravity forces in rotating frame, shape (n_nodes, 3).
-        torque_global : np.ndarray
-            Total torque vector [N·m], shape (3,).
-        torque_power : float
-            Driving torque projected on rotation axis [N·m].
+        torque_total_vec : np.ndarray
+            Total torque vector in rotating frame [N·m], shape (3,).
+        torque_aero : float
+            Aerodynamic torque projected on rotation axis [N·m].
+        torque_inertial : float
+            Inertial torque projected on rotation axis [N·m].
+        torque_gravity : float
+            Gravitational torque projected on rotation axis [N·m].
+        torque_total : float
+            Total torque projected on rotation axis [N·m].
         ramp_factor : float, optional
             Current force ramp factor in [0, 1].
         force_ramp_time : float, optional
@@ -1801,14 +2214,17 @@ class LinearDynamicFSIRotorSolver(LinearDynamicFSISolver):
         print("  │", flush=True)
         print("  ├─ ROTOR TORQUE (Rotating Frame)", flush=True)
         print(
-            f"  │  Total Vector: [{torque_global[0]:.4e}, "
-            f"{torque_global[1]:.4e}, {torque_global[2]:.4e}] N·m",
+            f"  │  Vector: [{torque_total_vec[0]:.4e}, "
+            f"{torque_total_vec[1]:.4e}, {torque_total_vec[2]:.4e}] N·m",
             flush=True,
         )
-        print(
-            f"  │  Driving Torque: {torque_power:.4e} N·m (Projected on axis)",
-            flush=True,
-        )
+        print(f"  │  Aero:       {torque_aero:+.4e} N·m", flush=True)
+        print(f"  │  Inertial:   {torque_inertial:+.4e} N·m", flush=True)
+        print(f"  │  Gravity:    {torque_gravity:+.4e} N·m", flush=True)
+        print(f"  │  Total:      {torque_total:+.4e} N·m  (on axis)", flush=True)
+        print("  │", flush=True)
+        print("  ├─ PERFORMANCE COEFFICIENTS", flush=True)
+        print(f"  │  Ct = {ct:.4f}  │  Cp = {cp:.4f}  │  Cq = {cq:.4f}  │  TSR = {tsr:.4f}", flush=True)
         print("  └" + "─" * 67, flush=True)
 
     def _log_solver_response(
@@ -2114,7 +2530,8 @@ class LinearDynamicFSIRotorSolver(LinearDynamicFSISolver):
         # Auto-compute inertia if requested
         if getattr(self, "_auto_inertia", False):
             estimated_inertia = self._compute_estimated_inertia()
-            _logger.info("Auto-computed Moment of Inertia: %.4e kg·m²", estimated_inertia)
+            if self._is_primary_rank():
+                print(f"  ↳ Auto-computed Moment of Inertia: {estimated_inertia:.4e} kg·m²", flush=True)
 
             # Re-initialize provider with computed inertia
             ramp_time = self._auto_inertia_params.get("ramp_time", 0.0)
@@ -2129,11 +2546,11 @@ class LinearDynamicFSIRotorSolver(LinearDynamicFSISolver):
                     moment_of_inertia=estimated_inertia,
                     resistive_torque=resistive_torque,
                 )
-                _logger.info(
-                    "Omega mode: Ramp (%.3f s) → Dynamic (I=%.4e kg·m²)",
-                    ramp_time,
-                    estimated_inertia,
-                )
+                if self._is_primary_rank():
+                    print(
+                        f"  ↳ Omega mode: Ramp ({ramp_time:.3f} s) → Dynamic (I={estimated_inertia:.4e} kg·m²)",
+                        flush=True,
+                    )
             else:
                 # Pure dynamic mode from start
                 self._omega_provider = ComputedOmega(
@@ -2141,7 +2558,8 @@ class LinearDynamicFSIRotorSolver(LinearDynamicFSISolver):
                     initial_omega=target_omega,
                     resistive_torque=resistive_torque,
                 )
-                _logger.info("Omega mode: Dynamic (I=%.4e kg·m²)", estimated_inertia)
+                if self._is_primary_rank():
+                    print(f"  ↳ Omega mode: Dynamic (I={estimated_inertia:.4e} kg·m²)", flush=True)
 
         # Phase 2: preCICE Initialization
         t, step, time_step = self._initialize_precice(bc_manager)
@@ -2482,9 +2900,18 @@ class LinearDynamicFSIRotorSolver(LinearDynamicFSISolver):
             # (t -> t + dt), so fluid does not start from a stale zero value.
             # preCICE owns the authoritative dt, but before initialize() returns
             # we only have the configured startup step available.
-            initial_omega, _ = self._omega_provider.get_omega(t + bootstrap_dt)
+            #
+            # On restart, the omega provider is freshly created and get_omega(0+dt)
+            # returns a ramped value near zero instead of the actual omega at the
+            # checkpoint time.  Use the checkpoint omega directly if available.
+            restart_omega = self._peek_checkpoint_omega()
+            if restart_omega is not None:
+                initial_omega = restart_omega
+            else:
+                initial_omega, _ = self._omega_provider.get_omega(t + bootstrap_dt)
             initial_data = {"AngularVelocity": initial_omega}
-            _logger.info(f"Initial angular velocity for preCICE: {initial_omega:.4f} rad/s")
+            if self._is_primary_rank():
+                print(f"  ↳ Initial ω for preCICE: {initial_omega:.4f} rad/s", flush=True)
 
         self.precice_participant.initialize(
             self.domain,
@@ -2579,6 +3006,63 @@ class LinearDynamicFSIRotorSolver(LinearDynamicFSISolver):
                 a.array[:] = 0.0
                 if self._is_primary_rank():
                     print("  ↳ State vectors reset to zero", flush=True)
+
+            # Restore omega provider state from checkpoint so that ramps are
+            # not re-applied and the dynamic omega evolution is preserved.
+            ckpt_omega = checkpoint_state.get("omega", None)
+            if ckpt_omega is not None:
+                ckpt_omega = float(ckpt_omega)
+                if isinstance(self._omega_provider, RampedComputedOmega):
+                    self._omega_provider.set_state(
+                        (ckpt_omega, 0.0, True, t)
+                    )
+                    if self._is_primary_rank():
+                        print(
+                            f"  ↳ Omega provider restored: ω = {ckpt_omega:.4f} rad/s"
+                            f" (ramp completed)",
+                            flush=True,
+                        )
+                elif isinstance(self._omega_provider, ComputedOmega):
+                    self._omega_provider.set_state((ckpt_omega, 0.0))
+                    if self._is_primary_rank():
+                        print(
+                            f"  ↳ Omega provider restored: ω = {ckpt_omega:.4f} rad/s",
+                            flush=True,
+                        )
+                elif isinstance(self._omega_provider, RampedOmega):
+                    # RampedOmega uses absolute time, so no state to restore,
+                    # but if t > ramp_time the ramp is already complete.
+                    if self._is_primary_rank():
+                        print(
+                            f"  ↳ Omega provider (RampedOmega): checkpoint ω = {ckpt_omega:.4f} rad/s",
+                            flush=True,
+                        )
+
+            # Explicitly skip ramps on restart — simulation continues from
+            # checkpoint state where ramps already completed.
+            self._skip_ramps = True
+            if self._is_primary_rank():
+                print("  ↳ Ramps bypassed (restart from checkpoint)", flush=True)
+
+            # Restore running maximum force for sanity checks.
+            ckpt_max_force = checkpoint_state.get("max_force_seen", None)
+            if ckpt_max_force is not None:
+                self._max_force_seen = float(ckpt_max_force)
+                if self._is_primary_rank():
+                    print(
+                        f"  ↳ Force baseline restored: |F|_max = {self._max_force_seen:.3e} N",
+                        flush=True,
+                    )
+
+            # Activate grace period: clamp (not abort) force spikes while
+            # the CFD solver re-stabilizes after restart.
+            self._restart_grace_remaining = self._restart_force_grace_windows
+            if self._is_primary_rank() and self._restart_grace_remaining > 0:
+                print(
+                    f"  ↳ Force grace period: {self._restart_grace_remaining} windows"
+                    f" (clamp instead of abort)",
+                    flush=True,
+                )
 
         # Note: Initial state checkpoint is written in solve() after computing
         # all debugging fields (gravity, masses, etc.)
@@ -2729,39 +3213,67 @@ class LinearDynamicFSIRotorSolver(LinearDynamicFSISolver):
 
             # --- Force sanity: detect CFD divergence before it contaminates the solve ---
             force_total_mag = float(np.linalg.norm(applied_force))
-            if (
+            force_jump_exceeded = (
                 self._max_force_seen > 0.0
                 and force_total_mag > self._force_jump_factor * self._max_force_seen
-            ):
-                raise RuntimeError(
-                    f"Diverged force from fluid solver detected at t={t_target:.6f} s: "
-                    f"|F| = {force_total_mag:.3e} N is "
-                    f"{force_total_mag / self._max_force_seen:.1f}× the running max "
-                    f"({self._max_force_seen:.3e} N). "
-                    f"CFD solver likely diverged (Courant blow-up or PIMPLE non-convergence). "
-                    "Aborting to prevent FSI hang."
-                )
-            if (
-                self._force_max_magnitude is not None
-                and force_total_mag > self._force_max_magnitude
-            ):
-                raise RuntimeError(
-                    f"Force exceeds configured limit at t={t_target:.6f} s: "
-                    f"|F| = {force_total_mag:.3e} N > {self._force_max_magnitude:.3e} N. Aborting."
-                )
-            # Update running maximum (only after ramp so it reflects real physics)
-            self._max_force_seen = max(self._max_force_seen, force_total_mag)
+            )
+
+            if force_jump_exceeded:
+                if self._restart_grace_remaining > 0:
+                    # Grace period: clamp forces to last known maximum
+                    clamp_scale = self._max_force_seen / force_total_mag
+                    data_global *= clamp_scale
+                    applied_force *= clamp_scale
+                    applied_max_nodal *= clamp_scale
+                    if self._is_primary_rank():
+                        print(
+                            f"  ⚠ Force clamped (grace {self._restart_grace_remaining}): "
+                            f"|F| = {force_total_mag:.3e} → {self._max_force_seen:.3e} N",
+                            flush=True,
+                        )
+                else:
+                    raise RuntimeError(
+                        f"Diverged force from fluid solver detected at t={t_target:.6f} s: "
+                        f"|F| = {force_total_mag:.3e} N is "
+                        f"{force_total_mag / self._max_force_seen:.1f}× the running max "
+                        f"({self._max_force_seen:.3e} N). "
+                        f"CFD solver likely diverged (Courant blow-up or PIMPLE non-convergence). "
+                        "Aborting to prevent FSI hang."
+                    )
+            if self._force_max_magnitude is not None and force_total_mag > self._force_max_magnitude:
+                if self._restart_grace_remaining > 0:
+                    clamp_scale = self._force_max_magnitude / force_total_mag
+                    data_global *= clamp_scale
+                    applied_force *= clamp_scale
+                    applied_max_nodal *= clamp_scale
+                    if self._is_primary_rank():
+                        print(
+                            f"  ⚠ Force clamped to limit (grace {self._restart_grace_remaining}): "
+                            f"|F| = {force_total_mag:.3e} → {self._force_max_magnitude:.3e} N",
+                            flush=True,
+                        )
+                else:
+                    raise RuntimeError(
+                        f"Force exceeds configured limit at t={t_target:.6f} s: "
+                        f"|F| = {force_total_mag:.3e} N > {self._force_max_magnitude:.3e} N. Aborting."
+                    )
+            # Update running maximum only when forces reflect real physics:
+            # - not during force ramp (CFD is transitioning, forces are not representative)
+            # - not when a jump/clamp occurred (spike would inflate the baseline)
             # -------------------------------------------------------------------------
 
-            # Apply force ramp if configured
+            # Apply force ramp if configured (skip on restart)
             ramp_factor = 1.0
-            if self._force_ramp_time > 1e-12:
+            if self._force_ramp_time > 1e-12 and not self._skip_ramps:
                 ramp_check = min(t_target / self._force_ramp_time, 1.0)
                 if ramp_check < 1.0:
                     ramp_factor = ramp_check
                     data_global *= ramp_factor
                     applied_force *= ramp_factor
                     applied_max_nodal *= ramp_factor
+
+            if not force_jump_exceeded and ramp_factor >= 1.0:
+                self._max_force_seen = max(self._max_force_seen, force_total_mag)
 
             mesh_dim = self.precice_participant.mesh_dimensions
 
@@ -2841,18 +3353,44 @@ class LinearDynamicFSIRotorSolver(LinearDynamicFSISolver):
             else:
                 driving_torque_mag = 0.0
 
-            # Compute torque and performance metrics (includes all forces for reporting)
-            torque_global, torque_power = self._compute_rotor_torque(
+            # --- Torque breakdown per force component ---
+            # Total torque (all forces: aero + inertial + gravity)
+            torque_total_local, torque_total_scalar = self._compute_rotor_torque(
                 interface_coords, interface_disps, data_combined
             )
+            # Aerodynamic torque (CFD surface forces only)
+            torque_aero_local, torque_aero_scalar = self._compute_rotor_torque(
+                interface_coords, interface_disps, data_local_2d
+            )
+            # Inertial torque (centrifugal + Coriolis + Euler)
+            torque_inertial_local, torque_inertial_scalar = self._compute_rotor_torque(
+                interface_coords, interface_disps, F_inertial
+            )
+            # Gravitational torque
+            torque_gravity_local, torque_gravity_scalar = self._compute_rotor_torque(
+                interface_coords, interface_disps, F_gravity_local
+            )
+
+            # Transform torque vectors to global (inertial) frame: τ_global = R(θ) · τ_local
+            R_theta = self._coord_transforms.rotation_matrix(theta_target)
+            torque_aero_global = R_theta @ torque_aero_local
+            torque_total_global = R_theta @ torque_total_local
 
             # Update rotor radius with deformation for accurate performance coefficients
             current_radius = self._compute_rotor_radius(interface_coords, interface_disps)
 
+            # Power: aero (extracted from wind) vs total (net after structural losses)
             thrust = np.dot(applied_force, self._coord_transforms.axis)
-            power_watts = torque_power * omega
-            ct, cp, tsr = self._compute_performance_coefficients(
-                thrust, power_watts, omega, radius=current_radius
+            power_aero = torque_aero_scalar * omega
+            power_total = torque_total_scalar * omega
+            structural_efficiency = (
+                power_total / power_aero
+                if abs(power_aero) > _MIN_DENOMINATOR
+                else 0.0
+            )
+
+            ct, cp, cq, tsr = self._compute_performance_coefficients(
+                thrust, power_aero, torque_aero_scalar, omega, radius=current_radius
             )
 
             # Log time step info
@@ -2868,8 +3406,12 @@ class LinearDynamicFSIRotorSolver(LinearDynamicFSISolver):
                 alpha,
                 inertial_diags,
                 F_gravity_local if self._include_gravity else None,
-                torque_global,
-                torque_power,
+                torque_total_local,
+                torque_aero_scalar,
+                torque_inertial_scalar,
+                torque_gravity_scalar,
+                torque_total_scalar,
+                ct=ct, cp=cp, cq=cq, tsr=tsr,
                 ramp_factor=ramp_factor if ramp_factor < 1.0 else None,
                 force_ramp_time=self._force_ramp_time,
             )
@@ -2961,6 +3503,10 @@ class LinearDynamicFSIRotorSolver(LinearDynamicFSISolver):
                 self._theta += omega * self.dt
                 omega_initialized_for_window = False
 
+                # Decrement restart grace period after each converged window
+                if self._restart_grace_remaining > 0:
+                    self._restart_grace_remaining -= 1
+
                 # Update Omega state after a converged time window.
                 rotor_dynamics_info = (None, None, None, None)
                 omega_next_for_coupling = omega
@@ -3025,16 +3571,29 @@ class LinearDynamicFSIRotorSolver(LinearDynamicFSISolver):
                 self._log_rotor_performance(
                     t,
                     omega * 30.0 / np.pi,
+                    omega,
+                    alpha,
                     np.degrees(self._theta),
-                    torque_power,
-                    torque_global,
                     thrust,
-                    power_watts,
+                    torque_aero_scalar,
+                    torque_inertial_scalar,
+                    torque_gravity_scalar,
+                    torque_total_scalar,
+                    power_aero,
+                    power_total,
+                    structural_efficiency,
                     cp,
+                    cq,
                     ct,
                     tsr,
+                    torque_aero_global,
+                    torque_total_global,
+                    max_disp,
                     deformed_radius=current_radius,
                 )
+
+                # Write lightweight kinematic state for restart alignment
+                self._write_restart_state(t, self._theta, omega, alpha)
 
                 # Prepare consistent force fields for checkpoint visualization.
                 force_fields = {
@@ -3054,6 +3613,7 @@ class LinearDynamicFSIRotorSolver(LinearDynamicFSISolver):
                     dt=self.dt,
                     theta=self._theta,
                     omega=omega,
+                    max_force_seen=self._max_force_seen,
                     u_red=u.array.copy(),
                     v_red=v.array.copy(),
                     a_red=a.array.copy(),

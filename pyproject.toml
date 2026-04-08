@@ -26,6 +26,9 @@ dependencies = [
     "networkx>=3.6.1",
     "plot3d>=1.7.11",
     "lxml>=6.0.2",
+    "textual>=1.0.0",
+    "textual-plotext>=1.0.0",
+    "plotext>=5.2.8",
 ]
 readme = "README.md"
 requires-python = ">= 3.12"
@@ -87,6 +90,8 @@ select = [
 
 [project.scripts]
 fem-shell-fsi = "fem_shell.cli.run_fsi:main"
+fem-shell-monitor = "fem_shell.cli.fsi_monitor:main"
+fem-shell-reconstruct-csv = "fem_shell.cli.reconstruct_rotor_csv:main"
 
 [project.optional-dependencies]
 dev = [
