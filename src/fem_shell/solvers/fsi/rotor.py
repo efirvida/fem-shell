@@ -486,6 +486,14 @@ class LinearDynamicFSIRotorSolver(LinearDynamicFSISolver):
         self._force_jump_factor: float = float(rotor_cfg.get("force_jump_factor", 1000.0))
         self._max_force_seen: float = 0.0  # running maximum |F_total| observed
 
+        # On restart, CFD may produce transient force spikes while it re-stabilizes.
+        # During the grace period, forces that exceed the jump factor are clamped
+        # to the last known maximum instead of aborting the simulation.
+        self._restart_force_grace_windows: int = int(
+            rotor_cfg.get("restart_force_grace_windows", 5)
+        )
+        self._restart_grace_remaining: int = 0
+
         # Coordinate transformation options for preCICE data exchange
         # transform_displacement_to_inertial: If True, transforms displacement
         # from rotating frame to inertial frame using R(θ)·u before sending to preCICE.
@@ -2713,6 +2721,26 @@ class LinearDynamicFSIRotorSolver(LinearDynamicFSISolver):
             if self._is_primary_rank():
                 print("  ↳ Ramps bypassed (restart from checkpoint)", flush=True)
 
+            # Restore running maximum force for sanity checks.
+            ckpt_max_force = checkpoint_state.get("max_force_seen", None)
+            if ckpt_max_force is not None:
+                self._max_force_seen = float(ckpt_max_force)
+                if self._is_primary_rank():
+                    print(
+                        f"  ↳ Force baseline restored: |F|_max = {self._max_force_seen:.3e} N",
+                        flush=True,
+                    )
+
+            # Activate grace period: clamp (not abort) force spikes while
+            # the CFD solver re-stabilizes after restart.
+            self._restart_grace_remaining = self._restart_force_grace_windows
+            if self._is_primary_rank() and self._restart_grace_remaining > 0:
+                print(
+                    f"  ↳ Force grace period: {self._restart_grace_remaining} windows"
+                    f" (clamp instead of abort)",
+                    flush=True,
+                )
+
         # Note: Initial state checkpoint is written in solve() after computing
         # all debugging fields (gravity, masses, etc.)
         return u, v, a, t, time_step, starting_from_zero
@@ -2863,22 +2891,53 @@ class LinearDynamicFSIRotorSolver(LinearDynamicFSISolver):
 
             # --- Force sanity: detect CFD divergence before it contaminates the solve ---
             force_total_mag = float(np.linalg.norm(applied_force))
-            if self._max_force_seen > 0.0 and force_total_mag > self._force_jump_factor * self._max_force_seen:
-                raise RuntimeError(
-                    f"Diverged force from fluid solver detected at t={t_target:.6f} s: "
-                    f"|F| = {force_total_mag:.3e} N is "
-                    f"{force_total_mag / self._max_force_seen:.1f}× the running max "
-                    f"({self._max_force_seen:.3e} N). "
-                    f"CFD solver likely diverged (Courant blow-up or PIMPLE non-convergence). "
-                    "Aborting to prevent FSI hang."
-                )
+            force_jump_exceeded = (
+                self._max_force_seen > 0.0
+                and force_total_mag > self._force_jump_factor * self._max_force_seen
+            )
+
+            if force_jump_exceeded:
+                if self._restart_grace_remaining > 0:
+                    # Grace period: clamp forces to last known maximum
+                    clamp_scale = self._max_force_seen / force_total_mag
+                    data_global *= clamp_scale
+                    applied_force *= clamp_scale
+                    applied_max_nodal *= clamp_scale
+                    if self._is_primary_rank():
+                        print(
+                            f"  ⚠ Force clamped (grace {self._restart_grace_remaining}): "
+                            f"|F| = {force_total_mag:.3e} → {self._max_force_seen:.3e} N",
+                            flush=True,
+                        )
+                else:
+                    raise RuntimeError(
+                        f"Diverged force from fluid solver detected at t={t_target:.6f} s: "
+                        f"|F| = {force_total_mag:.3e} N is "
+                        f"{force_total_mag / self._max_force_seen:.1f}× the running max "
+                        f"({self._max_force_seen:.3e} N). "
+                        f"CFD solver likely diverged (Courant blow-up or PIMPLE non-convergence). "
+                        "Aborting to prevent FSI hang."
+                    )
             if self._force_max_magnitude is not None and force_total_mag > self._force_max_magnitude:
-                raise RuntimeError(
-                    f"Force exceeds configured limit at t={t_target:.6f} s: "
-                    f"|F| = {force_total_mag:.3e} N > {self._force_max_magnitude:.3e} N. Aborting."
-                )
-            # Update running maximum (only after ramp so it reflects real physics)
-            self._max_force_seen = max(self._max_force_seen, force_total_mag)
+                if self._restart_grace_remaining > 0:
+                    clamp_scale = self._force_max_magnitude / force_total_mag
+                    data_global *= clamp_scale
+                    applied_force *= clamp_scale
+                    applied_max_nodal *= clamp_scale
+                    if self._is_primary_rank():
+                        print(
+                            f"  ⚠ Force clamped to limit (grace {self._restart_grace_remaining}): "
+                            f"|F| = {force_total_mag:.3e} → {self._force_max_magnitude:.3e} N",
+                            flush=True,
+                        )
+                else:
+                    raise RuntimeError(
+                        f"Force exceeds configured limit at t={t_target:.6f} s: "
+                        f"|F| = {force_total_mag:.3e} N > {self._force_max_magnitude:.3e} N. Aborting."
+                    )
+            # Update running maximum only when forces reflect real physics:
+            # - not during force ramp (CFD is transitioning, forces are not representative)
+            # - not when a jump/clamp occurred (spike would inflate the baseline)
             # -------------------------------------------------------------------------
 
             # Apply force ramp if configured (skip on restart)
@@ -2890,6 +2949,9 @@ class LinearDynamicFSIRotorSolver(LinearDynamicFSISolver):
                     data_global *= ramp_factor
                     applied_force *= ramp_factor
                     applied_max_nodal *= ramp_factor
+
+            if not force_jump_exceeded and ramp_factor >= 1.0:
+                self._max_force_seen = max(self._max_force_seen, force_total_mag)
 
             mesh_dim = self.precice_participant.mesh_dimensions
 
@@ -3086,6 +3148,10 @@ class LinearDynamicFSIRotorSolver(LinearDynamicFSISolver):
                 self._theta += omega * self.dt
                 omega_initialized_for_window = False
 
+                # Decrement restart grace period after each converged window
+                if self._restart_grace_remaining > 0:
+                    self._restart_grace_remaining -= 1
+
                 # Update Omega state after a converged time window.
                 rotor_dynamics_info = (None, None, None, None)
                 omega_next_for_coupling = omega
@@ -3176,6 +3242,7 @@ class LinearDynamicFSIRotorSolver(LinearDynamicFSISolver):
                     dt=self.dt,
                     theta=self._theta,
                     omega=omega,
+                    max_force_seen=self._max_force_seen,
                     u_red=u.array.copy(),
                     v_red=v.array.copy(),
                     a_red=a.array.copy(),
