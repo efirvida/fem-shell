@@ -142,11 +142,11 @@ INFO_TEXT = """\
 
 [bold yellow]■ FORCES & TORQUES  (projected on rotation axis)[/]
   [bold]Thrust[/]        Axial CFD force (N)
-  [bold]τ aero[/]        Aero torque — CFD surface forces (Nm)
-  [bold]τ non-aero[/]    τ_total − τ_aero  (inertia + gravity) (Nm)
-  [bold]τ inertial[/]    Centrifugal + Coriolis + Euler (Nm)
   [bold]τ gravity[/]     Gravitational torque (Nm)
-  [bold]τ total[/]       All contributions combined (Nm)
+  [bold]τ inertial[/]    Centrifugal + Coriolis + Euler (Nm)
+  [bold]τ non-aero[/]    τ_gravity + τ_inertial (structural effects) (Nm)
+  [bold]τ aero[/]        Aero torque — CFD surface forces (Nm)
+  [bold]τ total[/]       τ_non_aero + τ_aero (all contributions) (Nm)
   [bold]Aero   xyz[/]    τ_aero in inertial frame — X, Y, Z (Nm)
   [bold]Total  xyz[/]    τ_total in inertial frame — X, Y, Z (Nm)
 

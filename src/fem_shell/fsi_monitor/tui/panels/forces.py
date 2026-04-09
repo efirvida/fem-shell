@@ -93,10 +93,10 @@ class ForcesPanel(Static):
         lines = [
             "[bold yellow]FORCES & TORQUES[/]",
             _row("Thrust",       _v(g("Aero Thrust [N]")),          "N"),
-            _torque_row("τ aero",     g("Aero Torque [Nm]"),         omega),
-            _torque_row("τ non-aero", non_aero,                      omega),
-            _torque_row("τ inertial", g("Inertial Torque [Nm]"),     omega),
             _torque_row("τ gravity",  g("Gravity Torque [Nm]"),      omega),
+            _torque_row("τ inertial", g("Inertial Torque [Nm]"),     omega),
+            _torque_row("τ non-aero", non_aero,                      omega),
+            _torque_row("τ aero",     g("Aero Torque [Nm]"),         omega),
             _torque_row("τ total",    g("Total Torque [Nm]"),        omega),
             "",
             _xyz_row("Aero   xyz",
