@@ -1,0 +1,67 @@
+fem-shell Research License
+
+Copyright (c) 2026 Eduardo Firvida
+All rights reserved.
+
+1. Grant of permission
+
+Permission is granted to any person or organization obtaining a copy of this
+software and its associated documentation files (the "Software") to use,
+copy, modify, and distribute the Software, solely for non-commercial
+research, academic, educational, or evaluation purposes, subject to the
+conditions below.
+
+2. Conditions
+
+Any permitted use of the Software must:
+
+- retain this license text and all copyright notices
+- clearly identify any substantial modifications made to the Software
+- not imply endorsement by the copyright holder without prior written
+  permission
+
+3. Commercial use prohibited
+
+The Software may not be used, licensed, sold, sublicensed, provided as a
+service, embedded in a commercial offering, or otherwise exploited for direct
+or indirect commercial advantage without prior written permission from the
+copyright holder.
+
+Prohibited commercial use includes, without limitation:
+
+- paid consulting, support, or integration services based primarily on the
+  Software
+- internal commercial R&D or engineering workflows performed for business
+  advantage
+- use in proprietary product development, validation, or production pipelines
+- offering hosted or managed services that incorporate the Software
+
+4. Contributions
+
+Contributions, patches, pull requests, and other proposed changes are welcome.
+By submitting a contribution to this repository, you represent that you have
+the right to submit it and agree that the contribution may be used,
+modified, distributed, relicensed, and sublicensed by the project maintainer
+as part of this project and future versions of it.
+
+Unless explicitly stated otherwise in writing, all accepted contributions are
+provided under the terms of this license for public versions of the project.
+
+5. Third-party components
+
+This license applies only to the original content of this repository and does
+not override the license terms of third-party dependencies or bundled
+components. Users are responsible for complying with those separate terms.
+
+6. No warranty
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE, AND NONINFRINGEMENT.
+
+7. Limitation of liability
+
+IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM,
+DAMAGES, OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT, OR
+OTHERWISE, ARISING FROM, OUT OF, OR IN CONNECTION WITH THE SOFTWARE OR THE
+USE OR OTHER DEALINGS IN THE SOFTWARE.

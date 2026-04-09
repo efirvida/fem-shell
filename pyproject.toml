@@ -1,7 +1,7 @@
 [project]
 name = "fem_shell"
 version = "0.1.0"
-description = "Add your description here"
+description = "Experimental FEM toolkit for shell, solid, and FSI simulations with optional preCICE coupling"
 authors = [
     { name = "Eduardo Firvida", email = "efirvida@gmail.com" }
 ]
