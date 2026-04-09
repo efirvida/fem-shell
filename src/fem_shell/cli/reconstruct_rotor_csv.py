@@ -48,7 +48,7 @@ _TIME_TOL  = 5e-5   # seconds — tolerance for deduplication between sources
 _CSV_HEADER = (
     "Time [s],Angle [deg],Speed [RPM],Omega [rad/s],Alpha [rad/s2],"
     "Aero Thrust [N],"
-    "Aero Torque [Nm],Inertial Torque [Nm],"
+    "Aero Torque [Nm],Non-Aero Torque [Nm],Inertial Torque [Nm],"
     "Gravity Torque [Nm],Total Torque [Nm],"
     "Aero Power [W],Total Power [W],Structural Efficiency,"
     "Cp,Cq,Ct,TSR,"
