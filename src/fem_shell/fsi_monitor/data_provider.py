@@ -36,6 +36,7 @@ ROTATION_METRICS = [
 FORCE_METRICS = [
     "Aero Thrust [N]",
     "Aero Torque [Nm]",
+    "Non-Aero Torque [Nm]",
     "Inertial Torque [Nm]",
     "Gravity Torque [Nm]",
     "Total Torque [Nm]",
