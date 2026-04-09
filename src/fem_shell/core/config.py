@@ -334,7 +334,7 @@ class RotorConfig:
     omega: float = 0.0
     omega_ramp_time: float = 0.0
     moment_of_inertia: Optional[Union[float, str]] = None  # float, "auto", or None
-    resistive_torque: float = 0.0
+    shaft_torque: float = 0.0
     rotation_axis: List[float] = field(default_factory=lambda: [1.0, 0.0, 0.0])
     rotation_center: List[float] = field(default_factory=lambda: [0.0, 0.0, 0.0])
     include_geometric_stiffness: bool = True
@@ -360,7 +360,7 @@ class RotorConfig:
         d: Dict[str, Any] = {
             "omega": self.omega,
             "omega_ramp_time": self.omega_ramp_time,
-            "resistive_torque": self.resistive_torque,
+            "shaft_torque": self.shaft_torque,
             "rotation_axis": self.rotation_axis,
             "rotation_center": self.rotation_center,
             "include_geometric_stiffness": self.include_geometric_stiffness,

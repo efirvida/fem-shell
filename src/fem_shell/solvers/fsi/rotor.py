@@ -89,7 +89,7 @@ The solver supports both prescribed and dynamic angular velocity via
 OmegaProvider subclasses. The dynamic case solves the rigid-body
 rotational equation of motion for the rotor as a whole:
 
-    I · dω/dt = τ_aero + τ_gravity − τ_gen
+    I · dω/dt = τ_aero + τ_gravity + τ_shaft
 
 where:
     I         — Total moment of inertia about the rotation axis [kg·m²],
@@ -98,11 +98,12 @@ where:
     τ_aero    — Aerodynamic driving torque from CFD forces, projected onto
                 the rotation axis: τ_aero = n̂ · Σᵢ (rᵢ × F_cfd,ᵢ).
     τ_gravity — Gravitational torque (relevant for mass imbalance).
-    τ_gen     — Constant resistive/generator torque [N·m] (user-specified).
+    τ_shaft   — External shaft torque [N·m] (user-specified, signed).
+                Positive drives rotation, negative resists (e.g. generator).
 
 The integration uses explicit Euler:
 
-    α = (τ_driving − τ_gen) / I
+    α = (τ_driving + τ_shaft) / I
     ω^{n+1} = ω^n + α · Δt
 
 CRITICAL: Only EXTERNAL forces (aerodynamic + gravity) contribute to τ_driving.
@@ -141,9 +142,14 @@ forces/power only, consistent with standard wind energy definitions):
     TSR = ω · R / V∞
 
 Additionally, the solver reports a torque breakdown (aerodynamic, inertial,
-gravitational, total), two power columns (aero and total), and structural
-efficiency η = P_total / P_aero.  Freestream parameters (ρ, V∞) are
-configured under the ``postprocess:`` YAML key.
+gravitational, total), the net non-aerodynamic torque
+τ_non-aero = τ_total - τ_aero, two power columns (aero and total), and a
+structural efficiency based on the opposing non-aerodynamic torque.
+Freestream parameters (ρ, V∞) are configured under the ``postprocess:`` YAML key.
+
+The shaft torque sign convention is:
+    - Positive: drives rotation (e.g. motor powering a propeller)
+    - Negative: resists rotation (e.g. generator in a wind turbine)
 
 where R is the deformed rotor radius (max perpendicular distance from
 rotation axis, updated each step with elastic deformation).
@@ -369,7 +375,14 @@ class LinearDynamicFSIRotorSolver(LinearDynamicFSISolver):
 
         # Check for dynamic omega (ComputedOmega)
         moment_of_inertia = rotor_cfg.get("moment_of_inertia")
-        resistive_torque = rotor_cfg.get("resistive_torque", 0.0)
+        # Support both 'shaft_torque' (preferred) and deprecated 'resistive_torque'
+        shaft_torque = rotor_cfg.get("shaft_torque", None)
+        if shaft_torque is None:
+            # Backward compat: negate resistive_torque to match new sign convention
+            legacy = rotor_cfg.get("resistive_torque", 0.0)
+            shaft_torque = -float(legacy) if float(legacy) != 0.0 else 0.0
+        else:
+            shaft_torque = float(shaft_torque)
         self._auto_inertia = False
 
         # Priority: auto-inertia > explicit inertia > ramp-only > constant
@@ -379,7 +392,7 @@ class LinearDynamicFSIRotorSolver(LinearDynamicFSISolver):
             self._auto_inertia_params = {
                 "target_omega": omega_value,
                 "ramp_time": omega_ramp_time,
-                "resistive_torque": resistive_torque,
+                "shaft_torque": shaft_torque,
             }
             # Temporary provider until inertia is computed
             if omega_ramp_time > 0.0:
@@ -397,14 +410,14 @@ class LinearDynamicFSIRotorSolver(LinearDynamicFSISolver):
                     target_omega=omega_value,
                     ramp_time=omega_ramp_time,
                     moment_of_inertia=inertia_val,
-                    resistive_torque=resistive_torque,
+                    shaft_torque=shaft_torque,
                 )
             else:
                 # No ramp: pure dynamic from start
                 self._omega_provider = ComputedOmega(
                     moment_of_inertia=inertia_val,
                     initial_omega=omega_value,
-                    resistive_torque=resistive_torque,
+                    shaft_torque=shaft_torque,
                 )
         elif omega_ramp_time > 0.0:
             # Ramp only, no dynamic computation
@@ -1418,7 +1431,7 @@ class LinearDynamicFSIRotorSolver(LinearDynamicFSISolver):
 
         This is a point-mass approximation; rotational DOF inertia (drilling,
         tilting) is not included. The result is used by ComputedOmega /
-        RampedComputedOmega for the torque balance: I·α = τ_driving − τ_gen.
+        RampedComputedOmega for the torque balance: I·α = τ_driving + τ_shaft.
 
         Returns
         -------
@@ -1845,6 +1858,7 @@ class LinearDynamicFSIRotorSolver(LinearDynamicFSISolver):
         angle_deg: float,
         thrust: float,
         torque_aero: float,
+        torque_non_aero: float,
         torque_inertial: float,
         torque_gravity: float,
         torque_total: float,
@@ -1867,9 +1881,9 @@ class LinearDynamicFSIRotorSolver(LinearDynamicFSISolver):
         1. Time & kinematics: time, angle, speed, omega, alpha
         2. Axial force: aerodynamic thrust
         3. Torque breakdown (scalar projections on rotation axis):
-           aerodynamic, inertial, gravitational, total
+              aerodynamic, non-aerodynamic, inertial, gravitational, total
         4. Power: aerodynamic (extracted from wind), total (net after
-           structural losses), structural efficiency (η = P_total / P_aero)
+              structural losses), structural efficiency (clamped [0, 1])
         5. Performance coefficients (aero-based): Cp, Cq, Ct, TSR
         6. Torque vector components in the **global (inertial) frame**:
            aerodynamic and total (X, Y, Z)
@@ -1891,6 +1905,8 @@ class LinearDynamicFSIRotorSolver(LinearDynamicFSISolver):
             Aerodynamic thrust (axial CFD force) [N].
         torque_aero : float
             Aerodynamic torque (CFD forces only) on rotation axis [N·m].
+        torque_non_aero : float
+            Net non-aerodynamic torque = τ_total - τ_aero [N·m].
         torque_inertial : float
             Inertial torque (centrifugal + Coriolis + Euler) on axis [N·m].
         torque_gravity : float
@@ -1902,7 +1918,7 @@ class LinearDynamicFSIRotorSolver(LinearDynamicFSISolver):
         power_total : float
             Total power = τ_total × ω [W].
         structural_efficiency : float
-            η = P_total / P_aero [-].
+            Structural efficiency in [0, 1], based on opposing non-aerodynamic torque [-].
         cp : float
             Power coefficient (aero) [-].
         cq : float
@@ -1932,7 +1948,7 @@ class LinearDynamicFSIRotorSolver(LinearDynamicFSISolver):
                     header = (
                         "Time [s],Angle [deg],Speed [RPM],Omega [rad/s],Alpha [rad/s2],"
                         "Aero Thrust [N],"
-                        "Aero Torque [Nm],Inertial Torque [Nm],"
+                        "Aero Torque [Nm],Non-Aero Torque [Nm],Inertial Torque [Nm],"
                         "Gravity Torque [Nm],Total Torque [Nm],"
                         "Aero Power [W],Total Power [W],Structural Efficiency,"
                         "Cp,Cq,Ct,TSR,"
@@ -1947,7 +1963,7 @@ class LinearDynamicFSIRotorSolver(LinearDynamicFSISolver):
                     f"{t:.6f},{angle_deg:.4f},{omega_rpm:.4f},"
                     f"{omega_rad:.4f},{alpha:.6e},"
                     f"{thrust:.6e},"
-                    f"{torque_aero:.6e},{torque_inertial:.6e},"
+                    f"{torque_aero:.6e},{torque_non_aero:.6e},{torque_inertial:.6e},"
                     f"{torque_gravity:.6e},{torque_total:.6e},"
                     f"{power_aero:.6e},{power_total:.6e},{structural_efficiency:.6f},"
                     f"{cp:.6f},{cq:.6f},{ct:.6f},{tsr:.6f},"
@@ -2067,6 +2083,7 @@ class LinearDynamicFSIRotorSolver(LinearDynamicFSISolver):
         F_gravity_local: Optional[np.ndarray],
         torque_total_vec: np.ndarray,
         torque_aero: float,
+        torque_non_aero: float,
         torque_inertial: float,
         torque_gravity: float,
         torque_total: float,
@@ -2106,6 +2123,8 @@ class LinearDynamicFSIRotorSolver(LinearDynamicFSISolver):
             Total torque vector in rotating frame [N·m], shape (3,).
         torque_aero : float
             Aerodynamic torque projected on rotation axis [N·m].
+        torque_non_aero : float
+            Net non-aerodynamic torque (τ_total - τ_aero) on axis [N·m].
         torque_inertial : float
             Inertial torque projected on rotation axis [N·m].
         torque_gravity : float
@@ -2219,6 +2238,7 @@ class LinearDynamicFSIRotorSolver(LinearDynamicFSISolver):
             flush=True,
         )
         print(f"  │  Aero:       {torque_aero:+.4e} N·m", flush=True)
+        print(f"  │  Non-aero:   {torque_non_aero:+.4e} N·m", flush=True)
         print(f"  │  Inertial:   {torque_inertial:+.4e} N·m", flush=True)
         print(f"  │  Gravity:    {torque_gravity:+.4e} N·m", flush=True)
         print(f"  │  Total:      {torque_total:+.4e} N·m  (on axis)", flush=True)
@@ -2536,7 +2556,7 @@ class LinearDynamicFSIRotorSolver(LinearDynamicFSISolver):
             # Re-initialize provider with computed inertia
             ramp_time = self._auto_inertia_params.get("ramp_time", 0.0)
             target_omega = self._auto_inertia_params["target_omega"]
-            resistive_torque = self._auto_inertia_params["resistive_torque"]
+            shaft_torque = self._auto_inertia_params["shaft_torque"]
 
             if ramp_time > 0.0:
                 # Use combined ramp + computed provider
@@ -2544,7 +2564,7 @@ class LinearDynamicFSIRotorSolver(LinearDynamicFSISolver):
                     target_omega=target_omega,
                     ramp_time=ramp_time,
                     moment_of_inertia=estimated_inertia,
-                    resistive_torque=resistive_torque,
+                    shaft_torque=shaft_torque,
                 )
                 if self._is_primary_rank():
                     print(
@@ -2556,7 +2576,7 @@ class LinearDynamicFSIRotorSolver(LinearDynamicFSISolver):
                 self._omega_provider = ComputedOmega(
                     moment_of_inertia=estimated_inertia,
                     initial_omega=target_omega,
-                    resistive_torque=resistive_torque,
+                    shaft_torque=shaft_torque,
                 )
                 if self._is_primary_rank():
                     print(f"  ↳ Omega mode: Dynamic (I={estimated_inertia:.4e} kg·m²)", flush=True)
@@ -3383,11 +3403,22 @@ class LinearDynamicFSIRotorSolver(LinearDynamicFSISolver):
             thrust = np.dot(applied_force, self._coord_transforms.axis)
             power_aero = torque_aero_scalar * omega
             power_total = torque_total_scalar * omega
-            structural_efficiency = (
-                power_total / power_aero
-                if abs(power_aero) > _MIN_DENOMINATOR
-                else 0.0
-            )
+
+            # Signed non-aero contribution: inertial + gravity (+ any other non-CFD terms).
+            torque_non_aero_scalar = torque_total_scalar - torque_aero_scalar
+
+            # Efficiency is the fraction of aero torque opposed by non-aero effects.
+            # This avoids >100% values when non-aero terms assist rotor motion.
+            if abs(torque_aero_scalar) > _MIN_DENOMINATOR:
+                aero_sign = np.sign(torque_aero_scalar)
+                opposing_non_aero_torque = -torque_non_aero_scalar * aero_sign
+                structural_efficiency = np.clip(
+                    opposing_non_aero_torque / abs(torque_aero_scalar),
+                    0.0,
+                    1.0,
+                )
+            else:
+                structural_efficiency = 0.0
 
             ct, cp, cq, tsr = self._compute_performance_coefficients(
                 thrust, power_aero, torque_aero_scalar, omega, radius=current_radius
@@ -3408,6 +3439,7 @@ class LinearDynamicFSIRotorSolver(LinearDynamicFSISolver):
                 F_gravity_local if self._include_gravity else None,
                 torque_total_local,
                 torque_aero_scalar,
+                torque_non_aero_scalar,
                 torque_inertial_scalar,
                 torque_gravity_scalar,
                 torque_total_scalar,
@@ -3576,6 +3608,7 @@ class LinearDynamicFSIRotorSolver(LinearDynamicFSISolver):
                     np.degrees(self._theta),
                     thrust,
                     torque_aero_scalar,
+                    torque_non_aero_scalar,
                     torque_inertial_scalar,
                     torque_gravity_scalar,
                     torque_total_scalar,

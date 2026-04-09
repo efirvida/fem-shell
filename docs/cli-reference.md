@@ -376,6 +376,11 @@ solver:
                               # "auto" = compute I from mesh, then update ω each step
                               # <float> = use given I [kg·m²]
     resistive_torque: 0.0     # Generator/brake torque [N·m]
+                              # DEPRECATED: use shaft_torque instead.
+                              # If both are set, shaft_torque takes precedence.
+    shaft_torque: 0.0         # External shaft torque [N·m]
+                              # Positive = drives rotation (e.g. motor)
+                              # Negative = resists rotation (e.g. generator)
 
     # --- preCICE omega feedback ---
     send_omega_to_precice: true  # Write ω as "AngularVelocity" on GlobalSolidMesh
@@ -699,7 +704,7 @@ solver:
     force_ramp_time: 1.0e-3
     moment_of_inertia: "auto"       # Compute I from mesh → dynamic ω
     send_omega_to_precice: true     # Write ω to GlobalSolidMesh → CFD
-    resistive_torque: 0
+    shaft_torque: 0                 # External shaft torque [N·m] (+drives, -resists)
     transform_displacement_to_inertial: true
     rotation_axis: [0, 1, 0]
     rotation_center: [0, 0, 0]

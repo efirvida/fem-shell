@@ -151,7 +151,7 @@ solver:
   #   flow_velocity: 10.0
   #   radius: null                 # Rotor radius [m], null = auto
   #   moment_of_inertia: null      # null, float, or "auto"
-  #   resistive_torque: 0.0
+  #   shaft_torque: 0.0            # External shaft torque [N·m] (+drives, -resists)
 
 #============================================================================
 # BOUNDARY CONDITIONS

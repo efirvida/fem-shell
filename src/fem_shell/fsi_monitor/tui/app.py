@@ -160,7 +160,7 @@ INFO_TEXT = """\
     [bold]P total[/]       τ_total × ω (W)
                                     [green]green[/] > 0: net energy gain
                                     [red]red[/]   < 0: net energy loss
-  [bold]η struct[/]      Resistive efficiency = −τ_non_aero / τ_aero
+  [bold]η struct[/]      Structural efficiency = −τ_non_aero / τ_aero
                   clamped (0, 1)
                   [green]< 5%[/] good · [yellow]5–20%[/] moderate · [red]> 20%[/] high loss
   [bold]Cp[/]            P_aero / (½·ρ·V∞³·π·R²)

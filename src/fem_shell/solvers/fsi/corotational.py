@@ -827,7 +827,11 @@ class ComputedOmega(OmegaProvider):
     Dynamically computed angular velocity from torque balance.
 
     Solves the equation of motion for a rigid rotor:
-        I * dω/dt = τ_driving - τ_resistive
+        I * dω/dt = τ_driving + τ_shaft
+
+    The sign of τ_shaft determines its effect:
+        - Negative: resistive (e.g. generator extracting energy from a wind turbine)
+        - Positive: driving (e.g. motor powering a ship propeller)
 
     Parameters
     ----------
@@ -835,15 +839,16 @@ class ComputedOmega(OmegaProvider):
         Moment of inertia (I) about the rotation axis [kg·m²].
     initial_omega : float, optional
         Initial angular velocity [rad/s]. Default: 0.0.
-    resistive_torque : float, optional
-        Constant resistive torque (e.g. generator torque) [N·m]. Default: 0.0.
+    shaft_torque : float, optional
+        External shaft torque [N·m]. Positive drives rotation, negative resists.
+        Default: 0.0.
     """
 
     def __init__(
         self,
         moment_of_inertia: float,
         initial_omega: float = 0.0,
-        resistive_torque: float = 0.0,
+        shaft_torque: float = 0.0,
     ):
         self._I = float(moment_of_inertia)
         if self._I <= 0:
@@ -852,7 +857,7 @@ class ComputedOmega(OmegaProvider):
         self._omega = float(initial_omega)
         self._initial_omega_val = float(initial_omega)
         self._alpha = 0.0
-        self._tau_gen = float(resistive_torque)
+        self._tau_shaft = float(shaft_torque)
 
     def get_omega(self, t: float) -> Tuple[float, float]:
         """
@@ -873,9 +878,9 @@ class ComputedOmega(OmegaProvider):
         dt : float
             Time step size [s].
         """
-        # Euler integration: I * alpha = Tau_fluid - Tau_gen
-        # alpha = (Tau_fluid - Tau_gen) / I
-        self._alpha = (torque_fluid - self._tau_gen) / self._I
+        # Euler integration: I * alpha = Tau_fluid + Tau_shaft
+        # alpha = (Tau_fluid + Tau_shaft) / I
+        self._alpha = (torque_fluid + self._tau_shaft) / self._I
         self._omega += self._alpha * dt
 
     def get_state(self) -> Tuple[float, float]:
@@ -892,7 +897,7 @@ class ComputedOmega(OmegaProvider):
         return self._initial_omega_val
 
     def __repr__(self) -> str:
-        return f"ComputedOmega(I={self._I}, omega={self._omega:.4f}, alpha={self._alpha:.4f}, tau_gen={self._tau_gen})"
+        return f"ComputedOmega(I={self._I}, omega={self._omega:.4f}, alpha={self._alpha:.4f}, tau_shaft={self._tau_shaft})"
 
 
 class RampedComputedOmega(OmegaProvider):
@@ -915,8 +920,9 @@ class RampedComputedOmega(OmegaProvider):
         Time duration to reach target_omega [s].
     moment_of_inertia : float
         Moment of inertia (I) about the rotation axis [kg·m²].
-    resistive_torque : float, optional
-        Constant resistive torque (e.g. generator torque) [N·m]. Default: 0.0.
+    shaft_torque : float, optional
+        External shaft torque [N·m]. Positive drives rotation, negative resists.
+        Default: 0.0.
 
     Notes
     -----
@@ -924,7 +930,7 @@ class RampedComputedOmega(OmegaProvider):
     prescribed linear ramp. After ramp completion, the provider transitions to
     dynamic mode where omega evolves according to:
 
-        I * dω/dt = τ_driving - τ_resistive
+        I * dω/dt = τ_driving + τ_shaft
 
     The transition is smooth: at t = ramp_time, ω = target_omega, α = 0.
     """
@@ -934,7 +940,7 @@ class RampedComputedOmega(OmegaProvider):
         target_omega: float,
         ramp_time: float,
         moment_of_inertia: float,
-        resistive_torque: float = 0.0,
+        shaft_torque: float = 0.0,
     ):
         self._target_omega = float(target_omega)
         self._ramp_time = float(ramp_time)
@@ -945,7 +951,7 @@ class RampedComputedOmega(OmegaProvider):
         if self._I <= 0:
             raise ValueError("moment_of_inertia must be positive")
 
-        self._tau_gen = float(resistive_torque)
+        self._tau_shaft = float(shaft_torque)
 
         # State variables (used after ramp phase)
         self._omega = 0.0  # Will be set to target_omega at end of ramp
@@ -995,9 +1001,9 @@ class RampedComputedOmega(OmegaProvider):
             # Still in ramp phase - ignore torque-based updates
             return
 
-        # Euler integration: I * alpha = Tau_driving - Tau_gen
-        # alpha = (Tau_driving - Tau_gen) / I
-        self._alpha = (driving_torque - self._tau_gen) / self._I
+        # Euler integration: I * alpha = Tau_driving + Tau_shaft
+        # alpha = (Tau_driving + Tau_shaft) / I
+        self._alpha = (driving_torque + self._tau_shaft) / self._I
         self._omega += self._alpha * dt
 
     def get_state(self) -> Tuple[float, float, bool, float]:
