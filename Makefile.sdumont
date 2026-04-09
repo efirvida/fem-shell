@@ -335,7 +335,7 @@ $(VENV_DIR)/.precice.done: $(VENV_DIR)/.python.done $(VENV_DIR)/.petsc.done $(VE
 	module purge
 	module load automake sqlite/3.32.3.sequana readline/8.2_sequana glu openssl/3.0.9_sequana gcc/14.2.0_sequana openfoam/v2506_openmpi-4.1.4_gnu gcc/14.2.0_sequana
 	@cd $(BUILD_DIR)/precice/build && \
-		$(CMAKE_CMD) .. -DCMAKE_BUILD_TYPE=Debug \
+		$(CMAKE_CMD) .. -DCMAKE_BUILD_TYPE=Release \
 			-DCMAKE_CXX_COMPILER=/scratch/app_sequana/gcc/14.2.0/bin/g++ \
 			-DCMAKE_Fortran_COMPILER=/scratch/app_sequana/gcc/14.2.0/bin/gfortran \
 			-DCMAKE_C_COMPILER=/scratch/app_sequana/gcc/14.2.0/bin/gcc \
