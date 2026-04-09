@@ -23,6 +23,17 @@ def _row(label: str, val: str, unit: str = "") -> str:
     return f"  [dim]{label:<14}[/][bold]{val}[/]{u}"
 
 
+def _angle_row(angle: Any) -> str:
+    """Angle row: angle mod 360 with 1-based revolution counter."""
+    if angle is None or not isinstance(angle, (int, float)):
+        return f"  [dim]{'Angle':<14}[/][bold]{'—':>{_W}}[/] [dim]°[/]"
+    a = float(angle)
+    current_rev = int(a / 360) + 1  # 1-based: first lap = rev 1
+    mod = a % 360
+    val = f"{mod:>{_W}.2f}"
+    return f"  [dim]{'Angle':<14}[/][bold]{val}[/] [dim]° (rev {current_rev})[/]"
+
+
 class RotationPanel(Static):
     """Rotation metrics + structural deformation."""
 
@@ -56,7 +67,7 @@ class RotationPanel(Static):
         lines = [
             "[bold cyan]ROTATION[/]",
             _row("Time",         _v(g.get("Time [s]"), 4),             "s"),
-            _row("Angle",        _v(g.get("Angle [deg]"), 2),          "°"),
+            _angle_row(g.get("Angle [deg]")),
             _row("Speed",        _v(g.get("Speed [RPM]"), 1),          "RPM"),
             _row("ω",            _v(g.get("Omega [rad/s]"), 4),        "rad/s"),
             _row("α",            _v(g.get("Alpha [rad/s2]"), 2),       "rad/s²"),

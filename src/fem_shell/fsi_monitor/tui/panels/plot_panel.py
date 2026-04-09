@@ -88,7 +88,6 @@ class PlotPanel(Widget):
         p.clear_figure()
         p.theme("dark")
         p.xlabel("Time [s]")
-        p.ylabel(self._current_metric)
 
         xs, ys = self._provider.get_history_xy(self._current_metric)
 
@@ -106,7 +105,25 @@ class PlotPanel(Widget):
                 p.yscale("log")
             else:
                 p.yscale("linear")
-            p.plot(xs, ys, color="cyan")
+
+            # Upsample to ~400 points so the line appears solid regardless of
+            # how sparse the solver timesteps are relative to terminal columns.
+            if len(xs) >= 2:
+                import numpy as _np
+                xi = _np.linspace(xs[0], xs[-1], max(len(xs), 400))
+                yi = _np.interp(xi, xs, ys)
+                xs, ys = xi.tolist(), yi.tolist()
+
+            p.plot(xs, ys, color="cyan", marker="braille")
+            # Metric name as text label in upper-right corner of the data area
+            p.text(
+                self._current_metric,
+                x=xs[-1],
+                y=max(ys),
+                color="cyan+",
+                style="bold",
+                alignment="right",
+            )
 
         chart.refresh()
 
@@ -120,7 +137,6 @@ class PlotPanel(Widget):
         else:
             t0 = "t\u2080=0"
         status.update(
-            f"[bold cyan]{self._current_metric}[/]  "
             f"[dim]{idx}/{n}[/]  \u2502  Y:{scale}  \u2502  {t0}  \u2502  "
             f"[dim]\u2190\u2192[/] metric  [dim]Ctrl+P[/] commands"
         )

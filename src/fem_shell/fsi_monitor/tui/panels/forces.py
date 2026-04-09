@@ -23,6 +23,28 @@ def _row(label: str, val: str, unit: str = "") -> str:
     return f"  [dim]{label:<14}[/][bold]{val}[/]{u}"
 
 
+def _torque_row(label: str, value: Any, omega: Any) -> str:
+    """Torque row with colour: green = assists ω, red = brakes ω."""
+    val_str = _v(value)
+    unit = " [dim]Nm[/]"
+    if (
+        value is None
+        or not isinstance(value, (int, float))
+        or omega is None
+        or not isinstance(omega, (int, float))
+        or abs(float(omega)) < 1e-12
+    ):
+        return f"  [dim]{label:<14}[/][bold]{val_str}[/]{unit}"
+    product = float(value) * float(omega)
+    if abs(product) < 1e-20:
+        color = "bold"  # negligible
+    elif product > 0:
+        color = "green"  # assists rotation
+    else:
+        color = "red"  # brakes rotation
+    return f"  [dim]{label:<14}[/][{color}]{val_str}[/]{unit}"
+
+
 def _xyz_row(label: str, x: Any, y: Any, z: Any, prec: int = 3) -> str:
     """Format a labeled xyz vector as a compact row."""
     fmt = lambda v: f"{v:.{prec}f}" if isinstance(v, float) else "—"
@@ -59,13 +81,23 @@ class ForcesPanel(Static):
         r = self._provider.get_current() or {}
         g = r.get
 
+        non_aero = g("Non-Aero Torque [Nm]")
+        if non_aero is None:
+            tau_total = g("Total Torque [Nm]")
+            tau_aero  = g("Aero Torque [Nm]")
+            if tau_total is not None and tau_aero is not None:
+                non_aero = tau_total - tau_aero
+
+        omega = g("Omega [rad/s]")
+
         lines = [
             "[bold yellow]FORCES & TORQUES[/]",
             _row("Thrust",       _v(g("Aero Thrust [N]")),          "N"),
-            _row("τ aero",       _v(g("Aero Torque [Nm]")),         "Nm"),
-            _row("τ inertial",   _v(g("Inertial Torque [Nm]")),     "Nm"),
-            _row("τ gravity",    _v(g("Gravity Torque [Nm]")),      "Nm"),
-            _row("τ total",      _v(g("Total Torque [Nm]")),        "Nm"),
+            _torque_row("τ aero",     g("Aero Torque [Nm]"),         omega),
+            _torque_row("τ non-aero", non_aero,                      omega),
+            _torque_row("τ inertial", g("Inertial Torque [Nm]"),     omega),
+            _torque_row("τ gravity",  g("Gravity Torque [Nm]"),      omega),
+            _torque_row("τ total",    g("Total Torque [Nm]"),        omega),
             "",
             _xyz_row("Aero   xyz",
                      g("Aero Torque X [Nm]"),

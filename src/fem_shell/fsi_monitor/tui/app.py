@@ -35,7 +35,7 @@ from pathlib import Path
 
 from textual.app import App, ComposeResult
 from textual.command import DiscoveryHit, Hit, Hits, Provider
-from textual.containers import Horizontal, Vertical
+from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.reactive import reactive
 from textual.screen import ModalScreen
 from textual.widgets import Footer, Input, Static
@@ -118,9 +118,62 @@ HELP_TEXT = """\
   [bold]\u2190[/] / [bold]\u2192[/]         Previous / next metric
   [bold]Ctrl+P[/]         Command palette (select metric, set start time)
   [bold]?[/]              Toggle this help
+  [bold]i[/]              Toggle data info / metric glossary
 
 [dim]Reads rotor_performance.csv independently of solver.
 Loads full time-series history.[/]
+"""
+
+
+# ---------------------------------------------------------------------------
+# Info / glossary overlay
+# ---------------------------------------------------------------------------
+
+INFO_TEXT = """\
+[bold cyan]── METRIC GLOSSARY ──────────────────────────────────[/]
+
+[bold yellow]■ ROTATION[/]
+  [bold]Time[/]          Simulation time (s)
+  [bold]Angle[/]         Current angle mod 360° (°)
+                  [dim](×N)[/] revolution counter shown inline
+  [bold]Speed[/]         Angular velocity (RPM)
+  [bold]ω[/]             Angular velocity (rad/s)
+  [bold]α[/]             Angular acceleration (rad/s²)
+
+[bold yellow]■ FORCES & TORQUES  (projected on rotation axis)[/]
+  [bold]Thrust[/]        Axial CFD force (N)
+  [bold]τ aero[/]        Aero torque — CFD surface forces (Nm)
+  [bold]τ non-aero[/]    τ_total − τ_aero  (inertia + gravity) (Nm)
+  [bold]τ inertial[/]    Centrifugal + Coriolis + Euler (Nm)
+  [bold]τ gravity[/]     Gravitational torque (Nm)
+  [bold]τ total[/]       All contributions combined (Nm)
+  [bold]Aero   xyz[/]    τ_aero in inertial frame — X, Y, Z (Nm)
+  [bold]Total  xyz[/]    τ_total in inertial frame — X, Y, Z (Nm)
+
+  [dim]Torque colour code (RHR convention):[/]
+    [green]green[/]  τ·ω > 0 → assists current rotation
+    [red]red[/]    τ·ω < 0 → brakes current rotation
+
+[bold yellow]■ PERFORMANCE[/]
+  [bold]P aero[/]        τ_aero × ω (W)
+  [bold]P non-aero[/]    τ_non_aero × ω (W)
+    [bold]P total[/]       τ_total × ω (W)
+                                    [green]green[/] > 0: net energy gain
+                                    [red]red[/]   < 0: net energy loss
+  [bold]η struct[/]      Resistive efficiency = −τ_non_aero / τ_aero
+                  clamped (0, 1)
+                  [green]< 5%[/] good · [yellow]5–20%[/] moderate · [red]> 20%[/] high loss
+  [bold]Cp[/]            P_aero / (½·ρ·V∞³·π·R²)
+  [bold]Cq[/]            τ_aero / (½·ρ·V∞²·π·R³)
+  [bold]Ct[/]            Thrust / (½·ρ·V∞²·π·R²)
+  [bold]TSR[/]           ω·R / V∞
+
+[bold yellow]■ STRUCTURE[/]
+  [bold]Max Disp[/]      Max nodal displacement (m)
+  [bold]Def Radius[/]    Deformed rotor radius (m)
+                  (used for Cp, Cq, Ct, TSR)
+
+[dim]Press [bold]i[/] to close  ·  scroll with ↑↓[/]
 """
 
 
@@ -145,6 +198,30 @@ class HelpOverlay(Static):
 
     def render(self) -> str:
         return HELP_TEXT
+
+
+class InfoOverlay(VerticalScroll):
+    """Scrollable data / metric glossary overlay, toggled with 'i'."""
+
+    DEFAULT_CSS = """
+    InfoOverlay {
+        display: none;
+        layer: overlay;
+        width: 74;
+        max-height: 85%;
+        padding: 1 2;
+        margin: 1 2;
+        border: heavy $warning;
+        background: $surface;
+        overflow-y: scroll;
+    }
+    InfoOverlay.-visible {
+        display: block;
+    }
+    """
+
+    def compose(self) -> ComposeResult:
+        yield Static(INFO_TEXT, markup=True)
 
 
 # ---------------------------------------------------------------------------
@@ -291,6 +368,7 @@ class _FSIApp(App):
         ("left",           "prev_metric",      "Prev metric"),
         ("right",          "next_metric",      "Next metric"),
         ("question_mark",  "toggle_help",      "Help"),
+        ("i",              "toggle_info",      "Info"),
     ]
 
     def __init__(self, provider: FSIDataProvider, csv_path: Path, **kwargs):
@@ -298,6 +376,7 @@ class _FSIApp(App):
         self._provider = provider
         self._csv_path = csv_path
         self._help_visible = False
+        self._info_visible = False
 
     def compose(self) -> ComposeResult:
         yield SimulationHeader(self._provider, self._csv_path, id="sim-header")
@@ -310,6 +389,7 @@ class _FSIApp(App):
         yield PlotPanel(self._provider, id="plot-panel")
 
         yield HelpOverlay(id="help-overlay")
+        yield InfoOverlay(id="info-overlay")
         yield Footer()
 
     # ------------------------------------------------------------------
@@ -345,6 +425,20 @@ class _FSIApp(App):
         self._help_visible = not self._help_visible
         if self._help_visible:
             overlay.add_class("-visible")
+            # Close info overlay if open
+            self.query_one("#info-overlay", InfoOverlay).remove_class("-visible")
+            self._info_visible = False
+        else:
+            overlay.remove_class("-visible")
+
+    def action_toggle_info(self) -> None:
+        overlay = self.query_one("#info-overlay", InfoOverlay)
+        self._info_visible = not self._info_visible
+        if self._info_visible:
+            overlay.add_class("-visible")
+            # Close help overlay if open
+            self.query_one("#help-overlay", HelpOverlay).remove_class("-visible")
+            self._help_visible = False
         else:
             overlay.remove_class("-visible")
 
