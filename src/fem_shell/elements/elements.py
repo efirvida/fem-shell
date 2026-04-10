@@ -209,6 +209,9 @@ class ElementFactory:
             laminate = kwargs.pop("laminate", None)
             is_composite = laminate is not None
 
+        # Extract span_direction — only forwarded to composite element constructors.
+        span_direction = kwargs.pop("span_direction", None)
+
         # Shell element maps
         SHELL_ELEMENT_MAP = {3: MITC3, 4: MITC4}
         SHELL_COMPOSITE_MAP = {3: MITC3Composite, 4: MITC4Composite}
@@ -238,7 +241,8 @@ class ElementFactory:
                     # Composite shell element
                     element_class = SHELL_COMPOSITE_MAP[node_count]
                     return element_class(
-                        node_coords=node_coords, node_ids=node_ids, laminate=laminate, **kwargs
+                        node_coords=node_coords, node_ids=node_ids,
+                        laminate=laminate, span_direction=span_direction, **kwargs
                     )
                 else:
                     # Isotropic shell element

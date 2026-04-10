@@ -82,11 +82,12 @@ class MITC3Composite(MITC3):
         node_ids: Tuple[int, int, int],
         laminate: Laminate,
         nonlinear: bool = False,
+        span_direction: Optional[np.ndarray] = None,
     ):
         # Store laminate before calling parent __init__
         self.laminate = laminate
 
-        # Store ABD matrices for direct access
+        # Store ABD matrices for direct access (will be corrected below if span given)
         self._A_matrix = laminate.A.copy()
         self._B_matrix = laminate.B.copy()
         self._D_matrix = laminate.D.copy()
@@ -99,7 +100,7 @@ class MITC3Composite(MITC3):
         equiv_props = laminate.get_equivalent_properties()
         equivalent_material = self._create_equivalent_material(laminate, equiv_props)
 
-        # Call parent constructor
+        # Call parent constructor (sets self._e1, self._e2, self._e3)
         super().__init__(
             node_coords=node_coords,
             node_ids=node_ids,
@@ -111,6 +112,16 @@ class MITC3Composite(MITC3):
 
         # Override element type
         self.element_type = "MITC3Composite"
+
+        # Recompute ABD matrices using the physical fibre reference direction.
+        # The laminate ply angles are defined in the designer's frame (0° = span
+        # direction).  The element's e1 axis is NOT the span direction for most
+        # blade meshes (it follows the first element edge, which is chordwise).
+        # We correct this by computing the angle between e1 and the projected
+        # span direction, then rotating all ply angles by that offset before
+        # recomputing the ABD matrices.
+        if span_direction is not None:
+            self._recompute_abd_for_span(laminate, np.asarray(span_direction, dtype=float))
 
     def _create_equivalent_material(
         self,
@@ -133,6 +144,65 @@ class MITC3Composite(MITC3):
             rho=ref_material.rho,
             shear_correction_factor=laminate.shear_correction_factor,
         )
+
+    # =========================================================================
+    # SPAN-DIRECTION ORIENTATION CORRECTION
+    # =========================================================================
+
+    def _recompute_abd_for_span(self, laminate: Laminate, span_dir: np.ndarray) -> None:
+        """Recompute ABD matrices with ply angles referenced to the span axis.
+
+        The CLT ply angle convention is ``0° = fibre along laminate x-axis``.
+        Here, "laminate x-axis" is the element's local ``e1`` direction (first
+        edge).  For blade meshes this edge is typically *chordwise*, so a 0°
+        ply ends up with fibres chordwise rather than spanwise.
+
+        This method computes the angle between ``e1`` and the projection of
+        ``span_dir`` onto the element plane, then shifts all ply angles by
+        that offset before rebuilding A, B, D, Cs.  This makes 0° == fibre
+        along span for any mesh connectivity.
+
+        Parameters
+        ----------
+        laminate : Laminate
+            The original laminate definition (ply angles in designer frame).
+        span_dir : np.ndarray, shape (3,)
+            Global span axis direction (need not be normalised).
+        """
+        from fem_shell.core.laminate import Laminate as Lam, Ply as Pl
+
+        # Project span direction onto element plane (remove out-of-plane component)
+        e3 = self._e3  # element normal
+        sd = span_dir - float(np.dot(span_dir, e3)) * e3
+        sd_len = float(np.linalg.norm(sd))
+        if sd_len < 1e-10:
+            # span is nearly perpendicular to element — no correction possible
+            return
+
+        sd_hat = sd / sd_len
+
+        # Angle from e1 to the projected span direction (measured CCW in element plane)
+        cos_a = float(np.dot(sd_hat, self._e1))
+        sin_a = float(np.dot(sd_hat, self._e2))
+        angle_offset_deg = float(np.degrees(np.arctan2(sin_a, cos_a)))
+
+        if abs(angle_offset_deg) < 0.01:
+            # Already aligned — nothing to do
+            return
+
+        # Rebuild laminate with corrected ply angles
+        corrected_plies = [
+            Pl(material=ply.material, thickness=ply.thickness,
+               angle=ply.angle + angle_offset_deg)
+            for ply in laminate.plies
+        ]
+        corrected_lam = Lam(plies=corrected_plies)
+
+        self._A_matrix = corrected_lam.A.copy()
+        self._B_matrix = corrected_lam.B.copy()
+        self._D_matrix = corrected_lam.D.copy()
+        self._Cs_matrix = corrected_lam.Cs.copy()
+        self._has_coupling = not corrected_lam.is_symmetric
 
     # =========================================================================
     # ABD MATRIX PROPERTIES

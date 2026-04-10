@@ -85,11 +85,12 @@ class MITC4Composite(MITC4):
         kx_mod: float = 1.0,
         ky_mod: float = 1.0,
         nonlinear: bool = False,
+        span_direction: Optional[np.ndarray] = None,
     ):
         # Store laminate before calling parent __init__
         self.laminate = laminate
 
-        # Store ABD matrices for direct access
+        # Store ABD matrices for direct access (will be corrected below if span given)
         self._A_matrix = laminate.A.copy()
         self._B_matrix = laminate.B.copy()
         self._D_matrix = laminate.D.copy()
@@ -106,7 +107,7 @@ class MITC4Composite(MITC4):
         self._kx_mod = kx_mod
         self._ky_mod = ky_mod
 
-        # Call parent constructor
+        # Call parent constructor (sets self._e1, self._e2, self._e3)
         super().__init__(
             node_coords=node_coords,
             node_ids=node_ids,
@@ -118,6 +119,45 @@ class MITC4Composite(MITC4):
 
         # Override element type
         self.element_type = "MITC4Composite"
+
+        # Recompute ABD matrices using the physical fibre reference direction.
+        # See MITC3Composite._recompute_abd_for_span for full explanation.
+        if span_direction is not None:
+            self._recompute_abd_for_span(laminate, np.asarray(span_direction, dtype=float))
+
+    def _recompute_abd_for_span(self, laminate: Laminate, span_dir: np.ndarray) -> None:
+        """Recompute ABD matrices with ply angles referenced to the span axis.
+
+        See MITC3Composite._recompute_abd_for_span for full documentation.
+        """
+        from fem_shell.core.laminate import Laminate as Lam, Ply as Pl
+
+        e3 = self._e3
+        sd = span_dir - float(np.dot(span_dir, e3)) * e3
+        sd_len = float(np.linalg.norm(sd))
+        if sd_len < 1e-10:
+            return
+
+        sd_hat = sd / sd_len
+        cos_a = float(np.dot(sd_hat, self._e1))
+        sin_a = float(np.dot(sd_hat, self._e2))
+        angle_offset_deg = float(np.degrees(np.arctan2(sin_a, cos_a)))
+
+        if abs(angle_offset_deg) < 0.01:
+            return
+
+        corrected_plies = [
+            Pl(material=ply.material, thickness=ply.thickness,
+               angle=ply.angle + angle_offset_deg)
+            for ply in laminate.plies
+        ]
+        corrected_lam = Lam(plies=corrected_plies)
+
+        self._A_matrix = corrected_lam.A.copy()
+        self._B_matrix = corrected_lam.B.copy()
+        self._D_matrix = corrected_lam.D.copy()
+        self._Cs_matrix = corrected_lam.Cs.copy()
+        self._has_coupling = not corrected_lam.is_symmetric
 
     def _create_equivalent_material(
         self,
