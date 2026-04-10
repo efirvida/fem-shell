@@ -1038,12 +1038,14 @@ class BladeMesh:
         n_samples: int = 300,
         excel_file: str = None,
         airfoil_dir: str = None,
+        refine_tip: bool = True,
     ):
         self.yaml_file = yaml_file
         self.excel_file = excel_file
         self.airfoil_dir = airfoil_dir
         self.element_size = element_size
         self.n_samples = n_samples
+        self.refine_tip = refine_tip
         self._numad_blade = None
         self._numad_mesh = None
 
@@ -1100,6 +1102,14 @@ class BladeMesh:
             print("  Updating blade geometry...")
         self._numad_blade.update_blade()
 
+        # Refine cross-sections where chord changes rapidly.  The default
+        # YAML grid is uniform in span, so the last section can jump from
+        # chord ≈ 1.8 m to 0.5 m in a single 2.4 m span gap.  We subdivide
+        # sections whose chord ratio exceeds a threshold so that element
+        # aspect ratios stay reasonable.
+        if self.refine_tip:
+            self._refine_high_gradient_sections(verbose=verbose)
+
         # Expand trailing edge
         n_stations = self._numad_blade.geometry.coordinates.shape[2]
         min_TE_lengths = 0.001 * np.ones(n_stations)
@@ -1130,6 +1140,38 @@ class BladeMesh:
             )
 
         return mesh_model
+
+    def _refine_high_gradient_sections(self, chord_ratio_threshold=0.5, verbose=True):
+        """Add interpolated stations where the chord ratio between adjacent
+        sections is below *chord_ratio_threshold* (i.e. chord shrinks by
+        more than 50 %).  Stations are subdivided until the ratio of the
+        smaller chord to the larger chord in every pair exceeds the
+        threshold, up to a maximum of 3 subdivisions per original gap.
+        """
+        blade = self._numad_blade
+        ichord = blade.geometry.ichord
+        ispan = blade.ispan.copy()
+        added = 0
+
+        for _ in range(3):  # iterate because adding a station shifts indices
+            ichord = blade.geometry.ichord
+            ispan = blade.ispan.copy()
+            n = len(ichord)
+            inserted_any = False
+            for i in range(n - 1):
+                c_lo = min(ichord[i], ichord[i + 1])
+                c_hi = max(ichord[i], ichord[i + 1])
+                if c_hi > 0 and c_lo / c_hi < chord_ratio_threshold:
+                    mid = 0.5 * (ispan[i] + ispan[i + 1])
+                    blade.add_interpolated_station(mid)
+                    added += 1
+                    inserted_any = True
+                    break  # restart scan — indices shifted
+            if not inserted_any:
+                break
+
+        if verbose and added > 0:
+            print(f"  Added {added} interpolated section(s) for tip refinement")
 
     def _deduplicate_and_create_mesh(self, mesh_model: "MeshModel", verbose: bool = True):
         """
