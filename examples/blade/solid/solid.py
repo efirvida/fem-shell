@@ -1,11 +1,11 @@
 from pathlib import Path
 
-from fem_shell.core.bc import DirichletCondition
+from fem_shell.core.properties import build_element_data
 from fem_shell.elements import ElementFamily
 from fem_shell.models.blade.model import Blade
-from fem_shell.postprocess.precice import FSIDataVisualizer
-from fem_shell.solvers.fsi import LinearDynamicFSISolver
 
+# This example now defaults to the mesh/material preprocessing path so it can
+# run on machines that do not have PETSc/preCICE installed yet.
 SCRIPT_DIR = Path(__file__).parent
 BLADE_YAML_PATH = SCRIPT_DIR / "IEA-15-240-RWT.yaml"
 ELEMENT_SIZE = 0.15
@@ -48,18 +48,25 @@ model_config = {
     },
 }
 
-# # Visualize element properties (thickness, stiffness, plies, etc.)
-# element_data = build_element_data(properties, mesh)
-# mesh.view(element_data=element_data)
+# Visualize element properties (thickness, stiffness, plies, etc.)
+element_data = build_element_data(properties, mesh)
+mesh.view(element_data=element_data)
 
-# exit()
+# Toggle this only on machines with the full FSI stack installed. Keeping the
+# imports inside the block avoids import-time failures during mesh generation.
+RUN_FSI = False
 
-problem = LinearDynamicFSISolver(mesh, model_config)
-bottom_node_set = problem.get_dofs_by_nodeset_name("RootNodes")
-problem.add_dirichlet_conditions([DirichletCondition(bottom_node_set, 0.0)])
-problem.solve()
+if RUN_FSI:
+    from fem_shell.core.bc import DirichletCondition
+    from fem_shell.postprocess.precice import FSIDataVisualizer
+    from fem_shell.solvers.fsi import LinearDynamicFSISolver
 
-# Crear visualizador
-visualizer = FSIDataVisualizer("precice-Solid-watchpoint-Flap-Tip.log")
-visualizer.plot_displacement(save_path="desplazamientos.png")
-visualizer.plot_force(save_path="fuerzas.png")
+    problem = LinearDynamicFSISolver(mesh, model_config)
+    bottom_node_set = problem.get_dofs_by_nodeset_name("RootNodes")
+    problem.add_dirichlet_conditions([DirichletCondition(bottom_node_set, 0.0)])
+    problem.solve()
+
+    # Crear visualizador
+    visualizer = FSIDataVisualizer("precice-Solid-watchpoint-Flap-Tip.log")
+    visualizer.plot_displacement(save_path="desplazamientos.png")
+    visualizer.plot_force(save_path="fuerzas.png")
