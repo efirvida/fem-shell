@@ -303,6 +303,13 @@ def get_shell_mesh(blade, elementSize):
             vec = shellKp[0, :] - shellKp[3, :]
             mag = np.linalg.norm(vec)
             nEl4 = int(np.ceil(mag / elementSize))
+
+            # For the last spanwise section, match the tip chordwise edge
+            # count to the inner edge to avoid degenerate quads where chord
+            # shrinks abruptly.  The tip edge has no neighbour above, so
+            # this doesn't break mesh connectivity.
+            if i == rws - 2:
+                nEl3 = nEl1
             nEl = np.array([nEl1, nEl2, nEl3, nEl4])
 
             bladeSurf.addShellRegion(
