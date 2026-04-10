@@ -498,8 +498,7 @@ class LinearDynamicFSIRotorSolver(LinearDynamicFSISolver):
             or _DEFAULT_FLOW_VELOCITY
         )
         if not perf_cfg and (
-            rotor_cfg.get("fluid_density") is not None
-            or rotor_cfg.get("flow_velocity") is not None
+            rotor_cfg.get("fluid_density") is not None or rotor_cfg.get("flow_velocity") is not None
         ):
             _logger.warning(
                 "fluid_density / flow_velocity under 'rotor:' is deprecated. "
@@ -669,7 +668,10 @@ class LinearDynamicFSIRotorSolver(LinearDynamicFSISolver):
                 t_ckpt = float(data["t"]) if "t" in data.files else 0.0
                 if "theta" not in data.files:
                     if self._is_primary_rank():
-                        print("  ↳ WARNING: theta not found in checkpoint NPZ, defaulting to 0.0 rad", flush=True)
+                        print(
+                            "  ↳ WARNING: theta not found in checkpoint NPZ, defaulting to 0.0 rad",
+                            flush=True,
+                        )
                     return 0.0
                 theta_ckpt = float(data["theta"])
                 omega_ckpt = float(data["omega"]) if "omega" in data.files else 0.0
@@ -696,7 +698,7 @@ class LinearDynamicFSIRotorSolver(LinearDynamicFSISolver):
                     # Works correctly for both signs of dt_gap:
                     #   dt_gap > 0 → extrapolate forward
                     #   dt_gap < 0 → interpolate backward
-                    theta_rad = theta_ckpt + omega_ckpt * dt_gap + 0.5 * alpha_ckpt * dt_gap ** 2
+                    theta_rad = theta_ckpt + omega_ckpt * dt_gap + 0.5 * alpha_ckpt * dt_gap**2
                     source = "extrapolated"
 
                 # ── Guard: abort if gap is large and no restart state ───────
@@ -909,9 +911,9 @@ class LinearDynamicFSIRotorSolver(LinearDynamicFSISolver):
 
         # ── Detect decomposed vs serial ──────────────────────────────────────
         proc_dirs = sorted(
-            d for d in os.listdir(fluid_case_dir)
-            if re.match(r"^processor\d+$", d)
-            and os.path.isdir(os.path.join(fluid_case_dir, d))
+            d
+            for d in os.listdir(fluid_case_dir)
+            if re.match(r"^processor\d+$", d) and os.path.isdir(os.path.join(fluid_case_dir, d))
         )
 
         if proc_dirs:
@@ -923,8 +925,7 @@ class LinearDynamicFSIRotorSolver(LinearDynamicFSISolver):
                     times = {
                         float(e)
                         for e in os.listdir(proc_path)
-                        if time_pattern.match(e)
-                        and os.path.isdir(os.path.join(proc_path, e))
+                        if time_pattern.match(e) and os.path.isdir(os.path.join(proc_path, e))
                     }
                     time_sets.append(times)
                 except OSError:
@@ -2262,7 +2263,10 @@ class LinearDynamicFSIRotorSolver(LinearDynamicFSISolver):
         print(f"  │  Total:      {torque_total:+.4e} N·m  (on axis)", flush=True)
         print("  │", flush=True)
         print("  ├─ PERFORMANCE COEFFICIENTS", flush=True)
-        print(f"  │  Ct = {ct:.4f}  │  Cp = {cp:.4f}  │  Cq = {cq:.4f}  │  TSR = {tsr:.4f}", flush=True)
+        print(
+            f"  │  Ct = {ct:.4f}  │  Cp = {cp:.4f}  │  Cq = {cq:.4f}  │  TSR = {tsr:.4f}",
+            flush=True,
+        )
         print("  └" + "─" * 67, flush=True)
 
     def _log_solver_response(
@@ -2569,7 +2573,10 @@ class LinearDynamicFSIRotorSolver(LinearDynamicFSISolver):
         if getattr(self, "_auto_inertia", False):
             estimated_inertia = self._compute_estimated_inertia()
             if self._is_primary_rank():
-                print(f"  ↳ Auto-computed Moment of Inertia: {estimated_inertia:.4e} kg·m²", flush=True)
+                print(
+                    f"  ↳ Auto-computed Moment of Inertia: {estimated_inertia:.4e} kg·m²",
+                    flush=True,
+                )
 
             # Re-initialize provider with computed inertia
             ramp_time = self._auto_inertia_params.get("ramp_time", 0.0)
@@ -3051,9 +3058,7 @@ class LinearDynamicFSIRotorSolver(LinearDynamicFSISolver):
             if ckpt_omega is not None:
                 ckpt_omega = float(ckpt_omega)
                 if isinstance(self._omega_provider, RampedComputedOmega):
-                    self._omega_provider.set_state(
-                        (ckpt_omega, 0.0, True, t)
-                    )
+                    self._omega_provider.set_state((ckpt_omega, 0.0, True, t))
                     if self._is_primary_rank():
                         print(
                             f"  ↳ Omega provider restored: ω = {ckpt_omega:.4f} rad/s"
@@ -3278,7 +3283,10 @@ class LinearDynamicFSIRotorSolver(LinearDynamicFSISolver):
                         f"CFD solver likely diverged (Courant blow-up or PIMPLE non-convergence). "
                         "Aborting to prevent FSI hang."
                     )
-            if self._force_max_magnitude is not None and force_total_mag > self._force_max_magnitude:
+            if (
+                self._force_max_magnitude is not None
+                and force_total_mag > self._force_max_magnitude
+            ):
                 if self._restart_grace_remaining > 0:
                     clamp_scale = self._force_max_magnitude / force_total_mag
                     data_global *= clamp_scale
@@ -3461,7 +3469,10 @@ class LinearDynamicFSIRotorSolver(LinearDynamicFSISolver):
                 torque_inertial_scalar,
                 torque_gravity_scalar,
                 torque_total_scalar,
-                ct=ct, cp=cp, cq=cq, tsr=tsr,
+                ct=ct,
+                cp=cp,
+                cq=cq,
+                tsr=tsr,
                 ramp_factor=ramp_factor if ramp_factor < 1.0 else None,
                 force_ramp_time=self._force_ramp_time,
             )
@@ -3822,10 +3833,12 @@ class LinearDynamicFSIRotorSolver(LinearDynamicFSISolver):
                     stress_type=StressType.TOTAL,
                 )
             )
+            out.update(sr.compute_nodal_strains_all_layers_dict())
         elif has_solid and not has_shell:
             # Pure solid mesh → single set of results (no layer prefix)
             result = sr.compute_nodal_stresses()
             out.update(result.to_dict())
+            out.update({f"strain_{k}": v for k, v in sr.compute_nodal_strains().to_dict().items()})
         else:
             # Mixed mesh → export shell layers + solid (with prefix)
             out.update(
@@ -3833,6 +3846,7 @@ class LinearDynamicFSIRotorSolver(LinearDynamicFSISolver):
                     stress_type=StressType.TOTAL,
                 )
             )
+            out.update(sr.compute_nodal_strains_all_layers_dict())
 
         return out
 

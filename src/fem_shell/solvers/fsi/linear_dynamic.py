@@ -15,6 +15,7 @@ from petsc4py import PETSc
 
 from fem_shell.core.bc import BoundaryConditionManager
 from fem_shell.core.mesh import MeshModel
+from fem_shell.postprocess.stress_recovery import StressRecovery, StressType
 from fem_shell.solvers.linear import LinearDynamicSolver
 
 from .base import Adapter, ForceClipper, NewmarkCoefficients
@@ -159,6 +160,16 @@ class LinearDynamicFSISolver(LinearDynamicSolver):
         self._force_max_magnitude: Optional[float] = float(_fmax) if _fmax is not None else None
         self._force_jump_factor: float = float(self.solver_params.get("force_jump_factor", 1000.0))
         self._max_force_seen: float = 0.0
+
+        # On restart, CFD may produce transient force spikes while it re-stabilizes.
+        # During the grace period, force spikes are clamped instead of aborting.
+        self._restart_force_grace_windows: int = int(
+            self.solver_params.get("restart_force_grace_windows", 5)
+        )
+        self._restart_grace_remaining: int = 0
+
+        # On restart from latest checkpoint, force ramps must not be re-applied.
+        self._skip_ramps: bool = False
 
     # =========================================================================
     # Solver Setup
@@ -602,6 +613,25 @@ class LinearDynamicFSISolver(LinearDynamicSolver):
 
         return full_forces
 
+    def _compute_stress_fields(self, u_full: np.ndarray) -> Dict[str, np.ndarray]:
+        """Compute stress and strain fields for checkpoint VTU export."""
+        sr = StressRecovery(self.domain, u_full)
+        has_shell = any(sr._is_shell(e) for e in self.domain._element_map.values())
+        has_solid = any(sr._is_solid(e) for e in self.domain._element_map.values())
+
+        out: Dict[str, np.ndarray] = {}
+        if has_shell and not has_solid:
+            out.update(sr.compute_nodal_stresses_all_layers_dict(stress_type=StressType.TOTAL))
+            out.update(sr.compute_nodal_strains_all_layers_dict())
+        elif has_solid and not has_shell:
+            result = sr.compute_nodal_stresses()
+            out.update(result.to_dict())
+            out.update({f"strain_{k}": v for k, v in sr.compute_nodal_strains().to_dict().items()})
+        else:
+            out.update(sr.compute_nodal_stresses_all_layers_dict(stress_type=StressType.TOTAL))
+            out.update(sr.compute_nodal_strains_all_layers_dict())
+        return out
+
     def solve(self):
         """Perform dynamic analysis using improved Newmark-β method."""
         logger = logging.getLogger(__name__)
@@ -753,6 +783,26 @@ class LinearDynamicFSISolver(LinearDynamicSolver):
                     flush=True,
                 )
 
+            ckpt_max_force = checkpoint_state.get("max_force_seen", None)
+            if ckpt_max_force is not None:
+                self._max_force_seen = float(ckpt_max_force)
+                print(
+                    f"  ↳ Force baseline restored: |F|_max = {self._max_force_seen:.3e} N",
+                    flush=True,
+                )
+
+            # For true restart with state vectors, avoid re-ramping and enable
+            # temporary force spike grace to let CFD recover.
+            if "u_red" in checkpoint_state:
+                self._skip_ramps = True
+                self._restart_grace_remaining = self._restart_force_grace_windows
+                if self._restart_grace_remaining > 0:
+                    print(
+                        f"  ↳ Force grace period: {self._restart_grace_remaining} windows"
+                        " (clamp instead of abort)",
+                        flush=True,
+                    )
+
         # Write initial state at t=0 with undeformed mesh if configured
         if (
             self._checkpoint_manager is not None
@@ -760,6 +810,13 @@ class LinearDynamicFSISolver(LinearDynamicSolver):
             and starting_from_zero
             and t == 0
         ):
+            u_full_init = bc_manager.expand_solution(u).array.copy()
+            zeros_full = np.zeros((self.domain.mesh.node_count, 3), dtype=np.float64)
+            initial_fields = {
+                "F_AERO": zeros_full,
+                "F_TOTAL": zeros_full.copy(),
+            }
+            initial_fields.update(self._compute_stress_fields(u_full_init))
             self._handle_checkpoint(
                 t=0.0,
                 time_step=0,
@@ -767,9 +824,10 @@ class LinearDynamicFSISolver(LinearDynamicSolver):
                 u_red=u.array.copy(),
                 v_red=v.array.copy(),
                 a_red=a.array.copy(),
-                u_full=bc_manager.expand_solution(u).array.copy(),
+                u_full=u_full_init,
                 v_full=bc_manager.expand_state_vector(v).array.copy(),
                 a_full=bc_manager.expand_state_vector(a).array.copy(),
+                extra_fields=initial_fields,
             )
 
         # =====================================================================
@@ -837,24 +895,75 @@ class LinearDynamicFSISolver(LinearDynamicSolver):
             # Force sanity checks: detect CFD divergence
             # ==================================================================
             force_total_mag = raw_force_mag
-            if (
+            force_jump_exceeded = (
                 self._max_force_seen > 0.0
                 and force_total_mag > self._force_jump_factor * self._max_force_seen
-            ):
-                raise RuntimeError(
-                    f"Diverged force detected: |F| = {force_total_mag:.3e} N is "
-                    f"{force_total_mag / self._max_force_seen:.1f}× the running "
-                    f"max. CFD likely diverged."
-                )
+            )
+            if force_jump_exceeded:
+                if self._restart_grace_remaining > 0:
+                    clamp_scale = self._max_force_seen / force_total_mag
+                    data = data * clamp_scale
+                    if data.ndim == 2:
+                        raw_force_x = np.sum(data[:, 0])
+                        raw_force_y = np.sum(data[:, 1])
+                        raw_force_z = np.sum(data[:, 2]) if data.shape[1] >= 3 else 0.0
+                        raw_force_mag = np.sqrt(raw_force_x**2 + raw_force_y**2 + raw_force_z**2)
+                        raw_max_nodal = np.max(np.linalg.norm(data, axis=1))
+                    else:
+                        data_2d = data.reshape(-1, mesh_dim)
+                        raw_force_x = np.sum(data_2d[:, 0])
+                        raw_force_y = np.sum(data_2d[:, 1])
+                        raw_force_z = np.sum(data_2d[:, 2]) if mesh_dim >= 3 else 0.0
+                        raw_force_mag = np.sqrt(raw_force_x**2 + raw_force_y**2 + raw_force_z**2)
+                        raw_max_nodal = np.max(np.linalg.norm(data_2d, axis=1))
+                    force_total_mag = raw_force_mag
+                    print(
+                        f"  ⚠ Force clamped (grace {self._restart_grace_remaining}): "
+                        f"|F| = {force_total_mag:.3e} N",
+                        flush=True,
+                    )
+                else:
+                    raise RuntimeError(
+                        f"Diverged force detected: |F| = {force_total_mag:.3e} N is "
+                        f"{force_total_mag / self._max_force_seen:.1f}× the running "
+                        f"max. CFD likely diverged."
+                    )
             if (
                 self._force_max_magnitude is not None
                 and force_total_mag > self._force_max_magnitude
             ):
-                raise RuntimeError(
-                    f"Force exceeds limit: |F| = {force_total_mag:.3e} N > "
-                    f"{self._force_max_magnitude:.3e} N"
-                )
-            self._max_force_seen = max(self._max_force_seen, force_total_mag)
+                if self._restart_grace_remaining > 0:
+                    clamp_scale = self._force_max_magnitude / force_total_mag
+                    data = data * clamp_scale
+                    force_total_mag = self._force_max_magnitude
+                    print(
+                        f"  ⚠ Force clamped to limit (grace {self._restart_grace_remaining}): "
+                        f"|F| = {force_total_mag:.3e} N",
+                        flush=True,
+                    )
+                else:
+                    raise RuntimeError(
+                        f"Force exceeds limit: |F| = {force_total_mag:.3e} N > "
+                        f"{self._force_max_magnitude:.3e} N"
+                    )
+
+            # Recompute raw force diagnostics after potential restart clamping.
+            if data.ndim == 2:
+                n_nodes = data.shape[0]
+                raw_force_x = np.sum(data[:, 0])
+                raw_force_y = np.sum(data[:, 1])
+                raw_force_z = np.sum(data[:, 2]) if data.shape[1] >= 3 else 0.0
+                raw_force_mag = np.sqrt(raw_force_x**2 + raw_force_y**2 + raw_force_z**2)
+                raw_max_nodal = np.max(np.linalg.norm(data, axis=1))
+            else:
+                n_nodes = len(data) // mesh_dim
+                data_2d = data.reshape(-1, mesh_dim)
+                raw_force_x = np.sum(data_2d[:, 0])
+                raw_force_y = np.sum(data_2d[:, 1])
+                raw_force_z = np.sum(data_2d[:, 2]) if mesh_dim >= 3 else 0.0
+                raw_force_mag = np.sqrt(raw_force_x**2 + raw_force_y**2 + raw_force_z**2)
+                raw_max_nodal = np.max(np.linalg.norm(data_2d, axis=1))
+            force_total_mag = raw_force_mag
 
             # ==================================================================
             # Force clipping
@@ -865,7 +974,9 @@ class LinearDynamicFSISolver(LinearDynamicSolver):
             # Force ramping (physical time based)
             # ==================================================================
             t_target = t + self.dt
-            if ramp_time > 0 and t_target < ramp_time:
+            if self._skip_ramps:
+                ramp_factor = 1.0
+            elif ramp_time > 0 and t_target < ramp_time:
                 ramp_factor = 0.5 * (1.0 - np.cos(np.pi * t_target / ramp_time))
             elif ramp_time > 0 and t_target >= ramp_time:
                 ramp_factor = 1.0
@@ -873,6 +984,8 @@ class LinearDynamicFSISolver(LinearDynamicSolver):
                 ramp_factor = 1.0
 
             data_ramped = data_clipped * ramp_factor
+            if not force_jump_exceeded and ramp_factor >= 1.0:
+                self._max_force_seen = max(self._max_force_seen, force_total_mag)
 
             # ==================================================================
             # Applied forces (after clipping + ramping)
@@ -1012,20 +1125,25 @@ class LinearDynamicFSISolver(LinearDynamicSolver):
                 # Prepare force fields for checkpoint
                 force_fields = {}
                 if data_raw is not None:
-                    force_fields["Force CFD Raw"] = self._expand_interface_forces_to_full(
+                    force_fields["F_AERO_RAW"] = self._expand_interface_forces_to_full(
                         data_raw.reshape(-1, mesh_dim)
                     )
 
                 if data is not None:
-                    force_fields["Force Applied"] = self._expand_interface_forces_to_full(
+                    mapped_forces = self._expand_interface_forces_to_full(
                         data.reshape(-1, mesh_dim)
                     )
+                    force_fields["F_AERO"] = mapped_forces
+                    force_fields["F_TOTAL"] = mapped_forces.copy()
+
+                force_fields.update(self._compute_stress_fields(u_expanded.array.copy()))
 
                 # Handle checkpoint writing if enabled
                 self._handle_checkpoint(
                     t=t,
                     time_step=time_step,
                     dt=self.dt,
+                    max_force_seen=self._max_force_seen,
                     u_red=u.array.copy(),
                     v_red=v.array.copy(),
                     a_red=a.array.copy(),
@@ -1034,6 +1152,9 @@ class LinearDynamicFSISolver(LinearDynamicSolver):
                     a_full=bc_manager.expand_state_vector(a).array.copy(),
                     extra_fields=force_fields,
                 )
+
+                if self._restart_grace_remaining > 0:
+                    self._restart_grace_remaining -= 1
 
         # Get final clipping statistics
         clip_stats = force_clipper.get_statistics()
