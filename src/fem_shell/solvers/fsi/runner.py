@@ -1121,10 +1121,22 @@ class FSIRunner:
         """Visualize the model mesh.
 
         This loads the mesh if needed and opens the interactive viewer.
+        For blade/rotor generators, shows element data fields (thickness,
+        stiffness, plies, etc.) and colors by element sets.
         """
         if self.mesh is None:
             self.mesh = self._setup_mesh()
-        self.mesh.view()
+
+        element_data = None
+        if self._mesh_generator is not None and self.config.material is None:
+            # Extract composite properties and build visualization fields
+            if self._blade_properties is None:
+                self._blade_properties = self._extract_blade_properties()
+            from ...core.properties import build_element_data
+
+            element_data = build_element_data(self._blade_properties, self.mesh)
+
+        self.mesh.view(color_by_sets=True, element_data=element_data)
 
     def preview_config(self) -> str:
         """Get a preview of the configuration.
