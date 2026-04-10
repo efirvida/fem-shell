@@ -95,7 +95,7 @@ References
   33, 1331–1364.  (Theoretical basis for nodal stress smoothing.)
 """
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from enum import Enum
 from typing import TYPE_CHECKING, Dict, List, Optional, Tuple
 
@@ -359,48 +359,101 @@ class StressRecovery:
 
     _SOLID_NODE_COORDS: Dict[str, List[Tuple[float, float, float]]] = {
         "TETRA4": [
-            (0.0, 0.0, 0.0), (1.0, 0.0, 0.0),
-            (0.0, 1.0, 0.0), (0.0, 0.0, 1.0),
+            (0.0, 0.0, 0.0),
+            (1.0, 0.0, 0.0),
+            (0.0, 1.0, 0.0),
+            (0.0, 0.0, 1.0),
         ],
         "TETRA10": [
-            (0.0, 0.0, 0.0), (1.0, 0.0, 0.0),
-            (0.0, 1.0, 0.0), (0.0, 0.0, 1.0),
-            (0.5, 0.0, 0.0), (0.5, 0.5, 0.0),
-            (0.0, 0.5, 0.0), (0.0, 0.0, 0.5),
-            (0.5, 0.0, 0.5), (0.0, 0.5, 0.5),
+            (0.0, 0.0, 0.0),
+            (1.0, 0.0, 0.0),
+            (0.0, 1.0, 0.0),
+            (0.0, 0.0, 1.0),
+            (0.5, 0.0, 0.0),
+            (0.5, 0.5, 0.0),
+            (0.0, 0.5, 0.0),
+            (0.0, 0.0, 0.5),
+            (0.5, 0.0, 0.5),
+            (0.0, 0.5, 0.5),
         ],
         "HEXA8": [
-            (-1, -1, -1), (1, -1, -1), (1, 1, -1), (-1, 1, -1),
-            (-1, -1,  1), (1, -1,  1), (1, 1,  1), (-1, 1,  1),
+            (-1, -1, -1),
+            (1, -1, -1),
+            (1, 1, -1),
+            (-1, 1, -1),
+            (-1, -1, 1),
+            (1, -1, 1),
+            (1, 1, 1),
+            (-1, 1, 1),
         ],
         "HEXA20": [
-            (-1, -1, -1), (1, -1, -1), (1, 1, -1), (-1, 1, -1),
-            (-1, -1,  1), (1, -1,  1), (1, 1,  1), (-1, 1,  1),
-            ( 0, -1, -1), (1,  0, -1), ( 0, 1, -1), (-1, 0, -1),
-            ( 0, -1,  1), (1,  0,  1), ( 0, 1,  1), (-1, 0,  1),
-            (-1, -1,  0), (1, -1,  0), (1, 1,  0), (-1, 1,  0),
+            (-1, -1, -1),
+            (1, -1, -1),
+            (1, 1, -1),
+            (-1, 1, -1),
+            (-1, -1, 1),
+            (1, -1, 1),
+            (1, 1, 1),
+            (-1, 1, 1),
+            (0, -1, -1),
+            (1, 0, -1),
+            (0, 1, -1),
+            (-1, 0, -1),
+            (0, -1, 1),
+            (1, 0, 1),
+            (0, 1, 1),
+            (-1, 0, 1),
+            (-1, -1, 0),
+            (1, -1, 0),
+            (1, 1, 0),
+            (-1, 1, 0),
         ],
         "WEDGE6": [
-            (0, 0, -1), (1, 0, -1), (0, 1, -1),
-            (0, 0,  1), (1, 0,  1), (0, 1,  1),
+            (0, 0, -1),
+            (1, 0, -1),
+            (0, 1, -1),
+            (0, 0, 1),
+            (1, 0, 1),
+            (0, 1, 1),
         ],
         "WEDGE15": [
-            (0, 0, -1), (1, 0, -1), (0, 1, -1),
-            (0, 0,  1), (1, 0,  1), (0, 1,  1),
-            (0.5, 0, -1), (0.5, 0.5, -1), (0, 0.5, -1),
-            (0.5, 0,  1), (0.5, 0.5,  1), (0, 0.5,  1),
-            (0, 0, 0), (1, 0, 0), (0, 1, 0),
+            (0, 0, -1),
+            (1, 0, -1),
+            (0, 1, -1),
+            (0, 0, 1),
+            (1, 0, 1),
+            (0, 1, 1),
+            (0.5, 0, -1),
+            (0.5, 0.5, -1),
+            (0, 0.5, -1),
+            (0.5, 0, 1),
+            (0.5, 0.5, 1),
+            (0, 0.5, 1),
+            (0, 0, 0),
+            (1, 0, 0),
+            (0, 1, 0),
         ],
         "PYRAMID5": [
-            (-1, -1, 0), (1, -1, 0), (1, 1, 0), (-1, 1, 0),
+            (-1, -1, 0),
+            (1, -1, 0),
+            (1, 1, 0),
+            (-1, 1, 0),
             (0, 0, 1),
         ],
         "PYRAMID13": [
-            (-1, -1, 0), (1, -1, 0), (1, 1, 0), (-1, 1, 0),
+            (-1, -1, 0),
+            (1, -1, 0),
+            (1, 1, 0),
+            (-1, 1, 0),
             (0, 0, 1),
-            (0, -1, 0), (1, 0, 0), (0, 1, 0), (-1, 0, 0),
-            (-0.5, -0.5, 0.5), (0.5, -0.5, 0.5),
-            (0.5, 0.5, 0.5), (-0.5, 0.5, 0.5),
+            (0, -1, 0),
+            (1, 0, 0),
+            (0, 1, 0),
+            (-1, 0, 0),
+            (-0.5, -0.5, 0.5),
+            (0.5, -0.5, 0.5),
+            (0.5, 0.5, 0.5),
+            (-0.5, 0.5, 0.5),
         ],
     }
 
@@ -575,9 +628,7 @@ class StressRecovery:
             Stress vector [σ_xx, σ_yy, τ_xy] in Pa.
         """
         h = element.thickness
-        z = {StressLocation.TOP: h / 2, StressLocation.BOTTOM: -h / 2}.get(
-            location, 0.0
-        )
+        z = {StressLocation.TOP: h / 2, StressLocation.BOTTOM: -h / 2}.get(location, 0.0)
 
         # Material matrix WITHOUT thickness factor  →  actual stress (Pa)
         C_mat = element.Cm() / h
@@ -637,9 +688,7 @@ class StressRecovery:
             Strain vector [ε_xx, ε_yy, γ_xy].
         """
         h = element.thickness
-        z = {StressLocation.TOP: h / 2, StressLocation.BOTTOM: -h / 2}.get(
-            location, 0.0
-        )
+        z = {StressLocation.TOP: h / 2, StressLocation.BOTTOM: -h / 2}.get(location, 0.0)
 
         B_m = element.B_m(r, s)
         epsilon_m = B_m @ u_elem
@@ -753,9 +802,7 @@ class StressRecovery:
             u_elem = self._extract_element_displacements(element)
 
             if self._is_shell(element):
-                sig3 = self._compute_shell_stress(
-                    element, u_elem, r0, s0, location, stress_type
-                )
+                sig3 = self._compute_shell_stress(element, u_elem, r0, s0, location, stress_type)
                 sigma_all[elem_idx, :3] = sig3
 
             elif self._is_solid(element):
@@ -834,13 +881,9 @@ class StressRecovery:
             if self._is_shell(element):
                 node_coords = self._SHELL_NODE_COORDS.get(element.name)
                 if node_coords is None:
-                    raise ValueError(
-                        f"Unsupported shell element type: {element.name}"
-                    )
+                    raise ValueError(f"Unsupported shell element type: {element.name}")
                 for local_idx, (r, s) in enumerate(node_coords):
-                    sig3 = self._compute_shell_stress(
-                        element, u_elem, r, s, location, stress_type
-                    )
+                    sig3 = self._compute_shell_stress(element, u_elem, r, s, location, stress_type)
                     gn = self._node_id_to_index[element.node_ids[local_idx]]
                     sigma_sum[gn, :3] += weight * sig3
                     weight_sum[gn] += weight
@@ -848,9 +891,7 @@ class StressRecovery:
             elif self._is_solid(element):
                 has_solid = True
                 E_mat = self._get_extrapolation_matrix(element)
-                sig_gp, _ = self._compute_solid_gauss_stresses(
-                    element, u_elem
-                )
+                sig_gp, _ = self._compute_solid_gauss_stresses(element, u_elem)
                 # Extrapolate each component independently
                 sig_nodes = E_mat @ sig_gp  # (n_nodes_elem, 6)
 
@@ -902,15 +943,9 @@ class StressRecovery:
             Keys are ``"TOP"``, ``"MID"``, ``"BOT"``.
         """
         return {
-            "TOP": self.compute_nodal_stresses(
-                StressLocation.TOP, stress_type, smoothing
-            ),
-            "MID": self.compute_nodal_stresses(
-                StressLocation.MIDDLE, stress_type, smoothing
-            ),
-            "BOT": self.compute_nodal_stresses(
-                StressLocation.BOTTOM, stress_type, smoothing
-            ),
+            "TOP": self.compute_nodal_stresses(StressLocation.TOP, stress_type, smoothing),
+            "MID": self.compute_nodal_stresses(StressLocation.MIDDLE, stress_type, smoothing),
+            "BOT": self.compute_nodal_stresses(StressLocation.BOTTOM, stress_type, smoothing),
         }
 
     def compute_nodal_stresses_all_layers_dict(
@@ -948,6 +983,48 @@ class StressRecovery:
         layers = self.compute_nodal_stresses_all_layers(stress_type, smoothing)
         out: Dict[str, np.ndarray] = {}
         for prefix, result in layers.items():
+            for key, arr in result.to_dict().items():
+                out[f"{prefix}_{key}"] = arr
+        return out
+
+    def compute_nodal_strains_all_layers_dict(
+        self,
+        smoothing: str = "average",
+    ) -> Dict[str, np.ndarray]:
+        """Return a flat dictionary of nodal strain arrays for VTU export.
+
+        Evaluates ``compute_nodal_strains`` at TOP, MIDDLE and BOTTOM
+        through-thickness locations (shells) and flattens the resulting
+        ``StrainResult`` objects into a single ``dict[str, np.ndarray]``
+        with layer-prefixed keys.
+
+        Key naming convention::
+
+            {LAYER}_{component}
+
+        Examples: ``TOP_epsilon_xx``, ``MID_gamma_xy``, ``BOT_epsilon_1``.
+
+        For solid elements the through-thickness location is irrelevant;
+        the same strain field is returned for all three keys.
+
+        Parameters
+        ----------
+        smoothing : str, default ``"average"``
+            ``"average"`` or ``"area_weighted"``.
+
+        Returns
+        -------
+        dict of {str: np.ndarray}
+            Flat dictionary suitable for ``CheckpointManager.write(
+            extra_fields=...)``.
+        """
+        out: Dict[str, np.ndarray] = {}
+        for prefix, loc in (
+            ("TOP", StressLocation.TOP),
+            ("MID", StressLocation.MIDDLE),
+            ("BOT", StressLocation.BOTTOM),
+        ):
+            result = self.compute_nodal_strains(location=loc, smoothing=smoothing)
             for key, arr in result.to_dict().items():
                 out[f"{prefix}_{key}"] = arr
         return out
@@ -991,16 +1068,12 @@ class StressRecovery:
             u_elem = self._extract_element_displacements(element)
 
             if self._is_shell(element):
-                eps3 = self._compute_shell_strain(
-                    element, u_elem, r0, s0, location
-                )
+                eps3 = self._compute_shell_strain(element, u_elem, r0, s0, location)
                 eps_all[elem_idx, :3] = eps3
 
             elif self._is_solid(element):
                 has_solid = True
-                _, eps_gp = self._compute_solid_gauss_stresses(
-                    element, u_elem
-                )
+                _, eps_gp = self._compute_solid_gauss_stresses(element, u_elem)
                 eps_all[elem_idx, :] = eps_gp.mean(axis=0)
 
         return self._build_strain_result(eps_all, is_3d=has_solid)
@@ -1050,13 +1123,9 @@ class StressRecovery:
             if self._is_shell(element):
                 node_coords = self._SHELL_NODE_COORDS.get(element.name)
                 if node_coords is None:
-                    raise ValueError(
-                        f"Unsupported shell element type: {element.name}"
-                    )
+                    raise ValueError(f"Unsupported shell element type: {element.name}")
                 for local_idx, (r, s) in enumerate(node_coords):
-                    eps3 = self._compute_shell_strain(
-                        element, u_elem, r, s, location
-                    )
+                    eps3 = self._compute_shell_strain(element, u_elem, r, s, location)
                     gn = self._node_id_to_index[element.node_ids[local_idx]]
                     eps_sum[gn, :3] += weight * eps3
                     weight_sum[gn] += weight
@@ -1064,9 +1133,7 @@ class StressRecovery:
             elif self._is_solid(element):
                 has_solid = True
                 E_mat = self._get_extrapolation_matrix(element)
-                _, eps_gp = self._compute_solid_gauss_stresses(
-                    element, u_elem
-                )
+                _, eps_gp = self._compute_solid_gauss_stresses(element, u_elem)
                 eps_nodes = E_mat @ eps_gp  # (n_nodes_elem, 6)
 
                 for local_idx in range(element.node_count):
@@ -1117,7 +1184,7 @@ class StressRecovery:
         txy, tyz, tzx = s[:, 3], s[:, 4], s[:, 5]
         return np.sqrt(
             0.5 * ((sxx - syy) ** 2 + (syy - szz) ** 2 + (szz - sxx) ** 2)
-            + 3.0 * (txy ** 2 + tyz ** 2 + tzx ** 2)
+            + 3.0 * (txy**2 + tyz**2 + tzx**2)
         )
 
     @staticmethod
@@ -1158,7 +1225,7 @@ class StressRecovery:
         """
         avg = (sxx + syy) / 2
         diff = (sxx - syy) / 2
-        R = np.sqrt(diff ** 2 + sxy ** 2)
+        R = np.sqrt(diff**2 + sxy**2)
         return avg + R, avg - R, R, 0.5 * np.arctan2(2 * sxy, sxx - syy)
 
     @staticmethod
@@ -1208,13 +1275,11 @@ class StressRecovery:
 
         # Invariants
         I1 = sxx + syy + szz
-        I2 = (sxx * syy + syy * szz + szz * sxx
-              - txy ** 2 - tyz ** 2 - tzx ** 2)
-        I3 = (sxx * syy * szz + 2 * txy * tyz * tzx
-              - sxx * tyz ** 2 - syy * tzx ** 2 - szz * txy ** 2)
+        I2 = sxx * syy + syy * szz + szz * sxx - txy**2 - tyz**2 - tzx**2
+        I3 = sxx * syy * szz + 2 * txy * tyz * tzx - sxx * tyz**2 - syy * tzx**2 - szz * txy**2
 
-        p = I1 ** 2 / 3.0 - I2
-        q = 2.0 * I1 ** 3 / 27.0 - I1 * I2 / 3.0 + I3
+        p = I1**2 / 3.0 - I2
+        q = 2.0 * I1**3 / 27.0 - I1 * I2 / 3.0 + I3
 
         # Prevent numeric issues near zero discriminant
         p = np.maximum(p, 0.0)
@@ -1240,9 +1305,7 @@ class StressRecovery:
         return sigma_1, sigma_2, sigma_3, tau_max
 
     # ------------------------------------------------------------------
-    def _build_stress_result(
-        self, sigma: np.ndarray, is_3d: bool
-    ) -> StressResult:
+    def _build_stress_result(self, sigma: np.ndarray, is_3d: bool) -> StressResult:
         """Assemble a ``StressResult`` from a raw Voigt stress array.
 
         Given an ``(N, 6)`` array of Voigt stresses (nodal or elemental),
@@ -1275,9 +1338,7 @@ class StressRecovery:
             s1, s2, s3, tau = self._principal_3d(sigma)
             angle = np.zeros(sigma.shape[0])
         else:
-            s1, s2, tau, angle = self._principal_2d(
-                sigma[:, 0], sigma[:, 1], sigma[:, 3]
-            )
+            s1, s2, tau, angle = self._principal_2d(sigma[:, 0], sigma[:, 1], sigma[:, 3])
             s3 = None
 
         return StressResult(
@@ -1295,9 +1356,7 @@ class StressRecovery:
             sigma_3=s3,
         )
 
-    def _build_strain_result(
-        self, eps: np.ndarray, is_3d: bool
-    ) -> StrainResult:
+    def _build_strain_result(self, eps: np.ndarray, is_3d: bool) -> StrainResult:
         """Assemble a ``StrainResult`` from a raw Voigt strain array.
 
         Computes principal strains and maximum shear strain via in-plane
@@ -1321,7 +1380,7 @@ class StressRecovery:
 
         avg = (exx + eyy) / 2
         diff = (exx - eyy) / 2
-        R = np.sqrt(diff ** 2 + (gxy / 2) ** 2)
+        R = np.sqrt(diff**2 + (gxy / 2) ** 2)
 
         e1 = avg + R
         e2 = avg - R
@@ -1439,22 +1498,15 @@ def compute_von_mises(
     """
     if sigma_zz is None:
         # Plane stress shortcut
-        return np.sqrt(
-            sigma_xx ** 2 + sigma_yy ** 2 - sigma_xx * sigma_yy
-            + 3 * sigma_xy ** 2
-        )
+        return np.sqrt(sigma_xx**2 + sigma_yy**2 - sigma_xx * sigma_yy + 3 * sigma_xy**2)
 
     szz = np.asarray(sigma_zz)
     tyz = np.asarray(tau_yz) if tau_yz is not None else np.zeros_like(szz)
     tzx = np.asarray(tau_zx) if tau_zx is not None else np.zeros_like(szz)
 
     return np.sqrt(
-        0.5 * (
-            (sigma_xx - sigma_yy) ** 2
-            + (sigma_yy - szz) ** 2
-            + (szz - sigma_xx) ** 2
-        )
-        + 3.0 * (sigma_xy ** 2 + tyz ** 2 + tzx ** 2)
+        0.5 * ((sigma_xx - sigma_yy) ** 2 + (sigma_yy - szz) ** 2 + (szz - sigma_xx) ** 2)
+        + 3.0 * (sigma_xy**2 + tyz**2 + tzx**2)
     )
 
 
@@ -1489,16 +1541,16 @@ def compute_principal_stresses(
     if sigma_zz is None:
         sigma_avg = (sigma_xx + sigma_yy) / 2
         sigma_diff = (sigma_xx - sigma_yy) / 2
-        R = np.sqrt(sigma_diff ** 2 + sigma_xy ** 2)
-        return sigma_avg + R, sigma_avg - R, 0.5 * np.arctan2(
-            2 * sigma_xy, sigma_xx - sigma_yy
-        )
+        R = np.sqrt(sigma_diff**2 + sigma_xy**2)
+        return sigma_avg + R, sigma_avg - R, 0.5 * np.arctan2(2 * sigma_xy, sigma_xx - sigma_yy)
 
     # Full 3-D via StressRecovery helper
     n = len(sigma_xx)
     s = np.column_stack([
-        sigma_xx, sigma_yy,
-        np.asarray(sigma_zz), sigma_xy,
+        sigma_xx,
+        sigma_yy,
+        np.asarray(sigma_zz),
+        sigma_xy,
         np.asarray(tau_yz) if tau_yz is not None else np.zeros(n),
         np.asarray(tau_zx) if tau_zx is not None else np.zeros(n),
     ])
@@ -1534,9 +1586,7 @@ def compute_max_shear_stress(
     """
     if sigma_zz is None:
         sigma_diff = (sigma_xx - sigma_yy) / 2
-        return np.sqrt(sigma_diff ** 2 + sigma_xy ** 2)
+        return np.sqrt(sigma_diff**2 + sigma_xy**2)
 
-    s1, s2, s3 = compute_principal_stresses(
-        sigma_xx, sigma_yy, sigma_xy, sigma_zz, tau_yz, tau_zx
-    )
+    s1, s2, s3 = compute_principal_stresses(sigma_xx, sigma_yy, sigma_xy, sigma_zz, tau_yz, tau_zx)
     return (s1 - s3) / 2
