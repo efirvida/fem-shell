@@ -18,6 +18,11 @@ import logging
 from pathlib import Path
 from typing import Any, Dict, Optional, Union
 
+from rich.console import Console
+from rich.panel import Panel
+from rich.table import Table
+from rich.text import Text
+
 from ...core.bc import BodyForce, DirichletCondition
 from ...core.config import (
     ElementFamily,
@@ -98,6 +103,7 @@ class FSIRunner:
         self.working_dir = Path(working_dir) if working_dir else Path.cwd()
         self.mesh: Optional[MeshModel] = None
         self.solver = None
+        self._console = Console()
         self._material = None
         self._blade_properties = None  # Composite properties from blade YAML
         self._mesh_generator = None  # Stored for property extraction
@@ -131,8 +137,6 @@ class FSIRunner:
         self._print_header()
         self._validate_config()
 
-        logger.info("Starting FSI simulation...")
-
         # Step 1: Load or generate mesh
         self.mesh = self._setup_mesh()
 
@@ -149,12 +153,11 @@ class FSIRunner:
         self._apply_boundary_conditions()
 
         # Step 6: Run simulation
-        logger.info("Starting solver...")
+        self._console.print("\n[bold cyan]\\[6/6] Running solver...[/bold cyan]")
         try:
             result = self.solver.solve()
         except RuntimeError as exc:
             if not self._is_modal and self._is_precice_peer_disconnect(exc):
-                logger.error("preCICE peer disconnected: %s", exc)
                 self._print_precice_disconnect_help(exc)
                 raise
             raise
@@ -165,7 +168,7 @@ class FSIRunner:
         else:
             self._run_postprocessing()
 
-        logger.info("Simulation completed successfully!")
+        self._console.print("\n[bold green]Simulation completed successfully.[/bold green]")
         return self.solver
 
     def export_calculix(
@@ -214,13 +217,16 @@ class FSIRunner:
 
     def _print_header(self) -> None:
         """Print simulation header."""
-        print("\n" + "=" * 70)
-        print("  FEM-SHELL FSI SIMULATION RUNNER")
-        print("=" * 70)
-        print(f"  Configuration: {self.config_path or 'Provided object'}")
-        print(f"  Solver: {self.config.solver.type}")
-        print(f"  Mesh source: {self.config.mesh.source}")
-        print("=" * 70 + "\n")
+        content = Text()
+        content.append("Configuration: ", style="bold")
+        content.append(f"{self.config_path or 'Provided object'}\n")
+        content.append("Solver:        ", style="bold")
+        content.append(f"{self.config.solver.type}\n")
+        content.append("Mesh source:   ", style="bold")
+        content.append(f"{self.config.mesh.source}")
+        self._console.print()
+        self._console.print(Panel(content, title="FEM-SHELL FSI SIMULATION RUNNER",
+                                  border_style="cyan", expand=False))
 
     def _validate_config(self) -> None:
         """Validate configuration before running."""
@@ -259,14 +265,13 @@ class FSIRunner:
                 )
 
         if mismatches:
-            print("\n" + "!" * 60)
-            print("  WARNING: YAML ↔ preCICE time parameter mismatch")
-            print("!" * 60)
-            for m in mismatches:
-                print(f"  ⚠ {m}")
-            print("  The preCICE XML defines the coupling time window.")
-            print("  Mismatched values may cause unexpected behavior.")
-            print("!" * 60 + "\n")
+            lines = "\n".join(f"⚠ {m}" for m in mismatches)
+            lines += "\n\nThe preCICE XML defines the coupling time window."
+            lines += "\nMismatched values may cause unexpected behavior."
+            self._console.print()
+            self._console.print(Panel(lines, title="YAML ↔ preCICE time mismatch",
+                                      border_style="bold yellow", expand=False))
+            self._console.print()
 
     @staticmethod
     def _is_precice_peer_disconnect(exc: BaseException) -> bool:
@@ -284,22 +289,24 @@ class FSIRunner:
         """Print a user-friendly message for preCICE peer disconnects."""
         import os
 
-        print("\n" + "=" * 80)
-        print("PRECICE COUPLING STOPPED (PEER DISCONNECTED)")
-        print("=" * 80)
-        print("  Solid participant received EOF from preCICE socket.")
-        print("  This usually means the fluid participant crashed or exited first.")
-        print("\n  Next checks:")
-        print("    1) Inspect the fluid participant log around the same timestamp")
-        print("    2) Check preCICE adapter messages on the fluid side")
-        print("    3) Verify both participants use matching preCICE XML and data names")
+        console = Console()
+        lines = (
+            "Solid participant received EOF from preCICE socket.\n"
+            "This usually means the fluid participant crashed or exited first.\n\n"
+            "[bold]Next checks:[/bold]\n"
+            "  1) Inspect the fluid participant log around the same timestamp\n"
+            "  2) Check preCICE adapter messages on the fluid side\n"
+            "  3) Verify both participants use matching preCICE XML and data names"
+        )
         if os.environ.get("FEM_SHELL_DEBUG_TRACEBACK") == "1":
-            print(f"\n  Original error: {exc}")
-        print("=" * 80)
+            lines += f"\n\nOriginal error: {exc}"
+        console.print()
+        console.print(Panel(lines, title="PRECICE COUPLING STOPPED (PEER DISCONNECTED)",
+                            border_style="bold red", expand=False))
 
     def _setup_mesh(self) -> MeshModel:
         """Load or generate the mesh based on configuration."""
-        print("\n[1/6] Setting up mesh...", flush=True)
+        self._console.print("\n[bold cyan]\\[1/6] Setting up mesh...[/bold cyan]")
 
         mesh = None
 
@@ -315,12 +322,14 @@ class FSIRunner:
 
         # Renumber mesh if configured
         if self.config.mesh.renumber:
-            print(f"      Renumbering mesh (algorithm={self.config.mesh.renumber})...")
+            self._console.print(
+                f"      Renumbering mesh (algorithm={self.config.mesh.renumber})..."
+            )
             mesh.renumber_mesh(algorithm=self.config.mesh.renumber, verbose=True)
 
         # Mesh quality checks for solid elements
         if self.config.elements.family == ElementFamily.SOLID.value:
-            print("      Running solid element quality checks...")
+            self._console.print("      Running solid element quality checks...")
             verify_solid_element_orientations(mesh, fix_inplace=True)
             check_mesh_quality(mesh)
 
@@ -331,11 +340,10 @@ class FSIRunner:
         # Write VTK if configured
         if self.config.mesh.output_file:
             mesh.write_mesh(self.config.mesh.output_file)
-            print(f"      Written: {self.config.mesh.output_file}")
+            self._console.print(f"      Written: {self.config.mesh.output_file}")
 
-        print(f"      Nodes: {len(mesh.nodes)}")
-        print(f"      Elements: {len(mesh.elements)}")
-        print(f"      Node sets: {list(mesh.node_sets.keys())}")
+        # Print mesh statistics
+        self._print_mesh_statistics(mesh)
 
         # Mesh analysis for FSI coupling (RBF support-radius guidance)
         if self.config.coupling:
@@ -343,13 +351,122 @@ class FSIRunner:
 
         return mesh
 
+    def _print_mesh_statistics(self, mesh: MeshModel) -> None:
+        """Print mesh topology and element size statistics."""
+        import numpy as np
+        from collections import Counter
+        from itertools import combinations
+
+        # --- Topology overview ---
+        topo = Table(title="Mesh Topology", title_style="bold cyan",
+                     show_lines=False, pad_edge=True, expand=False)
+        topo.add_column("Property", style="bold")
+        topo.add_column("Value", justify="right")
+        topo.add_row("Nodes", f"{len(mesh.nodes):,}")
+        topo.add_row("Elements", f"{len(mesh.elements):,}")
+        topo.add_row("Node sets", ", ".join(mesh.node_sets.keys()) or "—")
+
+        # Count element types
+        type_counts = Counter(e.element_type.name for e in mesh.elements)
+        for etype, cnt in sorted(type_counts.items()):
+            topo.add_row(f"  {etype}", f"{cnt:,}")
+
+        self._console.print()
+        self._console.print(topo)
+
+        # --- Element size statistics ---
+        all_edge_lengths = []
+        elem_max_sizes = []
+        elem_min_sizes = []
+
+        for elem in mesh.elements:
+            coords = elem.node_coords
+            n_corner = {3: 3, 4: 4, 6: 3, 8: 4, 9: 4, 16: 4,
+                        10: 4, 20: 8}.get(len(coords), len(coords))
+            corners = coords[:n_corner]
+            edges = []
+            for i, j in combinations(range(n_corner), 2):
+                edges.append(np.linalg.norm(corners[i] - corners[j]))
+            if edges:
+                all_edge_lengths.extend(edges)
+                elem_max_sizes.append(max(edges))
+                elem_min_sizes.append(min(edges))
+
+        if not all_edge_lengths:
+            return
+
+        all_edge_lengths = np.array(all_edge_lengths)
+        elem_max_sizes = np.array(elem_max_sizes)
+        elem_min_sizes = np.array(elem_min_sizes)
+
+        stats = Table(title="Element Size Statistics",
+                      title_style="bold cyan", show_lines=False,
+                      pad_edge=True, expand=False)
+        stats.add_column("Metric", style="bold")
+        stats.add_column("Min", justify="right")
+        stats.add_column("Mean", justify="right")
+        stats.add_column("Max", justify="right")
+
+        stats.add_row(
+            "Edge length [m]",
+            f"{all_edge_lengths.min():.4f}",
+            f"{all_edge_lengths.mean():.4f}",
+            f"{all_edge_lengths.max():.4f}",
+        )
+        stats.add_row(
+            "Element max edge [m]",
+            f"{elem_max_sizes.min():.4f}",
+            f"{elem_max_sizes.mean():.4f}",
+            f"{elem_max_sizes.max():.4f}",
+        )
+        stats.add_row(
+            "Element min edge [m]",
+            f"{elem_min_sizes.min():.4f}",
+            f"{elem_min_sizes.mean():.4f}",
+            f"{elem_min_sizes.max():.4f}",
+        )
+
+        # Aspect ratio (max_edge / min_edge per element)
+        with np.errstate(divide="ignore", invalid="ignore"):
+            aspect = np.where(elem_min_sizes > 0,
+                              elem_max_sizes / elem_min_sizes, 0.0)
+        if aspect.any():
+            stats.add_row(
+                "Aspect ratio",
+                f"{aspect[aspect > 0].min():.2f}" if (aspect > 0).any() else "—",
+                f"{aspect[aspect > 0].mean():.2f}" if (aspect > 0).any() else "—",
+                f"{aspect.max():.2f}",
+            )
+
+        # Bounding box
+        all_coords = np.array([n.coords for n in mesh.nodes])
+        bb_min = all_coords.min(axis=0)
+        bb_max = all_coords.max(axis=0)
+        bb_size = bb_max - bb_min
+
+        stats.add_section()
+        stats.add_row(
+            "Bounding box [m]",
+            f"({bb_min[0]:.3f}, {bb_min[1]:.3f}, {bb_min[2]:.3f})",
+            "",
+            f"({bb_max[0]:.3f}, {bb_max[1]:.3f}, {bb_max[2]:.3f})",
+        )
+        stats.add_row(
+            "Domain size [m]",
+            "",
+            "",
+            f"({bb_size[0]:.3f}, {bb_size[1]:.3f}, {bb_size[2]:.3f})",
+        )
+
+        self._console.print(stats)
+
     def _try_load_checkpoint_mesh(self) -> Optional[MeshModel]:
         """Try to load deformed mesh from latest checkpoint."""
         from ..checkpoint import CheckpointManager
 
         output_folder = self.config.output.folder if self.config.output else "results"
 
-        print("      Attempting to restore mesh from latest checkpoint...")
+        self._console.print("      Attempting to restore mesh from latest checkpoint...")
 
         # Create a minimal checkpoint manager to find latest
         cm = CheckpointManager(
@@ -365,12 +482,18 @@ class FSIRunner:
         if latest is not None:
             deformed_path = Path(latest.path) / "deformed_mesh.h5"
             if deformed_path.exists():
-                print(f"      ✓ Restored deformed mesh: {deformed_path}")
+                self._console.print(
+                    f"      [green]✓[/green] Restored deformed mesh: {deformed_path}"
+                )
                 return MeshModel.load(str(deformed_path))
             else:
-                print("      ⚠️  No deformed mesh found in latest checkpoint")
+                self._console.print(
+                    "      [yellow]⚠[/yellow]  No deformed mesh found in latest checkpoint"
+                )
         else:
-            print("      ⚠️  No checkpoints found")
+            self._console.print(
+                "      [yellow]⚠[/yellow]  No checkpoints found"
+            )
 
         return None
 
@@ -385,7 +508,7 @@ class FSIRunner:
         if not file_path.exists():
             raise FileNotFoundError(f"Mesh file not found: {file_path}")
 
-        print(f"      Loading mesh from: {file_path}")
+        self._console.print(f"      Loading mesh from: {file_path}")
         return MeshModel.load(str(file_path), format=file_config.format)
 
     def _generate_mesh(self) -> MeshModel:
@@ -397,7 +520,7 @@ class FSIRunner:
         gen_type = gen_config.type
         params = gen_config.params
 
-        print(f"      Generating mesh with: {gen_type}")
+        self._console.print(f"      Generating mesh with: [bold]{gen_type}[/bold]")
 
         if gen_type == MeshGeneratorType.SQUARE.value:
             mesh = SquareShapeMesh(
@@ -470,6 +593,7 @@ class FSIRunner:
                 airfoil_dir=airfoil_dir,
                 element_size=params.get("element_size", 0.15),
                 n_samples=params.get("n_samples", 300),
+                span_grading=params.get("span_grading", "chord"),
             )
             mesh = generator.generate(renumber=None)
             self._mesh_generator = generator
@@ -494,8 +618,10 @@ class FSIRunner:
         """Create node sets from geometric criteria defined in configuration."""
         for ns_cfg in self.config.mesh.node_sets:
             if ns_cfg.name in mesh.node_sets:
-                print(f"      Node set '{ns_cfg.name}': already exists "
-                      f"({mesh.node_sets[ns_cfg.name].node_count} nodes), skipping")
+                self._console.print(
+                    f"      Node set [bold]'{ns_cfg.name}'[/bold]: already exists "
+                    f"({mesh.node_sets[ns_cfg.name].node_count} nodes), skipping"
+                )
                 continue
             kwargs = ns_cfg.params or {}
             nset = mesh.create_node_set_by_geometry(
@@ -504,19 +630,17 @@ class FSIRunner:
                 on_surface=ns_cfg.on_surface,
                 **kwargs,
             )
-            print(f"      Node set '{ns_cfg.name}': {nset.node_count} nodes "
-                  f"(criteria={ns_cfg.criteria_type}, on_surface={ns_cfg.on_surface})")
+            self._console.print(
+                f"      Node set [bold]'{ns_cfg.name}'[/bold]: {nset.node_count} nodes "
+                f"(criteria={ns_cfg.criteria_type}, on_surface={ns_cfg.on_surface})"
+            )
 
     def _log_mesh_analysis(self, mesh: MeshModel) -> None:
         """Log mesh size statistics and RBF support-radius guidance."""
         import numpy as np
         from itertools import combinations
 
-        print("\n" + "=" * 60)
-        print("  MESH SIZE STATISTICS (for RBF support-radius)")
-        print("=" * 60)
-
-        # Volume element edge lengths
+        # Edge lengths for RBF radius estimation
         edge_lengths = []
         for elem in mesh.elements:
             coords = np.array([n.coords for n in elem.nodes])
@@ -524,20 +648,26 @@ class FSIRunner:
                 edge_lengths.append(np.linalg.norm(coords[i] - coords[j]))
         edge_lengths = np.array(edge_lengths)
 
-        print(f"  Volume element edge lengths:")
-        print(f"    Min:    {edge_lengths.min():.6f} m")
-        print(f"    Max:    {edge_lengths.max():.6f} m")
-        print(f"    Mean:   {edge_lengths.mean():.6f} m")
-        print(f"    Median: {np.median(edge_lengths):.6f} m")
-        print(f"    Std:    {edge_lengths.std():.6f} m")
+        tbl = Table(title="RBF Support-Radius Guidance",
+                    title_style="bold cyan", show_lines=False,
+                    pad_edge=True, expand=False)
+        tbl.add_column("Metric", style="bold")
+        tbl.add_column("Value", justify="right")
+
+        tbl.add_row("Edge length min", f"{edge_lengths.min():.6f} m")
+        tbl.add_row("Edge length max", f"{edge_lengths.max():.6f} m")
+        tbl.add_row("Edge length mean", f"{edge_lengths.mean():.6f} m")
+        tbl.add_row("Edge length median", f"{np.median(edge_lengths):.6f} m")
 
         # Coupling surface nearest-neighbor spacing
         if self.config.coupling and self.config.coupling.boundaries:
             for boundary_name in self.config.coupling.boundaries:
                 ns = mesh.node_sets.get(boundary_name)
                 if ns is None or ns.node_count == 0:
-                    print(f"\n  WARNING: Coupling surface '{boundary_name}' "
-                          f"not found for spacing analysis")
+                    self._console.print(
+                        f"      [yellow]⚠[/yellow] Coupling surface "
+                        f"'{boundary_name}' not found for spacing analysis"
+                    )
                     continue
 
                 from scipy.spatial import cKDTree
@@ -549,31 +679,37 @@ class FSIRunner:
                 dists, _ = tree.query(surface_coords, k=2)
                 nn_dists = dists[:, 1]
 
-                print(f"\n  Coupling surface '{boundary_name}' "
-                      f"nearest-neighbor spacing:")
-                print(f"    Nodes on surface: {ns.node_count}")
-                print(f"    Min:    {nn_dists.min():.6f} m")
-                print(f"    Max:    {nn_dists.max():.6f} m")
-                print(f"    Mean:   {nn_dists.mean():.6f} m")
-                print(f"    Std:    {nn_dists.std():.6f} m")
-                print(f"\n  >>> Recommended RBF support-radius: "
-                      f"{nn_dists.mean() * 4:.6f} m (4x mean spacing)")
-                print(f"  >>> Conservative estimate:          "
-                      f"{nn_dists.max() * 3:.6f} m (3x max spacing)")
+                tbl.add_section()
+                tbl.add_row(f"Surface '{boundary_name}'", "")
+                tbl.add_row("  Nodes", f"{ns.node_count:,}")
+                tbl.add_row("  NN spacing min", f"{nn_dists.min():.6f} m")
+                tbl.add_row("  NN spacing max", f"{nn_dists.max():.6f} m")
+                tbl.add_row("  NN spacing mean", f"{nn_dists.mean():.6f} m")
+                tbl.add_row(
+                    "  Recommended radius (4×mean)",
+                    f"[bold green]{nn_dists.mean() * 4:.6f} m[/bold green]",
+                )
+                tbl.add_row(
+                    "  Conservative (3×max)",
+                    f"[green]{nn_dists.max() * 3:.6f} m[/green]",
+                )
 
-                # Bounding box
                 bb_min = surface_coords.min(axis=0)
                 bb_max = surface_coords.max(axis=0)
-                print(f"\n  Coupling surface bounding box:")
-                print(f"    min = ({bb_min[0]:.6f}, {bb_min[1]:.6f}, "
-                      f"{bb_min[2]:.6f})")
-                print(f"    max = ({bb_max[0]:.6f}, {bb_max[1]:.6f}, "
-                      f"{bb_max[2]:.6f})")
+                tbl.add_row(
+                    "  Bounding box min",
+                    f"({bb_min[0]:.4f}, {bb_min[1]:.4f}, {bb_min[2]:.4f})",
+                )
+                tbl.add_row(
+                    "  Bounding box max",
+                    f"({bb_max[0]:.4f}, {bb_max[1]:.4f}, {bb_max[2]:.4f})",
+                )
+
+        self._console.print()
+        self._console.print(tbl)
 
         # Validate RBF support-radius from preCICE XML against mesh spacing
         self._validate_rbf_radius(mesh)
-
-        print("=" * 60)
 
     def _validate_rbf_radius(self, mesh: MeshModel) -> None:
         """Compare preCICE RBF support-radius against coupling surface spacing."""
@@ -635,16 +771,21 @@ class FSIRunner:
                 )
 
         if warnings:
-            print("\n" + "!" * 60)
-            print("  WARNING: RBF support-radius may not be optimal")
-            print("!" * 60)
-            for w in warnings:
-                print(w)
-            print("!" * 60)
+            warn_text = "\n".join(warnings)
+            self._console.print()
+            self._console.print(Panel(
+                warn_text,
+                title="RBF support-radius may not be optimal",
+                border_style="bold yellow",
+                expand=False,
+            ))
         else:
             for rbf in self._precice_info.rbf_mappings:
-                print(f"\n  ✓ RBF {rbf.direction} {rbf.from_mesh}→{rbf.to_mesh}: "
-                      f"support-radius={rbf.support_radius:.6f} OK")
+                self._console.print(
+                    f"      [green]✓[/green] RBF {rbf.direction} "
+                    f"{rbf.from_mesh}→{rbf.to_mesh}: "
+                    f"support-radius={rbf.support_radius:.6f} OK"
+                )
 
     def _create_material(self):
         """Create material from configuration.
@@ -652,13 +793,15 @@ class FSIRunner:
         For blade/rotor generators without explicit material section,
         extracts composite properties from the blade YAML sections.
         """
-        print("\n[2/6] Creating material...", flush=True)
+        self._console.print("\n[bold cyan]\\[2/6] Creating material...[/bold cyan]")
 
         # Check if blade/rotor generator provides composite properties
         if self._mesh_generator is not None and self.config.material is None:
             self._blade_properties = self._extract_blade_properties()
-            print(f"      Composite properties from blade YAML: "
-                  f"{len(self._blade_properties)} element sets")
+            self._console.print(
+                f"      Composite properties from blade YAML: "
+                f"[bold]{len(self._blade_properties)}[/bold] element sets"
+            )
             return None
 
         mat_config = self.config.material
@@ -705,10 +848,12 @@ class FSIRunner:
                 rho=float(mat_config.rho),
             )
 
-        print(f"      Material: {material.name}")
-        print(f"      Type: {mat_config.type}")
+        self._console.print(f"      Material: [bold]{material.name}[/bold]")
+        self._console.print(f"      Type: {mat_config.type}")
         if mat_config.type == MaterialType.ISOTROPIC.value:
-            print(f"      E={mat_config.E}, nu={mat_config.nu}, rho={mat_config.rho}")
+            self._console.print(
+                f"      E={mat_config.E}, nu={mat_config.nu}, rho={mat_config.rho}"
+            )
 
         return material
 
@@ -781,7 +926,7 @@ class FSIRunner:
 
     def _build_model_config(self) -> Dict[str, Any]:
         """Build the model configuration dictionary for the solver."""
-        print("\n[3/6] Building model configuration...", flush=True)
+        self._console.print("\n[bold cyan]\\[3/6] Building model configuration...[/bold cyan]")
 
         # Element family mapping
         family_map = {
@@ -891,14 +1036,14 @@ class FSIRunner:
             if perf:
                 model_config["solver"]["performance"] = perf
 
-        print(f"      Solver type: {self.config.solver.type}")
-        print(f"      Element family: {self.config.elements.family}")
+        self._console.print(f"      Solver type: [bold]{self.config.solver.type}[/bold]")
+        self._console.print(f"      Element family: [bold]{self.config.elements.family}[/bold]")
 
         return model_config
 
     def _create_solver(self, model_config: Dict[str, Any]):
         """Create the appropriate solver based on configuration."""
-        print("\n[4/6] Creating solver...", flush=True)
+        self._console.print("\n[bold cyan]\\[4/6] Creating solver...[/bold cyan]")
 
         if self.mesh is None:
             raise RuntimeError("Mesh must be loaded before creating solver")
@@ -933,12 +1078,12 @@ class FSIRunner:
         else:
             raise ValueError(f"Unknown solver type: {solver_type}")
 
-        print(f"      Created: {solver_type}")
+        self._console.print(f"      Created: [bold]{solver_type}[/bold]")
         return solver
 
     def _apply_boundary_conditions(self) -> None:
         """Apply boundary conditions to the solver."""
-        print("\n[5/6] Applying boundary conditions...", flush=True)
+        self._console.print("\n[bold cyan]\\[5/6] Applying boundary conditions...[/bold cyan]")
 
         if self.solver is None or self.mesh is None:
             raise RuntimeError("Solver and mesh must be initialized before applying BCs")
@@ -949,8 +1094,8 @@ class FSIRunner:
             try:
                 dofs = self.solver.get_dofs_by_nodeset_name(bc_config.nodeset)
                 dirichlet_conditions.append(DirichletCondition(dofs, bc_config.value))
-                print(
-                    f"      Dirichlet BC: '{bc_config.nodeset}' = {bc_config.value} ({len(dofs)} DOFs)"
+                self._console.print(
+                    f"      Dirichlet BC: [bold]'{bc_config.nodeset}'[/bold] = {bc_config.value} ({len(dofs)} DOFs)"
                 )
             except KeyError:
                 raise ValueError(
@@ -965,19 +1110,17 @@ class FSIRunner:
         body_forces = []
         for bf_config in self.config.boundary_conditions.body_forces:
             body_forces.append(BodyForce(bf_config.value))
-            print(f"      Body force: {bf_config.value}")
+            self._console.print(f"      Body force: {bf_config.value}")
 
         if body_forces:
             self.solver.add_body_forces(body_forces)
 
-        print(f"      Total Dirichlet BCs: {len(dirichlet_conditions)}")
-        print(f"      Total body forces: {len(body_forces)}")
+        self._console.print(f"      Total Dirichlet BCs: {len(dirichlet_conditions)}")
+        self._console.print(f"      Total body forces: {len(body_forces)}")
 
     def _print_modal_results(self, result) -> None:
         """Print modal analysis results (frequencies and mode shapes)."""
         import numpy as np
-        from rich.console import Console
-        from rich.table import Table
 
         frequencies, mode_shapes = result
         n = len(frequencies)
@@ -986,7 +1129,6 @@ class FSIRunner:
         pf = self.solver.participation_factors
         has_pf = pf is not None and pf.shape[0] >= n
 
-        console = Console()
         table = Table(
             title="MODAL ANALYSIS RESULTS",
             title_style="bold cyan",
@@ -1033,9 +1175,9 @@ class FSIRunner:
 
             table.add_row(*row)
 
-        console.print()
-        console.print(table)
-        console.print()
+        self._console.print()
+        self._console.print(table)
+        self._console.print()
 
         # Write results to CSV
         csv_path = self.working_dir / "modal_frequencies.csv"
@@ -1055,25 +1197,32 @@ class FSIRunner:
                     for d in range(pf.shape[1]):
                         row += f",{pf[i, d]:.4f}"
                 fh.write(row + "\n")
-        print(f"  Frequencies saved: {csv_path}")
 
         # Write mode shapes
         np_path = self.working_dir / "modal_modes.npy"
         np.save(str(np_path), mode_shapes)
-        print(f"  Mode shapes saved: {np_path}")
 
         # Write VTU files for ParaView visualization
         output_dir = self.working_dir / "modal_results"
         self.solver.write_modal_results(str(output_dir), frequencies, mode_shapes)
-        print(f"  VTU mode shapes saved: {output_dir}/")
-        print(f"  ParaView collection: {output_dir}/modal_results.pvd")
+
+        out_tbl = Table(title="Output Files", title_style="bold cyan",
+                        show_lines=False, pad_edge=True, expand=False)
+        out_tbl.add_column("File", style="bold")
+        out_tbl.add_column("Path", style="dim")
+        out_tbl.add_row("Frequencies (CSV)", str(csv_path))
+        out_tbl.add_row("Mode shapes (NPY)", str(np_path))
+        out_tbl.add_row("Mode shapes (VTU)", str(output_dir) + "/")
+        out_tbl.add_row("ParaView collection", str(output_dir / "modal_results.pvd"))
+        self._console.print()
+        self._console.print(out_tbl)
 
     def _run_postprocessing(self) -> None:
         """Run post-processing if configured."""
         if not self.config.postprocess:
             return
 
-        print("\n[Post-processing]", flush=True)
+        self._console.print("\n[bold cyan]\\[Post-processing][/bold cyan]")
 
         try:
             from ...postprocess.precice import FSIDataVisualizer
@@ -1085,16 +1234,16 @@ class FSIRunner:
                     if "displacement" in self.config.postprocess.plots:
                         save_path = self.config.postprocess.plots["displacement"]
                         visualizer.plot_displacement(save_path=save_path)
-                        print(f"      Saved: {save_path}")
+                        self._console.print(f"      Saved: {save_path}")
 
                     if "force" in self.config.postprocess.plots:
                         save_path = self.config.postprocess.plots["force"]
                         visualizer.plot_force(save_path=save_path)
-                        print(f"      Saved: {save_path}")
+                        self._console.print(f"      Saved: {save_path}")
 
         except Exception as e:
             logger.warning("Post-processing failed: %s", e)
-            print(f"      Warning: Could not generate plots: {e}")
+            self._console.print(f"      [yellow]Warning:[/yellow] Could not generate plots: {e}")
 
     # =========================================================================
     # Utility methods

@@ -212,19 +212,18 @@ class MeshModel:
         self._finalize_renumbering()
 
         if verbose:
-            print("Mesh renumbering completed (algorithm: simple):")
-            print(f"  Nodes: {len(self.nodes):,} renumbered")
+            print(f"        Nodes: {len(self.nodes):,} renumbered")
             if self.nodes:
                 print(
-                    f"    ID range: [{old_node_id_min:,} - {old_node_id_max:,}] -> [0 - {len(self.nodes) - 1:,}]"
+                    f"        ID range: [{old_node_id_min:,} - {old_node_id_max:,}] -> [0 - {len(self.nodes) - 1:,}]"
                 )
-            print(f"  Elements: {len(self.elements):,} renumbered")
+            print(f"        Elements: {len(self.elements):,} renumbered")
             if self.elements:
                 print(
-                    f"    ID range: [{old_elem_id_min:,} - {old_elem_id_max:,}] -> [0 - {len(self.elements) - 1:,}]"
+                    f"        ID range: [{old_elem_id_min:,} - {old_elem_id_max:,}] -> [0 - {len(self.elements) - 1:,}]"
                 )
-            print(f"  Node sets updated: {len(self.node_sets)}")
-            print(f"  Element sets updated: {len(self.element_sets)}")
+            print(f"        Node sets updated: {len(self.node_sets)}")
+            print(f"        Element sets updated: {len(self.element_sets)}")
 
     def _renumber_rcm(self, verbose: bool = False) -> None:
         """Reverse Cuthill-McKee renumbering for bandwidth reduction."""
@@ -239,8 +238,7 @@ class MeshModel:
         n_elements = len(self.elements)
 
         if verbose:
-            print("Mesh renumbering (algorithm: rcm):")
-            print(f"  Building adjacency graph ({n_nodes:,} nodes, {n_elements:,} elements)...")
+            print(f"        Building adjacency graph ({n_nodes:,} nodes, {n_elements:,} elements)...")
 
         def compute_bandwidth():
             max_diff = 0
@@ -275,8 +273,8 @@ class MeshModel:
         )
 
         if verbose:
-            print(f"  Adjacency matrix: {adjacency.nnz:,} non-zeros")
-            print("  Applying Reverse Cuthill-McKee algorithm...")
+            print(f"        Adjacency matrix: {adjacency.nnz:,} non-zeros")
+            print("        Applying Reverse Cuthill-McKee algorithm...")
 
         rcm_order = reverse_cuthill_mckee(adjacency, symmetric_mode=True)
 
@@ -312,13 +310,13 @@ class MeshModel:
         )
 
         if verbose:
-            print(f"  Nodes: {n_nodes:,} reordered")
-            print(f"  Elements: {n_elements:,} reordered")
+            print(f"        Nodes: {n_nodes:,} reordered")
+            print(f"        Elements: {n_elements:,} reordered")
             print(
-                f"  Bandwidth: {bandwidth_before:,} -> {bandwidth_after:,} ({reduction:.1f}% reduction)"
+                f"        Bandwidth: {bandwidth_before:,} -> {bandwidth_after:,} ({reduction:.1f}% reduction)"
             )
-            print(f"  Node sets updated: {len(self.node_sets)}")
-            print(f"  Element sets updated: {len(self.element_sets)}")
+            print(f"        Node sets updated: {len(self.node_sets)}")
+            print(f"        Element sets updated: {len(self.element_sets)}")
 
     def _finalize_renumbering(self) -> None:
         """Common finalization steps after renumbering."""

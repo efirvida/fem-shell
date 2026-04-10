@@ -1039,6 +1039,7 @@ class BladeMesh:
         excel_file: str = None,
         airfoil_dir: str = None,
         refine_tip: bool = True,
+        span_grading: str = "chord",
     ):
         self.yaml_file = yaml_file
         self.excel_file = excel_file
@@ -1046,6 +1047,7 @@ class BladeMesh:
         self.element_size = element_size
         self.n_samples = n_samples
         self.refine_tip = refine_tip
+        self.span_grading = span_grading
         self._numad_blade = None
         self._numad_mesh = None
 
@@ -1084,7 +1086,7 @@ class BladeMesh:
 
         # Initialize numad blade
         if verbose:
-            print("  Loading blade definition...")
+            print("      Loading blade definition...")
         self._numad_blade = numadBlade()
         if self.excel_file:
             self._numad_blade.read_excel(self.excel_file, airfoil_dir=self.airfoil_dir)
@@ -1099,7 +1101,7 @@ class BladeMesh:
 
         # Update geometry
         if verbose:
-            print("  Updating blade geometry...")
+            print("      Updating blade geometry...")
         self._numad_blade.update_blade()
 
         # Refine cross-sections where chord changes rapidly.  The default
@@ -1117,13 +1119,15 @@ class BladeMesh:
 
         # Generate shell mesh using numad
         if verbose:
-            print("  Generating shell mesh...")
-        self._numad_mesh = get_shell_mesh(self._numad_blade, self.element_size)
+            print("      Generating shell mesh...")
+        self._numad_mesh = get_shell_mesh(
+            self._numad_blade, self.element_size, spanGrading=self.span_grading
+        )
 
         num_raw_nodes = len(self._numad_mesh["nodes"])
         num_elements = len(self._numad_mesh["elements"])
         if verbose:
-            print(f"  Raw mesh: {num_raw_nodes} nodes, {num_elements} elements")
+            print(f"      Raw mesh: {num_raw_nodes} nodes, {num_elements} elements")
 
         # Deduplicate nodes
         self._deduplicate_and_create_mesh(mesh_model, verbose)
@@ -1131,12 +1135,12 @@ class BladeMesh:
         # Renumber mesh if requested
         if renumber is not None:
             if verbose:
-                print(f"  Renumbering mesh using {renumber} algorithm...")
+                print(f"      Renumbering mesh using {renumber} algorithm...")
             mesh_model.renumber_mesh(algorithm=renumber)
 
         if verbose:
             print(
-                f"  Blade mesh generated: {mesh_model.node_count} nodes, {mesh_model.elements_count} elements"
+                f"      Blade mesh generated: {mesh_model.node_count} nodes, {mesh_model.elements_count} elements"
             )
 
         return mesh_model
@@ -1171,7 +1175,7 @@ class BladeMesh:
                 break
 
         if verbose and added > 0:
-            print(f"  Added {added} interpolated section(s) for tip refinement")
+            print(f"      Added {added} interpolated section(s) for tip refinement")
 
     def _deduplicate_and_create_mesh(self, mesh_model: "MeshModel", verbose: bool = True):
         """
@@ -1189,7 +1193,7 @@ class BladeMesh:
         num_elements = len(self._numad_mesh["elements"])
 
         if verbose:
-            print("  Deduplicating nodes...")
+            print("      Deduplicating nodes...")
 
         tolerance = 1e-6
         numad_to_unique = {}  # Maps numad node index to unique node index
@@ -1217,7 +1221,7 @@ class BladeMesh:
         if verbose:
             reduction_pct = 100 * (num_raw_nodes - num_unique_nodes) // max(1, num_raw_nodes)
             print(
-                f"  Deduplicated: {num_raw_nodes} -> {num_unique_nodes} nodes ({reduction_pct}% reduction)"
+                f"      Deduplicated: {num_raw_nodes} -> {num_unique_nodes} nodes ({reduction_pct}% reduction)"
             )
 
         # Create nodes
@@ -1229,7 +1233,7 @@ class BladeMesh:
 
         # Create elements (skip degenerate elements with repeated nodes)
         if verbose:
-            print(f"  Creating {num_elements} elements...")
+            print(f"      Creating {num_elements} elements...")
         skipped = 0
         raw_to_mesh_id = {}  # maps raw element index → mesh element id
         for elem_idx, node_ids in enumerate(self._numad_mesh["elements"]):
@@ -1248,11 +1252,11 @@ class BladeMesh:
             mesh_model.add_element(elem)
             raw_to_mesh_id[elem_idx] = elem.id
         if skipped and verbose:
-            print(f"  Skipped {skipped} degenerate element(s)")
+            print(f"      Skipped {skipped} degenerate element(s)")
 
         # Create element sets
         if verbose:
-            print("  Creating element and node sets...")
+            print("      Creating element and node sets...")
         for element_set in self._numad_mesh["sets"]["element"]:
             name = element_set["name"]
             elements = set()

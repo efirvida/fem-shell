@@ -1156,8 +1156,8 @@ def _build_legacy_components(definition, legacy):
             component_dict[comp_name] = comp
 
     definition.components = component_dict
-    logger.info("Legacy format: created %d components (%d blade + %d web)",
-                len(component_dict),
-                sum(1 for c in component_dict.values() if c.group == 0),
-                sum(1 for c in component_dict.values() if c.group > 0))
+    logger.debug("Legacy format: created %d components (%d blade + %d web)",
+                 len(component_dict),
+                 sum(1 for c in component_dict.values() if c.group == 0),
+                 sum(1 for c in component_dict.values() if c.group > 0))
 

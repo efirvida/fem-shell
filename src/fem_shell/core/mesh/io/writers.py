@@ -217,7 +217,7 @@ def write_mesh(mesh: "MeshModel", filename: str, **kwargs) -> None:
 # ============================================================================
 
 
-def write_meshio(mesh: "MeshModel", filename: str, close_tip: bool = False, **kwargs) -> None:
+def write_meshio(mesh: "MeshModel", filename: str, close_tip: bool = None, **kwargs) -> None:
     """Write mesh using meshio library (geometry only, no metadata).
 
     Parameters
@@ -229,7 +229,8 @@ def write_meshio(mesh: "MeshModel", filename: str, close_tip: bool = False, **kw
     close_tip : bool, optional
         When *True* and the output format is STL, boundary loops at the
         blade tip (maximum spanwise coordinate) are capped with fan
-        triangles so the resulting STL is watertight.  Default is *False*.
+        triangles so the resulting STL is watertight.
+        *None* (default) auto-enables for STL format.
     **kwargs
         Extra arguments forwarded to :func:`meshio.write`.
     """
@@ -238,6 +239,10 @@ def write_meshio(mesh: "MeshModel", filename: str, close_tip: bool = False, **kw
     points = mesh.coords_array
     cells = []
     ext = Path(filename).suffix.lower()
+
+    # Auto-enable tip closing for STL format
+    if close_tip is None:
+        close_tip = ext == ".stl"
 
     if ext == ".stl":
         # Check if mesh has volume elements
@@ -320,7 +325,6 @@ def write_meshio(mesh: "MeshModel", filename: str, close_tip: bool = False, **kw
 
     mesh_io = meshio.Mesh(points=points, cells=cells)
     meshio.write(filename, mesh_io, **kwargs)
-    print(f"Mesh written to {filename}.")
 
 
 # ============================================================================
