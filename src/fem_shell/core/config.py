@@ -556,6 +556,7 @@ class ElementConfig:
 
     family: str
     thickness: Optional[float] = None
+    span_direction: Optional[list] = None
 
     def __post_init__(self):
         valid_families = (
@@ -928,6 +929,7 @@ class FSISimulationConfig:
         element_config = ElementConfig(
             family=elem_data.get("family", "PLANE"),
             thickness=elem_data.get("thickness"),
+            span_direction=elem_data.get("span_direction"),
         )
 
         # Parse solver configuration

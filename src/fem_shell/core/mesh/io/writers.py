@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-from typing import TYPE_CHECKING, Dict
+from typing import TYPE_CHECKING, Dict, Optional, Union
 
 import meshio
 import numpy as np
@@ -198,7 +198,7 @@ def write_mesh(mesh: "MeshModel", filename: str, **kwargs) -> None:
 
     # Dispatch by extension
     if ext == ".inp":
-        write_ccx_mesh(mesh, filename)
+        write_ccx_mesh(mesh, filename, **kwargs)
     elif ext == ".msh":
         write_gmsh_mesh(mesh, filename)
     elif ext in (".h5", ".hdf5"):
@@ -362,7 +362,14 @@ def _write_plot3d_internal(mesh: meshio.Mesh, filename: str):
 # ============================================================================
 
 
-def write_ccx_mesh(mesh: "MeshModel", filename: str) -> None:
+def write_ccx_mesh(
+    mesh: "MeshModel",
+    filename: str,
+    properties: Optional[Dict[str, "ShellPropertyType"]] = None,
+    boundary_nodeset: Optional[str] = None,
+    num_modes: int = 10,
+    span_direction: Optional[tuple] = None,
+) -> None:
     """
     Write the mesh to CalculiX format following CGX conventions.
 
@@ -371,6 +378,29 @@ def write_ccx_mesh(mesh: "MeshModel", filename: str) -> None:
     - {basename}.nam: Node sets and element sets definitions
     - {basename}.sur: Surface definitions (if applicable)
     - {basename}.inp: Main input file with *INCLUDE statements
+
+    Parameters
+    ----------
+    mesh : MeshModel
+        The mesh model to export.
+    filename : str
+        Path to the main .inp file.
+    properties : dict, optional
+        Mapping of element-set name to ShellProperty or CompositeShellProperty.
+        When provided, material definitions, shell sections, and a modal
+        analysis step are written into the .inp file.
+    boundary_nodeset : str, optional
+        Name of the node set to clamp (all 6 DOFs fixed). Required when
+        properties are provided.
+    num_modes : int, optional
+        Number of eigenvalues for the *FREQUENCY step. Default 10.
+    span_direction : tuple of 3 floats, optional
+        Global direction of the structural span axis (e.g. ``(0, 0, 1)`` for
+        a blade along Z).  When provided, ply orientations in *ORIENTATION
+        cards are measured from this axis projected onto each element's
+        surface, so that a 0-degree ply is fibre-in-span rather than
+        fibre-in-the-first-element-edge.  Pass ``(0., 0., 1.)`` for a blade
+        model with span along Z.
     """
 
     def split_list(arr, chunk_size: int = 7):
@@ -388,11 +418,32 @@ def write_ccx_mesh(mesh: "MeshModel", filename: str) -> None:
     sur_file = os.path.join(base_path, f"{base_name}.sur") if base_path else f"{base_name}.sur"
     inp_file = filename
 
+    # Check if composite properties require quadratic elements
+    has_composite = False
+    if properties is not None:
+        from fem_shell.core.properties import CompositeShellProperty
+        has_composite = any(
+            isinstance(p, CompositeShellProperty) for p in properties.values()
+        )
+
+    # Build quadratic mesh data if needed (CalculiX requires S8R/S6 for composite)
+    quadratic_data = None
+    if has_composite:
+        quadratic_data = _build_quadratic_mesh_data(mesh)
+        print(f"  Converted to quadratic: {quadratic_data['n_nodes']} nodes "
+              f"({quadratic_data['n_midside']} midside nodes added)")
+
     # Write files
-    _write_ccx_msh_file(mesh, msh_file)
-    _write_ccx_nam_file(mesh, nam_file, split_list)
+    _write_ccx_msh_file(mesh, msh_file, quadratic_data=quadratic_data)
+    _write_ccx_nam_file(mesh, nam_file, split_list, quadratic_data=quadratic_data)
     has_surfaces = _write_ccx_sur_file(mesh, sur_file, split_list)
-    _write_ccx_inp_file(mesh, inp_file, base_name, has_surfaces)
+    _write_ccx_inp_file(
+        mesh, inp_file, base_name, has_surfaces,
+        properties=properties,
+        boundary_nodeset=boundary_nodeset,
+        num_modes=num_modes,
+        span_direction=span_direction,
+    )
 
     print("CalculiX mesh files written:")
     print(f"  - Mesh file: {msh_file}")
@@ -402,33 +453,138 @@ def write_ccx_mesh(mesh: "MeshModel", filename: str) -> None:
     print(f"  - Main input file: {inp_file}")
 
 
-def _write_ccx_msh_file(mesh: "MeshModel", filename: str) -> None:
+def _build_quadratic_mesh_data(mesh: "MeshModel") -> Dict:
+    """Convert linear shell mesh to quadratic by adding midside nodes.
+
+    CalculiX requires S8R (quad8) or S6 (triangle6) for composite shell
+    sections.  This function computes midside nodes for every edge and
+    returns the data needed by the msh/nam writers.
+
+    Returns
+    -------
+    dict
+        ``all_nodes``  – (N, 3) array of all node coordinates,
+        ``elements``   – list of (ccx_type, node_ids_1based) per element,
+        ``n_nodes``    – total node count,
+        ``n_midside``  – number of midside nodes added,
+        ``node_set_extra`` – dict mapping original node-set names to
+            additional midside node IDs (1-based) that lie on edges
+            between two nodes of the set.
+    """
+    nodes = np.array([[n.x, n.y, n.z] for n in mesh.nodes])
+    n_original = len(nodes)
+
+    edge_to_mid: Dict[tuple, int] = {}
+    new_nodes: list = []
+
+    def _get_midside(n1: int, n2: int) -> int:
+        edge = (min(n1, n2), max(n1, n2))
+        mid = edge_to_mid.get(edge)
+        if mid is not None:
+            return mid
+        mid = n_original + len(new_nodes)
+        new_nodes.append((nodes[n1] + nodes[n2]) / 2.0)
+        edge_to_mid[edge] = mid
+        return mid
+
+    elements: list = []
+    for el in mesh.elements:
+        nids = el.node_ids  # 0-based
+        etype = el.element_type.name
+
+        if etype == "triangle":
+            m01 = _get_midside(nids[0], nids[1])
+            m12 = _get_midside(nids[1], nids[2])
+            m20 = _get_midside(nids[2], nids[0])
+            elements.append((
+                "S6",
+                [nids[0]+1, nids[1]+1, nids[2]+1,
+                 m01+1, m12+1, m20+1],
+            ))
+        elif etype == "quad":
+            m01 = _get_midside(nids[0], nids[1])
+            m12 = _get_midside(nids[1], nids[2])
+            m23 = _get_midside(nids[2], nids[3])
+            m30 = _get_midside(nids[3], nids[0])
+            elements.append((
+                "S8R",
+                [nids[0]+1, nids[1]+1, nids[2]+1, nids[3]+1,
+                 m01+1, m12+1, m23+1, m30+1],
+            ))
+        else:
+            ccx_type = ELEMENTS_TO_CALCULIX.get(etype, etype)
+            elements.append((ccx_type, [n + 1 for n in nids]))
+
+    # Build extra midside nodes for node sets (edge between two set members)
+    node_set_extra: Dict[str, list] = {}
+    for ns_name, ns in mesh.node_sets.items():
+        ns_ids = set(ns.node_ids)  # 0-based
+        extras = []
+        for (n1, n2), mid in edge_to_mid.items():
+            if n1 in ns_ids and n2 in ns_ids:
+                extras.append(mid + 1)  # 1-based
+        node_set_extra[ns_name] = extras
+
+    all_nodes = np.vstack([nodes, np.array(new_nodes)]) if new_nodes else nodes
+
+    return {
+        "all_nodes": all_nodes,
+        "elements": elements,
+        "n_nodes": len(all_nodes),
+        "n_midside": len(new_nodes),
+        "node_set_extra": node_set_extra,
+    }
+
+
+def _write_ccx_msh_file(
+    mesh: "MeshModel", filename: str,
+    quadratic_data: Optional[Dict] = None,
+) -> None:
     """Write the .msh file containing nodes and elements."""
     with open(filename, "wt") as f:
-        # Write nodes
-        f.write("*NODE, NSET=Nall\n")
-        for i, nd in enumerate(mesh.nodes):
-            f.write(f"{i + 1:8d}, {nd.x:14.6E}, {nd.y:14.6E}, {nd.z:14.6E}\n")
+        if quadratic_data is not None:
+            # --- Quadratic mesh ---
+            all_nodes = quadratic_data["all_nodes"]
+            f.write("*NODE, NSET=Nall\n")
+            for i, nd in enumerate(all_nodes):
+                f.write(f"{i + 1:8d}, {nd[0]:14.6E}, {nd[1]:14.6E}, {nd[2]:14.6E}\n")
 
-        # Group elements by type
-        elements_by_type: Dict[str, list] = {}
-        for i, el in enumerate(mesh.elements):
-            el_type_name = el.element_type.name
-            if el_type_name not in elements_by_type:
-                elements_by_type[el_type_name] = []
-            elements_by_type[el_type_name].append((i, el))
+            # Group elements by CCX type
+            elements_by_type: Dict[str, list] = {}
+            for i, (ccx_type, nids) in enumerate(quadratic_data["elements"]):
+                elements_by_type.setdefault(ccx_type, []).append((i, nids))
 
-        # Write elements grouped by type
-        for el_type_name, elements in elements_by_type.items():
-            if el_type_name in ELEMENTS_TO_CALCULIX:
-                ccx_type = ELEMENTS_TO_CALCULIX[el_type_name]
+            for ccx_type, elems in elements_by_type.items():
                 f.write(f"*ELEMENT, TYPE={ccx_type}, ELSET=Eall\n")
-                for i, el in elements:
-                    node_ids_str = ", ".join(str(n + 1) for n in el.node_ids)
+                for i, nids in elems:
+                    node_ids_str = ", ".join(str(n) for n in nids)
                     f.write(f"{i + 1:8d}, {node_ids_str}\n")
+        else:
+            # --- Original linear mesh ---
+            f.write("*NODE, NSET=Nall\n")
+            for i, nd in enumerate(mesh.nodes):
+                f.write(f"{i + 1:8d}, {nd.x:14.6E}, {nd.y:14.6E}, {nd.z:14.6E}\n")
+
+            elements_by_type: Dict[str, list] = {}
+            for i, el in enumerate(mesh.elements):
+                el_type_name = el.element_type.name
+                if el_type_name not in elements_by_type:
+                    elements_by_type[el_type_name] = []
+                elements_by_type[el_type_name].append((i, el))
+
+            for el_type_name, elements in elements_by_type.items():
+                if el_type_name in ELEMENTS_TO_CALCULIX:
+                    ccx_type = ELEMENTS_TO_CALCULIX[el_type_name]
+                    f.write(f"*ELEMENT, TYPE={ccx_type}, ELSET=Eall\n")
+                    for i, el in elements:
+                        node_ids_str = ", ".join(str(n + 1) for n in el.node_ids)
+                        f.write(f"{i + 1:8d}, {node_ids_str}\n")
 
 
-def _write_ccx_nam_file(mesh: "MeshModel", filename: str, split_func) -> None:
+def _write_ccx_nam_file(
+    mesh: "MeshModel", filename: str, split_func,
+    quadratic_data: Optional[Dict] = None,
+) -> None:
     """Write the .nam file containing node sets and element sets."""
     with open(filename, "wt") as f:
         # Write element sets
@@ -438,10 +594,14 @@ def _write_ccx_nam_file(mesh: "MeshModel", filename: str, split_func) -> None:
             for chunk in split_func(labels):
                 f.write(", ".join(f"{e:8d}" for e in chunk) + "\n")
 
-        # Write node sets
+        # Write node sets (with extra midside nodes when quadratic)
+        ns_extra = quadratic_data["node_set_extra"] if quadratic_data else {}
         for name, node_set in mesh.node_sets.items():
             f.write(f"*NSET, NSET=N{name.upper()}\n")
             labels = sorted([n_id + 1 for n_id in node_set.node_ids])
+            extras = ns_extra.get(name, [])
+            if extras:
+                labels = sorted(labels + extras)
             for chunk in split_func(labels):
                 f.write(", ".join(f"{n:8d}" for n in chunk) + "\n")
 
@@ -482,9 +642,19 @@ def _write_ccx_sur_file(mesh: "MeshModel", filename: str, split_func) -> bool:
 
 
 def _write_ccx_inp_file(
-    mesh: "MeshModel", filename: str, base_name: str, has_surfaces: bool
+    mesh: "MeshModel",
+    filename: str,
+    base_name: str,
+    has_surfaces: bool,
+    properties: Optional[Dict[str, "ShellPropertyType"]] = None,
+    boundary_nodeset: Optional[str] = None,
+    num_modes: int = 10,
+    span_direction: Optional[tuple] = None,
 ) -> None:
-    """Write the main .inp file with *INCLUDE statements."""
+    """Write the main .inp file with *INCLUDE statements and optional material/step."""
+    from fem_shell.core.material import IsotropicMaterial, OrthotropicMaterial
+    from fem_shell.core.properties import CompositeShellProperty, ShellProperty
+
     with open(filename, "wt") as f:
         f.write("**\n")
         f.write("** CalculiX input file generated by fem_shell\n")
@@ -510,52 +680,264 @@ def _write_ccx_inp_file(
             f.write("**\n")
             f.write(f"*INCLUDE, INPUT={base_name}.sur\n")
 
-        f.write("**\n")
-        f.write("** ===========================================\n")
-        f.write("**           MATERIAL DEFINITION\n")
-        f.write("** ===========================================\n")
-        f.write("**\n")
-        f.write("** Define your material here, for example:\n")
-        f.write("** *MATERIAL, NAME=steel\n")
-        f.write("** *ELASTIC\n")
-        f.write("** 210000, 0.3\n")
-        f.write("** *DENSITY\n")
-        f.write("** 7.85E-9\n")
-        f.write("**\n")
-        f.write("** ===========================================\n")
-        f.write("**           SECTION DEFINITION\n")
-        f.write("** ===========================================\n")
-        f.write("**\n")
-        f.write("** Define shell section, for example:\n")
-        f.write("** *SHELL SECTION, ELSET=Eall, MATERIAL=steel\n")
-        f.write("** 0.01\n")
-        f.write("**\n")
-        f.write("** ===========================================\n")
-        f.write("**              STEP DEFINITION\n")
-        f.write("** ===========================================\n")
-        f.write("**\n")
-        f.write("** *STEP\n")
-        f.write("** *STATIC\n")
-        f.write("**\n")
-        f.write("** Boundary conditions:\n")
+        # ---- Material & section definitions (when properties provided) ----
+        if properties is not None:
+            _write_ccx_materials(f, properties)
+            _write_ccx_orientations(f, properties, span_direction=span_direction)
+            _write_ccx_sections(f, properties, span_direction=span_direction)
+            _write_ccx_modal_step(f, mesh, boundary_nodeset, num_modes)
+        else:
+            # Legacy: placeholder comments
+            _write_ccx_placeholder_comments(f, mesh)
 
+
+def _write_ccx_materials(f, properties: Dict[str, "ShellPropertyType"]) -> None:
+    """Write *MATERIAL blocks for every unique material found in properties."""
+    from fem_shell.core.material import IsotropicMaterial, OrthotropicMaterial
+    from fem_shell.core.properties import CompositeShellProperty, ShellProperty
+
+    # Collect unique materials (by name) across all element sets
+    materials: Dict[str, Union[IsotropicMaterial, OrthotropicMaterial]] = {}
+    for prop in properties.values():
+        if isinstance(prop, CompositeShellProperty):
+            for ply in prop.laminate.plies:
+                mat = ply.material
+                materials[mat.name] = mat
+        elif isinstance(prop, ShellProperty):
+            materials[prop.material.name] = prop.material
+
+    f.write("**\n")
+    f.write("** ===========================================\n")
+    f.write("**           MATERIAL DEFINITIONS\n")
+    f.write("** ===========================================\n")
+
+    for mat_name, mat in materials.items():
+        f.write("**\n")
+        f.write(f"*MATERIAL, NAME={mat_name}\n")
+
+        if isinstance(mat, OrthotropicMaterial):
+            # *ELASTIC, TYPE=ENGINEERING CONSTANTS
+            # E1, E2, E3, nu12, nu13, nu23, G12, G13  (line 1)
+            # G23                                       (line 2)
+            f.write("*ELASTIC, TYPE=ENGINEERING CONSTANTS\n")
+            f.write(
+                f"{mat.E1:.6E}, {mat.E2:.6E}, {mat.E3:.6E}, "
+                f"{mat.nu12:.6f}, {mat.nu31:.6f}, {mat.nu23:.6f}, "
+                f"{mat.G12:.6E}, {mat.G31:.6E}\n"
+            )
+            f.write(f"{mat.G23:.6E}\n")
+        elif isinstance(mat, IsotropicMaterial):
+            f.write("*ELASTIC\n")
+            f.write(f"{mat.E:.6E}, {mat.nu:.6f}\n")
+
+        f.write("*DENSITY\n")
+        f.write(f"{mat.rho:.6E}\n")
+
+
+def _write_ccx_orientations(
+    f,
+    properties: Dict[str, "ShellPropertyType"],
+    span_direction: Optional[tuple] = None,
+) -> None:
+    """Write *ORIENTATION blocks for each unique ply angle.
+
+    When *span_direction* is supplied (e.g. ``(0, 0, 1)`` for a blade along
+    Z), every ply angle – including 0° – gets an orientation whose reference
+    axis is the projected span direction on the element surface.  This
+    corrects the common bug where the element's first edge (often chordwise)
+    is used as the 0° fibre reference instead of the structural span.
+
+    Without *span_direction* the previous behaviour is preserved: the global
+    X axis is used as the reference and only non-zero angles are emitted.
+    """
+    from fem_shell.core.properties import CompositeShellProperty
+
+    # Collect unique ply angles; when a span direction is given, include 0°.
+    angles: set = set()
+    for prop in properties.values():
+        if isinstance(prop, CompositeShellProperty):
+            for ply in prop.laminate.plies:
+                if span_direction is not None or abs(ply.angle) > 1e-10:
+                    angles.add(ply.angle)
+
+    if not angles:
+        return
+
+    f.write("**\n")
+    f.write("** ===========================================\n")
+    f.write("**          ORIENTATION DEFINITIONS\n")
+    f.write("** ===========================================\n")
+
+    if span_direction is not None:
+        # Normalise the span vector to use as the orientation 1-axis.
+        sd = span_direction
+        sd_len = (sd[0]**2 + sd[1]**2 + sd[2]**2) ** 0.5
+        if sd_len < 1e-12:
+            raise ValueError("span_direction must be a non-zero vector")
+        s1, s2, s3 = sd[0]/sd_len, sd[1]/sd_len, sd[2]/sd_len
+        # Choose a second-axis vector that is not parallel to span.
+        # Use the global axis with the *smallest* component of span.
+        abs_sd = (abs(s1), abs(s2), abs(s3))
+        min_idx = abs_sd.index(min(abs_sd))
+        q = [0.0, 0.0, 0.0]
+        q[min_idx] = 1.0
+        q1, q2, q3 = q[0], q[1], q[2]
+        # CCX RECTANGULAR orientation: first 3 numbers = direction of local 1-axis;
+        # next 3 = a point in the 1-2 plane (used to define local 2-axis).
+        ref_line = f"{s1:.4f}, {s2:.4f}, {s3:.4f}, {q1:.4f}, {q2:.4f}, {q3:.4f}"
+    else:
+        # Legacy behaviour: base system aligned with global X, Y.
+        ref_line = "1.0, 0.0, 0.0, 0.0, 1.0, 0.0"
+
+    for angle in sorted(angles):
+        ori_name = _ccx_orientation_name(angle)
+        f.write("**\n")
+        f.write(f"*ORIENTATION, NAME={ori_name}, SYSTEM=RECTANGULAR\n")
+        f.write(ref_line + "\n")
+        if abs(angle) > 1e-10:
+            # Additional rotation around axis 3 (shell normal)
+            f.write(f"3, {angle:.4f}\n")
+
+
+def _ccx_orientation_name(angle: float) -> str:
+    """Generate a CalculiX orientation name from a ply angle."""
+    # e.g. 45.0 -> ORI_P45_0, -45.0 -> ORI_N45_0
+    sign = "N" if angle < 0 else "P"
+    a = abs(angle)
+    integer_part = int(a)
+    decimal_part = int(round((a - integer_part) * 10))
+    return f"ORI_{sign}{integer_part}_{decimal_part}"
+
+
+def _write_ccx_sections(
+    f,
+    properties: Dict[str, "ShellPropertyType"],
+    span_direction: Optional[tuple] = None,
+) -> None:
+    """Write *SHELL SECTION blocks for each element set.
+
+    When *span_direction* is given every ply (including 0°) references the
+    corresponding ORI_Pxx_x orientation so that CCX measures ply angles from
+    the span axis rather than from the element's default local axis.
+    """
+    from fem_shell.core.properties import CompositeShellProperty, ShellProperty
+
+    f.write("**\n")
+    f.write("** ===========================================\n")
+    f.write("**           SECTION DEFINITIONS\n")
+    f.write("** ===========================================\n")
+
+    for set_name, prop in properties.items():
+        elset_name = f"E{set_name.upper()}"
+        f.write("**\n")
+
+        if isinstance(prop, CompositeShellProperty):
+            f.write(f"*SHELL SECTION, ELSET={elset_name}, COMPOSITE\n")
+            for ply in prop.laminate.plies:
+                # Data line: thickness, nip, material_name, orientation_name
+                if span_direction is not None or abs(ply.angle) > 1e-10:
+                    ori_name = _ccx_orientation_name(ply.angle)
+                    f.write(
+                        f"{ply.thickness:.6E}, , {ply.material.name}, {ori_name}\n"
+                    )
+                else:
+                    # No span_direction and angle==0: use element-default orientation
+                    f.write(
+                        f"{ply.thickness:.6E}, , {ply.material.name}\n"
+                    )
+        elif isinstance(prop, ShellProperty):
+            f.write(
+                f"*SHELL SECTION, ELSET={elset_name}, MATERIAL={prop.material.name}\n"
+            )
+            f.write(f"{prop.thickness:.6E}\n")
+
+
+def _write_ccx_modal_step(
+    f, mesh: "MeshModel", boundary_nodeset: Optional[str], num_modes: int
+) -> None:
+    """Write boundary conditions and *FREQUENCY step."""
+    f.write("**\n")
+    f.write("** ===========================================\n")
+    f.write("**          BOUNDARY CONDITIONS\n")
+    f.write("** ===========================================\n")
+    f.write("**\n")
+
+    if boundary_nodeset:
+        nset_name = f"N{boundary_nodeset.upper()}"
+        f.write(f"*BOUNDARY\n")
+        f.write(f"{nset_name}, 1, 6, 0.0\n")
+    else:
+        # Fall back to first available node set
         for name in mesh.node_sets:
-            f.write("** *BOUNDARY\n")
-            f.write(f"** N{name.upper()}, 1, 6, 0.0\n")
+            f.write(f"*BOUNDARY\n")
+            f.write(f"N{name.upper()}, 1, 6, 0.0\n")
             break
 
-        f.write("**\n")
-        f.write("** Loads:\n")
-        f.write("** *CLOAD or *DLOAD definitions here\n")
-        f.write("**\n")
-        f.write("** Output requests:\n")
-        f.write("** *NODE FILE\n")
-        f.write("** U\n")
-        f.write("** *EL FILE\n")
-        f.write("** S, E\n")
-        f.write("**\n")
-        f.write("** *END STEP\n")
-        f.write("**\n")
+    f.write("**\n")
+    f.write("** ===========================================\n")
+    f.write("**              MODAL ANALYSIS\n")
+    f.write("** ===========================================\n")
+    f.write("**\n")
+    f.write("*STEP\n")
+    f.write("*FREQUENCY\n")
+    f.write(f"{num_modes}\n")
+    f.write("**\n")
+    f.write("*NODE FILE\n")
+    f.write("U\n")
+    f.write("*EL FILE\n")
+    f.write("S, E\n")
+    f.write("**\n")
+    f.write("*END STEP\n")
+
+
+def _write_ccx_placeholder_comments(f, mesh: "MeshModel") -> None:
+    """Write placeholder comments (legacy behavior when no properties given)."""
+    f.write("**\n")
+    f.write("** ===========================================\n")
+    f.write("**           MATERIAL DEFINITION\n")
+    f.write("** ===========================================\n")
+    f.write("**\n")
+    f.write("** Define your material here, for example:\n")
+    f.write("** *MATERIAL, NAME=steel\n")
+    f.write("** *ELASTIC\n")
+    f.write("** 210000, 0.3\n")
+    f.write("** *DENSITY\n")
+    f.write("** 7.85E-9\n")
+    f.write("**\n")
+    f.write("** ===========================================\n")
+    f.write("**           SECTION DEFINITION\n")
+    f.write("** ===========================================\n")
+    f.write("**\n")
+    f.write("** Define shell section, for example:\n")
+    f.write("** *SHELL SECTION, ELSET=Eall, MATERIAL=steel\n")
+    f.write("** 0.01\n")
+    f.write("**\n")
+    f.write("** ===========================================\n")
+    f.write("**              STEP DEFINITION\n")
+    f.write("** ===========================================\n")
+    f.write("**\n")
+    f.write("** *STEP\n")
+    f.write("** *STATIC\n")
+    f.write("**\n")
+    f.write("** Boundary conditions:\n")
+
+    for name in mesh.node_sets:
+        f.write("** *BOUNDARY\n")
+        f.write(f"** N{name.upper()}, 1, 6, 0.0\n")
+        break
+
+    f.write("**\n")
+    f.write("** Loads:\n")
+    f.write("** *CLOAD or *DLOAD definitions here\n")
+    f.write("**\n")
+    f.write("** Output requests:\n")
+    f.write("** *NODE FILE\n")
+    f.write("** U\n")
+    f.write("** *EL FILE\n")
+    f.write("** S, E\n")
+    f.write("**\n")
+    f.write("** *END STEP\n")
+    f.write("**\n")
 
 
 # ============================================================================
