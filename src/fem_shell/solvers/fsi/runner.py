@@ -168,6 +168,50 @@ class FSIRunner:
         logger.info("Simulation completed successfully!")
         return self.solver
 
+    def export_calculix(
+        self,
+        output_path: str,
+        num_modes: int = 10,
+        span_direction: Optional[tuple] = None,
+    ) -> None:
+        """Export mesh with composite materials to CalculiX .inp format.
+
+        Must be called after ``_setup_mesh()`` and ``_create_material()``
+        (or after ``run()``).
+
+        Parameters
+        ----------
+        output_path : str
+            Path to the output .inp file.
+        num_modes : int, optional
+            Number of eigenvalues for the *FREQUENCY step. Default 10.
+        span_direction : tuple of 3 floats, optional
+            Global span axis of the structure.  For a wind turbine blade
+            along Z pass ``(0., 0., 1.)``.  When given, all ply angles are
+            referenced to this axis so that 0-degree plies align with the
+            span rather than the (chordwise) first element edge.
+        """
+        from fem_shell.core.mesh.io.writers import write_ccx_mesh
+
+        if self.mesh is None:
+            self.mesh = self._setup_mesh()
+        if self._blade_properties is None:
+            self._material = self._create_material()
+
+        # Determine boundary node set for clamping
+        boundary_nodeset = None
+        if self.config.boundary_conditions and self.config.boundary_conditions.dirichlet:
+            boundary_nodeset = self.config.boundary_conditions.dirichlet[0].nodeset
+
+        write_ccx_mesh(
+            self.mesh,
+            output_path,
+            properties=self._blade_properties,
+            boundary_nodeset=boundary_nodeset,
+            num_modes=num_modes,
+            span_direction=span_direction,
+        )
+
     def _print_header(self) -> None:
         """Print simulation header."""
         print("\n" + "=" * 70)
@@ -408,13 +452,22 @@ class FSIRunner:
             self._mesh_generator = generator
 
         elif gen_type == MeshGeneratorType.BLADE.value:
-            # Single blade mesh from WindIO YAML definition
-            yaml_file = params["yaml_file"]
-            if self.config_path and not Path(yaml_file).is_absolute():
+            # Single blade mesh from YAML or NuMAD Excel definition
+            yaml_file = params.get("yaml_file")
+            excel_file = params.get("excel_file")
+            airfoil_dir = params.get("airfoil_dir")
+
+            if yaml_file and self.config_path and not Path(yaml_file).is_absolute():
                 yaml_file = str(self.config_path.parent / yaml_file)
+            if excel_file and self.config_path and not Path(excel_file).is_absolute():
+                excel_file = str(self.config_path.parent / excel_file)
+            if airfoil_dir and self.config_path and not Path(airfoil_dir).is_absolute():
+                airfoil_dir = str(self.config_path.parent / airfoil_dir)
 
             generator = BladeMesh(
                 yaml_file=yaml_file,
+                excel_file=excel_file,
+                airfoil_dir=airfoil_dir,
                 element_size=params.get("element_size", 0.15),
                 n_samples=params.get("n_samples", 300),
             )
@@ -761,6 +814,11 @@ class FSIRunner:
         else:
             model_config["elements"]["material"] = self._material
 
+        # Forward span_direction for composite fibre orientation correction
+        span_dir = getattr(self.config.elements, "span_direction", None)
+        if span_dir is not None:
+            model_config["elements"]["span_direction"] = tuple(float(v) for v in span_dir)
+
         # Add thickness for shell elements
         if self.config.elements.thickness:
             model_config["elements"]["thickness"] = self.config.elements.thickness
@@ -918,38 +976,97 @@ class FSIRunner:
     def _print_modal_results(self, result) -> None:
         """Print modal analysis results (frequencies and mode shapes)."""
         import numpy as np
+        from rich.console import Console
+        from rich.table import Table
 
         frequencies, mode_shapes = result
         n = len(frequencies)
 
-        print("\n" + "=" * 60)
-        print("  MODAL ANALYSIS RESULTS")
-        print("=" * 60)
-        print(f"  {'Mode':>4}  {'Frequency [Hz]':>16}  {'Period [s]':>12}  {'ω [rad/s]':>12}")
-        print("  " + "-" * 50)
+        # Participation factors from solver (may be None if not computed)
+        pf = self.solver.participation_factors
+        has_pf = pf is not None and pf.shape[0] >= n
+
+        console = Console()
+        table = Table(
+            title="MODAL ANALYSIS RESULTS",
+            title_style="bold cyan",
+            show_lines=False,
+            pad_edge=True,
+        )
+
+        table.add_column("Mode", justify="right", style="bold")
+        table.add_column("Frequency [Hz]", justify="right")
+        table.add_column("Period [s]", justify="right")
+        table.add_column("ω [rad/s]", justify="right")
+
+        if has_pf:
+            n_dirs = pf.shape[1]
+            all_labels = ["Ux%", "Uy%", "Uz%", "Rx%", "Ry%", "Rz%"]
+            for lb in all_labels[:n_dirs]:
+                table.add_column(lb, justify="right")
+            table.add_column("Type", justify="right", style="bold green")
 
         for i in range(n):
             f = frequencies[i]
             omega = 2.0 * np.pi * f
             period = 1.0 / f if f > 0 else float("inf")
-            print(f"  {i + 1:4d}  {f:16.6f}  {period:12.6f}  {omega:12.4f}")
+            row: list[str] = [
+                str(i + 1),
+                f"{f:.6f}",
+                f"{period:.6f}",
+                f"{omega:.4f}",
+            ]
 
-        print("=" * 60 + "\n")
+            if has_pf:
+                n_trans = min(n_dirs, 3)
+                trans_max = pf[i, :n_trans].max()
+                rot_max = pf[i, n_trans:n_dirs].max() if n_dirs > 3 else 0.0
+                rb_labels = ["Ux", "Uy", "Uz", "Rx", "Ry", "Rz"][:n_dirs]
+                if trans_max < 1.0 and rot_max < 1.0:
+                    mode_type = "Local"
+                else:
+                    dominant = int(np.argmax(pf[i, :n_dirs]))
+                    mode_type = rb_labels[dominant]
+                for d in range(n_dirs):
+                    row.append(f"{pf[i, d]:.1f}")
+                row.append(mode_type)
+
+            table.add_row(*row)
+
+        console.print()
+        console.print(table)
+        console.print()
 
         # Write results to CSV
         csv_path = self.working_dir / "modal_frequencies.csv"
         with open(csv_path, "w") as fh:
-            fh.write("mode,frequency_hz,period_s,omega_rad_s\n")
+            csv_dir_names = ["Ux", "Uy", "Uz", "Rx", "Ry", "Rz"]
+            header = "mode,frequency_hz,period_s,omega_rad_s"
+            if has_pf:
+                for d in range(pf.shape[1]):
+                    lbl = csv_dir_names[d] if d < len(csv_dir_names) else f"dir{d}"
+                    header += f",eff_mass_{lbl}_pct"
+            fh.write(header + "\n")
             for i, f in enumerate(frequencies):
                 omega = 2.0 * np.pi * f
                 period = 1.0 / f if f > 0 else float("inf")
-                fh.write(f"{i + 1},{f:.8e},{period:.8e},{omega:.8e}\n")
+                row = f"{i + 1},{f:.8e},{period:.8e},{omega:.8e}"
+                if has_pf:
+                    for d in range(pf.shape[1]):
+                        row += f",{pf[i, d]:.4f}"
+                fh.write(row + "\n")
         print(f"  Frequencies saved: {csv_path}")
 
         # Write mode shapes
         np_path = self.working_dir / "modal_modes.npy"
         np.save(str(np_path), mode_shapes)
         print(f"  Mode shapes saved: {np_path}")
+
+        # Write VTU files for ParaView visualization
+        output_dir = self.working_dir / "modal_results"
+        self.solver.write_modal_results(str(output_dir), frequencies, mode_shapes)
+        print(f"  VTU mode shapes saved: {output_dir}/")
+        print(f"  ParaView collection: {output_dir}/modal_results.pvd")
 
     def _run_postprocessing(self) -> None:
         """Run post-processing if configured."""

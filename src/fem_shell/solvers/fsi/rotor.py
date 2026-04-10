@@ -1169,9 +1169,27 @@ class LinearDynamicFSIRotorSolver(LinearDynamicFSISolver):
         ksp_st.setType("preonly")
         pc_st = ksp_st.getPC()
         pc_st.setType("lu")
-        # Use petsc built-in LU — avoid MUMPS (may not be compiled in).
-        # setFactorSolverType returns without error but fails silently at setup.
-        pc_st.setFactorSolverType("petsc")
+        # Prefer MUMPS when available (better for large matrices); fall back to
+        # the PETSc built-in LU which is always present.
+        # We probe availability by asking PETSc to register the solver type —
+        # if it can't, we stay with "petsc" (no-op means already set above).
+        try:
+            _probe = PETSc.Mat().createAIJ((2, 2), nnz=1, comm=PETSc.COMM_SELF)
+            _probe.setValue(0, 0, 1.0)
+            _probe.setValue(1, 1, 1.0)
+            _probe.assemble()
+            _ksp_probe = PETSc.KSP().create(PETSc.COMM_SELF)
+            _ksp_probe.setType("preonly")
+            _pc_probe = _ksp_probe.getPC()
+            _pc_probe.setType("lu")
+            _pc_probe.setFactorSolverType("mumps")
+            _ksp_probe.setOperators(_probe)
+            _ksp_probe.setUp()  # raises petsc4py.PETSc.Error if MUMPS missing
+            _ksp_probe.destroy()
+            _probe.destroy()
+            pc_st.setFactorSolverType("mumps")
+        except Exception:
+            pc_st.setFactorSolverType("petsc")
 
         eps.setWhichEigenpairs(SLEPc.EPS.Which.TARGET_MAGNITUDE)
         eps.setTarget(0.0)

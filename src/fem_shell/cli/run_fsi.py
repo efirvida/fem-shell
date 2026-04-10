@@ -481,6 +481,12 @@ Examples:
         help="Enable verbose logging",
     )
 
+    parser.add_argument(
+        "--export-ccx",
+        metavar="FILE",
+        help="Export model to CalculiX .inp format (mesh + composite materials + modal step)",
+    )
+
     args = parser.parse_args()
 
     # Handle special commands first
@@ -507,7 +513,7 @@ Examples:
     # Visualization
     if args.view:
         try:
-            from fem_shell.solvers.fsi import FSIRunner
+            from fem_shell.solvers.fsi.runner import FSIRunner
 
             # Initialize runner but don't run simulation
             runner = FSIRunner(str(config_path), args.workdir)
@@ -530,9 +536,34 @@ Examples:
         print(config)
         return 0
 
+    # Export to CalculiX
+    if args.export_ccx:
+        try:
+            from fem_shell.solvers.fsi.runner import FSIRunner
+
+            runner = FSIRunner(str(config_path), args.workdir)
+            num_modes = 10
+            if runner.config.solver.num_modes:
+                num_modes = runner.config.solver.num_modes
+            # Use span direction from config; fall back to Z for shell blade models
+            span_direction = None
+            elem_cfg = getattr(runner.config, "elements", None)
+            if elem_cfg is not None and getattr(elem_cfg, "span_direction", None) is not None:
+                span_direction = tuple(float(v) for v in elem_cfg.span_direction)
+            elif elem_cfg is not None and getattr(elem_cfg, "family", None) == "SHELL":
+                span_direction = (0.0, 0.0, 1.0)
+            runner.export_calculix(
+                args.export_ccx, num_modes=num_modes, span_direction=span_direction
+            )
+            return 0
+        except Exception as e:
+            logging.exception("CalculiX export failed")
+            print(f"\nError: {e}")
+            return 1
+
     # Run simulation
     try:
-        from fem_shell.solvers.fsi import FSIRunner
+        from fem_shell.solvers.fsi.runner import FSIRunner
 
         runner = FSIRunner(str(config_path), args.workdir)
         runner.run()

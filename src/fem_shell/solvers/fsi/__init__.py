@@ -2,21 +2,9 @@
 FSI (Fluid-Structure Interaction) solvers module.
 
 This module provides solvers for FSI problems using preCICE coupling.
+Imports are deferred so that modules requiring preCICE (base, corotational,
+linear_dynamic, rotor) are only loaded when actually accessed.
 """
-
-from .base import Adapter, ForceClipper, NewmarkCoefficients, SolverState
-from .corotational import (
-    ComputedOmega,
-    ConstantOmega,
-    CoordinateTransforms,
-    FunctionOmega,
-    InertialForcesCalculator,
-    OmegaProvider,
-    TableOmega,
-)
-from .linear_dynamic import LinearDynamicFSISolver
-from .rotor import LinearDynamicFSIRotorSolver
-from .runner import FSIRunner, run_from_yaml
 
 __all__ = [
     # Base classes
@@ -39,3 +27,34 @@ __all__ = [
     "FSIRunner",
     "run_from_yaml",
 ]
+
+_LAZY_IMPORTS = {
+    # base
+    "Adapter": ".base",
+    "ForceClipper": ".base",
+    "NewmarkCoefficients": ".base",
+    "SolverState": ".base",
+    # corotational
+    "ComputedOmega": ".corotational",
+    "ConstantOmega": ".corotational",
+    "CoordinateTransforms": ".corotational",
+    "FunctionOmega": ".corotational",
+    "InertialForcesCalculator": ".corotational",
+    "OmegaProvider": ".corotational",
+    "TableOmega": ".corotational",
+    # solvers
+    "LinearDynamicFSISolver": ".linear_dynamic",
+    "LinearDynamicFSIRotorSolver": ".rotor",
+    # runner
+    "FSIRunner": ".runner",
+    "run_from_yaml": ".runner",
+}
+
+
+def __getattr__(name: str):
+    if name in _LAZY_IMPORTS:
+        import importlib
+
+        module = importlib.import_module(_LAZY_IMPORTS[name], __name__)
+        return getattr(module, name)
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
