@@ -20,7 +20,6 @@ dependencies = [
     "shapely>=2.1.0",
     "mpi4py>=4.0.3",
     "h5py>=3.13.0",
-    "triangle>=0",
     "numpy-stl>=0",
     "trimesh>=4.10.1",
     "networkx>=3.6.1",
@@ -33,7 +32,7 @@ dependencies = [
     "plotext>=5.2.8",
 ]
 readme = "README.md"
-requires-python = ">= 3.12"
+requires-python = ">=3.12"
 
 [build-system]
 requires = ["setuptools>=61.0", "cython>=0.29", "numpy>=2.2"]
@@ -100,6 +99,12 @@ dev = [
     "pytest>=7.0",
     "pytest-cov>=4.0",
     "pytest-xdist>=3.0",
+]
+mesh = [
+    # Triangle is kept out of the base install because upstream wheels may lag
+    # behind the newest CPython releases, while the rest of fem-shell can work
+    # without it.
+    "triangle>=20250106; python_version < '3.14'",
 ]
 
 [tool.pytest.ini_options]

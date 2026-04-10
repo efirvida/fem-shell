@@ -75,6 +75,12 @@ pip install -e .
 This installs the package in editable mode and registers the available CLI
 commands.
 
+If you need Triangle-based meshing helpers, install the optional extra:
+
+```bash
+pip install -e .[mesh]
+```
+
 ### Optional external dependencies
 
 Some workflows require software that is not bundled with this repository:
@@ -85,6 +91,16 @@ Some workflows require software that is not bundled with this repository:
 
 If preCICE is not available in the environment, the package still imports, but
 FSI solvers are disabled.
+
+Recent packaging/runtime notes:
+
+- `triangle` was moved to the optional `mesh` extra so base installation keeps
+  working even on Python versions where Triangle wheels are not yet published.
+- Top-level package imports now tolerate missing PETSc/preCICE so CLI
+  operations such as `--preview` can inspect YAML files without a full solver
+  stack.
+- Example scripts that only generate meshes or inspect material data defer
+  PETSc/preCICE imports until the actual solver path is requested.
 
 ## Quick Start
 

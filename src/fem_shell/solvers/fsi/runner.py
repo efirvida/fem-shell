@@ -23,7 +23,6 @@ from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
 
-from ...core.bc import BodyForce, DirichletCondition
 from ...core.config import (
     ElementFamily,
     FSISimulationConfig,
@@ -225,8 +224,11 @@ class FSIRunner:
         content.append("Mesh source:   ", style="bold")
         content.append(f"{self.config.mesh.source}")
         self._console.print()
-        self._console.print(Panel(content, title="FEM-SHELL FSI SIMULATION RUNNER",
-                                  border_style="cyan", expand=False))
+        self._console.print(
+            Panel(
+                content, title="FEM-SHELL FSI SIMULATION RUNNER", border_style="cyan", expand=False
+            )
+        )
 
     def _validate_config(self) -> None:
         """Validate configuration before running."""
@@ -252,25 +254,27 @@ class FSIRunner:
             yaml_dt = solver_cfg.time_step
             xml_dt = precice_time.time_window_size
             if abs(yaml_dt - xml_dt) / max(abs(xml_dt), 1e-30) > 1e-6:
-                mismatches.append(
-                    f"time_step: YAML={yaml_dt:.2e} vs preCICE={xml_dt:.2e}"
-                )
+                mismatches.append(f"time_step: YAML={yaml_dt:.2e} vs preCICE={xml_dt:.2e}")
 
         if precice_time.max_time and solver_cfg.total_time:
             yaml_t = solver_cfg.total_time
             xml_t = precice_time.max_time
             if abs(yaml_t - xml_t) / max(abs(xml_t), 1e-30) > 1e-6:
-                mismatches.append(
-                    f"total_time: YAML={yaml_t:.2e} vs preCICE={xml_t:.2e}"
-                )
+                mismatches.append(f"total_time: YAML={yaml_t:.2e} vs preCICE={xml_t:.2e}")
 
         if mismatches:
             lines = "\n".join(f"⚠ {m}" for m in mismatches)
             lines += "\n\nThe preCICE XML defines the coupling time window."
             lines += "\nMismatched values may cause unexpected behavior."
             self._console.print()
-            self._console.print(Panel(lines, title="YAML ↔ preCICE time mismatch",
-                                      border_style="bold yellow", expand=False))
+            self._console.print(
+                Panel(
+                    lines,
+                    title="YAML ↔ preCICE time mismatch",
+                    border_style="bold yellow",
+                    expand=False,
+                )
+            )
             self._console.print()
 
     @staticmethod
@@ -301,8 +305,14 @@ class FSIRunner:
         if os.environ.get("FEM_SHELL_DEBUG_TRACEBACK") == "1":
             lines += f"\n\nOriginal error: {exc}"
         console.print()
-        console.print(Panel(lines, title="PRECICE COUPLING STOPPED (PEER DISCONNECTED)",
-                            border_style="bold red", expand=False))
+        console.print(
+            Panel(
+                lines,
+                title="PRECICE COUPLING STOPPED (PEER DISCONNECTED)",
+                border_style="bold red",
+                expand=False,
+            )
+        )
 
     def _setup_mesh(self) -> MeshModel:
         """Load or generate the mesh based on configuration."""
@@ -353,13 +363,19 @@ class FSIRunner:
 
     def _print_mesh_statistics(self, mesh: MeshModel) -> None:
         """Print mesh topology and element size statistics."""
-        import numpy as np
         from collections import Counter
         from itertools import combinations
 
+        import numpy as np
+
         # --- Topology overview ---
-        topo = Table(title="Mesh Topology", title_style="bold cyan",
-                     show_lines=False, pad_edge=True, expand=False)
+        topo = Table(
+            title="Mesh Topology",
+            title_style="bold cyan",
+            show_lines=False,
+            pad_edge=True,
+            expand=False,
+        )
         topo.add_column("Property", style="bold")
         topo.add_column("Value", justify="right")
         topo.add_row("Nodes", f"{len(mesh.nodes):,}")
@@ -381,8 +397,9 @@ class FSIRunner:
 
         for elem in mesh.elements:
             coords = elem.node_coords
-            n_corner = {3: 3, 4: 4, 6: 3, 8: 4, 9: 4, 16: 4,
-                        10: 4, 20: 8}.get(len(coords), len(coords))
+            n_corner = {3: 3, 4: 4, 6: 3, 8: 4, 9: 4, 16: 4, 10: 4, 20: 8}.get(
+                len(coords), len(coords)
+            )
             corners = coords[:n_corner]
             edges = []
             for i, j in combinations(range(n_corner), 2):
@@ -399,9 +416,13 @@ class FSIRunner:
         elem_max_sizes = np.array(elem_max_sizes)
         elem_min_sizes = np.array(elem_min_sizes)
 
-        stats = Table(title="Element Size Statistics",
-                      title_style="bold cyan", show_lines=False,
-                      pad_edge=True, expand=False)
+        stats = Table(
+            title="Element Size Statistics",
+            title_style="bold cyan",
+            show_lines=False,
+            pad_edge=True,
+            expand=False,
+        )
         stats.add_column("Metric", style="bold")
         stats.add_column("Min", justify="right")
         stats.add_column("Mean", justify="right")
@@ -428,8 +449,7 @@ class FSIRunner:
 
         # Aspect ratio (max_edge / min_edge per element)
         with np.errstate(divide="ignore", invalid="ignore"):
-            aspect = np.where(elem_min_sizes > 0,
-                              elem_max_sizes / elem_min_sizes, 0.0)
+            aspect = np.where(elem_min_sizes > 0, elem_max_sizes / elem_min_sizes, 0.0)
         if aspect.any():
             stats.add_row(
                 "Aspect ratio",
@@ -491,9 +511,7 @@ class FSIRunner:
                     "      [yellow]⚠[/yellow]  No deformed mesh found in latest checkpoint"
                 )
         else:
-            self._console.print(
-                "      [yellow]⚠[/yellow]  No checkpoints found"
-            )
+            self._console.print("      [yellow]⚠[/yellow]  No checkpoints found")
 
         return None
 
@@ -637,8 +655,9 @@ class FSIRunner:
 
     def _log_mesh_analysis(self, mesh: MeshModel) -> None:
         """Log mesh size statistics and RBF support-radius guidance."""
-        import numpy as np
         from itertools import combinations
+
+        import numpy as np
 
         # Edge lengths for RBF radius estimation
         edge_lengths = []
@@ -648,9 +667,13 @@ class FSIRunner:
                 edge_lengths.append(np.linalg.norm(coords[i] - coords[j]))
         edge_lengths = np.array(edge_lengths)
 
-        tbl = Table(title="RBF Support-Radius Guidance",
-                    title_style="bold cyan", show_lines=False,
-                    pad_edge=True, expand=False)
+        tbl = Table(
+            title="RBF Support-Radius Guidance",
+            title_style="bold cyan",
+            show_lines=False,
+            pad_edge=True,
+            expand=False,
+        )
         tbl.add_column("Metric", style="bold")
         tbl.add_column("Value", justify="right")
 
@@ -672,9 +695,7 @@ class FSIRunner:
 
                 from scipy.spatial import cKDTree
 
-                surface_coords = np.array(
-                    [mesh.nodes[nid].coords for nid in ns.node_ids]
-                )
+                surface_coords = np.array([mesh.nodes[nid].coords for nid in ns.node_ids])
                 tree = cKDTree(surface_coords)
                 dists, _ = tree.query(surface_coords, k=2)
                 nn_dists = dists[:, 1]
@@ -773,12 +794,14 @@ class FSIRunner:
         if warnings:
             warn_text = "\n".join(warnings)
             self._console.print()
-            self._console.print(Panel(
-                warn_text,
-                title="RBF support-radius may not be optimal",
-                border_style="bold yellow",
-                expand=False,
-            ))
+            self._console.print(
+                Panel(
+                    warn_text,
+                    title="RBF support-radius may not be optimal",
+                    border_style="bold yellow",
+                    expand=False,
+                )
+            )
         else:
             for rbf in self._precice_info.rbf_mappings:
                 self._console.print(
@@ -807,8 +830,7 @@ class FSIRunner:
         mat_config = self.config.material
         if mat_config is None:
             raise ValueError(
-                "Material configuration is required unless using "
-                "BladeMesh or RotorMesh generator."
+                "Material configuration is required unless using BladeMesh or RotorMesh generator."
             )
 
         if mat_config.type == MaterialType.ISOTROPIC.value:
@@ -851,9 +873,7 @@ class FSIRunner:
         self._console.print(f"      Material: [bold]{material.name}[/bold]")
         self._console.print(f"      Type: {mat_config.type}")
         if mat_config.type == MaterialType.ISOTROPIC.value:
-            self._console.print(
-                f"      E={mat_config.E}, nu={mat_config.nu}, rho={mat_config.rho}"
-            )
+            self._console.print(f"      E={mat_config.E}, nu={mat_config.nu}, rho={mat_config.rho}")
 
         return material
 
@@ -870,10 +890,7 @@ class FSIRunner:
             Mapping of element-set name to composite shell property.
         """
         from ...core.laminate import Laminate, Ply
-        from ...core.properties import (
-            CompositeShellProperty,
-            ShellProperty,
-        )
+        from ...core.properties import CompositeShellProperty, ShellProperty
         from ...models.blade.model import material_factory
 
         numad_data = self._mesh_generator.numad_mesh_data
@@ -1083,6 +1100,8 @@ class FSIRunner:
 
     def _apply_boundary_conditions(self) -> None:
         """Apply boundary conditions to the solver."""
+        from ...core.bc import BodyForce, DirichletCondition
+
         self._console.print("\n[bold cyan]\\[5/6] Applying boundary conditions...[/bold cyan]")
 
         if self.solver is None or self.mesh is None:
@@ -1206,8 +1225,13 @@ class FSIRunner:
         output_dir = self.working_dir / "modal_results"
         self.solver.write_modal_results(str(output_dir), frequencies, mode_shapes)
 
-        out_tbl = Table(title="Output Files", title_style="bold cyan",
-                        show_lines=False, pad_edge=True, expand=False)
+        out_tbl = Table(
+            title="Output Files",
+            title_style="bold cyan",
+            show_lines=False,
+            pad_edge=True,
+            expand=False,
+        )
         out_tbl.add_column("File", style="bold")
         out_tbl.add_column("Path", style="dim")
         out_tbl.add_row("Frequencies (CSV)", str(csv_path))
