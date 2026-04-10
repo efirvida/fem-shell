@@ -13,11 +13,16 @@ This module contains classes for generating various types of structured meshes:
 
 from __future__ import annotations
 
+import importlib
 import math
 from typing import TYPE_CHECKING, List, Tuple
 
-import gmsh
 import numpy as np
+
+
+def _import_gmsh():
+    """Lazy import of gmsh to avoid loading libGLU on headless systems."""
+    return importlib.import_module("gmsh")
 
 from fem_shell.core.mesh.entities import (
     ELEMENT_NODES_MAP,
@@ -103,6 +108,7 @@ class SquareShapeMesh:
         # Import here to avoid circular imports
         from fem_shell.core.mesh.model import MeshModel
 
+        gmsh = _import_gmsh()
         gmsh.initialize()
         try:
             gmsh.option.setNumber("General.Terminal", 0)
@@ -360,6 +366,7 @@ class BoxSurfaceMesh:
         """Generates and returns the MeshModel instance"""
         from fem_shell.core.mesh.model import MeshModel
 
+        gmsh = _import_gmsh()
         gmsh.initialize()
         try:
             gmsh.option.setNumber("General.Terminal", 0)
@@ -674,6 +681,7 @@ class MultiFlapMesh:
         """Generates and returns the MeshModel instance"""
         from fem_shell.core.mesh.model import MeshModel
 
+        gmsh = _import_gmsh()
         gmsh.initialize()
         try:
             gmsh.option.setNumber("General.Terminal", 0)
@@ -1025,11 +1033,15 @@ class BladeMesh:
 
     def __init__(
         self,
-        yaml_file: str,
+        yaml_file: str = None,
         element_size: float = 0.1,
         n_samples: int = 300,
+        excel_file: str = None,
+        airfoil_dir: str = None,
     ):
         self.yaml_file = yaml_file
+        self.excel_file = excel_file
+        self.airfoil_dir = airfoil_dir
         self.element_size = element_size
         self.n_samples = n_samples
         self._numad_blade = None
@@ -1072,7 +1084,12 @@ class BladeMesh:
         if verbose:
             print("  Loading blade definition...")
         self._numad_blade = numadBlade()
-        self._numad_blade.read_yaml(self.yaml_file)
+        if self.excel_file:
+            self._numad_blade.read_excel(self.excel_file, airfoil_dir=self.airfoil_dir)
+        elif self.yaml_file:
+            self._numad_blade.read_yaml(self.yaml_file)
+        else:
+            raise ValueError("BladeMesh requires either yaml_file or excel_file")
 
         # Resample airfoils
         for stat in self._numad_blade.definition.stations:
@@ -1168,25 +1185,40 @@ class BladeMesh:
             mesh_model.add_node(node)
             node_index_to_node[unique_idx] = node
 
-        # Create elements
+        # Create elements (skip degenerate elements with repeated nodes)
         if verbose:
             print(f"  Creating {num_elements} elements...")
-        for node_ids in self._numad_mesh["elements"]:
+        skipped = 0
+        raw_to_mesh_id = {}  # maps raw element index → mesh element id
+        for elem_idx, node_ids in enumerate(self._numad_mesh["elements"]):
             if node_ids[3] == -1:
                 element_type = ElementType.triangle
                 node_ids = node_ids[:3]
             else:
                 element_type = ElementType.quad
             node_objs = [node_index_to_node[numad_to_unique[n_id]] for n_id in node_ids]
-            mesh_model.add_element(MeshElement(nodes=node_objs, element_type=element_type))
+            # Skip elements where node deduplication collapsed nodes together
+            unique_node_ids = {id(n) for n in node_objs}
+            if len(unique_node_ids) < 3:
+                skipped += 1
+                continue
+            elem = MeshElement(nodes=node_objs, element_type=element_type)
+            mesh_model.add_element(elem)
+            raw_to_mesh_id[elem_idx] = elem.id
+        if skipped and verbose:
+            print(f"  Skipped {skipped} degenerate element(s)")
 
         # Create element sets
         if verbose:
             print("  Creating element and node sets...")
         for element_set in self._numad_mesh["sets"]["element"]:
             name = element_set["name"]
-            elements = {mesh_model.get_element_by_id(i) for i in element_set["labels"]}
-            mesh_model.add_element_set(ElementSet(name=name, elements=elements))
+            elements = set()
+            for raw_idx in element_set["labels"]:
+                if raw_idx in raw_to_mesh_id:
+                    elements.add(mesh_model.get_element_by_id(raw_to_mesh_id[raw_idx]))
+            if elements:
+                mesh_model.add_element_set(ElementSet(name=name, elements=elements))
 
         # Create node sets
         for node_set in self._numad_mesh["sets"]["node"]:
@@ -1588,6 +1620,7 @@ class CylindricalSurfaceMesh:
     def generate(self) -> "MeshModel":
         from fem_shell.core.mesh.model import MeshModel
 
+        gmsh = _import_gmsh()
         gmsh.initialize()
         try:
             gmsh.option.setNumber("General.Terminal", 0)
@@ -1882,6 +1915,7 @@ class HyperbolicParaboloidMesh(SquareShapeMesh):
     def generate(self) -> "MeshModel":
         from fem_shell.core.mesh.model import MeshModel
 
+        gmsh = _import_gmsh()
         gmsh.initialize()
         try:
             gmsh.option.setNumber("General.Terminal", 0)
@@ -1957,6 +1991,7 @@ class RaaschHookMesh:
 
         from fem_shell.core.mesh.model import MeshModel
 
+        gmsh = _import_gmsh()
         gmsh.initialize()
         try:
             gmsh.option.setNumber("General.Terminal", 0)
@@ -2354,6 +2389,7 @@ class BoxVolumeMesh:
         """Generate and return a MeshModel with volumetric elements."""
         from fem_shell.core.mesh.model import MeshModel
 
+        gmsh = _import_gmsh()
         gmsh.initialize()
         try:
             gmsh.option.setNumber("General.Terminal", 0)
@@ -2631,6 +2667,7 @@ class CylinderVolumeMesh:
         """Generate and return a MeshModel with volumetric elements."""
         from fem_shell.core.mesh.model import MeshModel
 
+        gmsh = _import_gmsh()
         gmsh.initialize()
         try:
             gmsh.option.setNumber("General.Terminal", 0)

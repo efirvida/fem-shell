@@ -2,6 +2,7 @@
 import numpy as np
 from numpy import ndarray
 
+from fem_shell.models.blade.numad.io.excel_to_blade import excel_to_blade
 from fem_shell.models.blade.numad.io.yaml_to_blade import yaml_to_blade
 from fem_shell.models.blade.numad.objects.bom import BillOfMaterials
 from fem_shell.models.blade.numad.objects.definition import Definition
@@ -96,6 +97,25 @@ class Blade:
 
         """
         yaml_to_blade(self, filename)
+        return self
+
+    def read_excel(self, filename: str, airfoil_dir: str = None):
+        """Populate blade attributes with NuMAD Excel file data.
+
+        Parameters
+        ----------
+        filename : str
+            Path to ``.xlsx`` file in the standard NuMAD 3-sheet format
+            (Geometry / Components / Materials).
+        airfoil_dir : str, optional
+            Directory containing airfoil coordinate ``.txt`` files.
+            If *None*, looks for an ``airfoils/`` directory next to *filename*.
+
+        Returns
+        -------
+        self
+        """
+        excel_to_blade(self, filename, airfoil_dir=airfoil_dir)
         return self
 
     def update_blade(self):
