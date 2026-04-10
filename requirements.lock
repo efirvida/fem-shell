@@ -10,7 +10,8 @@ Cython==3.2.4
 directsearch==1.0.1
 docstring_parser==0.17.0
 docutils==0.22.4
--e git+https://github.com/efirvida/fem-shell.git@a092f383a0f121874cb79e73439c1f91309b9fa2#egg=fem_shell
+et_xmlfile==2.0.0
+-e git+https://github.com/efirvida/fem-shell.git@04542747c6b03415862dabb15b0f3a433f47d806#egg=fem_shell
 fonttools==4.62.1
 gmsh==4.15.2
 h5py==3.16.0
@@ -18,7 +19,7 @@ idna==3.11
 joblib==1.5.3
 kiwisolver==1.5.0
 linkify-it-py==2.1.0
-lxml==6.0.2
+lxml==6.0.3
 markdown-it-py==4.0.0
 matplotlib==3.10.8
 mdit-py-plugins==0.5.0
@@ -29,6 +30,7 @@ networkx==3.6.1
 nevergrad==1.0.12
 numpy==2.4.4
 numpy-stl==3.2.0
+openpyxl==3.1.5
 packaging==26.0
 pandas==3.0.2
 petsc4py==3.24.2
