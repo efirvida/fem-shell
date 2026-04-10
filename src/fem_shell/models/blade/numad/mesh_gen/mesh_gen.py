@@ -9,7 +9,7 @@ from fem_shell.models.blade.numad.mesh_gen.surface import Surface
 from fem_shell.models.blade.numad.utils.interpolation import interpolator_wrap
 
 
-def get_shell_mesh(blade, elementSize):
+def get_shell_mesh(blade, elementSize, spanGrading="chord"):
     """
     This method generates a finite element shell mesh for the blade, based on what is
     stored in blade.geometry.coordinates, blade.keypoints.key_points,
@@ -20,6 +20,10 @@ def get_shell_mesh(blade, elementSize):
     blade: Blade
     forSolid: bool
     elementSize: float
+    spanGrading: str
+        Spanwise element size grading strategy.
+        - "uniform": constant elementSize for all sections
+        - "chord":   scale by sqrt(chord/chord_max) so tip gets finer elements
 
     Returns
     -------
@@ -133,9 +137,26 @@ def get_shell_mesh(blade, elementSize):
         Zrow = coordinates[XSCurvePts[i, :], 2, i]
         splineZ = np.vstack((splineZ, Zrow.T))
 
-    spParam = np.transpose(np.linspace(0, 1, rws))
+    # Use physical Z positions as spline parameter so that the
+    # intermediate interpolation points are uniformly spaced along the
+    # blade span, not in station-index space.
+    z_stations = splineZ[:, 0]
+    z_span = z_stations[-1] - z_stations[0]
+    if z_span > 0:
+        spParam = (z_stations - z_stations[0]) / z_span
+    else:
+        spParam = np.linspace(0, 1, rws)
+
+    # Build spParami with 3 aligned sub-intervals per section.
+    # Every 3rd row corresponds to an original station.
     nSpi = rws + 2 * (rws - 1)
-    spParami = np.transpose(np.linspace(0, 1, nSpi))
+    spParami = np.empty(nSpi)
+    for _i in range(rws - 1):
+        t0, t1 = spParam[_i], spParam[_i + 1]
+        spParami[3 * _i] = t0
+        spParami[3 * _i + 1] = t0 + (t1 - t0) / 3
+        spParami[3 * _i + 2] = t0 + 2 * (t1 - t0) / 3
+    spParami[-1] = spParam[-1]
     splineXi = interpolator_wrap(spParam, splineX[:, 0], spParami, "pchip")
     splineYi = interpolator_wrap(spParam, splineY[:, 0], spParami, "pchip")
     splineZi = interpolator_wrap(spParam, splineZ[:, 0], spParami, "pchip")
@@ -165,50 +186,58 @@ def get_shell_mesh(blade, elementSize):
     ## Generate the mesh using the splines as surface guides
 
     # ------------------------------------------------------------------
-    # Pre-scan: compute consistent SPANWISE element counts.
+    # Pre-scan: consistent SPANWISE element counts with chord grading.
     #
-    # The mesh is a (rws-1) x 12 grid of structured quad patches.
-    # Adjacent chordwise segments within the same section share a
-    # spanwise edge — they MUST have the same spanwise node count.
-    # We pre-scan all spanwise edge lengths and take:
+    # Adjacent chordwise segments within a section share spanwise edges
+    # and MUST have the same spanwise node count.  The effective spanwise
+    # element size is scaled by the local chord so that sections with a
+    # smaller chord (tip) get proportionally smaller elements, keeping
+    # the aspect ratio more uniform across the blade.
     #
-    #   nSpan[i] = max over 12 segments of ceil(span_edge / elSz)
+    #   elSz_span[i] = elementSize * sqrt(chord[i] / chord_max)
+    #   nSpan[i]     = max over 12 segments of ceil(span_edge / elSz_span)
     #
-    # This gives one consistent spanwise count per section row,
-    # eliminating spanwise triangle transitions and ensuring
-    # conformity between chordwise neighbours.
-    #
-    # Chordwise counts remain per-edge: each patch computes nEl1/nEl3
-    # from its own inboard/outboard chord edge length.  Where these
-    # differ, ShellRegion creates triangle transitions — the correct
-    # mechanism for chord-change boundaries.
+    # sqrt is used for moderate grading — linear would be too aggressive.
+    # Chordwise counts remain per-edge (triangle transitions at chord
+    # changes are the correct mechanism).
     # ------------------------------------------------------------------
     nSections = rws - 1
     nSegments = 12
 
-    # Outer shell spanwise edge lengths: [nSections, nSegments]
+    # Compute chord (chordwise extent) at each section boundary.
+    # Chord is measured as the sum of the 12 chordwise edges at the
+    # inboard face of each section (row _stPt in spline grid).
+    _chord = np.zeros(nSections)
     _span_trail = np.zeros((nSections, nSegments))
-    _span_lead = np.zeros((nSections, nSegments))
-
+    _span_lead  = np.zeros((nSections, nSegments))
     _stPt = 0
-    for i in range(nSections):
+    for _i in range(nSections):
         _stSp = 0
-        for j in range(nSegments):
+        _c = 0.0
+        for _j in range(nSegments):
             p0 = np.array([splineXi[_stPt, _stSp], splineYi[_stPt, _stSp], splineZi[_stPt, _stSp]])
             p1 = np.array([splineXi[_stPt, _stSp + 3], splineYi[_stPt, _stSp + 3], splineZi[_stPt, _stSp + 3]])
             p2 = np.array([splineXi[_stPt + 3, _stSp + 3], splineYi[_stPt + 3, _stSp + 3], splineZi[_stPt + 3, _stSp + 3]])
             p3 = np.array([splineXi[_stPt + 3, _stSp], splineYi[_stPt + 3, _stSp], splineZi[_stPt + 3, _stSp]])
-            _span_trail[i, j] = np.linalg.norm(p2 - p1)
-            _span_lead[i, j] = np.linalg.norm(p0 - p3)
+            _c += np.linalg.norm(p1 - p0)
+            _span_trail[_i, _j] = np.linalg.norm(p2 - p1)
+            _span_lead[_i, _j]  = np.linalg.norm(p0 - p3)
             _stSp += 3
+        _chord[_i] = _c
         _stPt += 3
 
-    # Consistent spanwise count per section row
+    # Chord-graded or uniform spanwise element size
+    if spanGrading == "chord":
+        _chord_max = _chord.max()
+        _elSz_span = elementSize * np.sqrt(np.clip(_chord / _chord_max, 0.1, 1.0))
+    else:
+        _elSz_span = np.full(nSections, elementSize)
+
     _nEl_span = np.maximum(
-        np.ceil(_span_trail / elementSize).astype(int),
-        np.ceil(_span_lead / elementSize).astype(int),
+        np.ceil(_span_trail / _elSz_span[:, None]).astype(int),
+        np.ceil(_span_lead  / _elSz_span[:, None]).astype(int),
     )
-    nSpan = np.maximum(_nEl_span.max(axis=1), 1)  # shape (nSections,)
+    nSpan = np.maximum(_nEl_span.max(axis=1), 1)
 
     bladeSurf = Surface()
     ## Outer shell sections
@@ -308,21 +337,13 @@ def get_shell_mesh(blade, elementSize):
                     ],
                 ]
             )
-            # Chordwise counts from actual edge lengths (natural
-            # transitions via triangles where chord changes).
-            # Spanwise counts from pre-scanned grid (consistent within
-            # each section row → no orphan nodes between segments).
+            # Per-edge chordwise + consistent nSpan spanwise
             nEl1 = max(1, int(np.ceil(
                 np.linalg.norm(shellKp[1, :] - shellKp[0, :]) / elementSize)))
             nEl3 = max(1, int(np.ceil(
                 np.linalg.norm(shellKp[3, :] - shellKp[2, :]) / elementSize)))
-
-            # At the last section the outboard (tip) chordwise edge has
-            # no neighbour — match it to the inboard edge to avoid
-            # degenerate quads where chord shrinks abruptly.
             if i == rws - 2:
                 nEl3 = nEl1
-
             nEl = np.array([nEl1, nSpan[i], nEl3, nSpan[i]])
 
             bladeSurf.addShellRegion(
@@ -341,22 +362,29 @@ def get_shell_mesh(blade, elementSize):
                 totThick = 0.001 * pg.thickness * pg.nPlies
                 ply = [pg.materialid, totThick, pg.angle]
                 layup.append(ply)
-            neChordwise counts from actual edge lengths (natural
-            # transitions via triangles where chord changes).
-            # Spanwise counts from pre-scanned grid (consistent within
-            # each section row → no orphan nodes between segments).
-            nEl1 = max(1, int(np.ceil(
-                np.linalg.norm(shellKp[1, :] - shellKp[0, :]) / elementSize)))
-            nEl3 = max(1, int(np.ceil(
-                np.linalg.norm(shellKp[3, :] - shellKp[2, :]) / elementSize)))
+            newSec["layup"] = layup
+            newSec["elementSet"] = stacks[j, i].name
+            newSec["xDir"] = (shellKp[3, :] - shellKp[0, :]) + (shellKp[2, :] - shellKp[1, :])
+            newSec["xyDir"] = (shellKp[1, :] - shellKp[0, :]) + (shellKp[2, :] - shellKp[3, :])
+            secList.append(newSec)
+            stSp = stSp + 3
+        stPt = stPt + 3
 
-            # At the last section the outboard (tip) chordwise edge has
-            # no neighbour — match it to the inboard edge to avoid
-            # degenerate quads where chord shrinks abruptly.
-            if i == rws - 2:
-                nEl3 = nEl1
-
-            nEl = np.array([nEl1, nSpan[i], nEl3, nSpan[i]]
+    ## Shear web sections
+    swES = set()
+    stPt = 0
+    web1Sets = np.array([])
+    web2Sets = np.array([])
+    for i in range(rws - 1):
+        if swstacks[0][i].plygroups:
+            shellKp = np.zeros((16, 3))
+            shellKp[0, :] = np.array([splineXi[stPt, 12], splineYi[stPt, 12], splineZi[stPt, 12]])
+            shellKp[1, :] = np.array([splineXi[stPt, 24], splineYi[stPt, 24], splineZi[stPt, 24]])
+            shellKp[2, :] = np.array(
+                [
+                    splineXi[stPt + 3, 24],
+                    splineYi[stPt + 3, 24],
+                    splineZi[stPt + 3, 24],
                 ]
             )
             shellKp[3, :] = np.array(
@@ -443,11 +471,7 @@ def get_shell_mesh(blade, elementSize):
             )
             shellKp[3, :] = np.array(
                 [
-               1 = max(1, int(np.ceil(
-                np.linalg.norm(shellKp[1, :] - shellKp[0, :]) / elementSize)))
-            nEl3 = max(1, int(np.ceil(
-                np.linalg.norm(shellKp[3, :] - shellKp[2, :]) / elementSize)))
-            nEl = np.array([nEl1, nSpan[i], nEl3
+                    splineXi[stPt + 3, 27],
                     splineYi[stPt + 3, 27],
                     splineZi[stPt + 3, 27],
                 ]
@@ -525,11 +549,7 @@ def get_shell_mesh(blade, elementSize):
     shellData["sections"] = secList
 
     ## Get local direction cosine orientations for individual elements
-    # print("ge1 = max(1, int(np.ceil(
-                np.linalg.norm(shellKp[1, :] - shellKp[0, :]) / elementSize)))
-            nEl3 = max(1, int(np.ceil(
-                np.linalg.norm(shellKp[3, :] - shellKp[2, :]) / elementSize)))
-            nEl = np.array([nEl1, nSpan[i], nEl3
+    # print("getting element orientations")
     nodes = shellData["nodes"]
     elements = shellData["elements"]
     numEls = len(shellData["elements"])
