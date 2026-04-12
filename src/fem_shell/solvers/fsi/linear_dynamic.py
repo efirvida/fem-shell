@@ -23,7 +23,7 @@ from fem_shell.solvers.linear import LinearDynamicSolver
 
 from .base import Adapter, ForceClipper, NewmarkCoefficients
 
-_console = Console()
+_console = Console(highlight=False)
 
 # =============================================================================
 # Module Constants
@@ -1121,52 +1121,22 @@ class LinearDynamicFSISolver(LinearDynamicSolver):
                 applied_max_nodal = np.max(np.linalg.norm(data_2d, axis=1))
 
             # ==================================================================
-            # Logging
+            # Logging — compact per-iteration output
             # ==================================================================
-            _console.print(f"\n{'─' * 70}")
-            _console.print(
-                f"  [bold cyan]TIME WINDOW[/bold cyan] {time_step + 1:4d}  │  "
-                f"[bold cyan]ITER[/bold cyan] {step:4d}  │  "
-                f"t → {t_target:.6f} s"
-            )
-            _console.print(f"{'─' * 70}")
+            _console.print(f"  [bold cyan]TW {time_step + 1:4d}[/bold cyan] │ "
+                           f"[bold]ITER {step:4d}[/bold] │ t → {t_target:.6f} s")
 
-            _console.print("  [bold]┌─ CFD FORCES[/bold] (mapped from fluid solver)")
-            _console.print(f"  │  Total:   |F| = {raw_force_mag:12.4e} N")
-            _console.print(
-                f"  │  Components: Fx={raw_force_x:+.4e}  "
-                f"Fy={raw_force_y:+.4e}  Fz={raw_force_z:+.4e}"
-            )
-            _console.print(f"  │  Max nodal:  {raw_max_nodal:.4e} N  ({n_nodes} nodes)")
-            _console.print("  │")
-
-            if force_max_cap is not None or ramp_time > 0:
-                _console.print("  [bold]├─ PROCESSING[/bold]")
-                if force_max_cap is not None:
-                    if clip_diags["n_clipped"] > 0:
-                        _console.print(
-                            f"  │  Clipping: [yellow]{clip_diags['n_clipped']}/{n_nodes}[/yellow]"
-                            f" nodes capped at {force_max_cap:.2e} N"
-                        )
-                    else:
-                        _console.print(
-                            f"  │  Clipping: None (cap={force_max_cap:.2e} N)"
-                        )
-                if ramp_time > 0:
-                    pct = ramp_factor * 100
-                    _console.print(
-                        f"  │  Ramping:  factor = {ramp_factor:.6f} ({pct:.2f}%)"
-                        f"  (t={t_target:.6f}s / T={ramp_time:.4f}s)"
-                    )
-                _console.print("  │")
-
-            _console.print("  [bold]└─ APPLIED FORCES[/bold] (after clipping + ramping)")
-            _console.print(f"     Total:   |F| = {applied_force_mag:12.4e} N")
-            _console.print(
-                f"     Components: Fx={applied_force_x:+.4e}  "
-                f"Fy={applied_force_y:+.4e}  Fz={applied_force_z:+.4e}"
-            )
-            _console.print(f"     Max nodal:  {applied_max_nodal:.4e} N")
+            # Forces: one line raw → applied
+            force_parts = [f"  Forces │ Raw |F|={raw_force_mag:.4e} N"]
+            if force_max_cap is not None and clip_diags["n_clipped"] > 0:
+                force_parts.append(
+                    f"  [yellow]Clipped {clip_diags['n_clipped']}/{n_nodes} nodes"
+                    f" at {force_max_cap:.2e} N[/yellow]"
+                )
+            if ramp_time > 0 and ramp_factor < 1.0:
+                force_parts.append(f"  Ramp {ramp_factor * 100:.1f}%")
+            force_parts.append(f"  → Applied |F|={applied_force_mag:.4e} N")
+            _console.print(" │ ".join(force_parts))
 
             # Use ramped data for assembly
             data = data_ramped
@@ -1189,23 +1159,19 @@ class LinearDynamicFSISolver(LinearDynamicSolver):
             # Compute solution response for this iteration
             max_disp_iter = u_new.norm(PETSc.NormType.INFINITY)
 
-            # --- Solver response ---
+            # Solver response: single compact line
             reason_style = "green" if ksp_reason > 0 else "red bold"
-            _console.print("  [bold]┌─ SOLVER RESPONSE[/bold]")
             _console.print(
-                f"  │  KSP iterations: {ksp_its}  "
-                f"(reason: [{reason_style}]{ksp_reason}[/{reason_style}])"
+                f"  Solver │ its={ksp_its}  "
+                f"reason=[{reason_style}]{ksp_reason}[/{reason_style}] │ "
+                f"max|u|={max_disp_iter:.4e} m"
             )
-            _console.print(f"  │  max|u_new| = {max_disp_iter:.4e} m")
-            _console.print("  └" + "─" * 67)
 
             logger.debug("Step %d: Writing displacement data to preCICE...", step)
             self.precice_participant.write_data(bc_manager.expand_solution(u_new).array)
 
-            # preCICE advance (its own log lines go to stdout)
-            _console.print("  ┌─ preCICE " + "─" * 57)
+            # preCICE advance
             self.precice_participant.advance(self.dt)
-            _console.print("  └" + "─" * 67)
 
             if self.precice_participant.requires_reading_checkpoint:
                 logger.debug("Step %d: Reading checkpoint (sub-iteration)", step)
@@ -1225,11 +1191,13 @@ class LinearDynamicFSISolver(LinearDynamicSolver):
                 max_vel = v.norm(PETSc.NormType.INFINITY)
                 max_acc = a.norm(PETSc.NormType.INFINITY)
 
-                _console.print("  [green bold]┌─ ✓ TIME WINDOW CONVERGED[/green bold]")
-                _console.print(f"  │  max|u| = {max_disp:.4e} m")
-                _console.print(f"  │  max|v| = {max_vel:.4e} m/s")
-                _console.print(f"  │  max|a| = {max_acc:.4e} m/s²")
-                _console.print(f"  [green bold]└─ Advanced to t = {t:.6f} s[/green bold]")
+                _console.print(f"{'═' * 70}")
+                _console.print(
+                    f"  [green bold]✓ TW {time_step:4d} CONVERGED[/green bold] │ "
+                    f"t = {t:.6f} s │ "
+                    f"|u|={max_disp:.4e}  |v|={max_vel:.4e}  |a|={max_acc:.4e}"
+                )
+                _console.print(f"{'═' * 70}")
 
                 # Prepare for checkpoint
                 u_expanded = bc_manager.expand_solution(u)
