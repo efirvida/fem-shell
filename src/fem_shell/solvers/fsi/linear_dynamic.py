@@ -5,7 +5,6 @@ This module provides the LinearDynamicFSISolver for fluid-structure interaction
 problems using preCICE coupling.
 """
 
-import logging
 from pathlib import Path
 from typing import Dict, Optional, Tuple
 
@@ -38,8 +37,6 @@ _DIRECT_SOLVER_ATOL = 1e-14
 _ITERATIVE_SOLVER_RTOL = 1e-6
 _ITERATIVE_SOLVER_ATOL = 1e-10
 _ITERATIVE_SOLVER_MAX_IT = 1000
-
-_logger = logging.getLogger(__name__)
 
 
 class LinearDynamicFSISolver(LinearDynamicSolver):
@@ -265,10 +262,12 @@ class LinearDynamicFSISolver(LinearDynamicSolver):
         # --- Fallback 1: BCGS+GAMG threshold=0 ---
         # CG requires SPD preconditioner; GAMG aggregation can produce
         # indefinite actions (reason=-8).  BCGS has no such requirement.
-        _logger.warning(
-            "KSP diverged (reason=%d). Retrying with BCGS + relaxed GAMG...",
-            ksp_reason,
-        )
+        _console.print(Panel(
+            f"[yellow]KSP diverged (reason={ksp_reason})[/yellow]\n"
+            f"CG+GAMG failed — switching to [bold]BCGS + GAMG(threshold=0)[/bold]",
+            title="⚠ Solver Fallback 1/2",
+            border_style="yellow",
+        ))
         fb1 = PETSc.KSP().create(self.comm)
         fb1.setType("bcgs")
         fb1_pc = fb1.getPC()
@@ -299,20 +298,23 @@ class LinearDynamicFSISolver(LinearDynamicSolver):
         fb1.destroy()
 
         if ksp_reason >= 0:
-            _logger.info(
-                "BCGS+GAMG fallback converged (reason=%d, its=%d).",
-                ksp_reason, ksp_its,
+            _console.print(
+                f"  [green]✓ BCGS+GAMG converged[/green] │ "
+                f"reason={ksp_reason}  its={ksp_its}"
             )
             return u_new, ksp_its, ksp_reason
 
         # --- Fallback 2: Direct LU solver ---
         # Try without specifying MUMPS first (PETSc native LU always exists).
         # If the build has MUMPS, try that as a second attempt.
-        _logger.warning(
-            "BCGS+GAMG also diverged (reason=%d). Falling back to direct LU...",
-            ksp_reason,
-        )
+        _console.print(Panel(
+            f"[red]BCGS+GAMG also diverged (reason={ksp_reason})[/red]\n"
+            f"Attempting [bold]direct LU factorization[/bold]",
+            title="⚠ Solver Fallback 2/2",
+            border_style="red",
+        ))
         for solver_pkg in (None, "mumps"):
+            pkg_label = solver_pkg or "petsc-native"
             fb2 = PETSc.KSP().create(self.comm)
             fb2.setType("preonly")
             fb2_pc = fb2.getPC()
@@ -333,15 +335,20 @@ class LinearDynamicFSISolver(LinearDynamicSolver):
                 ksp_reason = fb2.getConvergedReason()
                 fb2.destroy()
                 if ksp_reason >= 0:
-                    pkg_label = solver_pkg or "petsc-native"
-                    _logger.info("Direct LU (%s) converged (reason=%d).", pkg_label, ksp_reason)
+                    _console.print(
+                        f"  [green]✓ Direct LU ({pkg_label}) converged[/green] │ "
+                        f"reason={ksp_reason}"
+                    )
                     return u_new, ksp_its, ksp_reason
             except PETSc.Error as exc:
-                pkg_label = solver_pkg or "petsc-native"
-                _logger.warning("Direct LU (%s) failed: %s", pkg_label, exc)
+                _console.print(f"  [yellow]✗ LU ({pkg_label}) unavailable: {exc}[/yellow]")
                 fb2.destroy()
 
-        _logger.error("ALL solver fallbacks exhausted. Solution may be invalid.")
+        _console.print(Panel(
+            "[bold red]ALL solver fallbacks exhausted — solution may be invalid[/bold red]",
+            title="✗ Solver Failure",
+            border_style="red bold",
+        ))
         return u_new, 0, -1
 
     def _setup_mass_solver(self) -> None:
@@ -582,10 +589,9 @@ class LinearDynamicFSISolver(LinearDynamicSolver):
         beta = 2.0 * omega_i * omega_j * (zeta_j * omega_i - zeta_i * omega_j) / denom  # η_m
 
         if alpha < 0.0 or beta < 0.0:
-            _logger.warning(
-                "Rayleigh auto produced a negative coefficient: η_k=%.3e, η_m=%.3e.",
-                alpha,
-                beta,
+            _console.print(
+                f"  [yellow bold]⚠ Rayleigh auto: negative coefficient "
+                f"η_k={alpha:.3e}  η_m={beta:.3e}[/yellow bold]"
             )
 
         if self._is_primary_rank():
@@ -767,17 +773,25 @@ class LinearDynamicFSISolver(LinearDynamicSolver):
 
         coords = np.array([[n.x, n.y, n.z] for n in self.domain.mesh.nodes])
         resolved: list[int] = []
-        for pt in probe_cfg:
+        probe_table = Table(show_header=True, box=None, padding=(0, 1))
+        probe_table.add_column("#", style="bold")
+        probe_table.add_column("Target (x, y, z)")
+        probe_table.add_column("Node ID", justify="right")
+        probe_table.add_column("Distance", justify="right")
+        for i, pt in enumerate(probe_cfg):
             pt = np.asarray(pt, dtype=float)
             dists = np.linalg.norm(coords - pt, axis=1)
             idx = int(np.argmin(dists))
             node = self.domain.mesh.nodes[idx]
             resolved.append(idx)
-            _logger.info(
-                "Probe at (%.4f, %.4f, %.4f) → node %d  (dist=%.4e)",
-                pt[0], pt[1], pt[2], node.id, dists[idx],
+            probe_table.add_row(
+                str(i),
+                f"({pt[0]:.4f}, {pt[1]:.4f}, {pt[2]:.4f})",
+                str(node.id),
+                f"{dists[idx]:.4e}",
             )
         self._probe_node_ids = resolved
+        _console.print(Panel(probe_table, title="Probe Monitoring", border_style="cyan"))
 
         output_folder = self.solver_params.get("output_folder", "results")
         self._probe_file = str(Path(output_folder) / "probes.csv")
@@ -869,7 +883,7 @@ class LinearDynamicFSISolver(LinearDynamicSolver):
                     f"{applied_force_mag:.6e}\n"
                 )
         except Exception as e:
-            _logger.warning("Failed to write structural report: %s", e)
+            _console.print(f"  [yellow]⚠ Failed to write structural report: {e}[/yellow]")
 
     def _log_probe_data(
         self,
@@ -923,11 +937,10 @@ class LinearDynamicFSISolver(LinearDynamicSolver):
                     ])
                 f.write(",".join(parts) + "\n")
         except Exception as e:
-            _logger.warning("Failed to write probe data: %s", e)
+            _console.print(f"  [yellow]⚠ Failed to write probe data: {e}[/yellow]")
 
     def solve(self):
         """Perform dynamic analysis using improved Newmark-β method."""
-        logger = logging.getLogger(__name__)
 
         _console.print()
         _console.rule("[bold]FSI Dynamic Analysis — Structural Solver[/bold]", style="blue")
@@ -1161,11 +1174,9 @@ class LinearDynamicFSISolver(LinearDynamicSolver):
             step += 1
 
             if self.precice_participant.requires_writing_checkpoint:
-                logger.debug("Step %d: Writing checkpoint at t = %.6f s", step, t)
                 self.precice_participant.store_checkpoint((u, v, a, t))
 
             # Read coupling data from preCICE
-            logger.debug("Step %d: Reading coupling data from preCICE...", step)
             data = self.precice_participant.read_data()
             data_raw = data.copy() if data is not None else None
             interface_dofs = self.precice_participant.interface_dofs
@@ -1323,22 +1334,31 @@ class LinearDynamicFSISolver(LinearDynamicSolver):
                 applied_max_nodal = np.max(np.linalg.norm(data_2d, axis=1))
 
             # ==================================================================
-            # Logging — compact per-iteration output
+            # Logging — per-iteration status table
             # ==================================================================
-            _console.print(f"  [bold cyan]TW {time_step + 1:4d}[/bold cyan] │ "
-                           f"[bold]ITER {step:4d}[/bold] │ t → {t_target:.6f} s")
+            iter_table = Table(show_header=False, box=None, padding=(0, 1))
+            iter_table.add_column("Key", style="dim")
+            iter_table.add_column("Value")
+            iter_table.add_row("Time Window", f"[bold cyan]{time_step + 1}[/bold cyan]")
+            iter_table.add_row("Iteration", f"[bold]{step}[/bold]")
+            iter_table.add_row("Target time", f"{t_target:.6f} s")
 
-            # Forces: one line raw → applied
-            force_parts = [f"  Forces │ Raw |F|={raw_force_mag:.4e} N"]
+            # Force details
+            iter_table.add_row("Raw |F|", f"{raw_force_mag:.4e} N  ({n_nodes} nodes)")
+            iter_table.add_row(
+                "F components",
+                f"Fx={applied_force_x:.4e}  Fy={applied_force_y:.4e}  "
+                f"Fz={applied_force_z:.4e}",
+            )
             if force_max_cap is not None and clip_diags["n_clipped"] > 0:
-                force_parts.append(
-                    f"  [yellow]Clipped {clip_diags['n_clipped']}/{n_nodes} nodes"
-                    f" at {force_max_cap:.2e} N[/yellow]"
+                iter_table.add_row(
+                    "Clipping",
+                    f"[yellow]{clip_diags['n_clipped']}/{n_nodes} nodes "
+                    f"at {force_max_cap:.2e} N[/yellow]",
                 )
             if ramp_time > 0 and ramp_factor < 1.0:
-                force_parts.append(f"  Ramp {ramp_factor * 100:.1f}%")
-            force_parts.append(f"  → Applied |F|={applied_force_mag:.4e} N")
-            _console.print(" │ ".join(force_parts))
+                iter_table.add_row("Ramp", f"{ramp_factor * 100:.1f}%")
+            iter_table.add_row("Applied |F|", f"{applied_force_mag:.4e} N")
 
             # Use ramped data for assembly
             data = data_ramped
@@ -1355,28 +1375,31 @@ class LinearDynamicFSISolver(LinearDynamicSolver):
             F_eff = self._compute_effective_force(F_new_red, u, v, a, M_red, C_red, coeffs)
 
             # Solve for displacement
-            logger.debug("Step %d: Solving linear system...", step)
             u_new, ksp_its, ksp_reason = self._solve_linear_system(K_eff, F_eff)
 
             # Compute solution response for this iteration
             max_disp_iter = u_new.norm(PETSc.NormType.INFINITY)
 
-            # Solver response: single compact line
+            # Add solver result to iteration table
             reason_style = "green" if ksp_reason > 0 else "red bold"
-            _console.print(
-                f"  Solver │ its={ksp_its}  "
-                f"reason=[{reason_style}]{ksp_reason}[/{reason_style}] │ "
-                f"max|u|={max_disp_iter:.4e} m"
+            iter_table.add_row(
+                "KSP",
+                f"its={ksp_its}  reason=[{reason_style}]{ksp_reason}[/{reason_style}]",
             )
+            iter_table.add_row("max|u|", f"{max_disp_iter:.4e} m")
+            _console.print(Panel(
+                iter_table,
+                title=f"TW {time_step + 1} · Iteration {step}",
+                border_style="dim",
+                expand=False,
+            ))
 
-            logger.debug("Step %d: Writing displacement data to preCICE...", step)
             self.precice_participant.write_data(bc_manager.expand_solution(u_new).array)
 
             # preCICE advance
             self.precice_participant.advance(self.dt)
 
             if self.precice_participant.requires_reading_checkpoint:
-                logger.debug("Step %d: Reading checkpoint (sub-iteration)", step)
                 u, v, a, t = self.precice_participant.retrieve_checkpoint()
             else:
                 # Time window completed - increment physical time step counter
@@ -1393,13 +1416,20 @@ class LinearDynamicFSISolver(LinearDynamicSolver):
                 max_vel = v.norm(PETSc.NormType.INFINITY)
                 max_acc = a.norm(PETSc.NormType.INFINITY)
 
-                _console.print(f"{'═' * 70}")
-                _console.print(
-                    f"  [green bold]✓ TW {time_step:4d} CONVERGED[/green bold] │ "
-                    f"t = {t:.6f} s │ "
-                    f"|u|={max_disp:.4e}  |v|={max_vel:.4e}  |a|={max_acc:.4e}"
-                )
-                _console.print(f"{'═' * 70}")
+                conv_table = Table(show_header=False, box=None, padding=(0, 1))
+                conv_table.add_column("Key", style="bold")
+                conv_table.add_column("Value")
+                conv_table.add_row("Time", f"{t:.6f} s")
+                conv_table.add_row("Iterations", str(step - (time_step - 1)))
+                conv_table.add_row("max |u|", f"{max_disp:.4e} m")
+                conv_table.add_row("max |v|", f"{max_vel:.4e} m/s")
+                conv_table.add_row("max |a|", f"{max_acc:.4e} m/s²")
+                _console.print(Panel(
+                    conv_table,
+                    title=f"✓ TW {time_step} Converged",
+                    border_style="green bold",
+                    expand=False,
+                ))
 
                 # Prepare for checkpoint
                 u_expanded = bc_manager.expand_solution(u)
