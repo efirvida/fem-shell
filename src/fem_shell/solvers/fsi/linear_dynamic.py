@@ -174,6 +174,10 @@ class LinearDynamicFSISolver(LinearDynamicSolver):
         self._restart_grace_remaining: int = 0
 
         # On restart from latest checkpoint, force ramps must not be re-applied.
+
+        # --- Probe monitoring ---
+        self._probe_node_ids: list[int] = []
+        self._probe_file: Optional[str] = None
         self._skip_ramps: bool = False
 
     # =========================================================================
@@ -726,6 +730,181 @@ class LinearDynamicFSISolver(LinearDynamicSolver):
             out.update(sr.compute_nodal_strains_all_layers_dict())
         return out
 
+    # =========================================================================
+    # CSV Report & Probes
+    # =========================================================================
+
+    def _init_probes(self) -> None:
+        """Resolve probe node IDs from solver_params['probes'].
+
+        Accepts a list of ``[x, y, z]`` coordinates.  Each coordinate is
+        matched to the nearest mesh node.  Results are written once per
+        converged time window to ``<output_folder>/probes.csv``.
+        """
+        probe_cfg = self.solver_params.get("probes")
+        if not probe_cfg:
+            return
+
+        coords = np.array([[n.x, n.y, n.z] for n in self.domain.mesh.nodes])
+        resolved: list[int] = []
+        for pt in probe_cfg:
+            pt = np.asarray(pt, dtype=float)
+            dists = np.linalg.norm(coords - pt, axis=1)
+            idx = int(np.argmin(dists))
+            node = self.domain.mesh.nodes[idx]
+            resolved.append(idx)
+            _logger.info(
+                "Probe at (%.4f, %.4f, %.4f) → node %d  (dist=%.4e)",
+                pt[0], pt[1], pt[2], node.id, dists[idx],
+            )
+        self._probe_node_ids = resolved
+
+        output_folder = self.solver_params.get("output_folder", "results")
+        self._probe_file = str(Path(output_folder) / "probes.csv")
+
+    def _log_structural_report(
+        self,
+        t: float,
+        time_step: int,
+        u_full: np.ndarray,
+        v_full: np.ndarray,
+        a_full: np.ndarray,
+        stress_fields: Dict[str, np.ndarray],
+        applied_force_mag: float,
+    ) -> None:
+        """Append one row to ``structural_report.csv`` with key mechanical metrics.
+
+        Written once per converged time window (rank 0 only).
+
+        Columns
+        -------
+        Time, TimeStep, Max Displacement, Max Displacement Node,
+        Max Velocity, Max Acceleration,
+        Max VonMises TOP/MID/BOT + node, Max Sigma1 TOP,
+        Applied Force Magnitude.
+        """
+        if not self._is_primary_rank():
+            return
+
+        output_folder = self.solver_params.get("output_folder", "results")
+        csv_path = Path(output_folder) / "structural_report.csv"
+        csv_path.parent.mkdir(parents=True, exist_ok=True)
+
+        nodes = self.domain.mesh.nodes
+        n_nodes = len(nodes)
+        dofs_per_node = u_full.size // n_nodes
+
+        # Displacement magnitude per node
+        u_mat = u_full.reshape(n_nodes, dofs_per_node)[:, :3]
+        u_mag = np.linalg.norm(u_mat, axis=1)
+        max_disp_idx = int(np.argmax(u_mag))
+        max_disp = float(u_mag[max_disp_idx])
+        max_disp_node = nodes[max_disp_idx].id
+
+        # Velocity / acceleration magnitudes
+        v_mat = v_full.reshape(n_nodes, dofs_per_node)[:, :3]
+        a_mat = a_full.reshape(n_nodes, dofs_per_node)[:, :3]
+        max_vel = float(np.max(np.linalg.norm(v_mat, axis=1)))
+        max_acc = float(np.max(np.linalg.norm(a_mat, axis=1)))
+
+        # Stress peaks — TOP/MID/BOT von Mises + TOP sigma_1
+        def _peak(key: str) -> tuple[float, int]:
+            arr = stress_fields.get(key)
+            if arr is None:
+                return 0.0, -1
+            idx = int(np.argmax(np.abs(arr)))
+            return float(arr[idx]), nodes[idx].id if idx < n_nodes else idx
+
+        vm_top, vm_top_nd = _peak("TOP_von_mises")
+        vm_mid, vm_mid_nd = _peak("MID_von_mises")
+        vm_bot, vm_bot_nd = _peak("BOT_von_mises")
+        s1_top, s1_top_nd = _peak("TOP_sigma_1")
+
+        # Position of max displacement node
+        nd = nodes[max_disp_idx]
+        max_pos = f"{nd.x:.4f};{nd.y:.4f};{nd.z:.4f}"
+
+        write_header = not csv_path.exists()
+        try:
+            with open(csv_path, "a") as f:
+                if write_header:
+                    f.write(
+                        "Time [s],TimeStep,"
+                        "Max Disp [m],Max Disp Node,Max Disp Pos (x;y;z),"
+                        "Max Vel [m/s],Max Acc [m/s2],"
+                        "VonMises TOP [Pa],VonMises TOP Node,"
+                        "VonMises MID [Pa],VonMises MID Node,"
+                        "VonMises BOT [Pa],VonMises BOT Node,"
+                        "Sigma1 TOP [Pa],Sigma1 TOP Node,"
+                        "Applied Force [N]\n"
+                    )
+                f.write(
+                    f"{t:.6f},{time_step},"
+                    f"{max_disp:.6e},{max_disp_node},{max_pos},"
+                    f"{max_vel:.6e},{max_acc:.6e},"
+                    f"{vm_top:.6e},{vm_top_nd},"
+                    f"{vm_mid:.6e},{vm_mid_nd},"
+                    f"{vm_bot:.6e},{vm_bot_nd},"
+                    f"{s1_top:.6e},{s1_top_nd},"
+                    f"{applied_force_mag:.6e}\n"
+                )
+        except Exception as e:
+            _logger.warning("Failed to write structural report: %s", e)
+
+    def _log_probe_data(
+        self,
+        t: float,
+        time_step: int,
+        u_full: np.ndarray,
+        v_full: np.ndarray,
+        stress_fields: Dict[str, np.ndarray],
+    ) -> None:
+        """Append probe data for all monitored nodes to ``probes.csv``.
+
+        One row per time step.  For each probe node: displacement (3),
+        velocity magnitude, von Mises TOP.
+        """
+        if not self._probe_node_ids or not self._is_primary_rank():
+            return
+
+        nodes = self.domain.mesh.nodes
+        n_nodes = len(nodes)
+        dofs_per_node = u_full.size // n_nodes
+        u_mat = u_full.reshape(n_nodes, dofs_per_node)
+        v_mat = v_full.reshape(n_nodes, dofs_per_node)
+
+        vm_top = stress_fields.get("TOP_von_mises")
+
+        csv_path = self._probe_file
+        write_header = not Path(csv_path).exists()
+
+        try:
+            with open(csv_path, "a") as f:
+                if write_header:
+                    cols = ["Time [s]", "TimeStep"]
+                    for i, nid in enumerate(self._probe_node_ids):
+                        nd = nodes[nid]
+                        tag = f"P{i}(n{nd.id})"
+                        cols.extend([
+                            f"{tag} Ux [m]", f"{tag} Uy [m]", f"{tag} Uz [m]",
+                            f"{tag} |V| [m/s]",
+                            f"{tag} VonMises TOP [Pa]",
+                        ])
+                    f.write(",".join(cols) + "\n")
+
+                parts = [f"{t:.6f}", str(time_step)]
+                for nid in self._probe_node_ids:
+                    ux, uy, uz = float(u_mat[nid, 0]), float(u_mat[nid, 1]), float(u_mat[nid, 2])
+                    vmag = float(np.linalg.norm(v_mat[nid, :3]))
+                    vm = float(vm_top[nid]) if vm_top is not None else 0.0
+                    parts.extend([
+                        f"{ux:.6e}", f"{uy:.6e}", f"{uz:.6e}",
+                        f"{vmag:.6e}", f"{vm:.6e}",
+                    ])
+                f.write(",".join(parts) + "\n")
+        except Exception as e:
+            _logger.warning("Failed to write probe data: %s", e)
+
     def solve(self):
         """Perform dynamic analysis using improved Newmark-β method."""
         logger = logging.getLogger(__name__)
@@ -945,6 +1124,9 @@ class LinearDynamicFSISolver(LinearDynamicSolver):
         if self._force_max_magnitude is not None:
             cfg_table.add_row("Divergence limit", f"{self._force_max_magnitude:.2e} N")
         _console.print(Panel(cfg_table, title="FSI Solver Configuration", border_style="blue"))
+
+        # Initialize probe monitoring (resolves nearest nodes)
+        self._init_probes()
 
         # Store interface DOFs reference for checkpoint handling
         self._interface_dofs = self.precice_participant.interface_dofs
@@ -1218,6 +1400,28 @@ class LinearDynamicFSISolver(LinearDynamicSolver):
 
                 force_fields.update(self._compute_stress_fields(u_expanded.array.copy()))
 
+                # CSV reports (rank 0 only)
+                u_full_arr = u_expanded.array.copy()
+                v_full_arr = bc_manager.expand_state_vector(v).array.copy()
+                a_full_arr = bc_manager.expand_state_vector(a).array.copy()
+
+                self._log_structural_report(
+                    t=t,
+                    time_step=time_step,
+                    u_full=u_full_arr,
+                    v_full=v_full_arr,
+                    a_full=a_full_arr,
+                    stress_fields=force_fields,
+                    applied_force_mag=applied_force_mag,
+                )
+                self._log_probe_data(
+                    t=t,
+                    time_step=time_step,
+                    u_full=u_full_arr,
+                    v_full=v_full_arr,
+                    stress_fields=force_fields,
+                )
+
                 # Handle checkpoint writing if enabled
                 self._handle_checkpoint(
                     t=t,
@@ -1227,9 +1431,9 @@ class LinearDynamicFSISolver(LinearDynamicSolver):
                     u_red=u.array.copy(),
                     v_red=v.array.copy(),
                     a_red=a.array.copy(),
-                    u_full=u_expanded.array.copy(),
-                    v_full=bc_manager.expand_state_vector(v).array.copy(),
-                    a_full=bc_manager.expand_state_vector(a).array.copy(),
+                    u_full=u_full_arr,
+                    v_full=v_full_arr,
+                    a_full=a_full_arr,
                     extra_fields=force_fields,
                 )
 
