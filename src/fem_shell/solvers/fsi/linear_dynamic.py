@@ -12,6 +12,9 @@ from typing import Dict, Optional, Tuple
 import meshio
 import numpy as np
 from petsc4py import PETSc
+from rich.console import Console
+from rich.panel import Panel
+from rich.table import Table
 
 from fem_shell.core.bc import BoundaryConditionManager
 from fem_shell.core.mesh import MeshModel
@@ -19,6 +22,8 @@ from fem_shell.postprocess.stress_recovery import StressRecovery, StressType
 from fem_shell.solvers.linear import LinearDynamicSolver
 
 from .base import Adapter, ForceClipper, NewmarkCoefficients
+
+_console = Console()
 
 # =============================================================================
 # Module Constants
@@ -636,9 +641,8 @@ class LinearDynamicFSISolver(LinearDynamicSolver):
         """Perform dynamic analysis using improved Newmark-β method."""
         logger = logging.getLogger(__name__)
 
-        print("\n" + "═" * 70, flush=True)
-        print("  FSI DYNAMIC ANALYSIS - STRUCTURAL SOLVER", flush=True)
-        print("═" * 70, flush=True)
+        _console.print()
+        _console.rule("[bold]FSI Dynamic Analysis — Structural Solver[/bold]", style="blue")
 
         # =====================================================================
         # Phase 1: Matrix assembly
@@ -837,18 +841,21 @@ class LinearDynamicFSISolver(LinearDynamicSolver):
         force_clipper = ForceClipper(force_max_cap=force_max_cap)
         ramp_time = self._force_ramp_time
 
-        print("═" * 70, flush=True)
-        print(f"  dt = {self.dt:.6f} s  │  Newmark β={beta:.2f}, γ={gamma:.2f}", flush=True)
+        cfg_table = Table(show_header=False, box=None, padding=(0, 1))
+        cfg_table.add_column("Key", style="bold")
+        cfg_table.add_column("Value")
+        cfg_table.add_row("dt", f"{self.dt:.6f} s")
+        cfg_table.add_row("Newmark", f"β={beta:.2f}  γ={gamma:.2f}")
         if self._eta_m != 0.0 or self._eta_k != 0.0:
-            print(f"  Damping: η_m={self._eta_m:.4e}, η_k={self._eta_k:.4e}", flush=True)
-        print(f"  Solver type: {self._solver_type}", flush=True)
+            cfg_table.add_row("Damping", f"η_m={self._eta_m:.4e}  η_k={self._eta_k:.4e}")
+        cfg_table.add_row("Solver", self._solver_type)
         if force_max_cap:
-            print(f"  Force cap: {force_max_cap:.2e} N", flush=True)
+            cfg_table.add_row("Force cap", f"{force_max_cap:.2e} N")
         if ramp_time > 0:
-            print(f"  Ramp time: {ramp_time:.4f} s", flush=True)
+            cfg_table.add_row("Ramp", f"linear  T={ramp_time:.4f} s")
         if self._force_max_magnitude is not None:
-            print(f"  Force divergence limit: {self._force_max_magnitude:.2e} N", flush=True)
-        print("═" * 70, flush=True)
+            cfg_table.add_row("Divergence limit", f"{self._force_max_magnitude:.2e} N")
+        _console.print(Panel(cfg_table, title="FSI Solver Configuration", border_style="blue"))
 
         # Store interface DOFs reference for checkpoint handling
         self._interface_dofs = self.precice_participant.interface_dofs
@@ -871,6 +878,18 @@ class LinearDynamicFSISolver(LinearDynamicSolver):
             data = self.precice_participant.read_data()
             data_raw = data.copy() if data is not None else None
             interface_dofs = self.precice_participant.interface_dofs
+
+            # --- Mapping conservation diagnostic ---
+            if data is not None and data.ndim == 2:
+                _diag_sum = np.sum(data, axis=0)
+                _diag_mag = np.linalg.norm(_diag_sum)
+                print(
+                    f"---[preciceAdapter] READ \"Force\" (solid, {data.shape[0]} pts): "
+                    f"max|nodal|={np.max(np.linalg.norm(data, axis=1)):.4e}  "
+                    f"|sum|={_diag_mag:.4e}  "
+                    f"sum=({_diag_sum[0]:.4e}, {_diag_sum[1]:.4e}, {_diag_sum[2]:.4e})",
+                    flush=True,
+                )
 
             # ==================================================================
             # Force analysis: raw CFD forces
@@ -971,15 +990,19 @@ class LinearDynamicFSISolver(LinearDynamicSolver):
             data_clipped, clip_diags = force_clipper.apply(data)
 
             # ==================================================================
-            # Force ramping (physical time based)
+            # Force ramping (physical time based) — linear ramp
             # ==================================================================
+            # NOTE: Linear ramp f(t)=t/T gives O(t) growth near origin,
+            # ensuring non-zero applied forces from the first time step.
+            # A cosine ramp 0.5*(1-cos(πt/T)) has O(t²) near origin,
+            # which can produce forces so small that the KSP solver
+            # converges with u=0 (ATOL convergence), causing preCICE
+            # IQN-ILS to receive identical zero displacements and crash.
             t_target = t + self.dt
             if self._skip_ramps:
                 ramp_factor = 1.0
-            elif ramp_time > 0 and t_target < ramp_time:
-                ramp_factor = 0.5 * (1.0 - np.cos(np.pi * t_target / ramp_time))
-            elif ramp_time > 0 and t_target >= ramp_time:
-                ramp_factor = 1.0
+            elif ramp_time > 0:
+                ramp_factor = min(t_target / ramp_time, 1.0)
             else:
                 ramp_factor = 1.0
 
@@ -1011,50 +1034,59 @@ class LinearDynamicFSISolver(LinearDynamicSolver):
             # ==================================================================
             # Logging
             # ==================================================================
-            print(f"\n{'─' * 70}", flush=True)
-            print(
-                f"  TIME WINDOW {time_step + 1:4d}  │  ITER {step:4d}  │  t → {t_target:.6f} s",
-                flush=True,
+            _console.rule(
+                f"[bold]TW {time_step + 1:4d}  │  ITER {step:4d}  │  t → {t_target:.6f} s[/bold]",
+                style="cyan",
             )
-            print(f"{'─' * 70}", flush=True)
 
-            print("  ┌─ CFD FORCES (mapped from fluid solver)", flush=True)
-            print(f"  │  Total:   |F| = {raw_force_mag:12.4e} N", flush=True)
-            print(
-                f"  │  Components: Fx={raw_force_x:+.4e}  Fy={raw_force_y:+.4e}  Fz={raw_force_z:+.4e}",
-                flush=True,
+            # --- Forces table ---
+            ftable = Table(
+                title="Forces",
+                show_header=True,
+                header_style="bold",
+                box=None,
+                padding=(0, 1),
             )
-            print(f"  │  Max nodal:  {raw_max_nodal:.4e} N  ({n_nodes} nodes)", flush=True)
-            print("  │", flush=True)
+            ftable.add_column("", style="dim")
+            ftable.add_column("|F| [N]", justify="right")
+            ftable.add_column("Fx [N]", justify="right")
+            ftable.add_column("Fy [N]", justify="right")
+            ftable.add_column("Fz [N]", justify="right")
+            ftable.add_column("max nodal [N]", justify="right")
+            ftable.add_row(
+                "CFD",
+                f"{raw_force_mag:.4e}",
+                f"{raw_force_x:+.4e}",
+                f"{raw_force_y:+.4e}",
+                f"{raw_force_z:+.4e}",
+                f"{raw_max_nodal:.4e}",
+            )
 
-            if force_max_cap is not None or ramp_time > 0:
-                print("  ├─ PROCESSING", flush=True)
-                if force_max_cap is not None:
-                    if clip_diags["n_clipped"] > 0:
-                        print(
-                            f"  │  Clipping: {clip_diags['n_clipped']}/{n_nodes} nodes capped at {force_max_cap:.2e} N",
-                            flush=True,
-                        )
-                    else:
-                        print(
-                            f"  │  Clipping: None (cap={force_max_cap:.2e} N)",
-                            flush=True,
-                        )
-
-                if ramp_time > 0:
-                    print(
-                        f"  │  Ramping:  factor = {ramp_factor:.4f}  (t_target={t_target:.4f}s / {ramp_time:.4f}s)",
-                        flush=True,
+            # Processing info line
+            proc_parts = []
+            if force_max_cap is not None:
+                if clip_diags["n_clipped"] > 0:
+                    proc_parts.append(
+                        f"clip {clip_diags['n_clipped']}/{n_nodes} @ {force_max_cap:.2e}"
                     )
-                print("  │", flush=True)
+                else:
+                    proc_parts.append(f"clip off (cap={force_max_cap:.2e})")
+            if ramp_time > 0:
+                pct = ramp_factor * 100
+                proc_parts.append(f"ramp {ramp_factor:.6f} ({pct:.2f}%)")
 
-            print("  └─ APPLIED FORCES (after clipping + ramping)", flush=True)
-            print(f"     Total:   |F| = {applied_force_mag:12.4e} N", flush=True)
-            print(
-                f"     Components: Fx={applied_force_x:+.4e}  Fy={applied_force_y:+.4e}  Fz={applied_force_z:+.4e}",
-                flush=True,
+            ftable.add_row(
+                "Applied",
+                f"{applied_force_mag:.4e}",
+                f"{applied_force_x:+.4e}",
+                f"{applied_force_y:+.4e}",
+                f"{applied_force_z:+.4e}",
+                f"{applied_max_nodal:.4e}",
             )
-            print(f"     Max nodal:  {applied_max_nodal:.4e} N", flush=True)
+            _console.print(ftable)
+
+            if proc_parts:
+                _console.print(f"  [dim]Processing:[/dim] {' │ '.join(proc_parts)}")
 
             # Use ramped data for assembly
             data = data_ramped
@@ -1082,18 +1114,19 @@ class LinearDynamicFSISolver(LinearDynamicSolver):
             # Compute solution response for this iteration
             max_disp_iter = u_new.norm(PETSc.NormType.INFINITY)
 
-            print("  ┌─ SOLVER RESPONSE (this iteration)", flush=True)
-            print(f"  │  KSP iterations: {ksp_its}  (reason: {ksp_reason})", flush=True)
-            print(f"  │  max|u_new| = {max_disp_iter:.4e} m", flush=True)
-            print("  └" + "─" * 67, flush=True)
+            # --- Solver response ---
+            reason_style = "green" if ksp_reason > 0 else "red bold"
+            _console.print(
+                f"  [bold]Solver:[/bold] KSP its={ksp_its}  "
+                f"reason=[{reason_style}]{ksp_reason}[/{reason_style}]  "
+                f"max|u|={max_disp_iter:.4e} m"
+            )
 
             logger.debug("Step %d: Writing displacement data to preCICE...", step)
             self.precice_participant.write_data(bc_manager.expand_solution(u_new).array)
 
-            # Visual separator before preCICE output
-            print("  ┌─ preCICE " + "─" * 57, flush=True)
+            # preCICE advance (its own log lines go to stdout)
             self.precice_participant.advance(self.dt)
-            print("  └" + "─" * 67, flush=True)
 
             if self.precice_participant.requires_reading_checkpoint:
                 logger.debug("Step %d: Reading checkpoint (sub-iteration)", step)
@@ -1113,11 +1146,13 @@ class LinearDynamicFSISolver(LinearDynamicSolver):
                 max_vel = v.norm(PETSc.NormType.INFINITY)
                 max_acc = a.norm(PETSc.NormType.INFINITY)
 
-                print("  ┌─ ✓ TIME WINDOW CONVERGED", flush=True)
-                print(f"  │  max|u| = {max_disp:.4e} m", flush=True)
-                print(f"  │  max|v| = {max_vel:.4e} m/s", flush=True)
-                print(f"  │  max|a| = {max_acc:.4e} m/s²", flush=True)
-                print(f"  └─ Advanced to t = {t:.6f} s", flush=True)
+                _console.print(
+                    f"  [green bold]✓ CONVERGED[/green bold]  "
+                    f"t={t:.6f} s  "
+                    f"max|u|={max_disp:.4e} m  "
+                    f"max|v|={max_vel:.4e} m/s  "
+                    f"max|a|={max_acc:.4e} m/s²"
+                )
 
                 # Prepare for checkpoint
                 u_expanded = bc_manager.expand_solution(u)
@@ -1159,20 +1194,21 @@ class LinearDynamicFSISolver(LinearDynamicSolver):
         # Get final clipping statistics
         clip_stats = force_clipper.get_statistics()
 
-        print("\n" + "═" * 70, flush=True)
-        print("  FSI SIMULATION COMPLETED", flush=True)
-        print("═" * 70, flush=True)
-        print(f"  Final time:        {t:.6f} s", flush=True)
-        print(f"  Time steps:        {time_step}", flush=True)
-        print(f"  Total iterations:  {step}", flush=True)
+        summary_table = Table(show_header=False, box=None, padding=(0, 1))
+        summary_table.add_column("Key", style="bold")
+        summary_table.add_column("Value")
+        summary_table.add_row("Final time", f"{t:.6f} s")
+        summary_table.add_row("Time steps", str(time_step))
+        summary_table.add_row("Total iterations", str(step))
         if time_step > 0:
-            print(f"  Avg iters/step:    {step / time_step:.2f}", flush=True)
+            summary_table.add_row("Avg iters/step", f"{step / time_step:.2f}")
         if clip_stats["clipped_fraction"] > 0:
-            print(
-                f"  Clipping:          {100 * clip_stats['clipped_fraction']:.2f}% nodes clipped",
-                flush=True,
+            summary_table.add_row(
+                "Clipping", f"{100 * clip_stats['clipped_fraction']:.2f}% nodes clipped"
             )
-        print("═" * 70 + "\n", flush=True)
+        _console.print(
+            Panel(summary_table, title="FSI Simulation Completed", border_style="green")
+        )
 
         # Flush async checkpoints and create PVD index
         if self._checkpoint_manager is not None:
