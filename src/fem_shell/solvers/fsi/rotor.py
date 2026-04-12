@@ -1041,17 +1041,21 @@ class LinearDynamicFSIRotorSolver(LinearDynamicFSISolver):
         self._solver.setTolerances(rtol=_DIRECT_SOLVER_RTOL, atol=_DIRECT_SOLVER_ATOL, max_it=1)
 
     def _configure_iterative_solver(self, pc: PETSc.PC, opts: PETSc.Options) -> None:
-        """Configure iterative solver with GAMG preconditioner."""
+        """Configure iterative solver with GAMG preconditioner.
+
+        Uses conservative aggregation settings suitable for anisotropic shell
+        meshes (high aspect ratios, mixed edge lengths).
+        """
         self._solver.setType("cg")
         pc.setType("gamg")
         opts["pc_gamg_type"] = "agg"
-        opts["pc_gamg_agg_nsmooths"] = 1
-        opts["pc_gamg_threshold"] = 0.02
+        opts["pc_gamg_agg_nsmooths"] = 2
+        opts["pc_gamg_threshold"] = 0.005
         opts["pc_gamg_square_graph"] = 1
         opts["pc_gamg_sym_graph"] = True
         opts["mg_levels_ksp_type"] = "chebyshev"
         opts["mg_levels_pc_type"] = "jacobi"
-        opts["mg_levels_ksp_max_it"] = 3
+        opts["mg_levels_ksp_max_it"] = 4
         opts["mg_coarse_ksp_type"] = "preonly"
         opts["mg_coarse_pc_type"] = "lu"
         self._solver.setTolerances(
@@ -1059,6 +1063,91 @@ class LinearDynamicFSIRotorSolver(LinearDynamicFSISolver):
             atol=_ITERATIVE_SOLVER_ATOL,
             max_it=_ITERATIVE_SOLVER_MAX_IT,
         )
+
+    def _solve_linear_system(
+        self, K_eff: PETSc.Mat, F_eff: PETSc.Vec
+    ) -> tuple[PETSc.Vec, int, int]:
+        """Solve K_eff * u = F_eff with automatic fallback on divergence.
+
+        Fallback chain (iterative solver only):
+          1. Primary CG+GAMG solve
+          2. Retry CG+GAMG with relaxed threshold (0.0 = keep all connections)
+          3. Direct LU+MUMPS (guaranteed convergence)
+
+        Returns (u_new, ksp_iterations, ksp_converged_reason).
+        """
+        u_new = K_eff.createVecRight()
+        self._solver.setOperators(K_eff)
+        self._solver.solve(F_eff, u_new)
+
+        ksp_its = self._solver.getIterationNumber()
+        ksp_reason = self._solver.getConvergedReason()
+
+        is_iterative = self._solver.getType() != "preonly"
+        if ksp_reason >= 0 or not is_iterative:
+            return u_new, ksp_its, ksp_reason
+
+        # --- Fallback 1: GAMG with threshold=0 (keep all connections) ---
+        _logger.warning(
+            "KSP diverged (reason=%d). Retrying with relaxed GAMG threshold...",
+            ksp_reason,
+        )
+        opts = PETSc.Options()
+        old_threshold = opts.getString("pc_gamg_threshold", "0.005")
+        opts["pc_gamg_threshold"] = 0.0
+        self._solver.reset()
+        self._solver.setOperators(K_eff)
+        self._solver.setFromOptions()
+
+        u_new.zeroEntries()
+        self._solver.solve(F_eff, u_new)
+        ksp_its = self._solver.getIterationNumber()
+        ksp_reason = self._solver.getConvergedReason()
+
+        # Restore original threshold for next normal solve
+        opts["pc_gamg_threshold"] = old_threshold
+        self._solver.reset()
+        self._solver.setOperators(K_eff)
+        self._solver.setFromOptions()
+
+        if ksp_reason >= 0:
+            _logger.info(
+                "Relaxed-GAMG fallback converged (reason=%d, its=%d).",
+                ksp_reason, ksp_its,
+            )
+            return u_new, ksp_its, ksp_reason
+
+        # --- Fallback 2: Direct solver (MUMPS LU) ---
+        _logger.warning(
+            "Relaxed GAMG also diverged (reason=%d). Falling back to direct LU solver...",
+            ksp_reason,
+        )
+        fb_ksp = PETSc.KSP().create(self.comm)
+        fb_ksp.setType("preonly")
+        fb_pc = fb_ksp.getPC()
+        fb_pc.setType("lu")
+        try:
+            fb_pc.setFactorSolverType("mumps")
+        except Exception:
+            pass
+        fb_ksp.setTolerances(rtol=_DIRECT_SOLVER_RTOL, atol=_DIRECT_SOLVER_ATOL, max_it=1)
+        fb_ksp.setOperators(K_eff)
+        fb_ksp.setFromOptions()
+
+        u_new.zeroEntries()
+        fb_ksp.solve(F_eff, u_new)
+        ksp_its = fb_ksp.getIterationNumber()
+        ksp_reason = fb_ksp.getConvergedReason()
+        fb_ksp.destroy()
+
+        if ksp_reason >= 0:
+            _logger.info("Direct LU fallback converged (reason=%d).", ksp_reason)
+        else:
+            _logger.error(
+                "ALL solver fallbacks failed (reason=%d). Solution may be invalid.",
+                ksp_reason,
+            )
+        return u_new, ksp_its, ksp_reason
 
     def _setup_mass_solver(self) -> None:
         """Setup mass solver with simple diagonal preconditioner for lumped mass."""
@@ -1967,7 +2056,7 @@ class LinearDynamicFSIRotorSolver(LinearDynamicFSISolver):
                     header = (
                         "Time [s],Angle [deg],Speed [RPM],Omega [rad/s],Alpha [rad/s2],"
                         "Aero Thrust [N],"
-                        "Aero Torque [Nm],Non-Aero Torque [Nm],Inertial Torque [Nm],"
+                        "Aero Torque [Nm],Inertial Torque [Nm],"
                         "Gravity Torque [Nm],Total Torque [Nm],"
                         "Aero Power [W],Total Power [W],Structural Efficiency,"
                         "Cp,Cq,Ct,TSR,"
@@ -1982,7 +2071,7 @@ class LinearDynamicFSIRotorSolver(LinearDynamicFSISolver):
                     f"{t:.6f},{angle_deg:.4f},{omega_rpm:.4f},"
                     f"{omega_rad:.4f},{alpha:.6e},"
                     f"{thrust:.6e},"
-                    f"{torque_aero:.6e},{torque_non_aero:.6e},{torque_inertial:.6e},"
+                    f"{torque_aero:.6e},{torque_inertial:.6e},"
                     f"{torque_gravity:.6e},{torque_total:.6e},"
                     f"{power_aero:.6e},{power_total:.6e},{structural_efficiency:.6f},"
                     f"{cp:.6f},{cq:.6f},{ct:.6f},{tsr:.6f},"
@@ -4117,16 +4206,12 @@ class LinearDynamicFSIRotorSolver(LinearDynamicFSISolver):
 
         # Solve
         _logger.debug("Solving linear system...")
-        u_new = K_eff.createVecRight()
-        self._solver.solve(F_eff, u_new)
+        u_new, ksp_its, ksp_reason = self._solve_linear_system(K_eff, F_eff)
 
         # Cleanup
         F_new.destroy()
         F_new_red.destroy()
         F_eff.destroy()
-
-        ksp_its = self._solver.getIterationNumber()
-        ksp_reason = self._solver.getConvergedReason()
 
         return u_new, ksp_its, ksp_reason
 

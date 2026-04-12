@@ -35,8 +35,8 @@ _DOF_THRESHOLD_DIRECT_SOLVER = 20_000
 # Solver tolerances
 _DIRECT_SOLVER_RTOL = 1e-12
 _DIRECT_SOLVER_ATOL = 1e-14
-_ITERATIVE_SOLVER_RTOL = 1e-5
-_ITERATIVE_SOLVER_ATOL = 1e-8
+_ITERATIVE_SOLVER_RTOL = 1e-6
+_ITERATIVE_SOLVER_ATOL = 1e-10
 _ITERATIVE_SOLVER_MAX_IT = 1000
 
 _logger = logging.getLogger(__name__)
@@ -212,17 +212,21 @@ class LinearDynamicFSISolver(LinearDynamicSolver):
         self._solver.setTolerances(rtol=_DIRECT_SOLVER_RTOL, atol=_DIRECT_SOLVER_ATOL, max_it=1)
 
     def _configure_iterative_solver(self, pc: PETSc.PC, opts: PETSc.Options) -> None:
-        """Configure iterative solver with GAMG preconditioner."""
+        """Configure iterative solver with GAMG preconditioner.
+
+        Uses conservative aggregation settings suitable for anisotropic shell
+        meshes (high aspect ratios, mixed edge lengths).
+        """
         self._solver.setType("cg")
         pc.setType("gamg")
         opts["pc_gamg_type"] = "agg"
-        opts["pc_gamg_agg_nsmooths"] = 1
-        opts["pc_gamg_threshold"] = 0.02
+        opts["pc_gamg_agg_nsmooths"] = 2
+        opts["pc_gamg_threshold"] = 0.005
         opts["pc_gamg_square_graph"] = 1
         opts["pc_gamg_sym_graph"] = True
         opts["mg_levels_ksp_type"] = "chebyshev"
         opts["mg_levels_pc_type"] = "jacobi"
-        opts["mg_levels_ksp_max_it"] = 3
+        opts["mg_levels_ksp_max_it"] = 4
         opts["mg_coarse_ksp_type"] = "preonly"
         opts["mg_coarse_pc_type"] = "lu"
         self._solver.setTolerances(
@@ -230,6 +234,91 @@ class LinearDynamicFSISolver(LinearDynamicSolver):
             atol=_ITERATIVE_SOLVER_ATOL,
             max_it=_ITERATIVE_SOLVER_MAX_IT,
         )
+
+    def _solve_linear_system(
+        self, K_eff: PETSc.Mat, F_eff: PETSc.Vec
+    ) -> tuple[PETSc.Vec, int, int]:
+        """Solve K_eff * u = F_eff with automatic fallback on divergence.
+
+        Fallback chain (iterative solver only):
+          1. Primary CG+GAMG solve
+          2. Retry CG+GAMG with relaxed threshold (0.0 = keep all connections)
+          3. Direct LU+MUMPS (guaranteed convergence)
+
+        Returns (u_new, ksp_iterations, ksp_converged_reason).
+        """
+        u_new = K_eff.createVecRight()
+        self._solver.setOperators(K_eff)
+        self._solver.solve(F_eff, u_new)
+
+        ksp_its = self._solver.getIterationNumber()
+        ksp_reason = self._solver.getConvergedReason()
+
+        is_iterative = self._solver.getType() != "preonly"
+        if ksp_reason >= 0 or not is_iterative:
+            return u_new, ksp_its, ksp_reason
+
+        # --- Fallback 1: GAMG with threshold=0 (keep all connections) ---
+        logger.warning(
+            "KSP diverged (reason=%d). Retrying with relaxed GAMG threshold...",
+            ksp_reason,
+        )
+        opts = PETSc.Options()
+        old_threshold = opts.getString("pc_gamg_threshold", "0.005")
+        opts["pc_gamg_threshold"] = 0.0
+        self._solver.reset()
+        self._solver.setOperators(K_eff)
+        self._solver.setFromOptions()
+
+        u_new.zeroEntries()
+        self._solver.solve(F_eff, u_new)
+        ksp_its = self._solver.getIterationNumber()
+        ksp_reason = self._solver.getConvergedReason()
+
+        # Restore original threshold for next normal solve
+        opts["pc_gamg_threshold"] = old_threshold
+        self._solver.reset()
+        self._solver.setOperators(K_eff)
+        self._solver.setFromOptions()
+
+        if ksp_reason >= 0:
+            logger.info(
+                "Relaxed-GAMG fallback converged (reason=%d, its=%d).",
+                ksp_reason, ksp_its,
+            )
+            return u_new, ksp_its, ksp_reason
+
+        # --- Fallback 2: Direct solver (MUMPS LU) ---
+        logger.warning(
+            "Relaxed GAMG also diverged (reason=%d). Falling back to direct LU solver...",
+            ksp_reason,
+        )
+        fb_ksp = PETSc.KSP().create(self.comm)
+        fb_ksp.setType("preonly")
+        fb_pc = fb_ksp.getPC()
+        fb_pc.setType("lu")
+        try:
+            fb_pc.setFactorSolverType("mumps")
+        except Exception:
+            pass
+        fb_ksp.setTolerances(rtol=_DIRECT_SOLVER_RTOL, atol=_DIRECT_SOLVER_ATOL, max_it=1)
+        fb_ksp.setOperators(K_eff)
+        fb_ksp.setFromOptions()
+
+        u_new.zeroEntries()
+        fb_ksp.solve(F_eff, u_new)
+        ksp_its = fb_ksp.getIterationNumber()
+        ksp_reason = fb_ksp.getConvergedReason()
+        fb_ksp.destroy()
+
+        if ksp_reason >= 0:
+            logger.info("Direct LU fallback converged (reason=%d).", ksp_reason)
+        else:
+            logger.error(
+                "ALL solver fallbacks failed (reason=%d). Solution may be invalid.",
+                ksp_reason,
+            )
+        return u_new, ksp_its, ksp_reason
 
     def _setup_mass_solver(self) -> None:
         """Setup mass solver with diagonal preconditioner for lumped mass."""
@@ -1095,12 +1184,7 @@ class LinearDynamicFSISolver(LinearDynamicSolver):
 
             # Solve for displacement
             logger.debug("Step %d: Solving linear system...", step)
-            u_new = K_eff.createVecRight()
-            self._solver.solve(F_eff, u_new)
-
-            # Log solver convergence info
-            ksp_its = self._solver.getIterationNumber()
-            ksp_reason = self._solver.getConvergedReason()
+            u_new, ksp_its, ksp_reason = self._solve_linear_system(K_eff, F_eff)
 
             # Compute solution response for this iteration
             max_disp_iter = u_new.norm(PETSc.NormType.INFINITY)
