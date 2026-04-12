@@ -263,7 +263,7 @@ class LinearDynamicFSISolver(LinearDynamicSolver):
             return u_new, ksp_its, ksp_reason
 
         # --- Fallback 1: GAMG with threshold=0 (keep all connections) ---
-        logger.warning(
+        _logger.warning(
             "KSP diverged (reason=%d). Retrying with relaxed GAMG threshold...",
             ksp_reason,
         )
@@ -286,14 +286,14 @@ class LinearDynamicFSISolver(LinearDynamicSolver):
         self._solver.setFromOptions()
 
         if ksp_reason >= 0:
-            logger.info(
+            _logger.info(
                 "Relaxed-GAMG fallback converged (reason=%d, its=%d).",
                 ksp_reason, ksp_its,
             )
             return u_new, ksp_its, ksp_reason
 
         # --- Fallback 2: Direct solver (MUMPS LU) ---
-        logger.warning(
+        _logger.warning(
             "Relaxed GAMG also diverged (reason=%d). Falling back to direct LU solver...",
             ksp_reason,
         )
@@ -316,9 +316,9 @@ class LinearDynamicFSISolver(LinearDynamicSolver):
         fb_ksp.destroy()
 
         if ksp_reason >= 0:
-            logger.info("Direct LU fallback converged (reason=%d).", ksp_reason)
+            _logger.info("Direct LU fallback converged (reason=%d).", ksp_reason)
         else:
-            logger.error(
+            _logger.error(
                 "ALL solver fallbacks failed (reason=%d). Solution may be invalid.",
                 ksp_reason,
             )
