@@ -29,7 +29,9 @@ _console = Console(highlight=False)
 # =============================================================================
 
 # Solver configuration thresholds
-_DOF_THRESHOLD_DIRECT_SOLVER = 20_000
+# 200k DOFs fits comfortably in MUMPS memory on a single HPC node and gives
+# 1 back-substitution per solve instead of hundreds of CG/GAMG iterations.
+_DOF_THRESHOLD_DIRECT_SOLVER = 200_000
 
 # Solver tolerances
 _DIRECT_SOLVER_RTOL = 1e-12
@@ -200,16 +202,56 @@ class LinearDynamicFSISolver(LinearDynamicSolver):
             self._configure_iterative_solver(pc, opts)
 
         self._solver.setFromOptions()
+        self._keff_last: Optional[PETSc.Mat] = None  # tracks last operator to skip redundant setOperators
         self._setup_mass_solver()
 
+    @staticmethod
+    def _has_mumps() -> bool:
+        """Check if MUMPS is available in the current PETSc installation."""
+        try:
+            test = PETSc.Mat().createAIJ(size=[2, 2], comm=PETSc.COMM_SELF)
+            test.setUp()
+            test.setValue(0, 0, 1.0)
+            test.setValue(1, 1, 1.0)
+            test.assemble()
+            test.getOrdering("natural")
+            fmat = PETSc.Mat().createAIJ(size=[2, 2], comm=PETSc.COMM_SELF)
+            fmat.setUp()
+            fmat.assemble()
+            try:
+                ksp = PETSc.KSP().create(PETSc.COMM_SELF)
+                ksp.setType("preonly")
+                ksp_pc = ksp.getPC()
+                ksp_pc.setType("lu")
+                ksp_pc.setFactorSolverType("mumps")
+                ksp.setOperators(test)
+                rhs = test.createVecRight()
+                rhs.set(1.0)
+                sol = test.createVecRight()
+                ksp.solve(rhs, sol)
+                available = ksp.getConvergedReason() >= 0
+                ksp.destroy()
+                rhs.destroy()
+                sol.destroy()
+            except PETSc.Error:
+                available = False
+            test.destroy()
+            fmat.destroy()
+            return available
+        except Exception:
+            return False
+
     def _configure_direct_solver(self, pc: PETSc.PC) -> None:
-        """Configure direct LU solver - best for small/medium problems."""
+        """Configure direct LU solver - best for small/medium problems.
+
+        Uses MUMPS if available, otherwise falls back to PETSc native LU.
+        """
         self._solver.setType("preonly")
         pc.setType("lu")
-        try:
+        if self._has_mumps():
             pc.setFactorSolverType("mumps")
-        except Exception:
-            pass
+        else:
+            pc.setFactorSolverType("petsc")
         self._solver.setTolerances(rtol=_DIRECT_SOLVER_RTOL, atol=_DIRECT_SOLVER_ATOL, max_it=1)
 
     def _configure_iterative_solver(self, pc: PETSc.PC, opts: PETSc.Options) -> None:
@@ -249,7 +291,13 @@ class LinearDynamicFSISolver(LinearDynamicSolver):
         Returns (u_new, ksp_iterations, ksp_converged_reason).
         """
         u_new = K_eff.createVecRight()
-        self._solver.setOperators(K_eff)
+        # Only update operators if K_eff changed since the last call.  Within a
+        # time window K_eff is constant, so this avoids redundant LU
+        # re-factorizations for direct solvers and GAMG hierarchy rebuilds for
+        # iterative solvers on every IQN-ILS coupled iteration.
+        if K_eff is not self._keff_last:
+            self._solver.setOperators(K_eff)
+            self._keff_last = K_eff
         self._solver.solve(F_eff, u_new)
 
         ksp_its = self._solver.getIterationNumber()
@@ -315,16 +363,14 @@ class LinearDynamicFSISolver(LinearDynamicSolver):
         ))
         for solver_pkg in (None, "mumps"):
             pkg_label = solver_pkg or "petsc-native"
+            if solver_pkg == "mumps" and not self._has_mumps():
+                continue
             fb2 = PETSc.KSP().create(self.comm)
             fb2.setType("preonly")
             fb2_pc = fb2.getPC()
             fb2_pc.setType("lu")
             if solver_pkg is not None:
-                try:
-                    fb2_pc.setFactorSolverType(solver_pkg)
-                except Exception:
-                    fb2.destroy()
-                    continue
+                fb2_pc.setFactorSolverType(solver_pkg)
             fb2.setTolerances(rtol=_DIRECT_SOLVER_RTOL, atol=_DIRECT_SOLVER_ATOL, max_it=1)
             fb2.setOperators(K_eff)
             fb2.setFromOptions()
@@ -361,10 +407,33 @@ class LinearDynamicFSISolver(LinearDynamicSolver):
         self._m_solver.setFromOptions()
 
     def lump_mass_matrix(self, M: PETSc.Mat) -> PETSc.Mat:
-        """Convert mass matrix M to lumped (diagonal) form."""
+        """Convert mass matrix M to lumped (diagonal) form via row-sum technique.
+
+        The critical implementation detail: ``Mat.createAIJ`` must be called
+        with ``nnz=1`` so PETSc preallocates one non-zero per row BEFORE
+        ``setDiagonal`` is called.  Without preallocation, ``setDiagonal``
+        fails silently and the returned matrix is all zeros, which makes the
+        Newmark effective stiffness K_eff ≈ K (no mass term) and the time
+        integration degenerates to quasi-static.
+
+        A mass floor of 1e-4 × global_max is also applied via PETSc-native
+        ``pointwiseMax`` to handle tip-closure elements whose thickness → 0.
+        """
         diag = PETSc.Vec().createMPI(M.getSize()[0], comm=M.getComm())
-        M.getRowSum(diag)  # Diagonal will be row sums
-        M_lumped = PETSc.Mat().createAIJ(size=M.getSize(), comm=M.getComm())
+        M.getRowSum(diag)  # row sum = lumped mass per DOF
+
+        # Apply floor using PETSc operations (avoids numpy-view mutability issues).
+        _, m_max = diag.max()  # returns (global_index, global_max_value)
+        if m_max > 0.0:
+            floor_vec = diag.duplicate()
+            floor_vec.set(m_max * 1e-4)
+            diag.pointwiseMax(diag, floor_vec)
+            floor_vec.destroy()
+
+        # nnz=1 preallocates exactly one non-zero per row (the diagonal).
+        # Without this, setDiagonal silently discards all insertions.
+        M_lumped = PETSc.Mat().createAIJ(size=M.getSize(), comm=M.getComm(), nnz=1)
+        M_lumped.setUp()
         M_lumped.setDiagonal(diag)
         M_lumped.assemble()
         return M_lumped
@@ -955,6 +1024,19 @@ class LinearDynamicFSISolver(LinearDynamicSolver):
         self.M = self.domain.assemble_mass_matrix()
         self.M = self.lump_mass_matrix(self.M)
 
+        # --- mass diagnostic: sum translational DOFs of M_lumped ---
+        _m_diag = self.M.createVecRight()
+        self.M.getDiagonal(_m_diag)
+        _diag_arr = _m_diag.array
+        _dofs_per_node = self.domain.dofs_per_node
+        _m_total = (
+            _diag_arr[0::_dofs_per_node].sum()
+            + _diag_arr[1::_dofs_per_node].sum()
+            + _diag_arr[2::_dofs_per_node].sum()
+        ) / 3.0
+        print(f"        Total blade mass (M_lumped translational DOFs): {_m_total:.4e} kg", flush=True)
+        _m_diag.destroy()
+
         # =====================================================================
         # Phase 2: Damping matrix
         # =====================================================================
@@ -1013,6 +1095,11 @@ class LinearDynamicFSISolver(LinearDynamicSolver):
 
         self.free_dofs = bc_manager.free_dofs
 
+        # Tell GAMG to aggregate at the node level (dofs_per_node DOFs per block).
+        # Critical for shell elements (6 DOFs/node) where GAMG must coarsen all
+        # DOFs of a node together to avoid indefinite preconditioners.
+        K_red.setBlockSize(self.domain.dofs_per_node)
+
         # =====================================================================
         # Phase 5: Solver setup + effective stiffness
         # =====================================================================
@@ -1026,7 +1113,31 @@ class LinearDynamicFSISolver(LinearDynamicSolver):
         coeffs = NewmarkCoefficients.from_newmark_params(beta, gamma, self.dt)
 
         K_eff = self._build_effective_stiffness(K_red, M_red, coeffs, C_red)
+
+        # --- K_eff composition diagnostic ---
+        _diag_K = K_red.createVecRight()
+        _diag_M = K_red.createVecRight()
+        _diag_Keff = K_red.createVecRight()
+        K_red.getDiagonal(_diag_K)
+        M_red.getDiagonal(_diag_M)
+        K_eff.getDiagonal(_diag_Keff)
+        print(
+            f"        K_eff composition:  ||K_diag||={_diag_K.norm():.4e}"
+            f"  a0*||M_diag||={coeffs.a0 * _diag_M.norm():.4e}"
+            f"  ||K_eff_diag||={_diag_Keff.norm():.4e}",
+            flush=True,
+        )
+        _diag_K.destroy(); _diag_M.destroy(); _diag_Keff.destroy()
+
+        # IMPORTANT: For direct solvers (preonly+LU), PETSc factorizes the
+        # preconditioner matrix (2nd argument).  Passing K_red as P would make
+        # LU solve K_red·u = F instead of K_eff·u = F — ignoring mass/damping.
+        # Always use K_eff for both operator and preconditioner.  For iterative
+        # solvers, K_eff is also a valid (and correct) preconditioner; using
+        # K_red as an approximate PC for GAMG is an optional optimization that
+        # should be handled inside _solve_linear_system if needed.
         self._solver.setOperators(K_eff)
+        self._keff_last = K_eff  # mark as already configured; _solve_linear_system will skip setOperators
 
         # =====================================================================
         # Phase 6: Initial conditions
