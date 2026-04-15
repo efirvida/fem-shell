@@ -1030,14 +1030,16 @@ class LinearDynamicFSIRotorSolver(LinearDynamicFSISolver):
         self._setup_mass_solver()
 
     def _configure_direct_solver(self, pc: PETSc.PC) -> None:
-        """Configure direct LU solver - best for small/medium problems."""
+        """Configure direct LU solver - best for small/medium problems.
+
+        Uses MUMPS if available, otherwise falls back to PETSc native LU.
+        """
         self._solver.setType("preonly")
         pc.setType("lu")
-        # Use MUMPS if available for better performance
-        try:
+        if self._has_mumps():
             pc.setFactorSolverType("mumps")
-        except Exception:
-            pass  # Fall back to PETSc default LU
+        else:
+            pc.setFactorSolverType("petsc")
         self._solver.setTolerances(rtol=_DIRECT_SOLVER_RTOL, atol=_DIRECT_SOLVER_ATOL, max_it=1)
 
     def _configure_iterative_solver(self, pc: PETSc.PC, opts: PETSc.Options) -> None:
@@ -1138,16 +1140,14 @@ class LinearDynamicFSIRotorSolver(LinearDynamicFSISolver):
             ksp_reason,
         )
         for solver_pkg in (None, "mumps"):
+            if solver_pkg == "mumps" and not self._has_mumps():
+                continue
             fb2 = PETSc.KSP().create(self.comm)
             fb2.setType("preonly")
             fb2_pc = fb2.getPC()
             fb2_pc.setType("lu")
             if solver_pkg is not None:
-                try:
-                    fb2_pc.setFactorSolverType(solver_pkg)
-                except Exception:
-                    fb2.destroy()
-                    continue
+                fb2_pc.setFactorSolverType(solver_pkg)
             fb2.setTolerances(rtol=_DIRECT_SOLVER_RTOL, atol=_DIRECT_SOLVER_ATOL, max_it=1)
             fb2.setOperators(K_eff)
             fb2.setFromOptions()
