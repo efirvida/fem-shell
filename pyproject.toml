@@ -106,6 +106,17 @@ mesh = [
     # without it.
     "triangle>=20250106; python_version < '3.14'",
 ]
+bem = [
+    # CCBlade has a Fortran extension; needs gfortran and --no-build-isolation:
+    #   pip install -e ".[bem]" --no-build-isolation
+    "ccblade @ git+https://github.com/WISDEM/CCBlade.git",
+    "meson",
+    "meson-python",
+    "ninja",
+    "setuptools",
+    "numpy",
+    "neuralfoil",
+]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

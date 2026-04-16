@@ -1,0 +1,51 @@
+# BEM Standalone — IEA 15 MW parked blade at 45 m/s
+#
+# Run with:
+#   fem-shell-fsi simulation.yaml
+#
+# Outputs (in results/):
+#   bem_sectional_loads.csv  - per-station Np, Tp, alpha, cl, cd, a, ap
+#   bem_global_loads.csv     - integrated thrust, torque, power
+#   bem_nodal_forces.vtu     - shell mesh with projected force vectors
+
+mesh:
+  source: "generator"
+  generator:
+    type: "BladeMesh"
+    params:
+      yaml_file: "../solid/IEA-15-240-RWT.yaml"
+      element_size: 0.15
+      n_samples: 300
+
+elements:
+  family: "SHELL"
+  span_direction: [0.0, 0.0, 1.0]
+
+solver:
+  type: "BEMStandalone"
+
+bem:
+  n_blades: 3
+  air_density: 1.225
+  dynamic_viscosity: 1.81206e-5
+  wind_speed: 45.0          # m/s — IEC Class I extreme wind
+  omega: 0.0                # rad/s (parked)
+  pitch: 0.0                # blade pitch (deg)
+  hub_radius: 3.0           # IEA 15 MW hub radius (m)
+  hub_height: 150.0         # m
+  shear_exp: 0.2
+  precone: 0.0
+  tilt: 0.0
+  polar_source: "yaml"      # "yaml" polars (fallback: neuralfoil)
+  neuralfoil_model: "large"
+  default_re: 1.0e7
+  normal_direction: [1.0, 0.0, 0.0]       # Np → downwind (x)
+  tangential_direction: [0.0, 1.0, 0.0]   # Tp → edgewise (y)
+
+boundary_conditions:
+  dirichlet:
+    - nodeset: "RootNodes"
+      value: 0.0
+
+output:
+  folder: "results"

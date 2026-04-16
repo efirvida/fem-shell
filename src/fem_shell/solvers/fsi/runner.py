@@ -119,6 +119,10 @@ class FSIRunner:
     def _is_modal(self) -> bool:
         return self.config.solver.type == SolverType.MODAL.value
 
+    @property
+    def _is_bem(self) -> bool:
+        return self.config.solver.type == SolverType.BEM_STANDALONE.value
+
     def run(self) -> Any:
         """
         Execute the complete FSI simulation pipeline.
@@ -148,15 +152,16 @@ class FSIRunner:
         # Step 4: Create and setup solver
         self.solver = self._create_solver(model_config)
 
-        # Step 5: Apply boundary conditions
-        self._apply_boundary_conditions()
+        # Step 5: Apply boundary conditions (skip for BEM standalone)
+        if not self._is_bem:
+            self._apply_boundary_conditions()
 
         # Step 6: Run simulation
         self._console.print("\n[bold cyan]\\[6/6] Running solver...[/bold cyan]")
         try:
             result = self.solver.solve()
         except RuntimeError as exc:
-            if not self._is_modal and self._is_precice_peer_disconnect(exc):
+            if not (self._is_modal or self._is_bem) and self._is_precice_peer_disconnect(exc):
                 self._print_precice_disconnect_help(exc)
                 raise
             raise
@@ -164,6 +169,8 @@ class FSIRunner:
         # Step 7: Post-processing
         if self._is_modal:
             self._print_modal_results(result)
+        elif self._is_bem:
+            self._print_bem_results(result)
         else:
             self._run_postprocessing()
 
@@ -1053,6 +1060,21 @@ class FSIRunner:
             if perf:
                 model_config["solver"]["performance"] = perf
 
+        # Forward BEM configuration (for BEMStandalone solver)
+        if self.config.bem:
+            from dataclasses import asdict
+
+            model_config["bem"] = asdict(self.config.bem)
+
+        # Forward blade file path for BEM / aero loading
+        if self.config.mesh.generator and self.config.mesh.generator.params:
+            params = self.config.mesh.generator.params
+            blade_file = params.get("yaml_file") or params.get("excel_file")
+            if blade_file and self.config_path and not Path(blade_file).is_absolute():
+                blade_file = str(self.config_path.parent / blade_file)
+            if blade_file:
+                model_config["blade_file"] = blade_file
+
         self._console.print(f"      Solver type: [bold]{self.config.solver.type}[/bold]")
         self._console.print(f"      Element family: [bold]{self.config.elements.family}[/bold]")
 
@@ -1091,6 +1113,11 @@ class FSIRunner:
             from ..modal import ModalSolver
 
             solver = ModalSolver(self.mesh, model_config)
+
+        elif solver_type == SolverType.BEM_STANDALONE.value:
+            from ..bem.standalone import BEMStandaloneSolver
+
+            solver = BEMStandaloneSolver(self.mesh, model_config)
 
         else:
             raise ValueError(f"Unknown solver type: {solver_type}")
@@ -1240,6 +1267,27 @@ class FSIRunner:
         out_tbl.add_row("ParaView collection", str(output_dir / "modal_results.pvd"))
         self._console.print()
         self._console.print(out_tbl)
+
+    def _print_bem_results(self, result: dict) -> None:
+        """Print BEM standalone analysis results."""
+        table = Table(
+            title="BEM STANDALONE RESULTS",
+            title_style="bold cyan",
+            show_lines=False,
+            pad_edge=True,
+        )
+        table.add_column("Quantity", style="bold")
+        table.add_column("Value", justify="right")
+        table.add_column("Unit", justify="left")
+
+        table.add_row("Thrust", f"{result['thrust']:.2f}", "N")
+        table.add_row("Torque", f"{result['torque']:.2f}", "N·m")
+        table.add_row("Power", f"{result['power']:.2f}", "W")
+        table.add_row("Force projection error", f"{result['force_error']:.2e}", "N")
+
+        self._console.print()
+        self._console.print(table)
+        self._console.print()
 
     def _run_postprocessing(self) -> None:
         """Run post-processing if configured."""

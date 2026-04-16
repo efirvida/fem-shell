@@ -219,6 +219,7 @@ class SolverType(str, Enum):
     LINEAR_DYNAMIC_FSI = "LinearDynamicFSI"
     LINEAR_DYNAMIC_FSI_ROTOR = "LinearDynamicFSIRotor"
     MODAL = "Modal"
+    BEM_STANDALONE = "BEMStandalone"
 
 
 class MeshGeneratorType(str, Enum):
@@ -387,6 +388,28 @@ class RotorConfig:
         if self.flow_velocity is not None:
             d["flow_velocity"] = self.flow_velocity
         return d
+
+
+@dataclass
+class BEMConfig:
+    """Configuration for BEM standalone aerodynamic solver."""
+
+    n_blades: int = 3
+    air_density: float = 1.225
+    dynamic_viscosity: float = 1.81206e-5
+    wind_speed: float = 45.0
+    omega: float = 0.0
+    pitch: float = 0.0
+    hub_radius: float = 0.0
+    hub_height: float = 150.0
+    shear_exp: float = 0.2
+    precone: float = 0.0
+    tilt: float = 0.0
+    polar_source: str = "yaml"
+    neuralfoil_model: str = "large"
+    default_re: float = 1e7
+    normal_direction: List[float] = field(default_factory=lambda: [1.0, 0.0, 0.0])
+    tangential_direction: List[float] = field(default_factory=lambda: [0.0, 1.0, 0.0])
 
 
 @dataclass
@@ -663,8 +686,8 @@ class SolverConfig:
         ValueError
             If required parameters are missing.
         """
-        if self.type == SolverType.MODAL.value:
-            return  # Modal analysis does not require time parameters
+        if self.type in (SolverType.MODAL.value, SolverType.BEM_STANDALONE.value):
+            return  # Modal / BEM analysis does not require time parameters
         if self.total_time is None:
             raise ValueError(
                 "total_time not set. Provide in YAML or ensure preCICE config has max-time."
@@ -819,6 +842,7 @@ class FSISimulationConfig:
     coupling: Optional[CouplingConfig] = None
     output: Optional[OutputConfig] = None
     postprocess: Optional[PostprocessConfig] = None
+    bem: Optional[BEMConfig] = None
 
     @classmethod
     def from_yaml(cls, yaml_path: Union[str, Path]) -> "FSISimulationConfig":
@@ -1048,6 +1072,12 @@ class FSISimulationConfig:
                 plots=postprocess_data.get("plots"),
             )
 
+        # Parse BEM configuration (for BEMStandalone solver)
+        bem_config = None
+        bem_data = data.get("bem")
+        if bem_data:
+            bem_config = BEMConfig(**bem_data)
+
         return cls(
             mesh=mesh_config,
             material=material_config,
@@ -1057,6 +1087,7 @@ class FSISimulationConfig:
             coupling=coupling_config,
             output=output_config,
             postprocess=postprocess_config,
+            bem=bem_config,
         )
 
     def to_dict(self) -> Dict[str, Any]:
