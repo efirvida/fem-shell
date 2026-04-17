@@ -67,6 +67,7 @@ class ForceProjector:
             dtype=float,
         )
         span_dir /= np.linalg.norm(span_dir)
+        self._span_dir = span_dir
 
         self._normal_dir = np.asarray(
             normal_direction if normal_direction is not None else [1.0, 0.0, 0.0],
@@ -168,8 +169,11 @@ class ForceProjector:
             # Global force vector for the strip
             F_strip = F_n * self._normal_dir + F_t * self._tangential_dir
 
-            # Target moment about strip centroid – zero (no Cm projection)
-            M_strip = np.zeros(3)
+            # Pitching moment about strip centroid from Cm
+            if bem_result.Mp is not None:
+                M_strip = float(bem_result.Mp[k]) * strip.dr * self._span_dir
+            else:
+                M_strip = np.zeros(3)
 
             # Distribute to nodes (constrained minimum-norm)
             f_nodes = self._distribute(strip, F_strip, M_strip)

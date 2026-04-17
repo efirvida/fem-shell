@@ -39,6 +39,14 @@ class BEMResult:
         Integrated rotor torque (N*m).
     power : float
         Integrated rotor power (W).
+    cm : ndarray or None
+        Moment coefficient at each station.
+    Mp : ndarray or None
+        Pitching moment per unit span at each station (N*m/m),
+        about the aerodynamic centre.  Computed from
+        ``Cm * q_c * chord`` where ``q_c`` is the dynamic
+        pressure per unit span back-calculated from *Np*, *Tp*,
+        *Cl*, and *Cd*.
     """
 
     r: np.ndarray
@@ -52,6 +60,8 @@ class BEMResult:
     thrust: float
     torque: float
     power: float
+    cm: np.ndarray | None = None
+    Mp: np.ndarray | None = None
 
 
 def _build_ccairfoil(airfoil: AirfoilAero):
@@ -181,16 +191,49 @@ class BEMSolver:
         # Integrated loads (azimuth-averaged)
         outputs, _ = self.rotor.evaluate([v_inf], [omega_bem], [pitch])
 
+        # -- Aerodynamic pitching moment per unit span ----------------------
+        # Try to get Cm directly from CCBlade output; fall back to polar
+        # evaluation at the computed angle of attack.
+        Np = loads["Np"]
+        Tp = loads["Tp"]
+        cl = loads["Cl"]
+        cd = loads["Cd"]
+
+        try:
+            cm = loads["Cm"]
+        except (KeyError, TypeError):
+            alpha_rad = np.deg2rad(loads["alpha"])
+            cm = np.array([
+                st.airfoil.get_polar(re=1e7).evaluate(
+                    np.atleast_1d(alpha_rad[k]),
+                )[2][0]
+                for k, st in enumerate(self.blade_aero.stations)
+            ])
+
+        # Back-calculate dynamic pressure per unit span:
+        #   q_c = sqrt(Np² + Tp²) / sqrt(Cl² + Cd²)
+        # Then: Mp = q_c · chord · Cm
+        cl_cd_norm = np.sqrt(cl**2 + cd**2)
+        safe = cl_cd_norm > 1e-12
+        q_c = np.where(
+            safe,
+            np.sqrt(Np**2 + Tp**2) / np.where(safe, cl_cd_norm, 1.0),
+            0.0,
+        )
+        Mp = q_c * self.blade_aero.chord * cm
+
         return BEMResult(
             r=self.blade_aero.r,
-            Np=loads["Np"],
-            Tp=loads["Tp"],
+            Np=Np,
+            Tp=Tp,
             alpha=loads["alpha"],
-            cl=loads["Cl"],
-            cd=loads["Cd"],
+            cl=cl,
+            cd=cd,
             a=loads["a"],
             ap=loads["ap"],
             thrust=float(outputs["T"][0]),
             torque=float(outputs["Q"][0]),
             power=float(outputs["P"][0]),
+            cm=cm,
+            Mp=Mp,
         )
