@@ -45,9 +45,10 @@ SHELL=/bin/bash
 # Directory configurations
 export PATH            := ${VENV_DIR}/bin:${VENV_DIR}/sbin:/bin:/usr/bin
 
-VENV_DIR    := $(SCRATCH)/venv
-SOURCES_DIR := $(PWD)/.sources
-BUILD_DIR   := $(SOURCES_DIR)/build
+VENV_DIR     := $(SCRATCH)/venv
+SOURCES_DIR  := $(PWD)/.sources
+BUILD_DIR    := $(SOURCES_DIR)/build
+CCBLADE_SRC  := $(BUILD_DIR)/ccblade
 
 # Build Commands
 NPROC         := 3
@@ -87,9 +88,9 @@ export LD_LIBRARY_PATH := $(LD_LIBRARY_PATH):$(VENV_DIR)/lib:$(VENV_DIR)/lib64:/
 #-------------------------------------------------------------------------------
 # Main Targets
 #-------------------------------------------------------------------------------
-.PHONY: all clean pip docker docker-build docker-build-low-memory
+.PHONY: all clean pip docker docker-build docker-build-low-memory ccblade
 
-all: module_load python slepc precice python_env openfoam
+all: module_load python slepc precice python_env ccblade openfoam
 	pip freeze > requirements.lock
 	@echo "====================================="
 	@echo "# All components built successfully #"
@@ -107,6 +108,8 @@ clean:
 # Minimal Targets
 #-------------------------------------------------------------------------------
 download_sources: $(SOURCES_DIR)/download.done
+
+ccblade: $(VENV_DIR)/.ccblade.done
 
 openfoam: $(VENV_DIR)/.openfoam.done
 
@@ -250,8 +253,31 @@ $(VENV_DIR)/.python_env.done: $(VENV_DIR)/.python.done
 		PETSC_DIR=$(VENV_DIR) PETSC_ARCH="" SLEPC_DIR=$(VENV_DIR) $(VENV_DIR)/bin/python setup.py install
 
 	$(PIP_INSTALL) pyprecice==$(PRECICE_VERSION)
-	$(PIP_INSTALL) -e .
+	$(PIP_INSTALL) -e ".[bem,mesh]"
 
+	@touch $@
+
+#-------------------------------------------------------------------------------
+# CCBlade Installation (BEM Fortran extension)
+#-------------------------------------------------------------------------------
+# CCBlade cannot be built by pip alone: its Fortran extension must be compiled
+# in-place before installing.  Steps:
+#   1. Install meson/ninja into the venv (they are listed in the [bem] extras).
+#   2. Clone WISDEM/CCBlade to the build dir.
+#   3. Compile the Fortran extension with setup.py build_ext --inplace.
+#   4. Register it with pip as an editable install (no wheel, no re-build).
+#-------------------------------------------------------------------------------
+$(VENV_DIR)/.ccblade.done: $(VENV_DIR)/.python_env.done
+	@echo "Installing CCBlade (Fortran BEM extension)..."
+	LD_LIBRARY_PATH=$(VENV_DIR)/lib:$(VENV_DIR)/lib64:/usr/lib64/psm2-compat \
+		$(VENV_DIR)/bin/pip install --no-cache-dir meson ninja meson-python
+	@if [ ! -d $(CCBLADE_SRC) ]; then \
+		git clone --depth=1 https://github.com/WISDEM/CCBlade.git $(CCBLADE_SRC); \
+	fi
+	cd $(CCBLADE_SRC) && \
+		LD_LIBRARY_PATH=$(VENV_DIR)/lib:$(VENV_DIR)/lib64:/usr/lib64/psm2-compat \
+		$(VENV_DIR)/bin/python setup.py build_ext --inplace && \
+		$(VENV_DIR)/bin/pip install --no-build-isolation --no-deps -e .
 	@touch $@
 
 #-------------------------------------------------------------------------------

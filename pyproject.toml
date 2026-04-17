@@ -91,6 +91,7 @@ select = [
 
 [project.scripts]
 fem-shell-fsi = "fem_shell.cli.run_fsi:main"
+fem-shell-bem-fsi = "fem_shell.cli.run_bem_fsi:main"
 fem-shell-monitor = "fem_shell.cli.fsi_monitor:main"
 fem-shell-reconstruct-csv = "fem_shell.cli.reconstruct_rotor_csv:main"
 
@@ -107,9 +108,16 @@ mesh = [
     "triangle>=20250106; python_version < '3.14'",
 ]
 bem = [
-    # CCBlade has a Fortran extension; needs gfortran and --no-build-isolation:
-    #   pip install -e ".[bem]" --no-build-isolation
-    "ccblade @ git+https://github.com/WISDEM/CCBlade.git",
+    # CCBlade has a Fortran extension that pip cannot build reliably on its own.
+    # It must be compiled and installed manually in two steps:
+    #
+    #   pip install meson ninja meson-python setuptools numpy
+    #   git clone --depth=1 https://github.com/WISDEM/CCBlade.git /tmp/CCBlade
+    #   cd /tmp/CCBlade && python setup.py build_ext --inplace
+    #   pip install -e /tmp/CCBlade --no-build-isolation --no-deps
+    #
+    # On SDumont use the dedicated Makefile target:
+    #   make -f Makefile.sdumont ccblade
     "meson",
     "meson-python",
     "ninja",
