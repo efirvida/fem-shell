@@ -20,7 +20,9 @@ from fem_shell.core.mesh import MeshModel
 from fem_shell.postprocess.stress_recovery import StressRecovery, StressType
 from fem_shell.solvers.linear import LinearDynamicSolver
 
-from .base import Adapter, ForceClipper, NewmarkCoefficients
+from .base import Adapter
+from .force_clipper import ForceClipper
+from .time_integration import NewmarkCoefficients
 
 _console = Console(highlight=False)
 
@@ -97,16 +99,10 @@ class LinearDynamicFSISolver(LinearDynamicSolver):
     def __init__(self, mesh: MeshModel, fem_model_properties: Dict):
         super().__init__(mesh, fem_model_properties)
 
-        # Extract coupling configuration
-        coupling_cfg = fem_model_properties["solver"]["coupling"]
-
-        self.precice_participant = Adapter(
-            participant=coupling_cfg["participant"],
-            config_file=coupling_cfg["config_file"],
-            coupling_mesh=coupling_cfg["coupling_mesh"],
-            write_data=coupling_cfg["write_data"],
-            read_data=coupling_cfg["read_data"],
-        )
+        # Store coupling configuration — Adapter is created in _initialize_precice
+        # once interface coordinates are known.
+        self._coupling_cfg = fem_model_properties["solver"]["coupling"]
+        self.precice_participant: Optional[Adapter] = None
         self._prepared = False
         self._init_solver_config()
 
@@ -703,13 +699,13 @@ class LinearDynamicFSISolver(LinearDynamicSolver):
             return
 
         # Only proceed if interface coordinates are available
-        if not hasattr(self.precice_participant, "interface_coordinates"):
+        if not hasattr(self, "_interface_coords"):
             return
 
         out_dir = Path(directory)
         out_dir.mkdir(exist_ok=True, parents=True)
 
-        points = self.precice_participant.interface_coordinates
+        points = self._interface_coords
         n_points = len(points)
 
         # Prepare point data
@@ -796,8 +792,11 @@ class LinearDynamicFSISolver(LinearDynamicSolver):
         full_forces = np.zeros((n_nodes, 3), dtype=np.float64)
         dim = interface_forces.shape[1]
 
-        # Get the proper node indices from the adapter
-        interface_node_indices = self.precice_participant.interface_node_indices
+        # Get the proper node indices from the solver
+        node_id_to_index = self.domain.mesh.node_id_to_index
+        interface_node_indices = np.array(
+            [node_id_to_index[nid] for nid in self._interface_node_ids], dtype=np.int64,
+        )
 
         # Map interface forces to their corresponding mesh node indices
         for i, node_idx in enumerate(interface_node_indices):
@@ -1083,11 +1082,53 @@ class LinearDynamicFSISolver(LinearDynamicSolver):
         # Phase 4: preCICE initialization
         # =====================================================================
         print("  [5/7] Initializing preCICE coupling...", flush=True)
-        self.precice_participant.initialize(
-            self.domain,
-            self.model_properties["solver"]["coupling_boundaries"],
-            tuple(bc_manager.fixed_dofs.keys()),
+
+        # Extract interface information from domain (solver responsibility)
+        coupling_boundaries = self.model_properties["solver"]["coupling_boundaries"]
+        mesh = self.domain.mesh
+        node_sets = [mesh.node_sets[name] for name in coupling_boundaries]
+        nodes = {
+            node.id: node.coords
+            for _set in node_sets
+            for node in _set.nodes.values()
+        }
+        sorted_node_ids = sorted(nodes.keys())
+
+        self._interface_node_ids = np.array(sorted_node_ids, dtype=np.int64)
+        interface_coords = np.array([nodes[nid] for nid in sorted_node_ids])
+        if self.domain.spatial_dim == 2 and interface_coords.shape[1] > 2:
+            interface_coords = interface_coords[:, :2]
+        self._interface_coords = interface_coords
+
+        raw_dofs = np.array([
+            self.domain._node_dofs_map[nid] for nid in sorted_node_ids
+        ])
+        # For shell elements (6 DOFs/node), keep only translational DOFs
+        if raw_dofs.ndim == 2 and raw_dofs.shape[1] > 3:
+            self._interface_dofs = raw_dofs[:, :3].astype(PETSc.IntType)
+        else:
+            self._interface_dofs = raw_dofs.astype(PETSc.IntType)
+
+        # Debug CSV export (solver side)
+        np.savetxt(
+            "interface_coords.csv",
+            interface_coords,
+            header="X,Y,Z" if self.domain.spatial_dim == 3 else "X,Y",
+            delimiter=",",
         )
+
+        # Create and initialize the Adapter now that coordinates are known
+        cfg = self._coupling_cfg
+        self._coupling_mesh_name = cfg["coupling_mesh"]
+        self._write_data_name = cfg["write_data"] if isinstance(cfg["write_data"], str) else cfg["write_data"][0]
+        self._read_data_name = cfg["read_data"] if isinstance(cfg["read_data"], str) else cfg["read_data"][0]
+
+        self.precice_participant = Adapter(
+            participant=cfg["participant"],
+            config_file=cfg["config_file"],
+            coupling_meshes={self._coupling_mesh_name: interface_coords},
+        )
+        self.precice_participant.initialize()
 
         self.dt = self.precice_participant.dt
         K_red, F_red, M_red = bc_manager.reduced_system
@@ -1272,11 +1313,8 @@ class LinearDynamicFSISolver(LinearDynamicSolver):
         # Initialize probe monitoring (resolves nearest nodes)
         self._init_probes()
 
-        # Store interface DOFs reference for checkpoint handling
-        self._interface_dofs = self.precice_participant.interface_dofs
-
         # Get interface mesh dimensions
-        mesh_dim = self.precice_participant.mesh_dimensions
+        mesh_dim = self.precice_participant.mesh_dimensions(self._coupling_mesh_name)
 
         # =====================================================================
         # Main coupling loop
@@ -1288,9 +1326,11 @@ class LinearDynamicFSISolver(LinearDynamicSolver):
                 self.precice_participant.store_checkpoint((u, v, a, t))
 
             # Read coupling data from preCICE
-            data = self.precice_participant.read_data()
+            data = self.precice_participant.read_data(
+                self._coupling_mesh_name, self._read_data_name,
+            ).astype(PETSc.ScalarType)
             data_raw = data.copy() if data is not None else None
-            interface_dofs = self.precice_participant.interface_dofs
+            interface_dofs = self._interface_dofs
 
             # --- Mapping conservation diagnostic ---
             if data is not None and data.ndim == 2:
@@ -1505,7 +1545,11 @@ class LinearDynamicFSISolver(LinearDynamicSolver):
                 expand=False,
             ))
 
-            self.precice_participant.write_data(bc_manager.expand_solution(u_new).array)
+            self.precice_participant.write_data(
+                self._coupling_mesh_name,
+                self._write_data_name,
+                bc_manager.expand_solution(u_new).array[self._interface_dofs],
+            )
 
             # preCICE advance
             self.precice_participant.advance(self.dt)

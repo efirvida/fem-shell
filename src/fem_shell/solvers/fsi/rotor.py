@@ -169,7 +169,8 @@ from fem_shell.core.bc import BoundaryConditionManager
 from fem_shell.core.mesh import MeshModel
 from fem_shell.postprocess.stress_recovery import StressRecovery, StressType
 
-from .base import NewmarkCoefficients
+from .base import Adapter
+from .time_integration import NewmarkCoefficients
 from .corotational import (
     ComputedOmega,
     ConstantOmega,
@@ -1612,7 +1613,7 @@ class LinearDynamicFSIRotorSolver(LinearDynamicFSISolver):
         np.ndarray
             Reference coordinates X₀, shape (n_nodes, 3).
         """
-        return self.precice_participant.interface_coordinates
+        return self._interface_coords
 
     def _extract_interface_vector(
         self, full_vec: PETSc.Vec, interface_dofs: np.ndarray
@@ -1707,8 +1708,11 @@ class LinearDynamicFSIRotorSolver(LinearDynamicFSISolver):
         full_forces = np.zeros((n_nodes, 3), dtype=np.float64)
         dim = interface_forces.shape[1]
 
-        # Get the proper node indices from the adapter
-        interface_node_indices = self.precice_participant.interface_node_indices
+        # Get the proper node indices from the solver
+        node_id_to_index = self.domain.mesh.node_id_to_index
+        interface_node_indices = np.array(
+            [node_id_to_index[nid] for nid in self._interface_node_ids], dtype=np.int64,
+        )
 
         # Map interface forces to their corresponding mesh node indices
         for i, node_idx in enumerate(interface_node_indices):
@@ -2763,7 +2767,7 @@ class LinearDynamicFSIRotorSolver(LinearDynamicFSISolver):
 
         # Phase 6: Interface setup
         interface_coords = self._get_interface_nodal_coords()
-        interface_dofs = self.precice_participant.interface_dofs
+        interface_dofs = self._interface_dofs
         n_interface_nodes = interface_coords.shape[0]
 
         # Auto-detect radius if not provided
@@ -3040,41 +3044,91 @@ class LinearDynamicFSIRotorSolver(LinearDynamicFSISolver):
                     flush=True,
                 )
 
-        custom_meshes = {}
-        initial_data = None
-        if getattr(self, "_send_omega_to_precice", True):
-            # Prepare GlobalSolidMesh with a single vertex at origin (0,0,0)
-            # This matches the OpenFOAM adapter which creates a single vertex at origin
-            # for global data exchange (like AngularVelocity)
-            # Use origin (0,0,0) for global mesh - this is what OpenFOAM adapter expects
-            origin_vertex = np.array([[0.0, 0.0, 0.0]], dtype=np.float64)
-            custom_meshes["GlobalSolidMesh"] = origin_vertex
+        # ── Extract interface information from domain (solver responsibility) ──
+        coupling_boundaries = self.model_properties["solver"]["coupling_boundaries"]
+        mesh = self.domain.mesh
+        node_sets = [mesh.node_sets[name] for name in coupling_boundaries]
+        nodes = {
+            node.id: node.coords
+            for _set in node_sets
+            for node in _set.nodes.values()
+        }
+        sorted_node_ids = sorted(nodes.keys())
 
-            # Publish the omega that will be used in the first time window
-            # (t -> t + dt), so fluid does not start from a stale zero value.
-            # preCICE owns the authoritative dt, but before initialize() returns
-            # we only have the configured startup step available.
-            #
-            # On restart, the omega provider is freshly created and get_omega(0+dt)
-            # returns a ramped value near zero instead of the actual omega at the
-            # checkpoint time.  Use the checkpoint omega directly if available.
+        self._interface_node_ids = np.array(sorted_node_ids, dtype=np.int64)
+        interface_coords = np.array([nodes[nid] for nid in sorted_node_ids])
+        if self.domain.spatial_dim == 2 and interface_coords.shape[1] > 2:
+            interface_coords = interface_coords[:, :2]
+        self._interface_coords = interface_coords
+
+        raw_dofs = np.array([
+            self.domain._node_dofs_map[nid] for nid in sorted_node_ids
+        ])
+        # For shell elements (6 DOFs/node), keep only translational DOFs
+        if raw_dofs.ndim == 2 and raw_dofs.shape[1] > 3:
+            self._interface_dofs = raw_dofs[:, :3].astype(PETSc.IntType)
+        else:
+            self._interface_dofs = raw_dofs.astype(PETSc.IntType)
+
+        # Debug CSV export (solver side)
+        np.savetxt(
+            "interface_coords.csv",
+            interface_coords,
+            header="X,Y,Z" if self.domain.spatial_dim == 3 else "X,Y",
+            delimiter=",",
+        )
+
+        # Compute preCICE vertex coordinates: either transformed (on restart,
+        # to match the rotated OpenFOAM mesh) or identical to the internal
+        # interface coordinates (fresh start).
+        if precice_coord_transform is not None:
+            precice_vertex_coords = precice_coord_transform(interface_coords.copy())
+            np.savetxt(
+                "interface_coords_precice.csv",
+                precice_vertex_coords,
+                header="X,Y,Z (rotated to lab frame for preCICE)"
+                if self.domain.spatial_dim == 3 else "X,Y (rotated)",
+                delimiter=",",
+            )
+        else:
+            precice_vertex_coords = interface_coords
+
+        # ── Build coupling meshes dict ──
+        cfg = self._coupling_cfg
+        self._coupling_mesh_name = cfg["coupling_mesh"]
+        self._write_data_name = cfg["write_data"] if isinstance(cfg["write_data"], str) else cfg["write_data"][0]
+        self._read_data_name = cfg["read_data"] if isinstance(cfg["read_data"], str) else cfg["read_data"][0]
+
+        coupling_meshes = {self._coupling_mesh_name: precice_vertex_coords}
+        if getattr(self, "_send_omega_to_precice", True):
+            origin_vertex = np.array([[0.0, 0.0, 0.0]], dtype=np.float64)
+            coupling_meshes["GlobalSolidMesh"] = origin_vertex
+
+        # Create and initialize the Adapter
+        self.precice_participant = Adapter(
+            participant=cfg["participant"],
+            config_file=cfg["config_file"],
+            coupling_meshes=coupling_meshes,
+        )
+        self.precice_participant.initialize()
+
+        # ── Write initial omega after initialization ──
+        if getattr(self, "_send_omega_to_precice", True):
             restart_omega = self._peek_checkpoint_omega()
             if restart_omega is not None:
                 initial_omega = restart_omega
             else:
                 initial_omega, _ = self._omega_provider.get_omega(t + bootstrap_dt)
-            initial_data = {"AngularVelocity": initial_omega}
+
             if self._is_primary_rank():
                 print(f"  ↳ Initial ω for preCICE: {initial_omega:.4f} rad/s", flush=True)
 
-        self.precice_participant.initialize(
-            self.domain,
-            self.model_properties["solver"]["coupling_boundaries"],
-            tuple(bc_manager.fixed_dofs.keys()),
-            custom_mesh_coords=custom_meshes if custom_meshes else None,
-            initial_data_values=initial_data,
-            precice_coord_transform=precice_coord_transform,
-        )
+            # Write initial omega value to GlobalSolidMesh
+            self.precice_participant.write_data(
+                "GlobalSolidMesh",
+                "AngularVelocity",
+                np.array([initial_omega], dtype=np.float64),
+            )
 
         self.dt = self.precice_participant.dt
 
@@ -3430,7 +3484,7 @@ class LinearDynamicFSIRotorSolver(LinearDynamicFSISolver):
             if not force_jump_exceeded and ramp_factor >= 1.0:
                 self._max_force_seen = max(self._max_force_seen, force_total_mag)
 
-            mesh_dim = self.precice_participant.mesh_dimensions
+            mesh_dim = self.precice_participant.mesh_dimensions(self._coupling_mesh_name)
 
             # Transform forces from global (inertial) frame to rotating frame
             # OpenFOAM computes forces in the global frame (where the structure rotates)
@@ -3886,7 +3940,7 @@ class LinearDynamicFSIRotorSolver(LinearDynamicFSISolver):
             output_dir = os.path.join(self.solver_params.get("output_folder", "results"), time_str)
             os.makedirs(output_dir, exist_ok=True)
 
-            node_ids = self.precice_participant.interface_node_ids
+            node_ids = self._interface_node_ids
             debug_path = os.path.join(output_dir, "interface_debug.csv")
             with open(debug_path, "w") as f:
                 f.write(f"# t={t:.6f} theta={theta:.6f} theta_deg={np.degrees(theta):.2f}\n")
@@ -4066,8 +4120,10 @@ class LinearDynamicFSIRotorSolver(LinearDynamicFSISolver):
             n_nodes the number of interface nodes.
         """
         _logger.debug("Reading coupling data from preCICE...")
-        data_global = self.precice_participant.read_data()
-        mesh_dim = self.precice_participant.mesh_dimensions
+        data_global = self.precice_participant.read_data(
+            self._coupling_mesh_name, self._read_data_name,
+        ).astype(PETSc.ScalarType)
+        mesh_dim = self.precice_participant.mesh_dimensions(self._coupling_mesh_name)
 
         if data_global.ndim == 1:
             data_global = data_global.reshape(-1, mesh_dim)
@@ -4365,7 +4421,11 @@ class LinearDynamicFSIRotorSolver(LinearDynamicFSISolver):
             print("  └" + "─" * 40, flush=True)
 
         u_full_output[interface_dofs.flatten()] = u_interface_output.flatten()
-        self.precice_participant.write_data(u_full_output)
+        self.precice_participant.write_data(
+            self._coupling_mesh_name,
+            self._write_data_name,
+            u_full_output[interface_dofs],
+        )
         u_full_new.destroy()
 
     def _write_angular_velocity_to_precice(self, omega: float) -> None:
@@ -4413,8 +4473,8 @@ class LinearDynamicFSIRotorSolver(LinearDynamicFSISolver):
             )
 
         try:
-            self.precice_participant.write_interface_data(
-                data_to_write, omega_name, mesh_name="GlobalSolidMesh"
+            self.precice_participant.write_data(
+                "GlobalSolidMesh", omega_name, data_to_write,
             )
         except ValueError:
             # Fallback (unlikely if registered correctly above, but safety for existing flows)
