@@ -431,3 +431,116 @@ def get_solid_surf_proj(elCrd, elType, ptCrd):
     projOut["distance"] = minDist
     projOut["nVec"] = nVec
     return projOut
+
+
+def get_vertex_normals(nodes, elements):
+    """Compute outward-pointing vertex normals for a quad4 surface mesh.
+
+    The sign is corrected per element — before accumulation — by comparing
+    each element's face normal to the vector from the cross-section centroid
+    to the element centroid.  This is robust for any winding order and works
+    correctly at the trailing-edge panel, where the element centroid is at the
+    extreme aft position of the section (so the outward direction is
+    unambiguous even for a blunt-TE narrow panel).
+
+    Parameters
+    ----------
+    nodes : ndarray, shape (N, 3)
+        Node coordinates [x, y, z].
+    elements : ndarray, shape (M, 4)
+        Quad4 connectivity, 0-based local indices.  Elements whose
+        fourth index is -1 (degenerate triangles) are skipped.
+
+    Returns
+    -------
+    normals : ndarray, shape (N, 3)
+        Unit outward normals at every node.
+    """
+    N = len(nodes)
+    weighted = np.zeros((N, 3), dtype=float)
+
+    # Precompute section centroid (XY) for every node indexed by Z-level.
+    # Using a rounded integer key avoids floating-point equality issues.
+    z_coords = nodes[:, 2]
+    z_span = z_coords.max() - z_coords.min()
+    tol = 1e-6 * z_span if z_span > 0 else 1e-6
+    z_int = np.round(z_coords / tol).astype(np.int64)
+    unique_z_int = np.unique(z_int)
+
+    # node_sx[i], node_sy[i] = XY centroid of the section that contains node i
+    node_sx = np.empty(N, dtype=float)
+    node_sy = np.empty(N, dtype=float)
+    for zi in unique_z_int:
+        mask = z_int == zi
+        cx = nodes[mask, 0].mean()
+        cy = nodes[mask, 1].mean()
+        node_sx[mask] = cx
+        node_sy[mask] = cy
+
+    # Detect trailing-edge closure panels and skip them from normal
+    # accumulation.  TE panels are very thin (TE bluntness << element size)
+    # so their minimum edge length is far below the typical mesh size.
+    # We use an adaptive threshold: the 3rd-percentile of all min-edge values
+    # × 10.  This sits cleanly in the gap between TE panels (< ~0.02 m) and
+    # normal surface panels (> ~0.05 m) for the IEA-15-240-RWT at 0.15 m.
+    quad_els = np.array(elements)
+    is_quad = quad_els[:, 3] != -1
+    # For quad elements, compute the four edge lengths vectorised
+    p0 = nodes[np.where(is_quad, quad_els[:, 0], 0)]
+    p1 = nodes[np.where(is_quad, quad_els[:, 1], 0)]
+    p2 = nodes[np.where(is_quad, quad_els[:, 2], 0)]
+    p3 = nodes[np.where(is_quad, quad_els[:, 3], 0)]
+    e01 = np.linalg.norm(p1 - p0, axis=1)
+    e12 = np.linalg.norm(p2 - p1, axis=1)
+    e23 = np.linalg.norm(p3 - p2, axis=1)
+    e30 = np.linalg.norm(p0 - p3, axis=1)
+    min_edges = np.where(is_quad, np.minimum(np.minimum(e01, e12), np.minimum(e23, e30)), np.inf)
+    # Threshold = 10× the 1st-percentile of valid (quad) min-edges.
+    # p1 lands in the TE-panel range (< ~0.02 m for a 0.15 m mesh).
+    # × 10 puts the cut-off right in the gap (0.02 – 0.05 m) between
+    # the thin TE closure panels and the normal surface panels.
+    # Using p3 × 10 was too aggressive (0.34 m > any edge → 100% filtered).
+    finite_me = min_edges[np.isfinite(min_edges)]
+    te_threshold = np.percentile(finite_me, 1) * 10.0 if len(finite_me) else 0.0
+
+    for ei, el in enumerate(elements):
+        if el[3] == -1:
+            continue
+        # Skip TE closure panels: their thin edge contaminates the normals of
+        # adjacent nodes, pulling the BL extrusion toward aft instead of outward.
+        if min_edges[ei] < te_threshold:
+            continue
+        n0, n1, n2, n3 = el[0], el[1], el[2], el[3]
+        p0, p1, p2, p3 = nodes[n0], nodes[n1], nodes[n2], nodes[n3]
+
+        d1 = p2 - p0
+        d2 = p3 - p1
+        raw = np.cross(d1, d2)
+        mag = np.linalg.norm(raw)
+        if mag < 1e-14:
+            continue
+        unit = raw / mag
+
+        # Outward direction for this element: from the (averaged) section
+        # centroid to the element centroid in XY.  Using the element's own
+        # section centroids (averaged over its 4 corner nodes) gives the
+        # correct reference even when nodes span two Z-levels (span-wise
+        # elements) or sit at the extreme TE position.
+        el_cx = (p0[0] + p1[0] + p2[0] + p3[0]) * 0.25
+        el_cy = (p0[1] + p1[1] + p2[1] + p3[1]) * 0.25
+        sc_cx = (node_sx[n0] + node_sx[n1] + node_sx[n2] + node_sx[n3]) * 0.25
+        sc_cy = (node_sy[n0] + node_sy[n1] + node_sy[n2] + node_sy[n3]) * 0.25
+        out_x = el_cx - sc_cx
+        out_y = el_cy - sc_cy
+
+        # Flip if the face normal opposes the outward direction
+        if unit[0] * out_x + unit[1] * out_y < 0:
+            unit = -unit
+
+        for ni in (n0, n1, n2, n3):
+            weighted[ni] += unit
+
+    # Normalise — no per-node sign flip needed; sign is already correct
+    mags = np.linalg.norm(weighted, axis=1, keepdims=True)
+    mags = np.where(mags < 1e-14, 1.0, mags)
+    return weighted / mags

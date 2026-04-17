@@ -10,7 +10,10 @@ blades_path = os.path.join(
 )
 
 # Find all .yaml files in the directory
-yaml_files = [os.path.join(blades_path, f) for f in os.listdir(blades_path) if f.endswith(".yaml")]
+if os.path.isdir(blades_path):
+    yaml_files = [os.path.join(blades_path, f) for f in os.listdir(blades_path) if f.endswith(".yaml")]
+else:
+    yaml_files = []
 
 # Extract just the filenames for test IDs
 yaml_file_ids = [os.path.basename(f) for f in yaml_files]

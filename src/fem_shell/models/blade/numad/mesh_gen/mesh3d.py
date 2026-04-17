@@ -314,3 +314,284 @@ class Mesh3D:
         # allEls[self.numWedgeEls:totEls,0:8] = self.hexElements[0:self.numHexEls]
         meshOut["elements"] = allEls
         return meshOut
+
+
+def create_offset_layers(nodes, elements, n_layers, first_thickness, growth_rate):
+    """Extrude a quad4 surface mesh outward to build a hex8 boundary-layer mesh.
+
+    Each node is moved outward along its averaged vertex normal by a
+    distance that grows geometrically between layers.  Layer *k* (0-based)
+    has thickness ``first_thickness * growth_rate**k``.
+
+    Parameters
+    ----------
+    nodes : ndarray, shape (N, 3)
+        Surface node coordinates [x, y, z].
+    elements : ndarray, shape (M, 4)
+        Quad4 connectivity, 0-based indices.  Elements with ``el[3] == -1``
+        (degenerate triangles) are skipped and excluded from the output.
+    n_layers : int
+        Number of hex layers to extrude.
+    first_thickness : float
+        Thickness of the first (innermost) layer.
+    growth_rate : float
+        Geometric growth factor between consecutive layers.
+
+    Returns
+    -------
+    dict with keys:
+        ``nodes``    — ndarray shape (N*(n_layers+1), 3)
+        ``elements`` — ndarray shape (M_quad * n_layers, 8), hex8 connectivity
+        ``sets``     — dict with node sets:
+                        ``bladeWallNodes``     (surface node indices, 0..N-1)
+                        ``outerBoundaryNodes`` (outermost layer indices)
+    """
+    from fem_shell.models.blade.numad.mesh_gen.element_utils import get_vertex_normals
+
+    nodes = np.asarray(nodes, dtype=float)
+    elements = np.asarray(elements, dtype=int)
+    N = len(nodes)
+
+    # Only pure quad4 elements participate in the extrusion
+    quad_mask = elements[:, 3] != -1
+    quad_els = elements[quad_mask]
+    M = len(quad_els)
+
+    normals = get_vertex_normals(nodes, elements)  # (N, 3) outward unit normals
+
+    # Build all node layers: layer 0 = original surface
+    # Cumulative offset for layer k+1 = sum_{i=0}^{k} first_thickness * growth_rate^i
+    all_layers = [nodes.copy()]
+    current = nodes.copy()
+    for k in range(n_layers):
+        thickness = first_thickness * (growth_rate ** k)
+        current = current + normals * thickness
+        all_layers.append(current.copy())
+
+    all_nodes = np.vstack(all_layers)  # shape (N*(n_layers+1), 3)
+
+    # Hex8 connectivity: for each quad and each layer k -> k+1
+    # Hex8 node order (VTK/OpenFOAM convention):
+    #   bottom face (layer k):   n0, n1, n2, n3
+    #   top face   (layer k+1): n0', n1', n2', n3'
+    hex_els = np.empty((M * n_layers, 8), dtype=int)
+    for k in range(n_layers):
+        base_bot = k * N
+        base_top = (k + 1) * N
+        offset = k * M
+        hex_els[offset : offset + M, 0] = quad_els[:, 0] + base_bot
+        hex_els[offset : offset + M, 1] = quad_els[:, 1] + base_bot
+        hex_els[offset : offset + M, 2] = quad_els[:, 2] + base_bot
+        hex_els[offset : offset + M, 3] = quad_els[:, 3] + base_bot
+        hex_els[offset : offset + M, 4] = quad_els[:, 0] + base_top
+        hex_els[offset : offset + M, 5] = quad_els[:, 1] + base_top
+        hex_els[offset : offset + M, 6] = quad_els[:, 2] + base_top
+        hex_els[offset : offset + M, 7] = quad_els[:, 3] + base_top
+
+    # Jacobian sign check: ensure det > 0 for each hex (swap n1/n3 if needed)
+    for ei in range(len(hex_els)):
+        n0, n1, n3, n4 = hex_els[ei, 0], hex_els[ei, 1], hex_els[ei, 3], hex_els[ei, 4]
+        v1 = all_nodes[n1] - all_nodes[n0]
+        v2 = all_nodes[n3] - all_nodes[n0]
+        v3 = all_nodes[n4] - all_nodes[n0]
+        if np.linalg.det(np.array([v1, v2, v3])) < 0:
+            hex_els[ei, 1], hex_els[ei, 3] = hex_els[ei, 3], hex_els[ei, 1]
+            hex_els[ei, 5], hex_els[ei, 7] = hex_els[ei, 7], hex_els[ei, 5]
+
+    wall_indices = list(range(N))
+    outer_indices = list(range(n_layers * N, (n_layers + 1) * N))
+
+    return {
+        "nodes": all_nodes,
+        "elements": hex_els,
+        "sets": {
+            "node": [
+                {"name": "bladeWallNodes", "labels": wall_indices},
+                {"name": "outerBoundaryNodes", "labels": outer_indices},
+            ]
+        },
+    }
+
+
+
+def create_outer_domain_unstructured(
+    outer_nodes,
+    oml_elements,
+    cylinder_radius,
+    element_size,
+    n_cyl_theta=60,
+    outer_size_factor=3.0,
+    node_z_ref=None,
+):
+    """Mesh the volume between the BL outer surface and a coaxial cylinder.
+
+    Uses per-slab 3D Delaunay triangulation (scipy).  No gmsh required.
+
+    The inner boundary of the outer domain shares nodes EXACTLY with
+    *outer_nodes* (local indices 0..N_inner-1), so the combined mesh has
+    a single node array with no duplication and no interface.
+
+    Parameters
+    ----------
+    outer_nodes : ndarray, shape (N_inner, 3)
+        Positions of the BL outermost layer (``outerBoundaryNodes``).
+    oml_elements : ndarray, shape (M, 4)
+        Quad4 OML connectivity, 0-based indices into *outer_nodes*.
+    cylinder_radius : float
+        Radius of the outer cylinder from the local section centroid [m].
+    element_size : float
+        Reference element size (used only for reporting; the mesh density
+        is determined by the input node density and ``n_cyl_theta``).
+    n_cyl_theta : int
+        Angular resolution of the cylinder discretisation (default 60).
+    outer_size_factor : float
+        Unused in this implementation (kept for API compatibility).
+    node_z_ref : ndarray of float, shape (N_inner,), optional
+        Reference Z coordinates used **only** for spanwise grouping.
+        Must be supplied when the BL extrusion has a non-negligible
+        Z component (twisted/pre-bent blades), otherwise the extruded
+        Z values scatter nodes from the same spanwise station across
+        many thin Z-groups and the inner-profile polygon degenerates.
+        Pass ``bl["nodes"][:N_oml, 2]`` (the un-extruded blade-surface Z).
+
+    Returns
+    -------
+    dict with keys
+        ``nodes``    — (N_total, 3) with outer_nodes at indices 0..N_inner-1.
+        ``elements`` — (M_tet, 4) int32 tet4 connectivity, local indices.
+        ``sets``     — node sets: ``cylinderSurface``.
+    """
+    import math
+    from scipy.spatial import Delaunay
+    from shapely.geometry import Polygon as _SPoly, Point as _SPt
+
+    outer_nodes = np.asarray(outer_nodes, dtype=float)
+    N_inner = len(outer_nodes)
+
+    # ------------------------------------------------------------------ #
+    # Z levels                                                             #
+    # Use node_z_ref (un-extruded blade-surface Z) for grouping when      #
+    # available.  After BL extrusion with a twisted blade the outward      #
+    # normals have a Z component, so the extruded outer_nodes[:, 2] spread #
+    # nodes from the same spanwise station across many Z values, making    #
+    # each per-Z group have only 1-3 nodes and a degenerate polygon.       #
+    # ------------------------------------------------------------------ #
+    z_group = np.asarray(node_z_ref, dtype=float) if node_z_ref is not None \
+              else outer_nodes[:, 2]
+
+    z = outer_nodes[:, 2]          # actual Z (used for cylinder placement)
+    z_span = max(z_group.max() - z_group.min(), 1e-12)
+    tol_z = max(1e-6 * z_span, 1e-12)
+    z_int = np.round(z_group / tol_z).astype(np.int64)
+    unique_zi = np.unique(z_int)
+    N_z = len(unique_zi)
+
+    sec_cx = np.empty(N_z); sec_cy = np.empty(N_z); z_vals = np.empty(N_z)
+    for k, zi in enumerate(unique_zi):
+        mask = z_int == zi
+        sec_cx[k] = outer_nodes[mask, 0].mean()
+        sec_cy[k] = outer_nodes[mask, 1].mean()
+        z_vals[k]  = outer_nodes[mask, 2].mean()
+
+    # Validate cylinder radius
+    for k, zi in enumerate(unique_zi):
+        mask = z_int == zi
+        r_max = np.hypot(outer_nodes[mask, 0] - sec_cx[k],
+                         outer_nodes[mask, 1] - sec_cy[k]).max()
+        if r_max >= cylinder_radius:
+            raise ValueError(
+                f"create_outer_domain_unstructured: at Z={z_vals[k]:.3f} m "
+                f"some nodes are at r={r_max:.3f} >= cylinder_radius={cylinder_radius}. "
+                "Increase cylinder_radius."
+            )
+
+    # ------------------------------------------------------------------ #
+    # Cylinder nodes                                                       #
+    # CYL node (k, j) -> global index CYL0 + k*n_cyl_theta + j           #
+    # ------------------------------------------------------------------ #
+    theta = np.linspace(0, 2.0 * math.pi, n_cyl_theta, endpoint=False)
+    CYL0 = N_inner
+    cyl_xyz = np.array([
+        [sec_cx[k] + cylinder_radius * math.cos(th),
+         sec_cy[k] + cylinder_radius * math.sin(th),
+         z_vals[k]]
+        for k in range(N_z)
+        for th in theta
+    ])
+    all_nodes_out = np.vstack([outer_nodes, cyl_xyz])
+
+    # ------------------------------------------------------------------ #
+    # Per-level inner profile data                                         #
+    # ------------------------------------------------------------------ #
+    inner_idx_per_z = [np.where(z_int == zi)[0] for zi in unique_zi]
+
+    def _make_poly(pts_2d):
+        from shapely.geometry import MultiPoint as _SMPt
+        hull = _SMPt(pts_2d.tolist()).convex_hull
+        if hull.geom_type == "Polygon":
+            return hull
+        # Degenerate section (tip/root with < 3 non-collinear pts): tiny buffer
+        return hull.buffer(1e-6)
+
+    inner_poly_per_z = [_make_poly(outer_nodes[idx, :2])
+                        for idx in inner_idx_per_z]
+
+    # ------------------------------------------------------------------ #
+    # Per-slab 3D Delaunay → tet4                                         #
+    # For each slab k -> k+1:                                             #
+    #   points = inner_k ∪ inner_{k+1} ∪ cyl_k ∪ cyl_{k+1}             #
+    #   filter: centroid in Z-slab AND outside inner profile              #
+    # ------------------------------------------------------------------ #
+    all_tets = []
+
+    for k in range(N_z - 1):
+        i_k  = inner_idx_per_z[k]           # global indices in all_nodes_out
+        i_k1 = inner_idx_per_z[k + 1]
+        c_k  = np.arange(CYL0 + k * n_cyl_theta,
+                         CYL0 + (k + 1) * n_cyl_theta)
+        c_k1 = np.arange(CYL0 + (k + 1) * n_cyl_theta,
+                         CYL0 + (k + 2) * n_cyl_theta)
+
+        slab_global = np.concatenate([i_k, i_k1, c_k, c_k1])
+        slab_pts    = all_nodes_out[slab_global]   # (N_slab, 3)
+
+        try:
+            dt = Delaunay(slab_pts)
+        except Exception:
+            continue
+
+        z_k  = z_vals[k]
+        z_k1 = z_vals[k + 1]
+        poly_k  = inner_poly_per_z[k]
+        poly_k1 = inner_poly_per_z[k + 1]
+
+        for simplex in dt.simplices:
+            c = slab_pts[simplex].mean(0)
+
+            # Reject tets whose centroid is outside the Z slab
+            if c[2] < z_k - tol_z or c[2] > z_k1 + tol_z:
+                continue
+
+            # Reject tets whose centroid is inside the blade profile
+            t_frac = (c[2] - z_k) / max(z_k1 - z_k, 1e-30)
+            poly_check = poly_k if t_frac <= 0.5 else poly_k1
+            if poly_check.contains(_SPt(c[0], c[1])):
+                continue
+
+            all_tets.append(slab_global[simplex])
+
+    if not all_tets:
+        raise RuntimeError(
+            "create_outer_domain_unstructured: no tet elements generated. "
+            "Check that cylinder_radius is larger than the BL outer surface."
+        )
+
+    elements = np.array(all_tets, dtype=np.int32)
+
+    cyl_labels = list(range(CYL0, CYL0 + N_z * n_cyl_theta))
+
+    return {
+        "nodes":    all_nodes_out,
+        "elements": elements,
+        "sets": {"node": [{"name": "cylinderSurface", "labels": cyl_labels}]},
+    }
