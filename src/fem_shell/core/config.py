@@ -220,6 +220,7 @@ class SolverType(str, Enum):
     LINEAR_DYNAMIC_FSI_ROTOR = "LinearDynamicFSIRotor"
     MODAL = "Modal"
     BEM_STANDALONE = "BEMStandalone"
+    BEM_FSI = "BEMFSI"
 
 
 class MeshGeneratorType(str, Enum):
