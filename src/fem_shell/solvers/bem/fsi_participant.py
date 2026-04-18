@@ -286,6 +286,7 @@ class BEMFSIParticipant:
         force_data: str = "Force",
         output_folder: str | Path = "bem_fsi_results",
         log_interval: int = 10,
+        viz_mesh: MeshModel | None = None,
     ) -> None:
         self._mesh = mesh
         self._blade_aero = blade_aero
@@ -366,6 +367,17 @@ class BEMFSIParticipant:
         # instead of creating a new deep copy every iteration.
         self._working_mesh: MeshModel = copy.deepcopy(mesh)
 
+        # -- Full mesh with elements for surface VTU output -----------------
+        # When a coupling_node_set filter is applied in the CLI, the coupling
+        # mesh has no elements. viz_mesh keeps the full mesh for ParaView output.
+        self._viz_mesh: MeshModel = viz_mesh if viz_mesh is not None else mesh
+
+        # -- Tip node index (max span coordinate) --------------------------
+        # disp[-1] is NOT guaranteed to be the tip — node ordering in the
+        # coupling mesh depends on the mesh generator + coupling_node_set filter.
+        span_coords = self._ref_coords @ self._span_dir  # (n_nodes,)
+        self._tip_node_idx: int = int(np.argmax(span_coords))
+
         # -- Counters -------------------------------------------------------
         self._last_forces = np.zeros((self._n_nodes, 3), dtype=float)
         self._window_count = 0
@@ -399,12 +411,13 @@ class BEMFSIParticipant:
             len(self._strip_node_indices),
         )
 
-        # Initial checkpoint (before first advance, assertion is skipped)
-        adapter.store_checkpoint((self._last_forces.copy(),))
-
         bem_result: Optional[BEMResult] = None
 
         while adapter.is_coupling_ongoing:
+            # preCICE 3.x requires explicit checkpoint write/read guards.
+            if adapter.requires_writing_checkpoint:
+                adapter.store_checkpoint((self._last_forces.copy(),))
+
             if adapter.requires_reading_checkpoint:
                 states = adapter.retrieve_checkpoint()
                 self._last_forces = states[0]
@@ -423,19 +436,23 @@ class BEMFSIParticipant:
             adapter.advance(dt)
 
             if adapter.is_time_window_complete:
-                adapter.store_checkpoint((forces.copy(),))
                 self._last_forces = forces
                 self._window_count += 1
                 self._iteration_count = 0
+                current_time = self._window_count * dt
+
+                self._write_timestep_output(
+                    forces, displacements, bem_result,
+                    self._window_count, current_time,
+                )
 
                 if self._window_count % self._log_interval == 0:
                     self._log_window(
-                        bem_result, displacements, self._window_count * dt,
+                        bem_result, displacements, current_time,
                     )
 
         adapter.finalize()
         logger.info("[BEM-FSI] Finalized after %d time windows.", self._window_count)
-        self._write_summary(bem_result)
 
     # -----------------------------------------------------------------------
     # Deformed geometry extraction
@@ -748,6 +765,268 @@ class BEMFSIParticipant:
     # Diagnostics
     # -----------------------------------------------------------------------
 
+    def _write_timestep_output(
+        self,
+        forces: np.ndarray,
+        displacements: np.ndarray,
+        bem_result: BEMResult,
+        step: int,
+        time: float,
+    ) -> None:
+        """Write all output for one converged time window.
+
+        Structure mirrors the solid solver::
+
+            {output_folder}/
+              results.pvd               ← PVD time collection for fields.vtu
+              bem_report.csv            ← one row per window (global loads)
+              {time}/
+                fields.vtu              ← surface mesh: Force + Displacement
+                bem_sections.vtu        ← strip centroids: BEM spanwise data
+                bem_sectional.csv       ← sectional loads table
+        """
+        time_str = f"{time:.6g}"
+        ts_dir = self._output_folder / time_str
+        ts_dir.mkdir(parents=True, exist_ok=True)
+
+        self._write_fields_vtu(forces, displacements, ts_dir, time_str, time)
+        self._write_sections_vtu(bem_result, ts_dir)
+        self._write_sectional_csv(bem_result, ts_dir)
+        self._append_global_csv(bem_result, forces, displacements, step, time, time_str)
+
+    def _write_fields_vtu(
+        self,
+        forces: np.ndarray,
+        displacements: np.ndarray,
+        ts_dir: "Path",
+        time_str: str,
+        time: float,
+    ) -> None:
+        """Write surface VTU with Force and Displacement nodal fields."""
+        try:
+            import meshio
+        except ImportError:
+            return
+
+        viz = self._viz_mesh
+        coords = viz.coords_array  # (N_viz, 3)
+
+        # Build node-id → index map for the viz mesh
+        node_id_to_viz_idx = {node.id: i for i, node in enumerate(viz.nodes)}
+
+        # Map coupling-mesh forces/displacements onto the viz mesh
+        # (coupling nodes are a subset of viz nodes — same Node objects)
+        n_viz = len(viz.nodes)
+        forces_viz = np.zeros((n_viz, 3))
+        disp_viz = np.zeros((n_viz, 3))
+        for i, node in enumerate(self._working_mesh.nodes):
+            j = node_id_to_viz_idx.get(node.id)
+            if j is not None:
+                forces_viz[j] = forces[i]
+                disp_viz[j] = displacements[i]
+
+        # Build cell connectivity grouped by type
+        cell_blocks: dict[str, list] = {}
+        for elem in viz.elements:
+            conn = [node_id_to_viz_idx[n.id] for n in elem.nodes]
+            n_nds = len(conn)
+            if n_nds == 3:
+                ctype = "triangle"
+            elif n_nds == 4:
+                ctype = "quad"
+            elif n_nds == 6:
+                ctype = "triangle6"
+            elif n_nds == 8:
+                ctype = "quad8"
+            else:
+                continue
+            cell_blocks.setdefault(ctype, []).append(conn)
+
+        meshio_cells = [(k, np.array(v)) for k, v in cell_blocks.items()]
+        if not meshio_cells:
+            # Fallback to point cloud if no elements
+            meshio_cells = [("vertex", np.arange(n_viz).reshape(-1, 1))]
+
+        m = meshio.Mesh(
+            points=coords,
+            cells=meshio_cells,
+            point_data={"Force": forces_viz, "Displacement": disp_viz},
+        )
+        vtu_path = ts_dir / "fields.vtu"
+        m.write(str(vtu_path))
+
+        # Update PVD with relative path
+        rel_path = f"{ts_dir.name}/fields.vtu"
+        self._update_pvd(self._output_folder, "results.pvd", rel_path, time)
+
+    def _write_sections_vtu(self, bem_result: BEMResult, ts_dir: "Path") -> None:
+        """Write strip centroids VTU with spanwise BEM aerodynamic data."""
+        try:
+            import meshio
+        except ImportError:
+            return
+
+        strips = self._projector._strips
+        n_strips = len(strips)
+
+        centroids = np.array([s.centroid for s in strips])
+        dr = np.array([s.dr for s in strips])
+
+        # Integrated force vectors at each strip centroid
+        F_section = np.zeros((n_strips, 3))
+        for k, strip in enumerate(strips):
+            F_n = float(bem_result.Np[k]) * strip.dr
+            F_t = float(bem_result.Tp[k]) * strip.dr
+            F_section[k] = F_n * self._normal_dir + F_t * self._tangential_dir
+
+        point_data: dict[str, np.ndarray] = {
+            "r_m":      bem_result.r.astype(float),
+            "Np_N_m":   bem_result.Np.astype(float),
+            "Tp_N_m":   bem_result.Tp.astype(float),
+            "alpha_deg": bem_result.alpha.astype(float),
+            "cl":       bem_result.cl.astype(float),
+            "cd":       bem_result.cd.astype(float),
+            "a":        bem_result.a.astype(float),
+            "ap":       bem_result.ap.astype(float),
+            "dr_m":     dr.astype(float),
+            "Force_section": F_section,
+        }
+        # Optional fields — present when CCBlade version supports them
+        if bem_result.cn is not None:
+            point_data["cn"] = bem_result.cn.astype(float)
+        if bem_result.ct is not None:
+            point_data["ct"] = bem_result.ct.astype(float)
+        if bem_result.W is not None:
+            point_data["W_m_s"] = bem_result.W.astype(float)
+        if bem_result.Re is not None:
+            point_data["Re"] = bem_result.Re.astype(float)
+        if bem_result.cm is not None:
+            point_data["cm"] = bem_result.cm.astype(float)
+        if bem_result.Mp is not None:
+            point_data["Mp_Nm_m"] = bem_result.Mp.astype(float)
+        if bem_result.chord is not None:
+            point_data["chord_m"] = bem_result.chord.astype(float)
+        if bem_result.twist_deg is not None:
+            point_data["twist_deg"] = bem_result.twist_deg.astype(float)
+
+        cells = [("vertex", np.arange(n_strips).reshape(-1, 1))]
+        m = meshio.Mesh(points=centroids, cells=cells, point_data=point_data)
+        m.write(str(ts_dir / "bem_sections.vtu"))
+
+    def _write_sectional_csv(self, bem_result: BEMResult, ts_dir: "Path") -> None:
+        """Write sectional loads CSV for this timestep."""
+        strips = self._projector._strips
+        dr = np.array([s.dr for s in strips])
+
+        names = ["r[m]", "dr[m]",
+                 "chord[m]", "twist[deg]",
+                 "Np[N/m]", "Tp[N/m]",
+                 "alpha[deg]", "cl", "cd"]
+        cols = [
+            bem_result.r,
+            dr,
+            bem_result.chord if bem_result.chord is not None else np.zeros_like(bem_result.r),
+            bem_result.twist_deg if bem_result.twist_deg is not None else np.zeros_like(bem_result.r),
+            bem_result.Np, bem_result.Tp,
+            bem_result.alpha, bem_result.cl, bem_result.cd,
+        ]
+        for attr, col_name in [
+            ("cn",  "cn"),
+            ("ct",  "ct"),
+            ("a",   "a"),
+            ("ap",  "ap"),
+            ("W",   "W[m/s]"),
+            ("Re",  "Re"),
+            ("cm",  "cm"),
+            ("Mp",  "Mp[N.m/m]"),
+        ]:
+            val = getattr(bem_result, attr, None)
+            if val is not None:
+                names.append(col_name)
+                cols.append(val)
+        data = np.column_stack(cols)
+        np.savetxt(
+            ts_dir / "bem_sectional.csv",
+            data, delimiter=",", header=",".join(names), comments="",
+        )
+
+    def _append_global_csv(
+        self,
+        bem_result: BEMResult,
+        forces: np.ndarray,
+        displacements: np.ndarray,
+        step: int,
+        time: float,
+        time_str: str = "",
+    ) -> None:
+        """Append one row to the accumulated global loads CSV (like structural_report.csv)."""
+        csv_path = self._output_folder / "bem_report.csv"
+        write_header = not csv_path.exists()
+
+        disp_mag = np.linalg.norm(displacements, axis=1)
+        force_mag = np.linalg.norm(forces, axis=1)
+
+        tip_vec = displacements[self._tip_node_idx] if len(displacements) else np.zeros(3)
+        tip_disp_x, tip_disp_y, tip_disp_z = float(tip_vec[0]), float(tip_vec[1]), float(tip_vec[2])
+        tip_disp_mag = float(np.linalg.norm(tip_vec))
+
+        max_disp = float(np.max(disp_mag)) if len(disp_mag) else 0.0
+        max_force = float(np.max(force_mag)) if len(force_mag) else 0.0
+
+        CP = bem_result.CP if bem_result.CP is not None else float("nan")
+        CT = bem_result.CT if bem_result.CT is not None else float("nan")
+        CQ = bem_result.CQ if bem_result.CQ is not None else float("nan")
+        Mb = bem_result.Mb if bem_result.Mb is not None else float("nan")
+
+        with open(csv_path, "a") as f:
+            if write_header:
+                f.write(
+                    "Time [s],Step,"
+                    "Thrust [N],Torque [N.m],Power [W],"
+                    "CT,CQ,CP,"
+                    "Mb [N.m],"
+                    "Max Disp [m],"
+                    "Tip Disp X [m],Tip Disp Y [m],Tip Disp Z [m],Tip Disp Mag [m],"
+                    "Max Nodal Force [N]\n"
+                )
+            f.write(
+                f"{time:.6f},{step},"
+                f"{bem_result.thrust:.6e},{bem_result.torque:.6e},{bem_result.power:.6e},"
+                f"{CT:.6f},{CQ:.6f},{CP:.6f},"
+                f"{Mb:.6e},"
+                f"{max_disp:.6e},"
+                f"{tip_disp_x:.6e},{tip_disp_y:.6e},{tip_disp_z:.6e},{tip_disp_mag:.6e},"
+                f"{max_force:.6e}\n"
+            )
+
+    def _update_pvd(self, folder: "Path", pvd_name: str, filename: str, time: float) -> None:
+        """Append a timestep entry to the PVD collection file."""
+        pvd_path = folder / pvd_name
+
+        header = (
+            '<?xml version="1.0"?>\n'
+            '<VTKFile type="Collection" version="0.1" byte_order="LittleEndian"'
+            ' compressor="vtkZLibDataCompressor">\n'
+            "  <Collection>\n"
+        )
+        footer = "  </Collection>\n</VTKFile>"
+        entry = f'    <DataSet timestep="{time}" group="" part="0" file="{filename}"/>\n'
+
+        if not pvd_path.exists():
+            with open(pvd_path, "w") as f:
+                f.write(header + entry + footer)
+        else:
+            with open(pvd_path, "r") as f:
+                lines = f.readlines()
+            valid_lines = [
+                line for line in lines
+                if "</Collection>" not in line and "</VTKFile>" not in line
+            ]
+            with open(pvd_path, "w") as f:
+                f.writelines(valid_lines)
+                f.write(entry)
+                f.write(footer)
+
     def _log_window(
         self,
         bem_result: BEMResult,
@@ -756,35 +1035,28 @@ class BEMFSIParticipant:
     ) -> None:
         """Log a diagnostic summary for this time window."""
         if len(displacements) == 0:
-            tip_disp = max_disp = 0.0
+            tip_vec = np.zeros(3)
+            max_disp = 0.0
         else:
             disp_mag = np.linalg.norm(displacements, axis=1)
-            tip_disp = float(disp_mag[-1])
+            tip_vec = displacements[self._tip_node_idx]
             max_disp = float(np.max(disp_mag))
+        tip_x, tip_y, tip_z = float(tip_vec[0]), float(tip_vec[1]), float(tip_vec[2])
+        tip_mag = float(np.linalg.norm(tip_vec))
         logger.info(
             "[BEM-FSI] t=%.4f s | window=%d | iters=%d | T=%.2f kN "
-            "| Q=%.2f kNm | P=%.2f kW | tip_disp=%.4f m | max_disp=%.4f m",
+            "| Q=%.2f kNm | P=%.2f kW "
+            "| tip=(%.4f, %.4f, %.4f) mag=%.4f m | max_disp=%.4f m",
             current_time,
             self._window_count,
             self._iteration_count,
             bem_result.thrust * 1e-3,
             bem_result.torque * 1e-3,
             bem_result.power * 1e-3,
-            tip_disp,
+            tip_x, tip_y, tip_z,
+            tip_mag,
             max_disp,
         )
-
-    def _write_summary(self, bem_result: Optional[BEMResult]) -> None:
-        """Write final BEM global loads to CSV."""
-        if bem_result is None:
-            return
-        out = self._output_folder / "bem_fsi_global_loads.csv"
-        with open(out, "w") as f:
-            f.write("quantity,value,unit\n")
-            f.write(f"thrust,{bem_result.thrust:.6f},N\n")
-            f.write(f"torque,{bem_result.torque:.6f},Nm\n")
-            f.write(f"power,{bem_result.power:.6f},W\n")
-        logger.info("[BEM-FSI] Summary written to %s", out)
 
 
 # ---------------------------------------------------------------------------
@@ -796,6 +1068,7 @@ def build_from_config(
     mesh: MeshModel,
     cfg: dict,
     config_file: str | Path = "precice-config.xml",
+    viz_mesh: MeshModel | None = None,
 ) -> "BEMFSIParticipant":
     """Construct a :class:`BEMFSIParticipant` from a YAML config dict.
 
@@ -821,10 +1094,12 @@ def build_from_config(
 
     blade_aero = load_blade_aero(
         blade_file,
-        default_re=bem_cfg.get("default_re", 1e7),
+        default_re=float(bem_cfg.get("default_re", 1e7)),
         neuralfoil_model=bem_cfg.get("neuralfoil_model", "large"),
-        hub_radius=bem_cfg.get("hub_radius", 0.0),
-        n_blades=bem_cfg.get("n_blades", 3),
+        hub_radius=float(bem_cfg.get("hub_radius", 0.0)),
+        n_blades=int(bem_cfg.get("n_blades", 3)),
+        viterna_ar=float(bem_cfg.get("viterna_ar", 17.0)),
+        viterna_confidence_threshold=float(bem_cfg.get("viterna_confidence_threshold", 0.5)),
     )
 
     return BEMFSIParticipant(
@@ -838,4 +1113,5 @@ def build_from_config(
         force_data=cfg.get("force_data", "Force"),
         output_folder=output_cfg.get("folder", "bem_fsi_results"),
         log_interval=int(output_cfg.get("log_interval", 10)),
+        viz_mesh=viz_mesh,
     )

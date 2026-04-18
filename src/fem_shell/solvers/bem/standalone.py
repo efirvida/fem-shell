@@ -119,10 +119,12 @@ class BEMStandaloneSolver:
 
         return load_blade_aero(
             blade_file,
-            default_re=self._bem_cfg.get("default_re", 1e7),
+            default_re=float(self._bem_cfg.get("default_re", 1e7)),
             neuralfoil_model=self._bem_cfg.get("neuralfoil_model", "large"),
-            hub_radius=self._bem_cfg.get("hub_radius", 0.0),
-            n_blades=self._bem_cfg.get("n_blades", 3),
+            hub_radius=float(self._bem_cfg.get("hub_radius", 0.0)),
+            n_blades=int(self._bem_cfg.get("n_blades", 3)),
+            viterna_ar=float(self._bem_cfg.get("viterna_ar", 17.0)),
+            viterna_confidence_threshold=float(self._bem_cfg.get("viterna_confidence_threshold", 0.5)),
         )
 
     def _export(self, output_folder: str, verification: dict) -> None:
