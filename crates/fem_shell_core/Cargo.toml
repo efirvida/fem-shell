@@ -1,0 +1,15 @@
+[package]
+name = "fem_shell_core"
+version = "0.1.0"
+edition = "2021"
+description = "High-performance FEM shell element kernels for fem_shell"
+
+[lib]
+name = "fem_shell_core"
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+pyo3 = { version = "0.24", features = ["extension-module"] }
+numpy = "0.24"
+nalgebra = "0.33"
+rayon = "1.10"
