@@ -661,12 +661,19 @@ class BEMFSIParticipant:
             for k, st in enumerate(ba.stations)
         ]
 
+        # Update Rtip to the actual deformed tip position (+ 0.1% buffer).
+        # The blade elongates spanwise under large flapwise deformations, so
+        # strip centroids can exceed the reference rotor_radius.  A fixed
+        # Rtip_ref causes Prandtl factortip < 0 → exp(+) > 1 → acos(NaN).
+        deformed_rtip = float(np.max(r_def)) * 1.001
+        rotor_radius = max(deformed_rtip, ba.rotor_radius)
+
         deformed_aero = BladeAero(
             airfoils=ba.airfoils,
             stations=new_stations,
             blade_length=ba.blade_length,
             hub_radius=ba.hub_radius,
-            rotor_radius=ba.rotor_radius,
+            rotor_radius=rotor_radius,
             n_blades=ba.n_blades,
         )
 
