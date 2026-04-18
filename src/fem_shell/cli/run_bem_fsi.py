@@ -230,18 +230,43 @@ def _build_mesh(cfg: dict, config_path: Path):
         else:
             raise ValueError(f"Unknown mesh generator type: '{gen_type}'")
 
-    # Optional: write mesh for inspection
+    # Optional: write full mesh for inspection (before any node-set filter)
     output_file = mesh_cfg.get("output_file")
     if output_file:
         mesh.write_mesh(_resolve(output_file))
         logging.info("[BEM-FSI] Mesh written to %s", output_file)
+
+    # Optional: filter to a specific node set (e.g. "allOuterShellNods" to
+    # exclude shear-web nodes from the aerodynamic coupling mesh).
+    # The BEM participant only needs node coordinates for preCICE registration
+    # and force projection — elements are not required after this point.
+    # The full mesh (with elements) is kept as viz_mesh for VTU surface output.
+    viz_mesh = None
+    coupling_node_set = gen_cfg.get("coupling_node_set") if source != MeshSource.FILE.value else None
+    if coupling_node_set:
+        try:
+            ns = mesh.get_node_set(coupling_node_set)
+        except ValueError:
+            available = list(mesh.node_sets.keys())
+            raise ValueError(
+                f"coupling_node_set '{coupling_node_set}' not found. "
+                f"Available node sets: {available}"
+            )
+        viz_mesh = mesh  # full mesh with elements, for surface VTU
+        filtered_nodes = list(ns.nodes.values())
+        mesh = MeshModel(nodes=filtered_nodes)
+        logging.info(
+            "[BEM-FSI] Filtered to node set '%s': %d nodes",
+            coupling_node_set,
+            len(filtered_nodes),
+        )
 
     logging.info(
         "[BEM-FSI] Mesh ready: %d nodes, %d elements",
         len(mesh.nodes),
         len(mesh.elements),
     )
-    return mesh
+    return mesh, viz_mesh
 
 
 def main(argv=None) -> int:
@@ -318,7 +343,7 @@ def main(argv=None) -> int:
 
     # Build the mesh (user's responsibility to configure)
     try:
-        mesh = _build_mesh(cfg, config_path)
+        mesh, viz_mesh = _build_mesh(cfg, config_path)
     except Exception as exc:
         logging.error("Failed to build mesh: %s", exc)
         return 1
@@ -327,7 +352,7 @@ def main(argv=None) -> int:
     from fem_shell.solvers.bem.fsi_participant import build_from_config
 
     try:
-        participant = build_from_config(mesh, cfg)
+        participant = build_from_config(mesh, cfg, viz_mesh=viz_mesh)
         participant.run()
     except Exception as exc:
         logging.error("BEM-FSI participant failed: %s", exc, exc_info=True)
