@@ -60,8 +60,24 @@ class BEMResult:
     thrust: float
     torque: float
     power: float
+    # -- extended fields (industrial BEM standard) -------------------------
     cm: np.ndarray | None = None
     Mp: np.ndarray | None = None
+    # Normal / tangential force coefficients
+    cn: np.ndarray | None = None
+    ct: np.ndarray | None = None
+    # Relative inflow velocity (m/s) and chord Reynolds number
+    W: np.ndarray | None = None
+    Re: np.ndarray | None = None
+    # Reference geometry per station (from the (possibly deformed) blade_aero)
+    chord: np.ndarray | None = None
+    twist_deg: np.ndarray | None = None
+    # Integrated non-dimensional performance coefficients
+    CP: float | None = None
+    CT: float | None = None
+    CQ: float | None = None
+    # Blade root flap bending moment (N*m)
+    Mb: float | None = None
 
 
 def _build_ccairfoil(airfoil: AirfoilAero):
@@ -198,6 +214,20 @@ class BEMSolver:
         Tp = loads["Tp"]
         cl = loads["Cl"]
         cd = loads["Cd"]
+        cn = loads.get("Cn")
+        ct = loads.get("Ct")
+        W  = loads.get("W")
+        Re = loads.get("Re")
+
+        # Integrated coefficients
+        Mb = float(outputs["Mb"][0]) if "Mb" in outputs else None
+        try:
+            out_coef, _ = self.rotor.evaluate([v_inf], [omega_bem], [pitch], coefficients=True)
+            CP = float(out_coef["CP"][0])
+            CT = float(out_coef["CT"][0])
+            CQ = float(out_coef["CQ"][0])
+        except Exception:
+            CP = CT = CQ = None
 
         try:
             cm = loads["Cm"]
@@ -236,4 +266,14 @@ class BEMSolver:
             power=float(outputs["P"][0]),
             cm=cm,
             Mp=Mp,
+            cn=cn,
+            ct=ct,
+            W=W,
+            Re=Re,
+            chord=self.blade_aero.chord.copy(),
+            twist_deg=np.rad2deg(self.blade_aero.twist),
+            CP=CP,
+            CT=CT,
+            CQ=CQ,
+            Mb=Mb,
         )
