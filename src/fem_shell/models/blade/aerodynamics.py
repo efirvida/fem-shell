@@ -180,13 +180,134 @@ def _parse_polars_from_yaml(af_data: dict) -> List[PolarData]:
     return polars
 
 
+def _viterna_extrapolation(
+    alpha_attach: np.ndarray,
+    cl_attach: np.ndarray,
+    cd_attach: np.ndarray,
+    cm_attach: np.ndarray,
+    ar: float = 17.0,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """Extend a polar to [-180°, +180°] using the Viterna–Corrigan method.
+
+    Parameters
+    ----------
+    alpha_attach : ndarray
+        Angles of attack (radians) in the attached-flow regime (typically
+        the NeuralFoil output for |alpha| <= alpha_stall_deg).
+    cl_attach, cd_attach, cm_attach : ndarray
+        Corresponding aerodynamic coefficients.
+    ar : float
+        Blade aspect ratio used in the Viterna equations. Defaults to 17
+        (representative of IEA-15 MW outer sections).
+
+    Returns
+    -------
+    alpha_full, cl_full, cd_full, cm_full : ndarray
+        Polar tables spanning [-π, +π] at 1° resolution.
+    """
+    # Viterna empirical limit for maximum drag at 90°
+    cd_max = max(1.11 + 0.13 * ar, 1.11)  # Viterna eq. 8, capped at ~1.40 for large AR
+
+    # Reference point: take the stall angle from the last attached-flow point
+    # (last alpha before we switch to Viterna on each side)
+    alpha_stall_pos = alpha_attach[-1]   # e.g. +25°
+    alpha_stall_neg = alpha_attach[0]    # e.g. -25°
+    cl_stall_pos = cl_attach[-1]
+    cd_stall_pos = cd_attach[-1]
+    cl_stall_neg = cl_attach[0]
+    cd_stall_neg = cd_attach[0]
+
+    # Viterna coefficients for the positive (+) side
+    A2p = (cl_stall_pos - cd_max * np.sin(alpha_stall_pos) * np.cos(alpha_stall_pos)) * (
+        np.sin(alpha_stall_pos) / np.cos(alpha_stall_pos) ** 2
+    )
+    B2p = (cd_stall_pos - cd_max * np.sin(alpha_stall_pos) ** 2) / np.cos(alpha_stall_pos)
+
+    # Viterna coefficients for the negative (-) side (mirror)
+    A2n = (cl_stall_neg - cd_max * np.sin(alpha_stall_neg) * np.cos(alpha_stall_neg)) * (
+        np.sin(alpha_stall_neg) / np.cos(alpha_stall_neg) ** 2
+    )
+    B2n = (cd_stall_neg - cd_max * np.sin(alpha_stall_neg) ** 2) / np.cos(alpha_stall_neg)
+
+    alpha_full_deg = np.arange(-180, 181, 1, dtype=float)
+    alpha_full = np.deg2rad(alpha_full_deg)
+
+    cl_full = np.zeros_like(alpha_full)
+    cd_full = np.zeros_like(alpha_full)
+    cm_full = np.zeros_like(alpha_full)
+
+    for i, a in enumerate(alpha_full):
+        a_deg = alpha_full_deg[i]
+        if alpha_stall_neg <= a <= alpha_stall_pos:
+            # Attached-flow regime: interpolate from NeuralFoil data
+            cl_full[i] = np.interp(a, alpha_attach, cl_attach)
+            cd_full[i] = np.interp(a, alpha_attach, cd_attach)
+            cm_full[i] = np.interp(a, alpha_attach, cm_attach)
+        elif a > alpha_stall_pos:
+            # Viterna equations — post-stall positive
+            sa, ca = np.sin(a), np.cos(a)
+            # Guard against sin(α)≈0 at α=±180° where Viterna diverges
+            if abs(sa) < 1e-6:
+                cl_full[i] = 0.0
+                cd_full[i] = cd_max
+            else:
+                cl_full[i] = cd_max / 2.0 * np.sin(2.0 * a) + A2p * ca ** 2 / sa
+                cd_full[i] = cd_max * sa ** 2 + B2p * ca
+            cm_full[i] = np.interp(a, alpha_attach, cm_attach, left=cm_attach[-1], right=cm_attach[-1])
+        else:
+            # Viterna equations — post-stall negative (mirror about zero)
+            sa, ca = np.sin(a), np.cos(a)
+            # Guard against sin(α)≈0 at α=±180° where Viterna diverges
+            if abs(sa) < 1e-6:
+                cl_full[i] = 0.0
+                cd_full[i] = cd_max
+            else:
+                cl_full[i] = cd_max / 2.0 * np.sin(2.0 * a) + A2n * ca ** 2 / sa
+                cd_full[i] = cd_max * sa ** 2 - B2n * ca
+            cm_full[i] = np.interp(a, alpha_attach, cm_attach, left=cm_attach[0], right=cm_attach[0])
+
+    # Ensure cd is non-negative everywhere
+    cd_full = np.maximum(cd_full, 0.0)
+
+    return alpha_full, cl_full, cd_full, cm_full
+
+
 def _generate_polars_neuralfoil(
     coordinates: np.ndarray,
     re: float = 1e7,
     model_size: str = "large",
-    n_alpha: int = 360,
+    alpha_stall_deg: Optional[float] = None,
+    ar: float = 17.0,
+    confidence_threshold: float = 0.5,
 ) -> List[PolarData]:
-    """Generate polar tables using NeuralFoil from airfoil coordinates."""
+    """Generate polar tables using NeuralFoil + Viterna–Corrigan extrapolation.
+
+    NeuralFoil is used for the attached-flow regime. When ``alpha_stall_deg``
+    is ``None`` (the default) the stall boundary is detected automatically
+    using NeuralFoil's ``analysis_confidence`` output: the last angle where
+    confidence >= ``confidence_threshold`` is used as the Viterna hand-off
+    point, capped at ±30° to avoid over-extension.  Viterna–Corrigan takes
+    over beyond the stall boundary to extend the polar to ±180°.
+
+    Parameters
+    ----------
+    coordinates : ndarray
+        Airfoil Nx2 coordinates (normalised, (x,y)).
+    re : float
+        Reynolds number.
+    model_size : str
+        NeuralFoil model size ("xlarge", "large", "medium", etc.).
+    alpha_stall_deg : float or None
+        Half-range (degrees) for the NeuralFoil / attached-flow region.
+        ``None`` (default) triggers auto-detection via ``analysis_confidence``.
+    ar : float
+        Effective aspect ratio used in Viterna's cd_max formula
+        (``cd_max = 1.11 + 0.13·AR``).  Set to a small value (e.g. 3–5) for
+        cylindrical root sections where CD90 ≈ 1.0.
+    confidence_threshold : float
+        Minimum ``analysis_confidence`` to consider a NeuralFoil point
+        reliable.  Only used when ``alpha_stall_deg`` is ``None``.
+    """
     try:
         import neuralfoil as nf
     except ImportError:
@@ -195,22 +316,57 @@ def _generate_polars_neuralfoil(
             "Install it with: pip install neuralfoil"
         )
 
-    alpha_deg = np.linspace(-180, 180, n_alpha)
-    alpha_rad = np.deg2rad(alpha_deg)
+    # Scan a wide range so auto-detection can observe the confidence drop-off.
+    # Even when alpha_stall_deg is given we still scan widely so we hand off
+    # at the user-specified angle with the correct coefficients.
+    alpha_scan_deg = np.linspace(-35.0, 35.0, 281)
 
     aero = nf.get_aero_from_coordinates(
         coordinates=coordinates,
-        alpha=alpha_deg,
+        alpha=alpha_scan_deg,
         Re=re,
         model_size=model_size,
     )
 
+    cl_scan = np.asarray(aero["CL"], dtype=float)
+    cd_scan = np.asarray(aero["CD"], dtype=float)
+    cm_scan = np.asarray(aero["CM"], dtype=float)
+    conf = np.asarray(aero["analysis_confidence"], dtype=float)
+
+    if alpha_stall_deg is None:
+        # Auto-detect: find the outermost alpha on each side where NeuralFoil
+        # still claims confidence >= threshold.
+        confident = conf >= confidence_threshold
+        pos_idx = np.where((alpha_scan_deg > 0) & confident)[0]
+        neg_idx = np.where((alpha_scan_deg < 0) & confident)[0]
+
+        stall_pos = float(alpha_scan_deg[pos_idx[-1]]) if pos_idx.size else 20.0
+        stall_neg = float(alpha_scan_deg[neg_idx[0]]) if neg_idx.size else -20.0
+
+        # Safety cap — never extend the attached regime past ±30°
+        stall_pos = min(stall_pos, 30.0)
+        stall_neg = max(stall_neg, -30.0)
+    else:
+        stall_pos = float(alpha_stall_deg)
+        stall_neg = -float(alpha_stall_deg)
+
+    # Extract the attached-flow region (NeuralFoil data inside stall boundary)
+    mask = (alpha_scan_deg >= stall_neg) & (alpha_scan_deg <= stall_pos)
+    alpha_attach_rad = np.deg2rad(alpha_scan_deg[mask])
+    cl_attach = cl_scan[mask]
+    cd_attach = cd_scan[mask]
+    cm_attach = cm_scan[mask]
+
+    alpha_full, cl_full, cd_full, cm_full = _viterna_extrapolation(
+        alpha_attach_rad, cl_attach, cd_attach, cm_attach, ar=ar
+    )
+
     return [
         PolarData(
-            alpha=alpha_rad,
-            cl=np.asarray(aero["CL"], dtype=float),
-            cd=np.asarray(aero["CD"], dtype=float),
-            cm=np.asarray(aero["CM"], dtype=float),
+            alpha=alpha_full,
+            cl=cl_full,
+            cd=cd_full,
+            cm=cm_full,
             re=re,
         )
     ]
@@ -223,6 +379,8 @@ def _load_from_excel(
     hub_radius: float,
     n_blades: int,
     airfoil_dir: Optional[str],
+    viterna_ar: float = 17.0,
+    viterna_confidence_threshold: float = 0.5,
 ) -> BladeAero:
     """Load blade aerodynamic data from a NuMAD Excel file.
 
@@ -255,7 +413,10 @@ def _load_from_excel(
             coords = np.asarray(af.coordinates, dtype=float)
             rel_t = float(af.percentthick / 100.0) if af.percentthick else 0.0
 
-            polars = _generate_polars_neuralfoil(coords, re=default_re, model_size=neuralfoil_model)
+            polars = _generate_polars_neuralfoil(
+                coords, re=default_re, model_size=neuralfoil_model,
+                ar=viterna_ar, confidence_threshold=viterna_confidence_threshold,
+            )
 
             airfoil_aero = AirfoilAero(
                 name=af.name,
@@ -318,6 +479,8 @@ def load_blade_aero(
     hub_radius: float = 0.0,
     n_blades: int = 3,
     airfoil_dir: Optional[str] = None,
+    viterna_ar: float = 17.0,
+    viterna_confidence_threshold: float = 0.5,
 ) -> BladeAero:
     """Load blade aerodynamic data from a WindIO YAML or NuMAD Excel file.
 
@@ -346,6 +509,14 @@ def load_blade_aero(
     airfoil_dir : str or None
         Directory containing airfoil coordinate .txt files (Excel only).
         Defaults to an ``airfoils/`` folder next to the Excel file.
+    viterna_ar : float
+        Aspect ratio for the Viterna–Corrigan cd_max formula
+        (``cd_max = 1.11 + 0.13·AR``).  Default 17 suits IEA-15 outer sections.
+        Use a smaller value (e.g. 3–5) for cylindrical root sections.
+    viterna_confidence_threshold : float
+        NeuralFoil ``analysis_confidence`` threshold below which a point is
+        considered outside the reliable regime and handed off to Viterna.
+        Only used when the blade file does not supply pre-computed polars.
 
     Returns
     -------
@@ -363,6 +534,8 @@ def load_blade_aero(
             hub_radius=hub_radius,
             n_blades=n_blades,
             airfoil_dir=airfoil_dir,
+            viterna_ar=viterna_ar,
+            viterna_confidence_threshold=viterna_confidence_threshold,
         )
 
     # --- YAML path ---
@@ -424,7 +597,10 @@ def load_blade_aero(
 
         # Fallback: generate with NeuralFoil if no polars
         if not polars:
-            polars = _generate_polars_neuralfoil(coords, re=default_re, model_size=neuralfoil_model)
+            polars = _generate_polars_neuralfoil(
+                coords, re=default_re, model_size=neuralfoil_model,
+                ar=viterna_ar, confidence_threshold=viterna_confidence_threshold,
+            )
 
         airfoil = AirfoilAero(
             name=name,
