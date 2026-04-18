@@ -46,6 +46,8 @@ class MeshAssembler:
         self._row_nnz: Optional[np.ndarray] = None
         self._precompute_elements()
         self._compute_sparsity_pattern()
+        self._prepare_rust_batch_data()
+        self._rust_batch_overwrite_ke_me()
 
     # Mapping from ElementFamily to (dofs_per_node, spatial_dim).
     # This avoids instantiating every element twice just to query these constants.
@@ -240,6 +242,361 @@ class MeshAssembler:
 
         self._row_nnz = np.array([len(s) for s in nnz], dtype=PETSc.IntType)
 
+    def _prepare_rust_batch_data(self):
+        """Prepare element groups for Rust batch computation.
+
+        Groups elements by (element_type, E, nu, thickness, shear_correction)
+        for efficient parallel batch processing via the ``fem_shell_core`` Rust
+        backend.  Each group maps to a single parallel Rust call that processes
+        all elements of the same type and material at once.
+
+        For composite elements (MITC3Composite / MITC4Composite), per-element
+        ABD matrices are extracted and passed to dedicated composite batch
+        functions.
+        """
+        self._rust_groups = []
+        self._rust_composite_groups = []
+        self._has_rust = False
+        self._all_elements_rust = False
+
+        try:
+            import fem_shell_core
+
+            self._fsc = fem_shell_core
+            self._has_rust = True
+        except ImportError:
+            return
+
+        from fem_shell.elements.MITC3 import MITC3
+        from fem_shell.elements.MITC3_composite import MITC3Composite
+        from fem_shell.elements.MITC4 import MITC4
+        from fem_shell.elements.MITC4_composite import MITC4Composite
+
+        groups: dict = {}
+        composite_groups: dict = {}  # keyed by ("MITC3_composite",) or ("MITC4_composite",)
+        elem_list = list(self._element_map.values())
+
+        for e, fem_elem in enumerate(elem_list):
+            # Composite elements (must check before isotropic since Composite inherits from MITC3/4)
+            if isinstance(fem_elem, MITC3Composite):
+                key = "MITC3_composite"
+                if key not in composite_groups:
+                    composite_groups[key] = {
+                        "indices": [], "coords": [],
+                        "cm": [], "cb": [], "cs": [],
+                        "thickness": [], "e_equiv": [],
+                        "mass_per_area": [], "rotational_inertia": [],
+                        "etype": key,
+                    }
+                g = composite_groups[key]
+                g["indices"].append(e)
+                g["coords"].append(fem_elem._initial_coords.ravel())
+                g["cm"].append(fem_elem._A_matrix.ravel())
+                g["cb"].append(fem_elem._D_matrix.ravel())
+                g["cs"].append(fem_elem._Cs_matrix.ravel())
+                h = fem_elem.thickness
+                g["thickness"].append(h)
+                # e_equiv so that e_equiv * h² * 0.15 matches Python drilling
+                a_trace = np.trace(fem_elem._A_matrix)
+                g["e_equiv"].append(a_trace / (3.0 * h) if h > 0 else 0.0)
+                g["mass_per_area"].append(fem_elem._mass_per_area())
+                g["rotational_inertia"].append(fem_elem._rotational_inertia())
+                continue
+
+            if isinstance(fem_elem, MITC4Composite):
+                key = "MITC4_composite"
+                if key not in composite_groups:
+                    composite_groups[key] = {
+                        "indices": [], "coords": [],
+                        "cm": [], "cb": [], "cs": [],
+                        "thickness": [], "e_equiv": [],
+                        "mass_per_area": [], "rotational_inertia": [],
+                        "etype": key,
+                    }
+                g = composite_groups[key]
+                g["indices"].append(e)
+                g["coords"].append(fem_elem._initial_coords.ravel())
+                g["cm"].append(fem_elem._A_matrix.ravel())
+                g["cb"].append(fem_elem._D_matrix.ravel())
+                g["cs"].append(fem_elem._Cs_matrix.ravel())
+                h = fem_elem.thickness
+                g["thickness"].append(h)
+                a_trace = np.trace(fem_elem._A_matrix)
+                g["e_equiv"].append(a_trace / (3.0 * h) if h > 0 else 0.0)
+                g["mass_per_area"].append(fem_elem._mass_per_area())
+                g["rotational_inertia"].append(fem_elem._rotational_inertia())
+                continue
+
+            # Isotropic elements
+            if isinstance(fem_elem, MITC3):
+                etype = "MITC3"
+            elif isinstance(fem_elem, MITC4):
+                etype = "MITC4"
+            else:
+                continue
+
+            mat = fem_elem.material
+            sc = getattr(fem_elem, "_shear_correction_factor", 5.0 / 6.0)
+            key = (etype, mat.E, mat.nu, mat.rho, fem_elem.thickness, sc)
+
+            if key not in groups:
+                groups[key] = {
+                    "indices": [],
+                    "coords": [],
+                    "etype": etype,
+                    "E": mat.E,
+                    "nu": mat.nu,
+                    "rho": mat.rho,
+                    "thickness": fem_elem.thickness,
+                    "shear_correction": sc,
+                }
+            groups[key]["indices"].append(e)
+            groups[key]["coords"].append(fem_elem._initial_coords.ravel())
+
+        # Build isotropic groups
+        for g in groups.values():
+            indices = np.array(g["indices"], dtype=np.intp)
+            ndof = 18 if g["etype"] == "MITC3" else 24
+
+            if self._is_mixed_mesh:
+                dofs = np.array(
+                    [self._dofs_list[i] for i in indices], dtype=np.int64
+                )
+            else:
+                dofs = self._dofs_array[indices].copy()
+
+            self._rust_groups.append(
+                {
+                    "etype": g["etype"],
+                    "coords": np.array(g["coords"], dtype=np.float64),
+                    "dofs": dofs,
+                    "ndof": ndof,
+                    "E": g["E"],
+                    "nu": g["nu"],
+                    "rho": g["rho"],
+                    "thickness": g["thickness"],
+                    "shear_correction": g["shear_correction"],
+                    "n_elem": len(indices),
+                    "orig_indices": indices.tolist(),
+                }
+            )
+
+        # Build composite groups
+        for g in composite_groups.values():
+            indices = np.array(g["indices"], dtype=np.intp)
+            ndof = 18 if g["etype"] == "MITC3_composite" else 24
+
+            if self._is_mixed_mesh:
+                dofs = np.array(
+                    [self._dofs_list[i] for i in indices], dtype=np.int64
+                )
+            else:
+                dofs = self._dofs_array[indices].copy()
+
+            self._rust_composite_groups.append(
+                {
+                    "etype": g["etype"],
+                    "coords": np.array(g["coords"], dtype=np.float64),
+                    "dofs": dofs,
+                    "ndof": ndof,
+                    "cm": np.array(g["cm"], dtype=np.float64),
+                    "cb": np.array(g["cb"], dtype=np.float64),
+                    "cs": np.array(g["cs"], dtype=np.float64),
+                    "thickness": np.array(g["thickness"], dtype=np.float64),
+                    "e_equiv": np.array(g["e_equiv"], dtype=np.float64),
+                    "mass_per_area": np.array(g["mass_per_area"], dtype=np.float64),
+                    "rotational_inertia": np.array(g["rotational_inertia"], dtype=np.float64),
+                    "n_elem": len(indices),
+                    "orig_indices": indices.tolist(),
+                }
+            )
+
+        n_rust = sum(g["n_elem"] for g in self._rust_groups)
+        n_rust += sum(g["n_elem"] for g in self._rust_composite_groups)
+        self._all_elements_rust = n_rust == len(elem_list)
+
+    def _rust_batch_overwrite_ke_me(self):
+        """Replace Python-computed ke/me arrays with Rust batch results.
+
+        When the Rust backend covers all elements, this overwrites the per-element
+        stiffness and mass matrices that ``_precompute_elements()`` computed in
+        Python.  The result is identical (validated by tests) but much faster for
+        large meshes.
+        """
+        if not self._has_rust or not self._all_elements_rust:
+            return
+        if self._is_mixed_mesh:
+            # Mixed mesh: overwrite individual lists
+            self._rust_batch_overwrite_lists()
+            return
+
+        ndof = self._ke_array.shape[1]
+        n_elem = self._ke_array.shape[0]
+
+        # Overwrite with isotropic Rust batch results
+        for g in self._rust_groups:
+            indices = np.array(
+                [i for i, _ in enumerate(range(g["n_elem"]))],
+                dtype=np.intp,
+            )
+            # Find the original element indices from the dofs mapping
+            # The group stores the original element index from the element list
+            # We need to reconstruct which rows of _ke_array correspond to this group
+            pass  # Will be populated below
+
+        # For now: compute Rust ke/me and write directly into the arrays
+        # using the element ordering from the groups
+        for g in self._rust_groups:
+            if g["etype"] == "MITC3":
+                ke_flat = self._fsc.batch_ke_mitc3(
+                    g["coords"], g["E"], g["nu"], g["thickness"],
+                    g["shear_correction"],
+                )
+                me_flat = self._fsc.batch_me_mitc3(
+                    g["coords"], g["E"], g["nu"], g["rho"],
+                    g["thickness"], g["shear_correction"],
+                )
+                elem_ndof = 18
+            else:
+                ke_flat = self._fsc.batch_ke_mitc4(
+                    g["coords"], g["E"], g["nu"], g["thickness"],
+                    g["shear_correction"],
+                )
+                me_flat = self._fsc.batch_me_mitc4(
+                    g["coords"], g["E"], g["nu"], g["rho"],
+                    g["thickness"], g["shear_correction"],
+                )
+                elem_ndof = 24
+
+            ke_arr = np.asarray(ke_flat).reshape(g["n_elem"], elem_ndof, elem_ndof)
+            me_arr = np.asarray(me_flat).reshape(g["n_elem"], elem_ndof, elem_ndof)
+
+            # Map group-local indices back to the global element array
+            # _rust_groups stores original indices from _element_map iteration
+            orig_indices = self._rust_group_indices(g)
+            for local_i, global_i in enumerate(orig_indices):
+                self._ke_array[global_i] = ke_arr[local_i]
+                self._me_array[global_i] = me_arr[local_i]
+
+        for g in self._rust_composite_groups:
+            if g["etype"] == "MITC3_composite":
+                ke_flat = self._fsc.batch_ke_mitc3_composite(
+                    g["coords"], g["cm"], g["cb"], g["cs"],
+                    g["thickness"], g["e_equiv"],
+                )
+                me_flat = self._fsc.batch_me_mitc3_composite(
+                    g["coords"], g["mass_per_area"], g["rotational_inertia"],
+                )
+                elem_ndof = 18
+            else:
+                ke_flat = self._fsc.batch_ke_mitc4_composite(
+                    g["coords"], g["cm"], g["cb"], g["cs"],
+                    g["thickness"], g["e_equiv"],
+                )
+                me_flat = self._fsc.batch_me_mitc4_composite(
+                    g["coords"], g["mass_per_area"], g["rotational_inertia"],
+                )
+                elem_ndof = 24
+
+            ke_arr = np.asarray(ke_flat).reshape(g["n_elem"], elem_ndof, elem_ndof)
+            me_arr = np.asarray(me_flat).reshape(g["n_elem"], elem_ndof, elem_ndof)
+
+            orig_indices = self._rust_group_indices(g)
+            for local_i, global_i in enumerate(orig_indices):
+                self._ke_array[global_i] = ke_arr[local_i]
+                self._me_array[global_i] = me_arr[local_i]
+
+    def _rust_batch_overwrite_lists(self):
+        """Overwrite ke/me lists for mixed meshes with Rust batch results."""
+        for g in self._rust_groups:
+            if g["etype"] == "MITC3":
+                ke_flat = self._fsc.batch_ke_mitc3(
+                    g["coords"], g["E"], g["nu"], g["thickness"],
+                    g["shear_correction"],
+                )
+                me_flat = self._fsc.batch_me_mitc3(
+                    g["coords"], g["E"], g["nu"], g["rho"],
+                    g["thickness"], g["shear_correction"],
+                )
+                elem_ndof = 18
+            else:
+                ke_flat = self._fsc.batch_ke_mitc4(
+                    g["coords"], g["E"], g["nu"], g["thickness"],
+                    g["shear_correction"],
+                )
+                me_flat = self._fsc.batch_me_mitc4(
+                    g["coords"], g["E"], g["nu"], g["rho"],
+                    g["thickness"], g["shear_correction"],
+                )
+                elem_ndof = 24
+
+            ke_arr = np.asarray(ke_flat).reshape(g["n_elem"], elem_ndof, elem_ndof)
+            me_arr = np.asarray(me_flat).reshape(g["n_elem"], elem_ndof, elem_ndof)
+
+            orig_indices = self._rust_group_indices(g)
+            for local_i, global_i in enumerate(orig_indices):
+                self._ke_list[global_i] = ke_arr[local_i]
+                self._me_list[global_i] = me_arr[local_i]
+
+        for g in self._rust_composite_groups:
+            if g["etype"] == "MITC3_composite":
+                ke_flat = self._fsc.batch_ke_mitc3_composite(
+                    g["coords"], g["cm"], g["cb"], g["cs"],
+                    g["thickness"], g["e_equiv"],
+                )
+                me_flat = self._fsc.batch_me_mitc3_composite(
+                    g["coords"], g["mass_per_area"], g["rotational_inertia"],
+                )
+                elem_ndof = 18
+            else:
+                ke_flat = self._fsc.batch_ke_mitc4_composite(
+                    g["coords"], g["cm"], g["cb"], g["cs"],
+                    g["thickness"], g["e_equiv"],
+                )
+                me_flat = self._fsc.batch_me_mitc4_composite(
+                    g["coords"], g["mass_per_area"], g["rotational_inertia"],
+                )
+                elem_ndof = 24
+
+            ke_arr = np.asarray(ke_flat).reshape(g["n_elem"], elem_ndof, elem_ndof)
+            me_arr = np.asarray(me_flat).reshape(g["n_elem"], elem_ndof, elem_ndof)
+
+            orig_indices = self._rust_group_indices(g)
+            for local_i, global_i in enumerate(orig_indices):
+                self._ke_list[global_i] = ke_arr[local_i]
+                self._me_list[global_i] = me_arr[local_i]
+
+    @staticmethod
+    def _rust_group_indices(g):
+        """Extract original element indices stored during group preparation."""
+        # The group preparation stores dofs array; we need the original element
+        # indices. We store them during _prepare_rust_batch_data as 'orig_indices'.
+        return g.get("orig_indices", list(range(g["n_elem"])))
+
+    def _coo_to_petsc(
+        self, rows: np.ndarray, cols: np.ndarray, vals: np.ndarray
+    ) -> PETSc.Mat:
+        """Convert COO triplets to a PETSc sparse matrix via scipy CSR."""
+        from scipy.sparse import coo_matrix
+
+        n = self.dofs_count
+        csr = coo_matrix(
+            (vals, (rows.astype(np.int64), cols.astype(np.int64))),
+            shape=(n, n),
+        ).tocsr()
+
+        mat = PETSc.Mat().create(self.comm)
+        mat.createAIJ(
+            size=(n, n),
+            csr=(
+                csr.indptr.astype(PETSc.IntType),
+                csr.indices.astype(PETSc.IntType),
+                csr.data.astype(PETSc.ScalarType),
+            ),
+        )
+        mat.assemble()
+        return mat
+
     def _create_petsc_matrix(self) -> PETSc.Mat:
         """
         Create a PETSc sparse matrix with optimized memory preallocation.
@@ -280,7 +637,18 @@ class MeshAssembler:
         Performs parallel assembly using local element contributions.
         Matrix entries are accumulated using ADD_VALUES mode.
         Supports both uniform and mixed-element meshes.
+
+        When the Rust backend (``fem_shell_core``) is available and all
+        elements are covered, assembly uses COO triplets from Rust for
+        significantly faster sparse-matrix construction.
         """
+        # Rust fast-path: COO assembly from precomputed element matrices
+        if self._has_rust and self._all_elements_rust and not self._is_mixed_mesh:
+            ndof = self._dofs_array.shape[1]
+            ke_flat = np.ascontiguousarray(self._ke_array, dtype=np.float64).ravel()
+            rows, cols, vals = self._fsc.coo_assembly(self._dofs_array, ke_flat, ndof)
+            return self._coo_to_petsc(rows, cols, vals)
+
         K = self._create_petsc_matrix()
         K.setOption(PETSc.Mat.Option.NEW_NONZERO_ALLOCATION_ERR, False)
 
@@ -314,7 +682,17 @@ class MeshAssembler:
         Notes
         -----
         Supports both uniform and mixed-element meshes.
+
+        When the Rust backend is available the COO fast-path is used,
+        mirroring :meth:`assemble_stiffness_matrix`.
         """
+        # Rust fast-path: COO assembly from precomputed element matrices
+        if self._has_rust and self._all_elements_rust and not self._is_mixed_mesh:
+            ndof = self._dofs_array.shape[1]
+            me_flat = np.ascontiguousarray(self._me_array, dtype=np.float64).ravel()
+            rows, cols, vals = self._fsc.coo_assembly(self._dofs_array, me_flat, ndof)
+            return self._coo_to_petsc(rows, cols, vals)
+
         M = self._create_petsc_matrix()
         M.setOption(PETSc.Mat.Option.NEW_NONZERO_ALLOCATION_ERR, False)
 
@@ -506,7 +884,10 @@ class MeshAssembler:
             )
 
             # Get DOFs for this element
-            dofs = self._dofs_array[e].astype(PETSc.IntType)
+            if self._is_mixed_mesh:
+                dofs = self._dofs_list[e].astype(PETSc.IntType)
+            else:
+                dofs = self._dofs_array[e].astype(PETSc.IntType)
             kg_flat = kg_e.flatten(order="C")
 
             # Assemble into global matrix
@@ -514,3 +895,143 @@ class MeshAssembler:
 
         K_G.assemble()
         return K_G
+
+    # ------------------------------------------------------------------
+    # Nonlinear assembly (Rust-accelerated)
+    # ------------------------------------------------------------------
+
+    def assemble_tangent_stiffness(self, u: np.ndarray) -> PETSc.Mat:
+        """Assemble the global tangent stiffness matrix K_T(u).
+
+        Uses Rust batch computation (``fem_shell_core``) for parallel element
+        processing and COO sparse assembly.  This is the hot-path operation
+        in Newton-Raphson iterations.
+
+        Parameters
+        ----------
+        u : np.ndarray
+            Global displacement vector, shape ``(dofs_count,)``.
+
+        Returns
+        -------
+        PETSc.Mat
+            Assembled tangent stiffness matrix.
+
+        Raises
+        ------
+        RuntimeError
+            If the Rust backend is not available.
+        """
+        if not self._has_rust or not self._rust_groups:
+            raise RuntimeError(
+                "Rust backend (fem_shell_core) required for tangent stiffness assembly. "
+                "Install with: cd crates/fem_shell_core && maturin develop --release"
+            )
+
+        all_rows, all_cols, all_vals = [], [], []
+
+        for g in self._rust_groups:
+            # Gather per-element displacements from the global vector
+            u_local = np.ascontiguousarray(u[g["dofs"]], dtype=np.float64)
+
+            if g["etype"] == "MITC3":
+                kt_flat = self._fsc.batch_kt_mitc3(
+                    g["coords"],
+                    u_local,
+                    g["E"],
+                    g["nu"],
+                    g["thickness"],
+                    g["shear_correction"],
+                )
+            else:
+                kt_flat = self._fsc.batch_kt_mitc4(
+                    g["coords"],
+                    u_local,
+                    g["E"],
+                    g["nu"],
+                    g["thickness"],
+                    g["shear_correction"],
+                )
+
+            rows, cols, vals = self._fsc.coo_assembly(
+                g["dofs"], kt_flat, g["ndof"]
+            )
+            all_rows.append(rows)
+            all_cols.append(cols)
+            all_vals.append(vals)
+
+        return self._coo_to_petsc(
+            np.concatenate(all_rows),
+            np.concatenate(all_cols),
+            np.concatenate(all_vals),
+        )
+
+    def assemble_internal_forces(
+        self, u: np.ndarray, nonlinear: bool = True
+    ) -> PETSc.Vec:
+        """Assemble the global internal force vector f_int(u).
+
+        Uses Rust batch computation (``fem_shell_core``) for parallel element
+        processing.
+
+        Parameters
+        ----------
+        u : np.ndarray
+            Global displacement vector, shape ``(dofs_count,)``.
+        nonlinear : bool
+            If ``True``, include geometric-nonlinear (Green-Lagrange) strain
+            contributions.  Set to ``False`` for a linear f_int = K·u
+            equivalent.
+
+        Returns
+        -------
+        PETSc.Vec
+            Assembled internal force vector.
+
+        Raises
+        ------
+        RuntimeError
+            If the Rust backend is not available.
+        """
+        if not self._has_rust or not self._rust_groups:
+            raise RuntimeError(
+                "Rust backend (fem_shell_core) required for internal force assembly. "
+                "Install with: cd crates/fem_shell_core && maturin develop --release"
+            )
+
+        fint = np.zeros(self.dofs_count, dtype=np.float64)
+
+        for g in self._rust_groups:
+            u_local = np.ascontiguousarray(u[g["dofs"]], dtype=np.float64)
+
+            if g["etype"] == "MITC3":
+                fint_flat = self._fsc.batch_fint_mitc3(
+                    g["coords"],
+                    u_local,
+                    g["E"],
+                    g["nu"],
+                    g["thickness"],
+                    g["shear_correction"],
+                    nonlinear,
+                )
+                fint_local = fint_flat.reshape(-1, 18)
+            else:
+                fint_flat = self._fsc.batch_fint_mitc4(
+                    g["coords"],
+                    u_local,
+                    g["E"],
+                    g["nu"],
+                    g["thickness"],
+                    g["shear_correction"],
+                    nonlinear,
+                )
+                fint_local = fint_flat.reshape(-1, 24)
+
+            # Scatter into global vector (handles shared DOFs correctly)
+            np.add.at(fint, g["dofs"], fint_local)
+
+        vec = PETSc.Vec().create(self.comm)
+        vec.setSizes(self.dofs_count)
+        vec.setUp()
+        vec.setArray(fint)
+        return vec
