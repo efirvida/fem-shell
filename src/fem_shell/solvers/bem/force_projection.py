@@ -5,6 +5,7 @@ onto the finite-element mesh nodes, preserving the total integrated force
 and moment on each chordwise strip.
 """
 
+import logging
 from dataclasses import dataclass, field
 from typing import List
 
@@ -14,6 +15,8 @@ from scipy.linalg import lstsq
 from fem_shell.core.mesh.model import MeshModel
 from fem_shell.models.blade.aerodynamics import BladeAero
 from fem_shell.solvers.bem.engine import BEMResult
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -232,9 +235,26 @@ class ForceProjector:
                  Σ d_j × f_j   = M_strip        (3 eqs)
 
         via the pseudoinverse  f = Aᵀ (A Aᵀ)⁻¹ b.
+
+        **Single-node strips:** when *n* == 1 there is no moment arm, so
+        ``M_strip`` cannot be represented as a force couple.  Only
+        ``F_strip`` is applied; if ``M_strip`` is non-negligible a
+        ``WARNING`` is emitted advising to refine the mesh so that each
+        BEM strip spans at least two coupling nodes.
         """
         n = len(strip.node_indices)
         if n == 1:
+            # A single node has no moment arm — the aerodynamic pitching moment
+            # M_strip cannot be represented as a force couple.  Apply F_strip
+            # and warn once so that this situation is not silently ignored.
+            m_mag = float(np.linalg.norm(M_strip))
+            if m_mag > 1e-10:
+                logger.warning(
+                    "Strip with a single mesh node: aerodynamic pitching moment "
+                    "‖M_strip‖ = %.3e N·m cannot be distributed and is dropped. "
+                    "Refine the mesh so each BEM strip contains ≥ 2 nodes.",
+                    m_mag,
+                )
             return F_strip.reshape(1, 3)
 
         # Build constraint matrix A  (6 × 3n)

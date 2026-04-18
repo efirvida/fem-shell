@@ -306,7 +306,7 @@ elements:
 | Type | Class | Description |
 |------|-------|-------------|
 | `LinearStatic` | `LinearStaticSolver` | Static analysis |
-| `LinearDynamic` | `LinearDynamicSolver` | Transient dynamics (no coupling) |
+| `LinearDynamic` | `LinearDynamicSolver` | Transient dynamics (no coupling) — standalone, no preCICE |
 | `LinearDynamicFSI` | `LinearDynamicFSISolver` | FSI with preCICE coupling |
 | `LinearDynamicFSIRotor` | `LinearDynamicFSIRotorSolver` | FSI in rotating frame with inertial forces |
 
@@ -323,9 +323,9 @@ solver:
     beta: 0.25              # 0.25 = constant average acceleration (default)
     gamma: 0.5              # 0.5 = no numerical damping (default)
 
-  damping:                  # (O) Rayleigh damping
-    eta_m: 1.0e-4           # Mass proportional
-    eta_k: 1.0e-4           # Stiffness proportional
+  damping:                  # (O) Rayleigh damping  C = η_k·K + η_m·M
+    eta_m: 1.0e-4           # Mass proportional coefficient  [s⁻¹]
+    eta_k: 1.0e-4           # Stiffness proportional coefficient  [s]
 
   use_critical_dt: false    # (O) Auto-calculate critical ∆t from mesh
   safety_factor: 0.8        # (O) Multiplier for critical ∆t
@@ -521,6 +521,49 @@ postprocess:
 
 If `watchpoint_file` is omitted but preCICE config has `<watch-point>` entries,
 the runner auto-discovers watchpoint log files.
+
+---
+
+## Stress and Strain Post-Processing
+
+Stress and strain fields are computed by `StressRecovery` after the solve and
+written as VTU arrays in the output folder.  The following details are useful
+when interpreting results or extending the pipeline.
+
+### Voigt component layout
+
+All stress/strain arrays use the standard 6-component Voigt notation:
+
+| Index | Shell | Solid |
+|-------|-------|-------|
+| 0 | σ_xx | σ_xx |
+| 1 | σ_yy | σ_yy |
+| 2 | σ_zz = 0 (plane stress) | σ_zz |
+| 3 | τ_xy | τ_xy |
+| 4 | τ_yz = 0 | τ_yz |
+| 5 | τ_zx = 0 | τ_zx |
+
+Shell elements use a plane-stress constitutive model; components at indices 2,
+4, 5 are identically zero and are included only for layout consistency with
+solid elements.
+
+### Through-thickness location (shells)
+
+The `location` parameter controls the evaluation point on the shell thickness:
+
+| Value | z offset | Use case |
+|-------|----------|----------|
+| `MIDDLE` (default) | 0 | Membrane state |
+| `TOP` | +h/2 | Maximum bending stress (compression side) |
+| `BOTTOM` | −h/2 | Maximum bending stress (tension side) |
+
+### BEM force projection mesh requirements
+
+When using a BEM aerodynamic participant (`fem-shell-bem`), each BEM strip
+must contain **at least two** coupling-mesh nodes.  A strip with a single node
+cannot represent the aerodynamic pitching moment as a force couple; `M_strip` is
+dropped and a `WARNING` is emitted.  To suppress the warning, refine the mesh
+radially so that each BEM station spans at least two nodes.
 
 ---
 

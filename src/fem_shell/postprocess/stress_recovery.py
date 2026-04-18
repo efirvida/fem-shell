@@ -554,10 +554,20 @@ class StressRecovery:
         are extracted from the full solution vector ``self.u`` and
         concatenated into a local element displacement vector ``u_e``.
 
+        The global DOF vector is laid out with a uniform stride of
+        ``domain.dofs_per_node`` per node (the maximum across all element
+        families in the domain).  In a mixed-element mesh the assembler
+        places each element's DOFs in the **first** *element.dofs_per_node*
+        slots of the node's block, leaving any remaining slots unused.
+        This method replicates that convention when slicing ``self.u``.
+
         * Shell elements (6 DOF/node): u_e has length 6 × n_nodes
           [u₁, v₁, w₁, θx₁, θy₁, θz₁, u₂, …].
         * Solid elements (3 DOF/node): u_e has length 3 × n_nodes
           [u₁, v₁, w₁, u₂, v₂, w₂, …].
+        * Mixed mesh (e.g. MITC4 + HEXA8 in one domain): each element
+          type uses its own DOF count; solid nodes do not read the
+          rotational slots even though the global vector is 6-wide.
 
         Parameters
         ----------
@@ -566,14 +576,19 @@ class StressRecovery:
 
         Returns
         -------
-        np.ndarray, shape (n_dofs_elem,)
+        np.ndarray, shape (element.dofs_per_node × n_nodes,)
             Local displacement vector for the element.
         """
         elem_dofs: List[int] = []
         for node_id in element.node_ids:
             node_idx = self._node_id_to_index[node_id]
+            # The assembler always uses the global stride (domain.dofs_per_node)
+            # to place each node's block in the global vector, but solid elements
+            # only occupy the first 3 slots of a 6-DOF block in mixed meshes.
+            # Use the global stride for the base index but limit the range to
+            # the element's own DOF count to avoid reading phantom rotational DOFs.
             start = node_idx * self.dofs_per_node
-            elem_dofs.extend(range(start, start + self.dofs_per_node))
+            elem_dofs.extend(range(start, start + element.dofs_per_node))
         return self.u[elem_dofs]
 
     # ------------------------------------------------------------------
@@ -803,7 +818,11 @@ class StressRecovery:
 
             if self._is_shell(element):
                 sig3 = self._compute_shell_stress(element, u_elem, r0, s0, location, stress_type)
-                sigma_all[elem_idx, :3] = sig3
+                # Voigt layout: [σ_xx, σ_yy, σ_zz, τ_xy, τ_yz, τ_zx]
+                # Shells return [σ_xx, σ_yy, τ_xy] — map to columns 0, 1, 3
+                sigma_all[elem_idx, 0] = sig3[0]
+                sigma_all[elem_idx, 1] = sig3[1]
+                sigma_all[elem_idx, 3] = sig3[2]
 
             elif self._is_solid(element):
                 has_solid = True
@@ -885,7 +904,11 @@ class StressRecovery:
                 for local_idx, (r, s) in enumerate(node_coords):
                     sig3 = self._compute_shell_stress(element, u_elem, r, s, location, stress_type)
                     gn = self._node_id_to_index[element.node_ids[local_idx]]
-                    sigma_sum[gn, :3] += weight * sig3
+                    # Voigt layout: [σ_xx, σ_yy, σ_zz, τ_xy, τ_yz, τ_zx]
+                    # Shells return [σ_xx, σ_yy, τ_xy] — map to columns 0, 1, 3
+                    sigma_sum[gn, 0] += weight * sig3[0]
+                    sigma_sum[gn, 1] += weight * sig3[1]
+                    sigma_sum[gn, 3] += weight * sig3[2]
                     weight_sum[gn] += weight
 
             elif self._is_solid(element):
@@ -1069,7 +1092,11 @@ class StressRecovery:
 
             if self._is_shell(element):
                 eps3 = self._compute_shell_strain(element, u_elem, r0, s0, location)
-                eps_all[elem_idx, :3] = eps3
+                # Voigt layout: [ε_xx, ε_yy, ε_zz, γ_xy, γ_yz, γ_zx]
+                # Shells return [ε_xx, ε_yy, γ_xy] — map to columns 0, 1, 3
+                eps_all[elem_idx, 0] = eps3[0]
+                eps_all[elem_idx, 1] = eps3[1]
+                eps_all[elem_idx, 3] = eps3[2]
 
             elif self._is_solid(element):
                 has_solid = True
@@ -1127,7 +1154,11 @@ class StressRecovery:
                 for local_idx, (r, s) in enumerate(node_coords):
                     eps3 = self._compute_shell_strain(element, u_elem, r, s, location)
                     gn = self._node_id_to_index[element.node_ids[local_idx]]
-                    eps_sum[gn, :3] += weight * eps3
+                    # Voigt layout: [ε_xx, ε_yy, ε_zz, γ_xy, γ_yz, γ_zx]
+                    # Shells return [ε_xx, ε_yy, γ_xy] — map to columns 0, 1, 3
+                    eps_sum[gn, 0] += weight * eps3[0]
+                    eps_sum[gn, 1] += weight * eps3[1]
+                    eps_sum[gn, 3] += weight * eps3[2]
                     weight_sum[gn] += weight
 
             elif self._is_solid(element):

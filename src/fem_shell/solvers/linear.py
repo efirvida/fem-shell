@@ -552,10 +552,10 @@ class LinearDynamicSolver(Solver):
             self.time_history[t] = u_full.getArray().copy()
 
     def _create_damping_matrix(self, K: PETSc.Mat, M: PETSc.Mat) -> PETSc.Mat:
-        """Crea matriz de amortiguación Rayleigh"""
-        C = K.duplicate()
-        C.aypx(self.solver_params["eta_k"], M)
-        C.scale(self.solver_params["eta_m"])
+        """Crea matriz de amortiguación Rayleigh C = η_k·K + η_m·M."""
+        C = K.copy()
+        C.scale(self.solver_params["eta_k"])
+        C.axpy(self.solver_params["eta_m"], M)
         return C
 
     def _assemble_effective_matrix(

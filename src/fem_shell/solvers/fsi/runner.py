@@ -1109,6 +1109,11 @@ class FSIRunner:
 
             solver = LinearDynamicFSIRotorSolver(self.mesh, model_config)
 
+        elif solver_type == SolverType.STRESS_STIFFENED_DYNAMIC_FSI.value:
+            from .stress_stiffened_dynamic import StressStiffenedFSISolver
+
+            solver = StressStiffenedFSISolver(self.mesh, model_config)
+
         elif solver_type == SolverType.MODAL.value:
             from ..modal import ModalSolver
 

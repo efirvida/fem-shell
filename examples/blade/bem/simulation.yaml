@@ -39,6 +39,8 @@ bem:
   polar_source: "yaml"      # "yaml" polars (fallback: neuralfoil)
   neuralfoil_model: "large"
   default_re: 1.0e7
+  viterna_ar: 17.0                   # AR for cd_max = 1.11 + 0.13·AR (~3.32 at 90°)
+  viterna_confidence_threshold: 0.5  # NeuralFoil confidence cutoff for Viterna hand-off
   normal_direction: [1.0, 0.0, 0.0]       # Np → downwind (x)
   tangential_direction: [0.0, 1.0, 0.0]   # Tp → edgewise (y)
 

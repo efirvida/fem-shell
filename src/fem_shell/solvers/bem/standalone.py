@@ -75,8 +75,9 @@ class BEMStandaloneSolver:
         v_inf = self._bem_cfg.get("wind_speed", 45.0)
         omega = self._bem_cfg.get("omega", 0.0)
         pitch = self._bem_cfg.get("pitch", 0.0)
+        azimuth = self._bem_cfg.get("azimuth", 0.0)
 
-        self.bem_result = bem_solver.compute(v_inf, omega, pitch)
+        self.bem_result = bem_solver.compute(v_inf, omega, pitch, azimuth=azimuth)
 
         # 3. Force projection
         span_dir = self._cfg.get("elements", {}).get("span_direction", [0.0, 0.0, 1.0])

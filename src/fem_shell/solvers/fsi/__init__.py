@@ -15,6 +15,7 @@ __all__ = [
     # Solvers
     "LinearDynamicFSISolver",
     "LinearDynamicFSIRotorSolver",
+    "StressStiffenedFSISolver",
     # Co-rotational utilities
     "CoordinateTransforms",
     "InertialForcesCalculator",
@@ -45,6 +46,7 @@ _LAZY_IMPORTS = {
     # solvers
     "LinearDynamicFSISolver": ".linear_dynamic",
     "LinearDynamicFSIRotorSolver": ".rotor",
+    "StressStiffenedFSISolver": ".stress_stiffened_dynamic",
     # runner
     "FSIRunner": ".runner",
     "run_from_yaml": ".runner",

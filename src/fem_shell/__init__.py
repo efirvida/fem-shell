@@ -83,12 +83,14 @@ try:
         FSIRunner,
         LinearDynamicFSIRotorSolver,
         LinearDynamicFSISolver,
+        StressStiffenedFSISolver,
         run_from_yaml,
     )
 
     _fsi_names = [
         "LinearDynamicFSISolver",
         "LinearDynamicFSIRotorSolver",
+        "StressStiffenedFSISolver",
         "FSIRunner",
         "run_from_yaml",
     ]

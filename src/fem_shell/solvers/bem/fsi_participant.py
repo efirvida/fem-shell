@@ -249,6 +249,7 @@ class BEMFSIParticipant:
         * ``wind_speed``           – free-stream wind speed [m/s]
         * ``omega``                – rotor angular velocity [RPM]
         * ``pitch``                – collective pitch angle [deg]
+        * ``azimuth``              – blade azimuth angle [deg] (default 0)
         * ``air_density``          – ρ [kg/m³] (default 1.225)
         * ``dynamic_viscosity``    – μ [Pa·s]  (default 1.81e-5)
         * ``hub_height``           – hub centre height above ground [m]
@@ -758,12 +759,13 @@ class BEMFSIParticipant:
         v_inf = float(self._bem_cfg.get("wind_speed", 45.0))
         omega = float(self._bem_cfg.get("omega", 0.0))
         pitch = float(self._bem_cfg.get("pitch", 0.0))
+        azimuth = float(self._bem_cfg.get("azimuth", 0.0))
 
         disp_max = float(np.max(np.linalg.norm(displacements, axis=1)))
 
         if disp_max < 1e-12:
             # Zero displacement — use pre-built reference solver and projector
-            bem_result = self._bem_solver.compute(v_inf, omega, pitch)
+            bem_result = self._bem_solver.compute(v_inf, omega, pitch, azimuth=azimuth)
             forces = self._projector.project(bem_result)
             return forces, bem_result
 
@@ -774,7 +776,15 @@ class BEMFSIParticipant:
         deformed_coords = self._ref_coords + displacements
         projector = self._rebuild_projector(deformed_coords, deformed_aero)
 
-        bem_result = bem_solver.compute(v_inf, omega, pitch)
+        # Keep strip-to-node membership in sync with the deformed projector.
+        # _compute_deformed_geometry above used the previous membership; update
+        # it now so the next iteration operates on the re-binned assignments
+        # instead of the ones frozen at initialisation.
+        self._strip_node_indices = [
+            strip.node_indices.copy() for strip in projector._strips
+        ]
+
+        bem_result = bem_solver.compute(v_inf, omega, pitch, azimuth=azimuth)
         forces = projector.project(bem_result)
         return forces, bem_result
 

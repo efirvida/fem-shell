@@ -488,6 +488,53 @@ class LinearDynamicFSISolver(LinearDynamicSolver):
             K_eff.axpy(coeffs.a1, C_red)
         return K_eff
 
+    def _post_convergence_hook(
+        self,
+        u: "PETSc.Vec",
+        time_step: int,
+        K_eff: "PETSc.Mat",
+        K_red: "PETSc.Mat",
+        M_red: "PETSc.Mat",
+        C_red: "Optional[PETSc.Mat]",
+        coeffs: "NewmarkCoefficients",
+        bc_manager: "BoundaryConditionManager",
+    ) -> "Optional[PETSc.Mat]":
+        """Hook called after each converged time window.
+
+        Subclasses can override this method to rebuild the effective
+        stiffness matrix (e.g. with an updated geometric stiffness K_G
+        from the current deformed state).  Returning a NEW PETSc.Mat
+        object causes ``_solve_linear_system`` to automatically
+        refactorize on the next time window; returning ``None`` keeps
+        the current ``K_eff`` and reuses the existing factorization.
+
+        Parameters
+        ----------
+        u : PETSc.Vec
+            Reduced displacement vector at the newly converged time step.
+        time_step : int
+            Index of the converged time window (1-based).
+        K_eff : PETSc.Mat
+            Current effective stiffness matrix.
+        K_red : PETSc.Mat
+            Reduced elastic stiffness matrix (free DOFs only).
+        M_red : PETSc.Mat
+            Reduced mass matrix.
+        C_red : PETSc.Mat or None
+            Reduced Rayleigh damping matrix.
+        coeffs : NewmarkCoefficients
+            Current Newmark integration coefficients.
+        bc_manager : BoundaryConditionManager
+            Boundary condition manager (used to expand/reduce vectors).
+
+        Returns
+        -------
+        PETSc.Mat or None
+            A replacement K_eff (NEW object) to trigger refactorization,
+            or ``None`` to keep the current K_eff unchanged.
+        """
+        return None
+
     def _compute_effective_force(
         self,
         F_new_red: PETSc.Vec,
@@ -1076,7 +1123,9 @@ class LinearDynamicFSISolver(LinearDynamicSolver):
 
         t = self.solver_params.get("start_time", 0.0)
         step = 0
-        time_step = int(round(t / self.solver_params.get("time_step", 1.0)))
+        # time_step index is resolved after preCICE init (self.dt comes from
+        # the coupling time-window-size); placeholder 0 until then.
+        time_step = 0
 
         # =====================================================================
         # Phase 4: preCICE initialization
@@ -1131,6 +1180,9 @@ class LinearDynamicFSISolver(LinearDynamicSolver):
         self.precice_participant.initialize()
 
         self.dt = self.precice_participant.dt
+        # Now that dt is known from preCICE, resolve the initial step index
+        # (non-zero only on restarts where start_time > 0).
+        time_step = int(round(t / self.dt)) if self.dt and self.dt > 0 else 0
         K_red, F_red, M_red = bc_manager.reduced_system
         C_red = bc_manager.reduce_matrix(C) if C is not None else None
 
@@ -1518,6 +1570,8 @@ class LinearDynamicFSISolver(LinearDynamicSolver):
 
             F_new = self.F.copy()
             F_new.setValues(interface_dofs, data)
+            F_new.assemblyBegin()
+            F_new.assemblyEnd()
             F_new_red = bc_manager.reduce_vector(F_new)
 
             # ==================================================================
@@ -1565,6 +1619,22 @@ class LinearDynamicFSISolver(LinearDynamicSolver):
                 v_new = v + coeffs.a6 * a + coeffs.a7 * a_new
                 u, v, a = u_new, v_new, a_new
                 t += self.dt
+
+                # Allow subclasses (e.g. StressStiffenedFSISolver) to
+                # update K_eff with geometric stiffness from the current
+                # deformed state without requiring full NR iterations.
+                new_K_eff = self._post_convergence_hook(
+                    u=u,
+                    time_step=time_step,
+                    K_eff=K_eff,
+                    K_red=K_red,
+                    M_red=M_red,
+                    C_red=C_red,
+                    coeffs=coeffs,
+                    bc_manager=bc_manager,
+                )
+                if new_K_eff is not None:
+                    K_eff = new_K_eff
 
                 # Log final state after time window completion
                 max_disp = u.norm(PETSc.NormType.INFINITY)

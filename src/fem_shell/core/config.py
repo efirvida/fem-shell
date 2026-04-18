@@ -218,6 +218,7 @@ class SolverType(str, Enum):
     LINEAR_DYNAMIC = "LinearDynamic"
     LINEAR_DYNAMIC_FSI = "LinearDynamicFSI"
     LINEAR_DYNAMIC_FSI_ROTOR = "LinearDynamicFSIRotor"
+    STRESS_STIFFENED_DYNAMIC_FSI = "StressStiffenedDynamicFSI"
     MODAL = "Modal"
     BEM_STANDALONE = "BEMStandalone"
     BEM_FSI = "BEMFSI"

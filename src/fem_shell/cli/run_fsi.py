@@ -366,7 +366,11 @@ def validate_config(config_path: str) -> bool:
                 print(f"  ⚠️  {w}")
 
         # Cross-validate against preCICE XML if applicable
-        fsi_types = (SolverType.LINEAR_DYNAMIC_FSI.value, SolverType.LINEAR_DYNAMIC_FSI_ROTOR.value)
+        fsi_types = (
+            SolverType.LINEAR_DYNAMIC_FSI.value,
+            SolverType.LINEAR_DYNAMIC_FSI_ROTOR.value,
+            SolverType.STRESS_STIFFENED_DYNAMIC_FSI.value,
+        )
         if config.solver.type in fsi_types:
             precice_info = config.load_precice_config()
             if precice_info:

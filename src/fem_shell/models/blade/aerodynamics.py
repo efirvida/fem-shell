@@ -206,7 +206,8 @@ def _viterna_extrapolation(
         Polar tables spanning [-π, +π] at 1° resolution.
     """
     # Viterna empirical limit for maximum drag at 90°
-    cd_max = max(1.11 + 0.13 * ar, 1.11)  # Viterna eq. 8, capped at ~1.40 for large AR
+    # Viterna & Corrigan (1981) eq. 8: Cd_max = 1.11 + 0.018·AR
+    cd_max = max(1.11 + 0.018 * ar, 1.11)
 
     # Reference point: take the stall angle from the last attached-flow point
     # (last alpha before we switch to Viterna on each side)

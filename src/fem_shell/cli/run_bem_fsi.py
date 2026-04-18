@@ -94,6 +94,7 @@ bem:
   wind_speed: 10.59           # m/s
   omega: 7.56                 # rad/s (7.23 rpm for IEA-15)
   pitch: 0.0                  # deg
+    azimuth: 0.0                # deg (blade position around rotor disc)
   air_density: 1.225          # kg/m³
   dynamic_viscosity: 1.81e-5  # Pa·s
   hub_height: 150.0           # m

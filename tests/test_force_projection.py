@@ -3,8 +3,8 @@
 No external BEM dependencies required — uses synthetic BEM results and
 a simple rectangular mesh to verify:
 - Total force conservation: Σ f_nodes == F_BEM_integrated
-- Moment conservation per strip
-- Correct handling of single-node strips
+- Correct handling of single-node strips (M_strip is dropped; a WARNING
+  is emitted but force equilibrium is still preserved)
 """
 
 import numpy as np
