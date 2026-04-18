@@ -501,8 +501,18 @@ class BEMFSIParticipant:
         r_def = np.empty(n_strips)
         twist_def = np.empty(n_strips)
 
-        # Chord directions on the deformed configuration
+        # Chord directions on the deformed configuration.
+        # _compute_strip_chord_dirs resolves the SVD 180° sign ambiguity
+        # against self._normal_dir, but the blade chord is nearly
+        # perpendicular to the normal (flapwise) direction, so
+        # dot(chord_dir, normal_dir) ≈ 0 and the sign is numerical noise.
+        # Re-orient each deformed chord dir to be in the same hemisphere as
+        # its reference counterpart so that delta_twist = arctan2(sin,cos) is
+        # always small (elastic) rather than jumping to ±π.
         def_chord_dirs = self._compute_strip_chord_dirs(deformed_coords)
+        for k in range(n_strips):
+            if np.dot(def_chord_dirs[k], self._ref_chord_dirs[k]) < 0:
+                def_chord_dirs[k] = -def_chord_dirs[k]
 
         s = self._span_dir
         for k in range(n_strips):
