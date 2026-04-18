@@ -409,6 +409,8 @@ class BEMConfig:
     polar_source: str = "yaml"
     neuralfoil_model: str = "large"
     default_re: float = 1e7
+    viterna_ar: float = 17.0
+    viterna_confidence_threshold: float = 0.5
     normal_direction: List[float] = field(default_factory=lambda: [1.0, 0.0, 0.0])
     tangential_direction: List[float] = field(default_factory=lambda: [0.0, 1.0, 0.0])
 
