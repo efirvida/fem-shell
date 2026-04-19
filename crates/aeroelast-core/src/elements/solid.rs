@@ -9,6 +9,13 @@
 
 use nalgebra::{Matrix3, SMatrix};
 
+use crate::quadrature::{
+    GAUSS2_PTS as HEXA8_GP_IMPORT, TETRA4_GP, TETRA4_W, TETRA10_GP, TETRA10_W,
+    TRI3_XI, TRI3_ETA, TRI3_W, LIN2_ZETA, LIN2_W, WEDGE6_W,
+    WEDGE15_TRI_XI, WEDGE15_TRI_ETA, WEDGE15_TRI_W, WEDGE15_LIN_ZETA, WEDGE15_LIN_W,
+    PYRAMID5_GP, PYRAMID5_W, PYRAMID13_GP, PYRAMID13_W,
+};
+
 // ============================================================================
 // Type aliases
 // ============================================================================
@@ -142,16 +149,7 @@ const HEXA8_NODES: [[f64; 3]; 8] = [
 ];
 
 /// 2×2×2 Gauss rule for HEXA8.
-const GP: f64 = 0.577_350_269_189_625_8; // 1/sqrt(3)
-
-fn hexa8_gauss() -> ([[[f64; 3]; 2]; 2], [[[f64; 1]; 2]; 2]) {
-    // This is just a helper to iterate; we return raw inline below.
-    // Unused — inlined directly into compute functions.
-    (
-        [[[0.0; 3]; 2]; 2],
-        [[[0.0; 1]; 2]; 2],
-    )
-}
+const GP: f64 = 0.577_350_269_189_625_8; // 1/sqrt(3) — also available in crate::quadrature
 
 /// Trilinear shape functions for HEXA8.
 #[inline]
@@ -240,8 +238,8 @@ pub fn hexa8_me(coords: &[[f64; 3]; 8], rho: f64) -> MatH8 {
 // ============================================================================
 
 /// 1-point integration rule for TETRA4 (unit tetrahedron, volume 1/6).
-const TETRA4_GP: [f64; 3] = [0.25, 0.25, 0.25];
-const TETRA4_W: f64 = 1.0 / 6.0;
+// TETRA4_GP and TETRA4_W are imported from crate::quadrature above.
+
 
 /// Shape functions for TETRA4.
 /// Natural coords: ξ,η,ζ ∈ [0,1] with ξ+η+ζ ≤ 1.
@@ -305,15 +303,7 @@ pub fn tetra4_me(coords: &[[f64; 3]; 4], rho: f64) -> MatT4 {
 /// Triangular points: (1/6,1/6), (2/3,1/6), (1/6,2/3), each weight 1/6.
 /// Linear points: ±1/√3, each weight 1.0.
 /// Combined weight per point: tri_w × lin_w × 2 = 1/6 × 1.0 × 2 = 1/3.
-const TRI3_XI:  [f64; 3] = [1.0/6.0, 2.0/3.0, 1.0/6.0];
-const TRI3_ETA: [f64; 3] = [1.0/6.0, 1.0/6.0, 2.0/3.0];
-const TRI3_W:   f64 = 1.0/6.0;
-
-const LIN2_ZETA: [f64; 2] = [-GP, GP];
-const LIN2_W:    f64 = 1.0;
-
-/// Combined Gauss weight for WEDGE6: tri_w × lin_w × 2.
-const WEDGE6_W: f64 = TRI3_W * LIN2_W * 2.0;
+// TRI3_XI, TRI3_ETA, TRI3_W, LIN2_ZETA, LIN2_W, WEDGE6_W imported from crate::quadrature.
 
 /// Shape functions for WEDGE6.
 #[inline]
@@ -435,16 +425,8 @@ pub fn wedge6_me(coords: &[[f64; 3]; 6], rho: f64) -> MatW6 {
 /// (volume coordinates: L1 = 1−ξ−η−ζ, L2 = ξ, L3 = η, L4 = ζ)
 
 /// 4-point integration rule for TETRA10 (Keast degree-2 rule).
-/// Points: (a,a,a), (b,a,a), (a,b,a), (a,a,b) each with weight 1/24.
-const TETRA10_A: f64 = (5.0 - 2.2360679774997896_f64) / 20.0; // (5 - √5) / 20
-const TETRA10_B: f64 = (5.0 + 3.0 * 2.2360679774997896_f64) / 20.0; // (5 + 3√5) / 20
-const TETRA10_GP: [[f64; 3]; 4] = [
-    [TETRA10_A, TETRA10_A, TETRA10_A],
-    [TETRA10_B, TETRA10_A, TETRA10_A],
-    [TETRA10_A, TETRA10_B, TETRA10_A],
-    [TETRA10_A, TETRA10_A, TETRA10_B],
-];
-const TETRA10_W: f64 = 1.0 / 24.0;
+// TETRA10_GP and TETRA10_W are imported from crate::quadrature above.
+
 
 /// Quadratic tetrahedral shape functions.
 #[inline]
@@ -595,36 +577,9 @@ pub fn tetra10_me(coords: &[[f64; 3]; 10], rho: f64) -> MatT10 {
 /// Triangular points from Dunavant degree-5 rule, weights scaled for unit triangle (×0.5).
 /// Linear points: ±√(3/5), 0 with weights 5/9, 8/9, 5/9.
 /// Combined weight: tri_w × lin_w × 2 (factor 2 for ζ ∈ [−1,1]).
+// WEDGE15_TRI_XI, WEDGE15_TRI_ETA, WEDGE15_TRI_W, WEDGE15_LIN_ZETA, WEDGE15_LIN_W
+// imported from crate::quadrature.
 
-const WEDGE15_TRI_XI: [f64; 7] = [
-    1.0/3.0,
-    0.797_426_985_353_087,
-    0.101_286_507_323_456,
-    0.101_286_507_323_456,
-    0.470_142_064_105_115,
-    0.470_142_064_105_115,
-    0.059_715_871_789_770,
-];
-const WEDGE15_TRI_ETA: [f64; 7] = [
-    1.0/3.0,
-    0.101_286_507_323_456,
-    0.797_426_985_353_087,
-    0.101_286_507_323_456,
-    0.059_715_871_789_770,
-    0.470_142_064_105_115,
-    0.470_142_064_105_115,
-];
-const WEDGE15_TRI_W: [f64; 7] = [
-    0.225 * 0.5,
-    0.125_939_180_544_827 * 0.5,
-    0.125_939_180_544_827 * 0.5,
-    0.125_939_180_544_827 * 0.5,
-    0.132_394_152_788_506 * 0.5,
-    0.132_394_152_788_506 * 0.5,
-    0.132_394_152_788_506 * 0.5,
-];
-const WEDGE15_LIN_ZETA: [f64; 3] = [-0.774_596_669_241_483, 0.0, 0.774_596_669_241_483];
-const WEDGE15_LIN_W: [f64; 3] = [5.0/9.0, 8.0/9.0, 5.0/9.0];
 
 /// Shape functions for WEDGE15.
 #[inline]
@@ -810,26 +765,7 @@ pub fn wedge15_me(coords: &[[f64; 3]; 15], rho: f64) -> MatW15 {
 ///
 /// Reference: Felippa, C.A. (2004). "A compendium of FEM integration formulas
 /// for symbolic work," Engineering Computation, 21(8), 867-890.
-const PYRAMID5_GP: [[f64; 3]; 8] = [
-    [-0.263_184_055_569_713_60, -0.263_184_055_569_713_60, 0.544_151_844_011_225_29],
-    [ 0.263_184_055_569_713_60, -0.263_184_055_569_713_60, 0.544_151_844_011_225_29],
-    [ 0.263_184_055_569_713_60,  0.263_184_055_569_713_60, 0.544_151_844_011_225_29],
-    [-0.263_184_055_569_713_60,  0.263_184_055_569_713_60, 0.544_151_844_011_225_29],
-    [-0.506_616_303_349_787_42, -0.506_616_303_349_787_42, 0.122_514_822_655_441_38],
-    [ 0.506_616_303_349_787_42, -0.506_616_303_349_787_42, 0.122_514_822_655_441_38],
-    [ 0.506_616_303_349_787_42,  0.506_616_303_349_787_42, 0.122_514_822_655_441_38],
-    [-0.506_616_303_349_787_42,  0.506_616_303_349_787_42, 0.122_514_822_655_441_38],
-];
-const PYRAMID5_W: [f64; 8] = [
-    0.100_785_882_079_825_43,
-    0.100_785_882_079_825_43,
-    0.100_785_882_079_825_43,
-    0.100_785_882_079_825_43,
-    0.232_547_451_253_507_90,
-    0.232_547_451_253_507_90,
-    0.232_547_451_253_507_90,
-    0.232_547_451_253_507_90,
-];
+// PYRAMID5_GP and PYRAMID5_W imported from crate::quadrature.
 const PYRAMID5_EPS: f64 = 1e-14;
 
 /// Shape functions for PYRAMID5 (singularity-free formulation).
@@ -964,38 +900,8 @@ pub fn pyramid5_me(coords: &[[f64; 3]; 5], rho: f64) -> MatP5 {
 ///
 /// Reference: Felippa, C.A. (2004). "A compendium of FEM integration formulas
 /// for symbolic work," Engineering Computation, 21(8), 867-890.
-const PYRAMID13_GP: [[f64; 3]; 18] = [
-    // 9 points at ζ ≈ 0.544 (upper layer, near apex)
-    [-0.353_098_463_308_777_04, -0.353_098_463_308_777_04, 0.544_151_844_011_225_29],
-    [ 0.000_000_000_000_000_00, -0.353_098_463_308_777_04, 0.544_151_844_011_225_29],
-    [ 0.353_098_463_308_777_04, -0.353_098_463_308_777_04, 0.544_151_844_011_225_29],
-    [-0.353_098_463_308_777_04,  0.000_000_000_000_000_00, 0.544_151_844_011_225_29],
-    [ 0.000_000_000_000_000_00,  0.000_000_000_000_000_00, 0.544_151_844_011_225_29],
-    [ 0.353_098_463_308_777_04,  0.000_000_000_000_000_00, 0.544_151_844_011_225_29],
-    [-0.353_098_463_308_777_04,  0.353_098_463_308_777_04, 0.544_151_844_011_225_29],
-    [ 0.000_000_000_000_000_00,  0.353_098_463_308_777_04, 0.544_151_844_011_225_29],
-    [ 0.353_098_463_308_777_04,  0.353_098_463_308_777_04, 0.544_151_844_011_225_29],
-    // 9 points at ζ ≈ 0.122 (lower layer, near base)
-    [-0.679_697_095_679_867_46, -0.679_697_095_679_867_46, 0.122_514_822_655_441_38],
-    [ 0.000_000_000_000_000_00, -0.679_697_095_679_867_46, 0.122_514_822_655_441_38],
-    [ 0.679_697_095_679_867_46, -0.679_697_095_679_867_46, 0.122_514_822_655_441_38],
-    [-0.679_697_095_679_867_46,  0.000_000_000_000_000_00, 0.122_514_822_655_441_38],
-    [ 0.000_000_000_000_000_00,  0.000_000_000_000_000_00, 0.122_514_822_655_441_38],
-    [ 0.679_697_095_679_867_46,  0.000_000_000_000_000_00, 0.122_514_822_655_441_38],
-    [-0.679_697_095_679_867_46,  0.679_697_095_679_867_46, 0.122_514_822_655_441_38],
-    [ 0.000_000_000_000_000_00,  0.679_697_095_679_867_46, 0.122_514_822_655_441_38],
-    [ 0.679_697_095_679_867_46,  0.679_697_095_679_867_46, 0.122_514_822_655_441_38],
-];
-const PYRAMID13_W: [f64; 18] = [
-    // Upper layer
-    0.023_330_065_296_255_887, 0.037_328_104_474_009_419, 0.023_330_065_296_255_887,
-    0.037_328_104_474_009_419, 0.059_724_967_158_415_070, 0.037_328_104_474_009_419,
-    0.023_330_065_296_255_887, 0.037_328_104_474_009_419, 0.023_330_065_296_255_887,
-    // Lower layer
-    0.053_830_428_530_904_607, 0.086_128_685_649_447_371, 0.053_830_428_530_904_607,
-    0.086_128_685_649_447_371, 0.137_805_897_039_115_794, 0.086_128_685_649_447_371,
-    0.053_830_428_530_904_607, 0.086_128_685_649_447_371, 0.053_830_428_530_904_607,
-];
+// PYRAMID13_GP and PYRAMID13_W imported from crate::quadrature.
+
 
 /// Shape functions for PYRAMID13 (rational blending, Gmsh convention).
 ///
@@ -1225,9 +1131,12 @@ pub fn pyramid13_me(coords: &[[f64; 3]; 13], rho: f64) -> MatP13 {
 /// Natural coordinates: ξ, η, ζ ∈ [−1, 1]
 
 /// 3×3×3 Gauss quadrature for HEXA20.
+// SQRT35 and 3-pt 1D rule available via crate::quadrature::GAUSS3_PTS / GAUSS3_W.
+// Using local aliases below for the HEXA20 loops to keep code readable.
 const SQRT35: f64 = 0.774_596_669_241_483_4; // √(3/5)
 const HEXA20_GP1D: [f64; 3] = [-SQRT35, 0.0, SQRT35];
 const HEXA20_W1D:  [f64; 3] = [5.0/9.0, 8.0/9.0, 5.0/9.0];
+
 
 /// Natural coordinates of the 8 corner nodes of a hex.
 const HEX_CORNERS: [[f64; 3]; 8] = [
