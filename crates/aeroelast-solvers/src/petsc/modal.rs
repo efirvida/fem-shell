@@ -3,8 +3,9 @@
 /// Solves the generalized Hermitian eigenvalue problem: K·x = λ·M·x
 /// where K is stiffness and M is mass matrix (both assembled PETSc Mats).
 use super::assembler::create_vec;
-use super::ffi::{EPS_GHEP, EPS_TARGET_MAGNITUDE, PETSC_DEFAULT};
-use super::mat::{check, PetscError, PetscMat};
+use super::infra::ffi::{EPS_GHEP, EPS_TARGET_MAGNITUDE, PETSC_DEFAULT};
+use super::infra::mat::{check, PetscError, PetscMat};
+use super::infra::ffi as ffi;
 
 // C-string constants for KSP/PC/ST types
 const STSINVERT: &std::ffi::CStr =
@@ -49,10 +50,10 @@ pub fn modal_solve(
     crate::petsc::assembler::ensure_initialized()?;
 
     unsafe {
-        let comm = super::ffi::petsc_comm_self();
-        let mut eps: super::ffi::EPS = std::ptr::null_mut();
+        let comm = ffi::petsc_comm_self();
+        let mut eps: ffi::EPS = std::ptr::null_mut();
 
-        check(super::ffi::EPSCreate(comm, &mut eps), "EPSCreate")?;
+        check(ffi::EPSCreate(comm, &mut eps), "EPSCreate")?;
 
         // Determine matrix size for dimension clamping
         let mut k_rows: i32 = 0;
@@ -61,71 +62,71 @@ pub fn modal_solve(
 
         // Set K (operator A) and M (operator B) for K·x = λ·M·x
         check(
-            super::ffi::EPSSetOperators(eps, k.as_raw(), m.as_raw()),
+            ffi::EPSSetOperators(eps, k.as_raw(), m.as_raw()),
             "EPSSetOperators",
         )?;
 
         // Generalized Hermitian Eigenvalue Problem
         check(
-            super::ffi::EPSSetProblemType(eps, EPS_GHEP),
+            ffi::EPSSetProblemType(eps, EPS_GHEP),
             "EPSSetProblemType",
         )?;
 
         // Find smallest eigenvalues (closest to target 0)
         check(
-            super::ffi::EPSSetWhichEigenpairs(eps, EPS_TARGET_MAGNITUDE),
+            ffi::EPSSetWhichEigenpairs(eps, EPS_TARGET_MAGNITUDE),
             "EPSSetWhichEigenpairs",
         )?;
-        check(super::ffi::EPSSetTarget(eps, 0.0), "EPSSetTarget")?;
+        check(ffi::EPSSetTarget(eps, 0.0), "EPSSetTarget")?;
 
         // Configure ST: SINVERT with shift=0, KSP=preonly, PC=LU
         // SINVERT enables shift-and-invert: finds eigenvalues near target=0 efficiently.
         // PC=LU: direct factorization of (K - σ·M).
-        let mut st: super::ffi::ST = std::ptr::null_mut();
-        check(super::ffi::EPSGetST(eps, &mut st), "EPSGetST")?;
+        let mut st: ffi::ST = std::ptr::null_mut();
+        check(ffi::EPSGetST(eps, &mut st), "EPSGetST")?;
         check(
-            super::ffi::STSetType(st, STSINVERT.as_ptr()),
+            ffi::STSetType(st, STSINVERT.as_ptr()),
             "STSetType(sinvert)",
         )?;
-        check(super::ffi::STSetShift(st, 0.0), "STSetShift")?;
-        let mut ksp: super::ffi::KSP = std::ptr::null_mut();
-        check(super::ffi::STGetKSP(st, &mut ksp), "STGetKSP")?;
+        check(ffi::STSetShift(st, 0.0), "STSetShift")?;
+        let mut ksp: ffi::KSP = std::ptr::null_mut();
+        check(ffi::STGetKSP(st, &mut ksp), "STGetKSP")?;
         check(
-            super::ffi::KSPSetType(ksp, KSPPREONLY.as_ptr()),
+            ffi::KSPSetType(ksp, KSPPREONLY.as_ptr()),
             "KSPSetType(preonly)",
         )?;
-        let mut pc: super::ffi::PC = std::ptr::null_mut();
-        check(super::ffi::KSPGetPC(ksp, &mut pc), "KSPGetPC")?;
-        check(super::ffi::PCSetType(pc, PCLU.as_ptr()), "PCSetType(lu)")?;
+        let mut pc: ffi::PC = std::ptr::null_mut();
+        check(ffi::KSPGetPC(ksp, &mut pc), "KSPGetPC")?;
+        check(ffi::PCSetType(pc, PCLU.as_ptr()), "PCSetType(lu)")?;
         check(
-            super::ffi::PCFactorSetMatSolverType(pc, MATSOLVERPETSC.as_ptr()),
+            ffi::PCFactorSetMatSolverType(pc, MATSOLVERPETSC.as_ptr()),
             "PCFactorSetMatSolverType(petsc)",
         )?;
 
         // Request extra modes for better Krylov-Schur convergence (matches Python impl)
         let eff_n_modes = (n_modes + 5).min(k_rows as usize) as i32;
         check(
-            super::ffi::EPSSetDimensions(eps, eff_n_modes, PETSC_DEFAULT, PETSC_DEFAULT),
+            ffi::EPSSetDimensions(eps, eff_n_modes, PETSC_DEFAULT, PETSC_DEFAULT),
             "EPSSetDimensions",
         )?;
 
         // Set convergence tolerances (matches Python: tol=1e-10, max_it=1000)
         check(
-            super::ffi::EPSSetTolerances(eps, 1e-10, 1000),
+            ffi::EPSSetTolerances(eps, 1e-10, 1000),
             "EPSSetTolerances",
         )?;
 
         // Allow runtime override via -eps_* options
-        check(super::ffi::EPSSetFromOptions(eps), "EPSSetFromOptions")?;
+        check(ffi::EPSSetFromOptions(eps), "EPSSetFromOptions")?;
 
         // Setup and solve
-        check(super::ffi::EPSSetUp(eps), "EPSSetUp")?;
-        check(super::ffi::EPSSolve(eps), "EPSSolve")?;
+        check(ffi::EPSSetUp(eps), "EPSSetUp")?;
+        check(ffi::EPSSolve(eps), "EPSSolve")?;
 
         // Query converged count
         let mut nconv: i32 = 0;
         check(
-            super::ffi::EPSGetConverged(eps, &mut nconv),
+            ffi::EPSGetConverged(eps, &mut nconv),
             "EPSGetConverged",
         )?;
 
@@ -147,7 +148,7 @@ pub fn modal_solve(
             let mut ki: f64 = 0.0;
 
             check(
-                super::ffi::EPSGetEigenpair(eps, i, &mut kr, &mut ki, vr.as_raw(), vi.as_raw()),
+                ffi::EPSGetEigenpair(eps, i, &mut kr, &mut ki, vr.as_raw(), vi.as_raw()),
                 "EPSGetEigenpair",
             )?;
 
@@ -156,7 +157,7 @@ pub fn modal_solve(
         }
 
         // Cleanup EPS
-        check(super::ffi::EPSDestroy(&mut eps), "EPSDestroy")?;
+        check(ffi::EPSDestroy(&mut eps), "EPSDestroy")?;
 
         Ok(ModalResult {
             eigenvalues,
@@ -168,9 +169,9 @@ pub fn modal_solve(
 
 /// Query global row/col size of a PETSc Mat via MatGetSize.
 unsafe fn petsc_mat_get_size(
-    mat: super::ffi::Mat,
+    mat: ffi::Mat,
     m: *mut i32,
     n: *mut i32,
 ) -> Result<(), PetscError> {
-    check(super::ffi::MatGetSize(mat, m, n), "MatGetSize")
+    check(ffi::MatGetSize(mat, m, n), "MatGetSize")
 }
