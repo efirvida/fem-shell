@@ -64,6 +64,9 @@ __pypackages__/
 # Ruff stuff:
 .ruff_cache/
 
+# Rust build artifacts
+crates/target/
+
 # OpenFOAM ignore
 ### Resultados de OpenFOAM (incluyendo sub-subdirectorios) ###
 # Todos los directorios de tiempo en cualquier nivel

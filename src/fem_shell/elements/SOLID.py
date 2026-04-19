@@ -43,6 +43,12 @@ from fem_shell.elements.elements import ElementFamily, FemElement
 
 MaterialType = Union[IsotropicMaterial, OrthotropicMaterial]
 
+try:
+    import fem_shell_core as _fsc
+    _RUST_AVAILABLE = True
+except ImportError:
+    _RUST_AVAILABLE = False
+
 
 class SolidElement(FemElement):
     """Base class for 3D solid volumetric elements.
@@ -828,6 +834,22 @@ class WEDGE6(SolidElement):
 
         return dN_dxi, dN_deta, dN_dzeta
 
+    @cached_property
+    def K(self) -> np.ndarray:
+        if _RUST_AVAILABLE and isinstance(self.material, IsotropicMaterial) and self.orientation is None:
+            coords = self.node_coords[:, :3].astype(np.float64).flatten()[np.newaxis, :]
+            flat = _fsc.batch_ke_wedge6(coords, self.material.E, self.material.nu)
+            return flat.reshape(18, 18)
+        return super().K
+
+    @cached_property
+    def M(self) -> np.ndarray:
+        if _RUST_AVAILABLE and isinstance(self.material, IsotropicMaterial) and self.orientation is None:
+            coords = self.node_coords[:, :3].astype(np.float64).flatten()[np.newaxis, :]
+            flat = _fsc.batch_me_wedge6(coords, self.material.rho)
+            return flat.reshape(18, 18)
+        return super().M
+
 
 class WEDGE15(SolidElement):
     """15-node quadratic wedge/prism element.
@@ -1596,6 +1618,22 @@ class TETRA4(SolidElement):
         dN_dzeta = np.array([-1, 0, 0, 1])
         return dN_dxi, dN_deta, dN_dzeta
 
+    @cached_property
+    def K(self) -> np.ndarray:
+        if _RUST_AVAILABLE and isinstance(self.material, IsotropicMaterial) and self.orientation is None:
+            coords = self.node_coords[:, :3].astype(np.float64).flatten()[np.newaxis, :]
+            flat = _fsc.batch_ke_tetra4(coords, self.material.E, self.material.nu)
+            return flat.reshape(12, 12)
+        return super().K
+
+    @cached_property
+    def M(self) -> np.ndarray:
+        if _RUST_AVAILABLE and isinstance(self.material, IsotropicMaterial) and self.orientation is None:
+            coords = self.node_coords[:, :3].astype(np.float64).flatten()[np.newaxis, :]
+            flat = _fsc.batch_me_tetra4(coords, self.material.rho)
+            return flat.reshape(12, 12)
+        return super().M
+
 
 class TETRA10(SolidElement):
     r"""10-node quadratic tetrahedron element.
@@ -1816,6 +1854,22 @@ class HEXA8(SolidElement):
         ])
 
         return dN_dxi, dN_deta, dN_dzeta
+
+    @cached_property
+    def K(self) -> np.ndarray:
+        if _RUST_AVAILABLE and isinstance(self.material, IsotropicMaterial) and self.orientation is None:
+            coords = self.node_coords[:, :3].astype(np.float64).flatten()[np.newaxis, :]
+            flat = _fsc.batch_ke_hexa8(coords, self.material.E, self.material.nu)
+            return flat.reshape(24, 24)
+        return super().K
+
+    @cached_property
+    def M(self) -> np.ndarray:
+        if _RUST_AVAILABLE and isinstance(self.material, IsotropicMaterial) and self.orientation is None:
+            coords = self.node_coords[:, :3].astype(np.float64).flatten()[np.newaxis, :]
+            flat = _fsc.batch_me_hexa8(coords, self.material.rho)
+            return flat.reshape(24, 24)
+        return super().M
 
 
 class HEXA20(SolidElement):

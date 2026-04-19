@@ -1,5 +1,7 @@
 pub mod mitc3;
 pub mod mitc4;
+pub mod quad;
+pub mod solid;
 
 /// Result of a batch element computation.
 pub struct BatchResult {

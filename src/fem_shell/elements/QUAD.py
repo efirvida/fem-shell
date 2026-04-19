@@ -29,6 +29,12 @@ import numpy as np
 from fem_shell.core.material import IsotropicMaterial
 from fem_shell.elements.elements import PlaneElement
 
+try:
+    import fem_shell_core as _fsc
+    _RUST_AVAILABLE = True
+except ImportError:
+    _RUST_AVAILABLE = False
+
 
 class QUAD(PlaneElement):
     """Base class for quadrilateral elements
@@ -316,6 +322,22 @@ class QUAD4(QUAD):
 
         return dN_dxi, dN_deta
 
+    @cached_property
+    def K(self) -> np.ndarray:
+        if _RUST_AVAILABLE:
+            coords = self.node_coords[:, :2].astype(np.float64).flatten()[np.newaxis, :]
+            flat = _fsc.batch_ke_quad4(coords, self.material.E, self.material.nu)
+            return flat.reshape(8, 8)
+        return super().K
+
+    @cached_property
+    def M(self) -> np.ndarray:
+        if _RUST_AVAILABLE:
+            coords = self.node_coords[:, :2].astype(np.float64).flatten()[np.newaxis, :]
+            flat = _fsc.batch_me_quad4(coords, self.material.rho)
+            return flat.reshape(8, 8)
+        return super().M
+
 
 class QUAD8(QUAD):
     """8-node Serendipity Element
@@ -410,6 +432,22 @@ class QUAD8(QUAD):
 
         return dN_dxi, dN_deta
 
+    @cached_property
+    def K(self) -> np.ndarray:
+        if _RUST_AVAILABLE:
+            coords = self.node_coords[:, :2].astype(np.float64).flatten()[np.newaxis, :]
+            flat = _fsc.batch_ke_quad8(coords, self.material.E, self.material.nu)
+            return flat.reshape(16, 16)
+        return super().K
+
+    @cached_property
+    def M(self) -> np.ndarray:
+        if _RUST_AVAILABLE:
+            coords = self.node_coords[:, :2].astype(np.float64).flatten()[np.newaxis, :]
+            flat = _fsc.batch_me_quad8(coords, self.material.rho)
+            return flat.reshape(16, 16)
+        return super().M
+
 
 class QUAD9(QUAD):
     """9-node Lagrange Element
@@ -474,8 +512,24 @@ class QUAD9(QUAD):
                 -xi * (xi + 1) * eta,  # N5
                 0.5 * (1 - xi**2) * (2 * eta + 1),  # N6
                 -xi * (xi - 1) * eta,  # N7
-                -2 * eta * (1 - xi**2),  # N8
+                 -2 * eta * (1 - xi**2),  # N8
             ]
         )
 
         return dN_dxi, dN_deta
+
+    @cached_property
+    def K(self) -> np.ndarray:
+        if _RUST_AVAILABLE:
+            coords = self.node_coords[:, :2].astype(np.float64).flatten()[np.newaxis, :]
+            flat = _fsc.batch_ke_quad9(coords, self.material.E, self.material.nu)
+            return flat.reshape(18, 18)
+        return super().K
+
+    @cached_property
+    def M(self) -> np.ndarray:
+        if _RUST_AVAILABLE:
+            coords = self.node_coords[:, :2].astype(np.float64).flatten()[np.newaxis, :]
+            flat = _fsc.batch_me_quad9(coords, self.material.rho)
+            return flat.reshape(18, 18)
+        return super().M
