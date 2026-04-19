@@ -1370,6 +1370,335 @@ fn batch_me_wedge6<'py>(
 }
 
 // ============================================================================
+// Higher-order solid element batch functions
+// ============================================================================
+
+/// Batch-compute TETRA10 element stiffness matrices.
+///
+/// coords: shape (n_elem, 30) — each row: 10 nodes × [x, y, z]
+/// Returns flat array (n_elem × 900).
+#[pyfunction]
+fn batch_ke_tetra10<'py>(
+    py: Python<'py>,
+    coords: PyReadonlyArray2<'py, f64>,
+    e: f64,
+    nu: f64,
+) -> Bound<'py, PyArray1<f64>> {
+    let arr = coords.as_array();
+    let n_elem = arr.nrows();
+    let results: Vec<[f64; 900]> = (0..n_elem)
+        .into_par_iter()
+        .map(|i| {
+            let mut c = [[0.0f64; 3]; 10];
+            for n in 0..10 {
+                c[n][0] = arr[[i, 3 * n]];
+                c[n][1] = arr[[i, 3 * n + 1]];
+                c[n][2] = arr[[i, 3 * n + 2]];
+            }
+            let ke = solid::tetra10_ke(&c, e, nu);
+            let mut flat = [0.0f64; 900];
+            for r in 0..30 { for col in 0..30 { flat[r * 30 + col] = ke[(r, col)]; } }
+            flat
+        })
+        .collect();
+    let mut out = Vec::with_capacity(n_elem * 900);
+    for f in &results { out.extend_from_slice(f); }
+    Array1::from(out).into_pyarray(py)
+}
+
+/// Batch-compute TETRA10 consistent mass matrices.
+///
+/// coords: shape (n_elem, 30), rho: density
+/// Returns flat array (n_elem × 900).
+#[pyfunction]
+fn batch_me_tetra10<'py>(
+    py: Python<'py>,
+    coords: PyReadonlyArray2<'py, f64>,
+    rho: f64,
+) -> Bound<'py, PyArray1<f64>> {
+    let arr = coords.as_array();
+    let n_elem = arr.nrows();
+    let results: Vec<[f64; 900]> = (0..n_elem)
+        .into_par_iter()
+        .map(|i| {
+            let mut c = [[0.0f64; 3]; 10];
+            for n in 0..10 {
+                c[n][0] = arr[[i, 3 * n]];
+                c[n][1] = arr[[i, 3 * n + 1]];
+                c[n][2] = arr[[i, 3 * n + 2]];
+            }
+            let me = solid::tetra10_me(&c, rho);
+            let mut flat = [0.0f64; 900];
+            for r in 0..30 { for col in 0..30 { flat[r * 30 + col] = me[(r, col)]; } }
+            flat
+        })
+        .collect();
+    let mut out = Vec::with_capacity(n_elem * 900);
+    for f in &results { out.extend_from_slice(f); }
+    Array1::from(out).into_pyarray(py)
+}
+
+/// Batch-compute WEDGE15 element stiffness matrices.
+///
+/// coords: shape (n_elem, 45) — each row: 15 nodes × [x, y, z]
+/// Returns flat array (n_elem × 2025).
+#[pyfunction]
+fn batch_ke_wedge15<'py>(
+    py: Python<'py>,
+    coords: PyReadonlyArray2<'py, f64>,
+    e: f64,
+    nu: f64,
+) -> Bound<'py, PyArray1<f64>> {
+    let arr = coords.as_array();
+    let n_elem = arr.nrows();
+    let results: Vec<[f64; 2025]> = (0..n_elem)
+        .into_par_iter()
+        .map(|i| {
+            let mut c = [[0.0f64; 3]; 15];
+            for n in 0..15 {
+                c[n][0] = arr[[i, 3 * n]];
+                c[n][1] = arr[[i, 3 * n + 1]];
+                c[n][2] = arr[[i, 3 * n + 2]];
+            }
+            let ke = solid::wedge15_ke(&c, e, nu);
+            let mut flat = [0.0f64; 2025];
+            for r in 0..45 { for col in 0..45 { flat[r * 45 + col] = ke[(r, col)]; } }
+            flat
+        })
+        .collect();
+    let mut out = Vec::with_capacity(n_elem * 2025);
+    for f in &results { out.extend_from_slice(f); }
+    Array1::from(out).into_pyarray(py)
+}
+
+/// Batch-compute WEDGE15 consistent mass matrices.
+///
+/// coords: shape (n_elem, 45), rho: density
+/// Returns flat array (n_elem × 2025).
+#[pyfunction]
+fn batch_me_wedge15<'py>(
+    py: Python<'py>,
+    coords: PyReadonlyArray2<'py, f64>,
+    rho: f64,
+) -> Bound<'py, PyArray1<f64>> {
+    let arr = coords.as_array();
+    let n_elem = arr.nrows();
+    let results: Vec<[f64; 2025]> = (0..n_elem)
+        .into_par_iter()
+        .map(|i| {
+            let mut c = [[0.0f64; 3]; 15];
+            for n in 0..15 {
+                c[n][0] = arr[[i, 3 * n]];
+                c[n][1] = arr[[i, 3 * n + 1]];
+                c[n][2] = arr[[i, 3 * n + 2]];
+            }
+            let me = solid::wedge15_me(&c, rho);
+            let mut flat = [0.0f64; 2025];
+            for r in 0..45 { for col in 0..45 { flat[r * 45 + col] = me[(r, col)]; } }
+            flat
+        })
+        .collect();
+    let mut out = Vec::with_capacity(n_elem * 2025);
+    for f in &results { out.extend_from_slice(f); }
+    Array1::from(out).into_pyarray(py)
+}
+
+/// Batch-compute HEXA20 element stiffness matrices.
+///
+/// coords: shape (n_elem, 60) — each row: 20 nodes × [x, y, z]
+/// Returns flat array (n_elem × 3600).
+#[pyfunction]
+fn batch_ke_hexa20<'py>(
+    py: Python<'py>,
+    coords: PyReadonlyArray2<'py, f64>,
+    e: f64,
+    nu: f64,
+) -> Bound<'py, PyArray1<f64>> {
+    let arr = coords.as_array();
+    let n_elem = arr.nrows();
+    let results: Vec<[f64; 3600]> = (0..n_elem)
+        .into_par_iter()
+        .map(|i| {
+            let mut c = [[0.0f64; 3]; 20];
+            for n in 0..20 {
+                c[n][0] = arr[[i, 3 * n]];
+                c[n][1] = arr[[i, 3 * n + 1]];
+                c[n][2] = arr[[i, 3 * n + 2]];
+            }
+            let ke = solid::hexa20_ke(&c, e, nu);
+            let mut flat = [0.0f64; 3600];
+            for r in 0..60 { for col in 0..60 { flat[r * 60 + col] = ke[(r, col)]; } }
+            flat
+        })
+        .collect();
+    let mut out = Vec::with_capacity(n_elem * 3600);
+    for f in &results { out.extend_from_slice(f); }
+    Array1::from(out).into_pyarray(py)
+}
+
+/// Batch-compute HEXA20 consistent mass matrices.
+///
+/// coords: shape (n_elem, 60), rho: density
+/// Returns flat array (n_elem × 3600).
+#[pyfunction]
+fn batch_me_hexa20<'py>(
+    py: Python<'py>,
+    coords: PyReadonlyArray2<'py, f64>,
+    rho: f64,
+) -> Bound<'py, PyArray1<f64>> {
+    let arr = coords.as_array();
+    let n_elem = arr.nrows();
+    let results: Vec<[f64; 3600]> = (0..n_elem)
+        .into_par_iter()
+        .map(|i| {
+            let mut c = [[0.0f64; 3]; 20];
+            for n in 0..20 {
+                c[n][0] = arr[[i, 3 * n]];
+                c[n][1] = arr[[i, 3 * n + 1]];
+                c[n][2] = arr[[i, 3 * n + 2]];
+            }
+            let me = solid::hexa20_me(&c, rho);
+            let mut flat = [0.0f64; 3600];
+            for r in 0..60 { for col in 0..60 { flat[r * 60 + col] = me[(r, col)]; } }
+            flat
+        })
+        .collect();
+    let mut out = Vec::with_capacity(n_elem * 3600);
+    for f in &results { out.extend_from_slice(f); }
+    Array1::from(out).into_pyarray(py)
+}
+
+/// Batch-compute PYRAMID5 element stiffness matrices.
+///
+/// coords: shape (n_elem, 15) — each row: 5 nodes × [x, y, z]
+/// Returns flat array (n_elem × 225).
+#[pyfunction]
+fn batch_ke_pyramid5<'py>(
+    py: Python<'py>,
+    coords: PyReadonlyArray2<'py, f64>,
+    e: f64,
+    nu: f64,
+) -> Bound<'py, PyArray1<f64>> {
+    let arr = coords.as_array();
+    let n_elem = arr.nrows();
+    let results: Vec<[f64; 225]> = (0..n_elem)
+        .into_par_iter()
+        .map(|i| {
+            let mut c = [[0.0f64; 3]; 5];
+            for n in 0..5 {
+                c[n][0] = arr[[i, 3 * n]];
+                c[n][1] = arr[[i, 3 * n + 1]];
+                c[n][2] = arr[[i, 3 * n + 2]];
+            }
+            let ke = solid::pyramid5_ke(&c, e, nu);
+            let mut flat = [0.0f64; 225];
+            for r in 0..15 { for col in 0..15 { flat[r * 15 + col] = ke[(r, col)]; } }
+            flat
+        })
+        .collect();
+    let mut out = Vec::with_capacity(n_elem * 225);
+    for f in &results { out.extend_from_slice(f); }
+    Array1::from(out).into_pyarray(py)
+}
+
+/// Batch-compute PYRAMID5 consistent mass matrices.
+///
+/// coords: shape (n_elem, 15), rho: density
+/// Returns flat array (n_elem × 225).
+#[pyfunction]
+fn batch_me_pyramid5<'py>(
+    py: Python<'py>,
+    coords: PyReadonlyArray2<'py, f64>,
+    rho: f64,
+) -> Bound<'py, PyArray1<f64>> {
+    let arr = coords.as_array();
+    let n_elem = arr.nrows();
+    let results: Vec<[f64; 225]> = (0..n_elem)
+        .into_par_iter()
+        .map(|i| {
+            let mut c = [[0.0f64; 3]; 5];
+            for n in 0..5 {
+                c[n][0] = arr[[i, 3 * n]];
+                c[n][1] = arr[[i, 3 * n + 1]];
+                c[n][2] = arr[[i, 3 * n + 2]];
+            }
+            let me = solid::pyramid5_me(&c, rho);
+            let mut flat = [0.0f64; 225];
+            for r in 0..15 { for col in 0..15 { flat[r * 15 + col] = me[(r, col)]; } }
+            flat
+        })
+        .collect();
+    let mut out = Vec::with_capacity(n_elem * 225);
+    for f in &results { out.extend_from_slice(f); }
+    Array1::from(out).into_pyarray(py)
+}
+
+/// Batch-compute PYRAMID13 element stiffness matrices.
+///
+/// coords: shape (n_elem, 39) — each row: 13 nodes × [x, y, z]
+/// Returns flat array (n_elem × 1521).
+#[pyfunction]
+fn batch_ke_pyramid13<'py>(
+    py: Python<'py>,
+    coords: PyReadonlyArray2<'py, f64>,
+    e: f64,
+    nu: f64,
+) -> Bound<'py, PyArray1<f64>> {
+    let arr = coords.as_array();
+    let n_elem = arr.nrows();
+    let results: Vec<[f64; 1521]> = (0..n_elem)
+        .into_par_iter()
+        .map(|i| {
+            let mut c = [[0.0f64; 3]; 13];
+            for n in 0..13 {
+                c[n][0] = arr[[i, 3 * n]];
+                c[n][1] = arr[[i, 3 * n + 1]];
+                c[n][2] = arr[[i, 3 * n + 2]];
+            }
+            let ke = solid::pyramid13_ke(&c, e, nu);
+            let mut flat = [0.0f64; 1521];
+            for r in 0..39 { for col in 0..39 { flat[r * 39 + col] = ke[(r, col)]; } }
+            flat
+        })
+        .collect();
+    let mut out = Vec::with_capacity(n_elem * 1521);
+    for f in &results { out.extend_from_slice(f); }
+    Array1::from(out).into_pyarray(py)
+}
+
+/// Batch-compute PYRAMID13 consistent mass matrices.
+///
+/// coords: shape (n_elem, 39), rho: density
+/// Returns flat array (n_elem × 1521).
+#[pyfunction]
+fn batch_me_pyramid13<'py>(
+    py: Python<'py>,
+    coords: PyReadonlyArray2<'py, f64>,
+    rho: f64,
+) -> Bound<'py, PyArray1<f64>> {
+    let arr = coords.as_array();
+    let n_elem = arr.nrows();
+    let results: Vec<[f64; 1521]> = (0..n_elem)
+        .into_par_iter()
+        .map(|i| {
+            let mut c = [[0.0f64; 3]; 13];
+            for n in 0..13 {
+                c[n][0] = arr[[i, 3 * n]];
+                c[n][1] = arr[[i, 3 * n + 1]];
+                c[n][2] = arr[[i, 3 * n + 2]];
+            }
+            let me = solid::pyramid13_me(&c, rho);
+            let mut flat = [0.0f64; 1521];
+            for r in 0..39 { for col in 0..39 { flat[r * 39 + col] = me[(r, col)]; } }
+            flat
+        })
+        .collect();
+    let mut out = Vec::with_capacity(n_elem * 1521);
+    for f in &results { out.extend_from_slice(f); }
+    Array1::from(out).into_pyarray(py)
+}
+
+// ============================================================================
 // QUAD plane element batch functions
 // ============================================================================
 
@@ -1588,6 +1917,16 @@ pub fn register_module(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(batch_me_tetra4, m)?)?;
     m.add_function(wrap_pyfunction!(batch_ke_wedge6, m)?)?;
     m.add_function(wrap_pyfunction!(batch_me_wedge6, m)?)?;
+    m.add_function(wrap_pyfunction!(batch_ke_tetra10, m)?)?;
+    m.add_function(wrap_pyfunction!(batch_me_tetra10, m)?)?;
+    m.add_function(wrap_pyfunction!(batch_ke_wedge15, m)?)?;
+    m.add_function(wrap_pyfunction!(batch_me_wedge15, m)?)?;
+    m.add_function(wrap_pyfunction!(batch_ke_hexa20, m)?)?;
+    m.add_function(wrap_pyfunction!(batch_me_hexa20, m)?)?;
+    m.add_function(wrap_pyfunction!(batch_ke_pyramid5, m)?)?;
+    m.add_function(wrap_pyfunction!(batch_me_pyramid5, m)?)?;
+    m.add_function(wrap_pyfunction!(batch_ke_pyramid13, m)?)?;
+    m.add_function(wrap_pyfunction!(batch_me_pyramid13, m)?)?;
     m.add_function(wrap_pyfunction!(batch_ke_quad4, m)?)?;
     m.add_function(wrap_pyfunction!(batch_me_quad4, m)?)?;
     m.add_function(wrap_pyfunction!(batch_ke_quad8, m)?)?;

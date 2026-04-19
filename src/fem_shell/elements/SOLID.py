@@ -899,6 +899,22 @@ class WEDGE15(SolidElement):
             raise ValueError(f"WEDGE15 requires 15 nodes, got {len(node_ids)}")
         super().__init__("WEDGE15", node_coords, node_ids, material, orientation)
 
+    @cached_property
+    def K(self) -> np.ndarray:
+        if _RUST_AVAILABLE and isinstance(self.material, IsotropicMaterial) and self.orientation is None:
+            coords = self.node_coords[:, :3].astype(np.float64).flatten()[np.newaxis, :]
+            flat = _fsc.batch_ke_wedge15(coords, self.material.E, self.material.nu)
+            return flat.reshape(45, 45)
+        return super().K
+
+    @cached_property
+    def M(self) -> np.ndarray:
+        if _RUST_AVAILABLE and isinstance(self.material, IsotropicMaterial) and self.orientation is None:
+            coords = self.node_coords[:, :3].astype(np.float64).flatten()[np.newaxis, :]
+            flat = _fsc.batch_me_wedge15(coords, self.material.rho)
+            return flat.reshape(45, 45)
+        return super().M
+
     @property
     def integration_points(self) -> Tuple[np.ndarray, np.ndarray]:
         """3-point triangular × 3-point linear Gauss rule (21 points)."""
@@ -1117,6 +1133,22 @@ class PYRAMID5(SolidElement):
             raise ValueError(f"PYRAMID5 requires 5 nodes, got {len(node_ids)}")
         super().__init__("PYRAMID5", node_coords, node_ids, material, orientation)
 
+    @cached_property
+    def K(self) -> np.ndarray:
+        if _RUST_AVAILABLE and isinstance(self.material, IsotropicMaterial) and self.orientation is None:
+            coords = self.node_coords[:, :3].astype(np.float64).flatten()[np.newaxis, :]
+            flat = _fsc.batch_ke_pyramid5(coords, self.material.E, self.material.nu)
+            return flat.reshape(15, 15)
+        return super().K
+
+    @cached_property
+    def M(self) -> np.ndarray:
+        if _RUST_AVAILABLE and isinstance(self.material, IsotropicMaterial) and self.orientation is None:
+            coords = self.node_coords[:, :3].astype(np.float64).flatten()[np.newaxis, :]
+            flat = _fsc.batch_me_pyramid5(coords, self.material.rho)
+            return flat.reshape(15, 15)
+        return super().M
+
     @property
     def integration_points(self) -> Tuple[np.ndarray, np.ndarray]:
         """8-point Felippa integration rule for pyramid (precision 3).
@@ -1289,6 +1321,22 @@ class PYRAMID13(SolidElement):
         if len(node_ids) != 13:
             raise ValueError(f"PYRAMID13 requires 13 nodes, got {len(node_ids)}")
         super().__init__("PYRAMID13", node_coords, node_ids, material, orientation)
+
+    @cached_property
+    def K(self) -> np.ndarray:
+        if _RUST_AVAILABLE and isinstance(self.material, IsotropicMaterial) and self.orientation is None:
+            coords = self.node_coords[:, :3].astype(np.float64).flatten()[np.newaxis, :]
+            flat = _fsc.batch_ke_pyramid13(coords, self.material.E, self.material.nu)
+            return flat.reshape(39, 39)
+        return super().K
+
+    @cached_property
+    def M(self) -> np.ndarray:
+        if _RUST_AVAILABLE and isinstance(self.material, IsotropicMaterial) and self.orientation is None:
+            coords = self.node_coords[:, :3].astype(np.float64).flatten()[np.newaxis, :]
+            flat = _fsc.batch_me_pyramid13(coords, self.material.rho)
+            return flat.reshape(39, 39)
+        return super().M
 
     @property
     def integration_points(self) -> Tuple[np.ndarray, np.ndarray]:
@@ -1677,6 +1725,22 @@ class TETRA10(SolidElement):
             raise ValueError(f"TETRA10 requires 10 nodes, got {len(node_ids)}")
         super().__init__("TETRA10", node_coords, node_ids, material, orientation)
 
+    @cached_property
+    def K(self) -> np.ndarray:
+        if _RUST_AVAILABLE and isinstance(self.material, IsotropicMaterial) and self.orientation is None:
+            coords = self.node_coords[:, :3].astype(np.float64).flatten()[np.newaxis, :]
+            flat = _fsc.batch_ke_tetra10(coords, self.material.E, self.material.nu)
+            return flat.reshape(30, 30)
+        return super().K
+
+    @cached_property
+    def M(self) -> np.ndarray:
+        if _RUST_AVAILABLE and isinstance(self.material, IsotropicMaterial) and self.orientation is None:
+            coords = self.node_coords[:, :3].astype(np.float64).flatten()[np.newaxis, :]
+            flat = _fsc.batch_me_tetra10(coords, self.material.rho)
+            return flat.reshape(30, 30)
+        return super().M
+
     @property
     def integration_points(self) -> Tuple[np.ndarray, np.ndarray]:
         """4-point integration rule for quadratic tetrahedron."""
@@ -1912,6 +1976,22 @@ class HEXA20(SolidElement):
         if len(node_ids) != 20:
             raise ValueError(f"HEXA20 requires 20 nodes, got {len(node_ids)}")
         super().__init__("HEXA20", node_coords, node_ids, material, orientation)
+
+    @cached_property
+    def K(self) -> np.ndarray:
+        if _RUST_AVAILABLE and isinstance(self.material, IsotropicMaterial) and self.orientation is None:
+            coords = self.node_coords[:, :3].astype(np.float64).flatten()[np.newaxis, :]
+            flat = _fsc.batch_ke_hexa20(coords, self.material.E, self.material.nu)
+            return flat.reshape(60, 60)
+        return super().K
+
+    @cached_property
+    def M(self) -> np.ndarray:
+        if _RUST_AVAILABLE and isinstance(self.material, IsotropicMaterial) and self.orientation is None:
+            coords = self.node_coords[:, :3].astype(np.float64).flatten()[np.newaxis, :]
+            flat = _fsc.batch_me_hexa20(coords, self.material.rho)
+            return flat.reshape(60, 60)
+        return super().M
 
     @property
     def integration_points(self) -> Tuple[np.ndarray, np.ndarray]:
