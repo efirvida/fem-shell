@@ -48,6 +48,7 @@ class MeshAssembler:
         self._compute_sparsity_pattern()
         self._prepare_rust_batch_data()
         self._rust_batch_overwrite_ke_me()
+        self._build_py_mesh_assembler()
 
     # Mapping from ElementFamily to (dofs_per_node, spatial_dim).
     # This avoids instantiating every element twice just to query these constants.
@@ -566,6 +567,88 @@ class MeshAssembler:
                 self._ke_list[global_i] = ke_arr[local_i]
                 self._me_list[global_i] = me_arr[local_i]
 
+    def _build_py_mesh_assembler(self):
+        """Build a PyMeshAssembler (Rust) from the precomputed element data.
+
+        This provides a single unified Rust assembler as an alternative to the
+        group-based batch approach. The ``self._rust`` attribute is set when
+        construction succeeds; otherwise it is ``None`` and fallback paths are used.
+        """
+        self._rust = None
+        if not self._has_rust:
+            return
+
+        try:
+            from fem_shell_core import PyMeshAssembler  # noqa: PLC0415
+        except ImportError:
+            return
+
+        from fem_shell.elements.MITC3 import MITC3  # noqa: PLC0415
+        from fem_shell.elements.MITC3_composite import MITC3Composite  # noqa: PLC0415
+        from fem_shell.elements.MITC4 import MITC4  # noqa: PLC0415
+        from fem_shell.elements.MITC4_composite import MITC4Composite  # noqa: PLC0415
+
+        # Build node_coords array (n_nodes × 3)
+        node_id_to_index = self.mesh.node_id_to_index
+        n_nodes = self.mesh.node_count
+        node_coords = np.zeros((n_nodes, 3), dtype=np.float64)
+        for node in self.mesh.nodes:
+            idx = node_id_to_index[node.id]
+            node_coords[idx, :] = node.coords[:3]
+
+        # Build connectivity and material lists ordered by element_map
+        connectivity = []
+        elem_types = []
+        materials_list = []
+
+        for fem_elem in self._element_map.values():
+            # 0-based node indices
+            conn = [node_id_to_index[nid] for nid in fem_elem.node_ids]
+            connectivity.append(conn)
+
+            if isinstance(fem_elem, (MITC3, MITC3Composite)):
+                elem_types.append(3)
+            else:
+                elem_types.append(4)
+
+            # Build material dict
+            if isinstance(fem_elem, MITC3Composite) or isinstance(fem_elem, MITC4Composite):
+                h = fem_elem.thickness
+                a_trace = np.trace(fem_elem._A_matrix)
+                e_equiv = a_trace / (3.0 * h) if h > 0 else 0.0
+                mat_dict = {
+                    "type": "composite",
+                    "cm": fem_elem._A_matrix.ravel().tolist(),
+                    "cb": fem_elem._D_matrix.ravel().tolist(),
+                    "cs": fem_elem._Cs_matrix.ravel().tolist(),
+                    "thickness": h,
+                    "e_equiv": e_equiv,
+                    "mass_per_area": fem_elem._mass_per_area(),
+                    "rotational_inertia": fem_elem._rotational_inertia(),
+                }
+            else:
+                mat = fem_elem.material
+                sc = getattr(fem_elem, "_shear_correction_factor", 5.0 / 6.0)
+                mat_dict = {
+                    "type": "isotropic",
+                    "e": mat.E,
+                    "nu": mat.nu,
+                    "rho": mat.rho,
+                    "thickness": fem_elem.thickness,
+                    "shear_correction": sc,
+                }
+            materials_list.append(mat_dict)
+
+        try:
+            self._rust = PyMeshAssembler(
+                node_coords,
+                connectivity,
+                elem_types,
+                materials_list,
+            )
+        except Exception:  # noqa: BLE001
+            self._rust = None
+
     @staticmethod
     def _rust_group_indices(g):
         """Extract original element indices stored during group preparation."""
@@ -642,6 +725,11 @@ class MeshAssembler:
         elements are covered, assembly uses COO triplets from Rust for
         significantly faster sparse-matrix construction.
         """
+        # PyMeshAssembler fast-path (unified Rust assembler)
+        if self._rust is not None:
+            rows, cols, vals = self._rust.assemble_k()
+            return self._coo_to_petsc(rows, cols, vals)
+
         # Rust fast-path: COO assembly from precomputed element matrices
         if self._has_rust and self._all_elements_rust and not self._is_mixed_mesh:
             ndof = self._dofs_array.shape[1]
@@ -686,6 +774,11 @@ class MeshAssembler:
         When the Rust backend is available the COO fast-path is used,
         mirroring :meth:`assemble_stiffness_matrix`.
         """
+        # PyMeshAssembler fast-path
+        if self._rust is not None:
+            rows, cols, vals = self._rust.assemble_m()
+            return self._coo_to_petsc(rows, cols, vals)
+
         # Rust fast-path: COO assembly from precomputed element matrices
         if self._has_rust and self._all_elements_rust and not self._is_mixed_mesh:
             ndof = self._dofs_array.shape[1]
@@ -922,6 +1015,12 @@ class MeshAssembler:
         RuntimeError
             If the Rust backend is not available.
         """
+        # PyMeshAssembler fast-path
+        if self._rust is not None:
+            u_c = np.ascontiguousarray(u, dtype=np.float64)
+            rows, cols, vals = self._rust.assemble_kt(u_c)
+            return self._coo_to_petsc(rows, cols, vals)
+
         if not self._has_rust or not self._rust_groups:
             raise RuntimeError(
                 "Rust backend (fem_shell_core) required for tangent stiffness assembly. "
@@ -993,6 +1092,16 @@ class MeshAssembler:
         RuntimeError
             If the Rust backend is not available.
         """
+        # PyMeshAssembler fast-path
+        if self._rust is not None:
+            u_c = np.ascontiguousarray(u, dtype=np.float64)
+            fint = np.asarray(self._rust.assemble_fint(u_c, nonlinear), dtype=np.float64)
+            vec = PETSc.Vec().create(self.comm)
+            vec.setSizes(self.dofs_count)
+            vec.setUp()
+            vec.setArray(fint)
+            return vec
+
         if not self._has_rust or not self._rust_groups:
             raise RuntimeError(
                 "Rust backend (fem_shell_core) required for internal force assembly. "
