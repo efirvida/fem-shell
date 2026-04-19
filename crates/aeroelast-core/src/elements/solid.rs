@@ -14,7 +14,9 @@ use crate::quadrature::{
     TRI3_XI, TRI3_ETA, TRI3_W, LIN2_ZETA, LIN2_W, WEDGE6_W,
     WEDGE15_TRI_XI, WEDGE15_TRI_ETA, WEDGE15_TRI_W, WEDGE15_LIN_ZETA, WEDGE15_LIN_W,
     PYRAMID5_GP, PYRAMID5_W, PYRAMID13_GP, PYRAMID13_W,
+    GAUSS2X2X2_PTS, GAUSS2X2X2_W,
 };
+use super::reference::ReferenceElement3D;
 
 // ============================================================================
 // Type aliases
@@ -1311,6 +1313,26 @@ pub fn hexa20_me(coords: &[[f64; 3]; 20], rho: f64) -> MatH20 {
         }
     }
     0.5 * (me + me.transpose())
+}
+
+// ============================================================================
+// ReferenceElement3D implementations
+// ============================================================================
+
+/// Zero-size marker type for HEXA8 reference element.
+pub struct Hexa8Ref;
+
+impl ReferenceElement3D<8> for Hexa8Ref {
+    #[inline]
+    fn shape_functions(&self, xi: f64, eta: f64, zeta: f64) -> [f64; 8] {
+        hexa8_shape(xi, eta, zeta)
+    }
+    #[inline]
+    fn shape_derivs(&self, xi: f64, eta: f64, zeta: f64) -> ([f64; 8], [f64; 8], [f64; 8]) {
+        hexa8_derivs(xi, eta, zeta)
+    }
+    fn gauss_points(&self) -> &'static [[f64; 3]] { &GAUSS2X2X2_PTS }
+    fn gauss_weights(&self) -> &'static [f64]     { &GAUSS2X2X2_W  }
 }
 
 // ============================================================================

@@ -13,7 +13,11 @@
 
 use nalgebra::SMatrix;
 
-use crate::quadrature::{GAUSS2_PTS, GAUSS2_W, GAUSS3_PTS, GAUSS3_W};
+use crate::quadrature::{
+    GAUSS2_PTS, GAUSS2_W, GAUSS3_PTS, GAUSS3_W,
+    GAUSS2X2_PTS, GAUSS2X2_W, GAUSS3X3_PTS, GAUSS3X3_W,
+};
+use super::reference::ReferenceElement2D;
 
 // ============================================================================
 // Type aliases
@@ -513,6 +517,56 @@ impl Quad9Precomputed {
         }
         f
     }
+}
+
+// ============================================================================
+// ReferenceElement2D implementations
+// ============================================================================
+
+/// Zero-size marker type for QUAD4 reference element.
+pub struct Quad4Ref;
+/// Zero-size marker type for QUAD8 reference element.
+pub struct Quad8Ref;
+/// Zero-size marker type for QUAD9 reference element.
+pub struct Quad9Ref;
+
+impl ReferenceElement2D<4> for Quad4Ref {
+    #[inline]
+    fn shape_functions(&self, xi: f64, eta: f64) -> [f64; 4] {
+        quad4_shape(xi, eta)
+    }
+    #[inline]
+    fn shape_derivs(&self, xi: f64, eta: f64) -> ([f64; 4], [f64; 4]) {
+        quad4_derivs(xi, eta)
+    }
+    fn gauss_points(&self) -> &'static [[f64; 2]] { &GAUSS2X2_PTS }
+    fn gauss_weights(&self) -> &'static [f64]     { &GAUSS2X2_W  }
+}
+
+impl ReferenceElement2D<8> for Quad8Ref {
+    #[inline]
+    fn shape_functions(&self, xi: f64, eta: f64) -> [f64; 8] {
+        quad8_shape(xi, eta)
+    }
+    #[inline]
+    fn shape_derivs(&self, xi: f64, eta: f64) -> ([f64; 8], [f64; 8]) {
+        quad8_derivs(xi, eta)
+    }
+    fn gauss_points(&self) -> &'static [[f64; 2]] { &GAUSS3X3_PTS }
+    fn gauss_weights(&self) -> &'static [f64]     { &GAUSS3X3_W  }
+}
+
+impl ReferenceElement2D<9> for Quad9Ref {
+    #[inline]
+    fn shape_functions(&self, xi: f64, eta: f64) -> [f64; 9] {
+        quad9_shape(xi, eta)
+    }
+    #[inline]
+    fn shape_derivs(&self, xi: f64, eta: f64) -> ([f64; 9], [f64; 9]) {
+        quad9_derivs(xi, eta)
+    }
+    fn gauss_points(&self) -> &'static [[f64; 2]] { &GAUSS3X3_PTS }
+    fn gauss_weights(&self) -> &'static [f64]     { &GAUSS3X3_W  }
 }
 
 // ============================================================================
