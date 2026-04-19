@@ -1,0 +1,13 @@
+[package]
+name = "aeroelast-core"
+version = "0.1.0"
+edition = "2021"
+description = "Pure computation core: FEM shell elements, materials, assembly, solvers. No PyO3, no PETSc."
+
+[lib]
+name = "aeroelast_core"
+crate-type = ["rlib"]
+
+[dependencies]
+nalgebra = "0.34.2"
+rayon = "1.10"

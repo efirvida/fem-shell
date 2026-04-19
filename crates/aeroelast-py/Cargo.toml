@@ -1,0 +1,16 @@
+[package]
+name = "aeroelast-py"
+version = "0.1.0"
+edition = "2021"
+description = "PyO3 bindings for aeroelast-core. Exposes Python API for FEM shell element kernels."
+
+[lib]
+name = "aeroelast_py"
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+aeroelast-core = { path = "../aeroelast-core" }
+aeroelast-solvers = { path = "../aeroelast-solvers" }
+pyo3 = { version = "0.28.3", features = ["extension-module"] }
+numpy = "0.28.0"
+rayon = "1.10"

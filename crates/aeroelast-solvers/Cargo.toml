@@ -1,0 +1,13 @@
+[package]
+name = "aeroelast-solvers"
+version = "0.1.0"
+edition = "2021"
+description = "PETSc/SLEPc-backed assembler and modal solver for aeroelast"
+build = "build.rs"
+
+[lib]
+name = "aeroelast_solvers"
+crate-type = ["rlib"]
+
+[dependencies]
+aeroelast-core = { path = "../aeroelast-core" }

@@ -188,20 +188,67 @@ def _python_modal_solve(K_petsc, M_petsc, free_dofs_arr, num_modes, n_total_dofs
 
 
 def _rust_modal_solve(assembler, free_dofs_arr, num_modes):
-    """Rust modal solve using element K/M from assembler."""
+    """Rust modal solve using PETSc/SLEPc via fem_shell_core.
+
+    Strategy:
+    1. Build full COO for K and M via coo_assembly.
+    2. Restrict to free DOFs by remapping indices (submatrix in COO form).
+    3. Assemble reduced PETSc Mats and solve with petsc_modal_solve.
+    4. Expand eigenvectors back to full DOF space.
+    """
     ke_flat = np.ascontiguousarray(assembler._ke_array, dtype=np.float64).ravel()
     me_flat = np.ascontiguousarray(assembler._me_array, dtype=np.float64).ravel()
-    dofs = np.ascontiguousarray(assembler._dofs_array, dtype=np.int64)
+    dofs = np.ascontiguousarray(assembler._dofs_array, dtype=np.int64)  # coo_assembly needs int64
     n_total = assembler.dofs_count
 
-    freq, modes_flat = fem_shell_core.modal_solve(
-        ke_flat, me_flat, dofs, n_total, free_dofs_arr.astype(np.int64), num_modes
-    )
-    freq = np.asarray(freq)
-    modes_flat = np.asarray(modes_flat)
-    n_modes = len(freq)
-    modes = modes_flat.reshape((n_modes, n_total)).T  # (n_total, n_modes)
-    return freq, modes
+    n_dof_per_elem = assembler._ke_array.shape[-1]  # last dim of element matrix
+
+    # Build full COO triplets for K and M
+    rows_k, cols_k, vals_k = fem_shell_core.coo_assembly(dofs, ke_flat, n_dof_per_elem)
+    rows_m, cols_m, vals_m = fem_shell_core.coo_assembly(dofs, me_flat, n_dof_per_elem)
+
+    # Restrict COO to free DOFs submatrix
+    free_set = set(free_dofs_arr.tolist())
+    free_map = {old: new for new, old in enumerate(sorted(free_set))}
+    n_free = len(free_dofs_arr)
+
+    def _restrict_coo(rows, cols, vals):
+        mask = np.isin(rows, free_dofs_arr) & np.isin(cols, free_dofs_arr)
+        r = np.array([free_map[v] for v in rows[mask]], dtype=np.int32)
+        c = np.array([free_map[v] for v in cols[mask]], dtype=np.int32)
+        v = vals[mask].astype(np.float64)
+        return r, c, v
+
+    rk, ck, vk = _restrict_coo(rows_k, cols_k, vals_k)
+    rm, cm, vm = _restrict_coo(rows_m, cols_m, vals_m)
+
+    # Assemble PETSc Mats (reduced system)
+    k_cap = fem_shell_core.petsc_assemble_matrix(rk, ck, vk, n_free)
+    m_cap = fem_shell_core.petsc_assemble_matrix(rm, cm, vm, n_free)
+
+    # Solve eigenvalue problem
+    eigvals_raw, modes_flat_raw = fem_shell_core.petsc_modal_solve(k_cap, m_cap, num_modes)
+    eigvals = np.asarray(eigvals_raw)
+    modes_flat = np.asarray(modes_flat_raw)
+
+    # Filter positive eigenvalues and sort
+    valid = eigvals > 1e-8
+    eigvals = eigvals[valid]
+    n_conv = len(eigvals)
+    modes_red = modes_flat.reshape((-1, n_free))[:n_conv]  # (n_conv, n_free)
+
+    idx = np.argsort(eigvals)
+    eigvals = eigvals[idx]
+    modes_red = modes_red[idx]
+
+    freq = np.sqrt(eigvals) / (2 * np.pi)
+
+    # Expand modes to full DOF space
+    free_sorted = np.array(sorted(free_set), dtype=np.int64)
+    full_modes = np.zeros((n_total, n_conv))
+    full_modes[free_sorted, :] = modes_red.T
+
+    return freq[:num_modes], full_modes[:, :num_modes]
 
 
 # ---------------------------------------------------------------------------

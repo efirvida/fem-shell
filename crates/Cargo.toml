@@ -1,0 +1,8 @@
+[workspace]
+members = [
+    "fem_shell_core",
+    "aeroelast-core",
+    "aeroelast-solvers",
+    "aeroelast-py",
+]
+resolver = "2"

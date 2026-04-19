@@ -2,14 +2,12 @@
 name = "fem_shell_core"
 version = "0.1.0"
 edition = "2021"
-description = "High-performance FEM shell element kernels for fem_shell"
+description = "Compatibility shim — re-exports aeroelast-py as fem_shell_core Python module"
 
 [lib]
 name = "fem_shell_core"
-crate-type = ["cdylib", "rlib"]
+crate-type = ["cdylib"]
 
 [dependencies]
-pyo3 = { version = "0.24", features = ["extension-module"] }
-numpy = "0.24"
-nalgebra = "0.33"
-rayon = "1.10"
+aeroelast-py = { path = "../aeroelast-py" }
+pyo3 = { version = "0.28.3", features = ["extension-module"] }
