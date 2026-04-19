@@ -188,24 +188,18 @@ def _python_modal_solve(K_petsc, M_petsc, free_dofs_arr, num_modes, n_total_dofs
 
 
 def _rust_modal_solve(assembler, free_dofs_arr, num_modes):
-    """Rust modal solve using PETSc/SLEPc via fem_shell_core.
+    """Rust modal solve using PyMeshAssembler (production path).
 
-    Strategy:
-    1. Build full COO for K and M via coo_assembly.
-    2. Restrict to free DOFs by remapping indices (submatrix in COO form).
-    3. Assemble reduced PETSc Mats and solve with petsc_modal_solve.
-    4. Expand eigenvectors back to full DOF space.
+    Uses assembler._rust.assemble_k() / assemble_m() directly — the same
+    path used in production. This validates the full Rust assembly pipeline
+    rather than a separate COO path from Python element matrices.
     """
-    ke_flat = np.ascontiguousarray(assembler._ke_array, dtype=np.float64).ravel()
-    me_flat = np.ascontiguousarray(assembler._me_array, dtype=np.float64).ravel()
-    dofs = np.ascontiguousarray(assembler._dofs_array, dtype=np.int64)  # coo_assembly needs int64
+    assert assembler._rust is not None, "PyMeshAssembler not built — Rust unavailable"
+
+    rows_k, cols_k, vals_k = assembler._rust.assemble_k()
+    rows_m, cols_m, vals_m = assembler._rust.assemble_m()
+
     n_total = assembler.dofs_count
-
-    n_dof_per_elem = assembler._ke_array.shape[-1]  # last dim of element matrix
-
-    # Build full COO triplets for K and M
-    rows_k, cols_k, vals_k = fem_shell_core.coo_assembly(dofs, ke_flat, n_dof_per_elem)
-    rows_m, cols_m, vals_m = fem_shell_core.coo_assembly(dofs, me_flat, n_dof_per_elem)
 
     # Restrict COO to free DOFs submatrix
     free_set = set(free_dofs_arr.tolist())
@@ -467,32 +461,31 @@ class TestCOOModalSolve:
         self.free_dofs = np.setdiff1d(all_dofs, fixed)
 
     def test_coo_matches_element_path(self):
-        """modal_solve_coo gives same result as modal_solve (element path)."""
+        """modal_solve_coo gives same result as PyMeshAssembler assembly path."""
         asm = self.assembler
 
-        # Element-based path
-        freq_elem, _ = _rust_modal_solve(asm, self.free_dofs, self.num_modes)
+        # Reference: PyMeshAssembler path (production)
+        freq_ref, _ = _rust_modal_solve(asm, self.free_dofs, self.num_modes)
 
-        # COO path
-        ke_flat = np.ascontiguousarray(asm._ke_array, dtype=np.float64).ravel()
-        me_flat = np.ascontiguousarray(asm._me_array, dtype=np.float64).ravel()
-        dofs = np.ascontiguousarray(asm._dofs_array, dtype=np.int64)
-        ndof = dofs.shape[1]
+        # COO path via PyMeshAssembler COO output + modal_solve_coo
+        k_rows, k_cols, k_vals = asm._rust.assemble_k()
+        m_rows, m_cols, m_vals = asm._rust.assemble_m()
 
-        k_rows, k_cols, k_vals = fem_shell_core.coo_assembly(dofs, ke_flat, ndof)
-        m_rows, m_cols, m_vals = fem_shell_core.coo_assembly(dofs, me_flat, ndof)
-
-        freq_coo, modes_coo = fem_shell_core.modal_solve_coo(
-            k_rows, k_cols, k_vals,
-            m_rows, m_cols, m_vals,
+        freq_coo, _ = fem_shell_core.modal_solve_coo(
+            np.ascontiguousarray(k_rows, dtype=np.int64),
+            np.ascontiguousarray(k_cols, dtype=np.int64),
+            np.ascontiguousarray(k_vals, dtype=np.float64),
+            np.ascontiguousarray(m_rows, dtype=np.int64),
+            np.ascontiguousarray(m_cols, dtype=np.int64),
+            np.ascontiguousarray(m_vals, dtype=np.float64),
             asm.dofs_count,
             self.free_dofs.astype(np.int64),
             self.num_modes,
         )
         freq_coo = np.asarray(freq_coo)
 
-        np.testing.assert_allclose(freq_coo, freq_elem, rtol=1e-10,
-                                   err_msg="COO and element paths diverge")
+        np.testing.assert_allclose(freq_coo, freq_ref, rtol=1e-10,
+                                   err_msg="COO and PyMeshAssembler paths diverge")
 
 
 # ---------------------------------------------------------------------------

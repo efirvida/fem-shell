@@ -6,30 +6,30 @@ authors = [
     { name = "Eduardo Firvida", email = "efirvida@gmail.com" }
 ]
 dependencies = [
-    "gmsh>=4.13.1",
-    "matplotlib>=3.10.1",
-    "polars[rtcompat]>=1.36.1",
+    "gmsh>=4.15.2",
+    "matplotlib>=3.10.8",
+    "polars[rtcompat]>=1.40.0",
     "meshio>=5.3.5",
-    "nevergrad>=1.0.11",
-    "numpy>=2.2.5",
-    "pyside6>=6.9.0",
-    "pyvista>=0.45.0",
-    "pyvistaqt>=0.11.2",
-    "pyyaml>=6.0.2",
-    "scipy>=1.15.2",
-    "shapely>=2.1.0",
-    "mpi4py>=4.0.3",
-    "h5py>=3.13.0",
-    "numpy-stl>=0",
-    "trimesh>=4.10.1",
+    "nevergrad>=1.0.12",
+    "numpy>=2.4.4",
+    "pyside6>=6.11.0",
+    "pyvista>=0.47.3",
+    "pyvistaqt>=0.11.4",
+    "pyyaml>=6.0.3",
+    "scipy>=1.17.1",
+    "shapely>=2.1.2",
+    "mpi4py>=4.1.1",
+    "h5py>=3.16.0",
+    "numpy-stl>=3.2.0",
+    "trimesh>=4.11.5",
     "networkx>=3.6.1",
-    "plot3d>=1.7.11",
-    "lxml>=6.0.2",
-    "openpyxl>=3.1.0",
-    "rich>=14.0.0",
-    "textual>=1.0.0",
-    "textual-plotext>=1.0.0",
-    "plotext>=5.2.8",
+    "plot3d>=1.9.1",
+    "lxml>=6.1.0",
+    "openpyxl>=3.1.5",
+    "rich>=15.0.0",
+    "textual>=8.2.4",
+    "textual-plotext>=1.0.1",
+    "plotext>=5.3.2",
 ]
 readme = "README.md"
 requires-python = ">=3.12"
@@ -90,6 +90,7 @@ select = [
 ]
 
 [project.scripts]
+aeroelast = "fem_shell.cli.aeroelast:main"
 fem-shell-fsi = "fem_shell.cli.run_fsi:main"
 fem-shell-bem-fsi = "fem_shell.cli.run_bem_fsi:main"
 fem-shell-monitor = "fem_shell.cli.fsi_monitor:main"
@@ -97,9 +98,9 @@ fem-shell-reconstruct-csv = "fem_shell.cli.reconstruct_rotor_csv:main"
 
 [project.optional-dependencies]
 dev = [
-    "pytest>=7.0",
-    "pytest-cov>=4.0",
-    "pytest-xdist>=3.0",
+    "pytest>=9.0.3",
+    "pytest-cov>=7.1.0",
+    "pytest-xdist>=3.8.0",
 ]
 mesh = [
     # Triangle is kept out of the base install because upstream wheels may lag

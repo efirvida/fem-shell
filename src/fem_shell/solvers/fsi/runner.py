@@ -15,6 +15,7 @@ Or from command line:
 """
 
 import logging
+import time
 from pathlib import Path
 from typing import Any, Dict, Optional, Union
 
@@ -140,24 +141,47 @@ class FSIRunner:
         self._print_header()
         self._validate_config()
 
+        _t0 = time.perf_counter()
+        logger.info("[runner] START run() — solver_type=%s", self.config.solver.type)
+
         # Step 1: Load or generate mesh
+        logger.info("[runner] Step 1: _setup_mesh...")
+        _t = time.perf_counter()
         self.mesh = self._setup_mesh()
+        logger.info("[runner] Step 1 done in %.2fs — nodes=%s elements=%s",
+                    time.perf_counter() - _t,
+                    getattr(self.mesh, 'node_count', '?'),
+                    getattr(self.mesh, 'element_count', len(getattr(self.mesh, 'elements', []))))
 
         # Step 2: Create material
+        logger.info("[runner] Step 2: _create_material...")
+        _t = time.perf_counter()
         self._material = self._create_material()
+        logger.info("[runner] Step 2 done in %.2fs — material=%s", time.perf_counter() - _t, type(self._material).__name__)
 
         # Step 3: Build model configuration
+        logger.info("[runner] Step 3: _build_model_config...")
+        _t = time.perf_counter()
         model_config = self._build_model_config()
+        logger.info("[runner] Step 3 done in %.2fs", time.perf_counter() - _t)
 
-        # Step 4: Create and setup solver
+        # Step 4: Create and setup solver (this is where MeshAssembler is built)
+        logger.info("[runner] Step 4: _create_solver... (this builds MeshAssembler)")
+        _t = time.perf_counter()
         self.solver = self._create_solver(model_config)
+        logger.info("[runner] Step 4 done in %.2fs — solver=%s", time.perf_counter() - _t, type(self.solver).__name__)
 
         # Step 5: Apply boundary conditions (skip for BEM standalone)
         if not self._is_bem:
+            logger.info("[runner] Step 5: _apply_boundary_conditions...")
+            _t = time.perf_counter()
             self._apply_boundary_conditions()
+            logger.info("[runner] Step 5 done in %.2fs", time.perf_counter() - _t)
 
         # Step 6: Run simulation
         self._console.print("\n[bold cyan]\\[6/6] Running solver...[/bold cyan]")
+        logger.info("[runner] Step 6: solver.solve()...")
+        _t = time.perf_counter()
         try:
             result = self.solver.solve()
         except RuntimeError as exc:
@@ -165,6 +189,7 @@ class FSIRunner:
                 self._print_precice_disconnect_help(exc)
                 raise
             raise
+        logger.info("[runner] Step 6 done in %.2fs", time.perf_counter() - _t)
 
         # Step 7: Post-processing
         if self._is_modal:

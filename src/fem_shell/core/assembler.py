@@ -1,3 +1,5 @@
+import logging
+import time
 from typing import Dict, Iterable, Optional
 
 import numpy as np
@@ -7,6 +9,8 @@ from petsc4py import PETSc
 from fem_shell.core.mesh import MeshModel
 from fem_shell.core.properties import ShellPropertyType
 from fem_shell.elements import ElementFactory, ElementFamily, FemElement
+
+logger = logging.getLogger(__name__)
 
 
 class MeshAssembler:
@@ -27,10 +31,6 @@ class MeshAssembler:
             Total number of degrees of freedom in the system
         _dofs_array : np.ndarray
             Element-to-DOF connectivity array
-        _ke_array : np.ndarray
-            Precomputed local stiffness matrices
-        _me_array : np.ndarray
-            Precomputed local mass matrices
         """
         self.mesh = mesh
         self.model = model["elements"]
@@ -38,17 +38,31 @@ class MeshAssembler:
         self._element_map: Dict[int, FemElement] = {}
         self._dofs_array: np.ndarray = None
         self._node_dofs_map: Dict[int, Iterable] = {}
-        self._ke_array: np.ndarray = None
-        self._me_array: np.ndarray = None
         self.dofs_per_node: int = 0
         self.spatial_dim: int = 0
         self.dofs_count: int = 0
         self._row_nnz: Optional[np.ndarray] = None
+
+        t0 = time.perf_counter()
+        logger.info("[assembler] START __init__ — nodes=%d", mesh.node_count)
+
+        t1 = time.perf_counter()
         self._precompute_elements()
+        logger.info("[assembler] _precompute_elements done in %.2fs — elements=%d", time.perf_counter() - t1, len(self._element_map))
+
+        t2 = time.perf_counter()
         self._compute_sparsity_pattern()
+        logger.info("[assembler] _compute_sparsity_pattern done in %.2fs", time.perf_counter() - t2)
+
+        t3 = time.perf_counter()
         self._prepare_rust_batch_data()
-        self._rust_batch_overwrite_ke_me()
+        logger.info("[assembler] _prepare_rust_batch_data done in %.2fs", time.perf_counter() - t3)
+
+        t4 = time.perf_counter()
         self._build_py_mesh_assembler()
+        logger.info("[assembler] _build_py_mesh_assembler done in %.2fs — rust=%s", time.perf_counter() - t4, self._rust is not None)
+
+        logger.info("[assembler] TOTAL __init__ done in %.2fs — dofs=%d", time.perf_counter() - t0, self.dofs_count)
 
     # Mapping from ElementFamily to (dofs_per_node, spatial_dim).
     # This avoids instantiating every element twice just to query these constants.
@@ -59,7 +73,7 @@ class MeshAssembler:
     }
 
     def _precompute_elements(self):
-        """Precompute element matrices and DOF connectivity arrays.
+        """Precompute element DOF connectivity arrays.
 
         Uses mesh.node_id_to_index mapping to ensure DOF indices are consecutive
         starting from 0, regardless of the original node IDs in the mesh.
@@ -110,6 +124,10 @@ class MeshAssembler:
         node_id_to_index = self.mesh.node_id_to_index
         n_elements = len(elements)
         progress_interval = max(n_elements // 10, 1)
+        _t_loop_start = time.perf_counter()
+        _t_factory = 0.0
+        _t_dofs = 0.0
+        _t_km = 0.0
 
         # Build per-element property lookup from properties map (if provided).
         # Maps element_id -> ShellPropertyType for O(1) access in the loop.
@@ -123,6 +141,16 @@ class MeshAssembler:
 
         for idx, element in enumerate(elements):
             if idx % progress_interval == 0:
+                elapsed = time.perf_counter() - _t_loop_start
+                rate = idx / elapsed if elapsed > 0 else 0
+                eta = (n_elements - idx) / rate if rate > 0 else 0
+                logger.info(
+                    "[assembler._precompute] %d/%d (%.0f%%) | elapsed=%.1fs rate=%.0f/s ETA=%.1fs"
+                    " | t_factory=%.2fs t_dofs=%.2fs t_km=%.2fs",
+                    idx, n_elements, 100 * idx / n_elements,
+                    elapsed, rate, eta,
+                    _t_factory, _t_dofs, _t_km,
+                )
                 print(
                     f"\r  Precomputing element matrices... {idx}/{n_elements}"
                     f" ({100 * idx // n_elements}%)",
@@ -160,13 +188,17 @@ class MeshAssembler:
                 )
                 element_model = {**element_model, "thickness": element.thickness}
 
+            _t0 = time.perf_counter()
             fem_element = ElementFactory.get_element(
                 mesh_element=element, shell_property=shell_property, **element_model
             )
+            _t_factory += time.perf_counter() - _t0
+
             if not fem_element:
                 continue
 
             # Remap DOFs using the GLOBAL stride to avoid aliasing
+            _t0 = time.perf_counter()
             remapped_dof_indices = {}
             for node_id in fem_element.node_ids:
                 node_index = node_id_to_index[node_id]
@@ -189,36 +221,40 @@ class MeshAssembler:
                 dtype=np.int64,
             )
             dof_sizes.add(len(dofs))
+            _t_dofs += time.perf_counter() - _t0
 
             self._element_map[element.id] = fem_element
             dofs_list.append(dofs)
-            ke_list.append(fem_element.K)
-            me_list.append(fem_element.M)
+
+            # NOTE: K and M are NOT computed here — assembly is done entirely
+            # by the Rust PyMeshAssembler. Computing them in Python would be
+            # dead code and waste ~165s on 85k composite elements.
+            _t_km += 0.0  # kept for timing instrumentation consistency
 
         print(
             f"\r  Precomputing element matrices... {n_elements}/{n_elements} (100%)",
             flush=True,
+        )
+        logger.info(
+            "[assembler._precompute] DONE total=%.2fs | t_factory=%.2fs t_dofs=%.2fs t_km=%.2fs",
+            time.perf_counter() - _t_loop_start, _t_factory, _t_dofs, _t_km,
         )
 
         # Check if all elements have the same DOF count (uniform mesh)
         self._is_mixed_mesh = len(dof_sizes) > 1
 
         if self._is_mixed_mesh:
-            # Mixed mesh: store as lists (variable-size arrays not supported by numpy)
             self._dofs_list = dofs_list
-            self._ke_list = ke_list
-            self._me_list = me_list
             self._dofs_array = None
-            self._ke_array = None
-            self._me_array = None
         else:
-            # Uniform mesh: store as numpy arrays for efficiency
             self._dofs_array = np.array(dofs_list, dtype=np.int64)
-            self._ke_array = np.array(ke_list, dtype=np.float64)
-            self._me_array = np.array(me_list, dtype=np.float64)
             self._dofs_list = None
-            self._ke_list = None
-            self._me_list = None
+
+        # K/M arrays are NOT stored — assembly is done by the Rust assembler.
+        self._ke_array = None
+        self._me_array = None
+        self._ke_list = None
+        self._me_list = None
 
         self.dofs_count = self.mesh.node_count * self.dofs_per_node
 
@@ -247,13 +283,12 @@ class MeshAssembler:
         """Prepare element groups for Rust batch computation.
 
         Groups elements by (element_type, E, nu, thickness, shear_correction)
-        for efficient parallel batch processing via the ``fem_shell_core`` Rust
-        backend.  Each group maps to a single parallel Rust call that processes
-        all elements of the same type and material at once.
+        for batch processing metadata. This populates ``_rust_groups``,
+        ``_rust_composite_groups``, ``_has_rust``, and ``_all_elements_rust``
+        which are used by tests and introspection code.
 
-        For composite elements (MITC3Composite / MITC4Composite), per-element
-        ABD matrices are extracted and passed to dedicated composite batch
-        functions.
+        NOTE: The actual K/M assembly now goes through ``self._rust``
+        (PyMeshAssembler) exclusively. These groups are kept for compatibility.
         """
         self._rust_groups = []
         self._rust_composite_groups = []
@@ -261,9 +296,8 @@ class MeshAssembler:
         self._all_elements_rust = False
 
         try:
-            import fem_shell_core
+            import fem_shell_core  # noqa: F401
 
-            self._fsc = fem_shell_core
             self._has_rust = True
         except ImportError:
             return
@@ -274,61 +308,26 @@ class MeshAssembler:
         from fem_shell.elements.MITC4_composite import MITC4Composite
 
         groups: dict = {}
-        composite_groups: dict = {}  # keyed by ("MITC3_composite",) or ("MITC4_composite",)
+        composite_groups: dict = {}
         elem_list = list(self._element_map.values())
 
         for e, fem_elem in enumerate(elem_list):
-            # Composite elements (must check before isotropic since Composite inherits from MITC3/4)
             if isinstance(fem_elem, MITC3Composite):
                 key = "MITC3_composite"
                 if key not in composite_groups:
-                    composite_groups[key] = {
-                        "indices": [], "coords": [],
-                        "cm": [], "cb": [], "cs": [],
-                        "thickness": [], "e_equiv": [],
-                        "mass_per_area": [], "rotational_inertia": [],
-                        "etype": key,
-                    }
-                g = composite_groups[key]
-                g["indices"].append(e)
-                g["coords"].append(fem_elem._initial_coords.ravel())
-                g["cm"].append(fem_elem._A_matrix.ravel())
-                g["cb"].append(fem_elem._D_matrix.ravel())
-                g["cs"].append(fem_elem._Cs_matrix.ravel())
-                h = fem_elem.thickness
-                g["thickness"].append(h)
-                # e_equiv so that e_equiv * h² * 0.15 matches Python drilling
-                a_trace = np.trace(fem_elem._A_matrix)
-                g["e_equiv"].append(a_trace / (3.0 * h) if h > 0 else 0.0)
-                g["mass_per_area"].append(fem_elem._mass_per_area())
-                g["rotational_inertia"].append(fem_elem._rotational_inertia())
+                    composite_groups[key] = {"indices": [], "coords": [], "etype": key}
+                composite_groups[key]["indices"].append(e)
+                composite_groups[key]["coords"].append(fem_elem._initial_coords.ravel())
                 continue
 
             if isinstance(fem_elem, MITC4Composite):
                 key = "MITC4_composite"
                 if key not in composite_groups:
-                    composite_groups[key] = {
-                        "indices": [], "coords": [],
-                        "cm": [], "cb": [], "cs": [],
-                        "thickness": [], "e_equiv": [],
-                        "mass_per_area": [], "rotational_inertia": [],
-                        "etype": key,
-                    }
-                g = composite_groups[key]
-                g["indices"].append(e)
-                g["coords"].append(fem_elem._initial_coords.ravel())
-                g["cm"].append(fem_elem._A_matrix.ravel())
-                g["cb"].append(fem_elem._D_matrix.ravel())
-                g["cs"].append(fem_elem._Cs_matrix.ravel())
-                h = fem_elem.thickness
-                g["thickness"].append(h)
-                a_trace = np.trace(fem_elem._A_matrix)
-                g["e_equiv"].append(a_trace / (3.0 * h) if h > 0 else 0.0)
-                g["mass_per_area"].append(fem_elem._mass_per_area())
-                g["rotational_inertia"].append(fem_elem._rotational_inertia())
+                    composite_groups[key] = {"indices": [], "coords": [], "etype": key}
+                composite_groups[key]["indices"].append(e)
+                composite_groups[key]["coords"].append(fem_elem._initial_coords.ravel())
                 continue
 
-            # Isotropic elements
             if isinstance(fem_elem, MITC3):
                 etype = "MITC3"
             elif isinstance(fem_elem, MITC4):
@@ -400,13 +399,6 @@ class MeshAssembler:
                     "coords": np.array(g["coords"], dtype=np.float64),
                     "dofs": dofs,
                     "ndof": ndof,
-                    "cm": np.array(g["cm"], dtype=np.float64),
-                    "cb": np.array(g["cb"], dtype=np.float64),
-                    "cs": np.array(g["cs"], dtype=np.float64),
-                    "thickness": np.array(g["thickness"], dtype=np.float64),
-                    "e_equiv": np.array(g["e_equiv"], dtype=np.float64),
-                    "mass_per_area": np.array(g["mass_per_area"], dtype=np.float64),
-                    "rotational_inertia": np.array(g["rotational_inertia"], dtype=np.float64),
                     "n_elem": len(indices),
                     "orig_indices": indices.tolist(),
                 }
@@ -416,171 +408,18 @@ class MeshAssembler:
         n_rust += sum(g["n_elem"] for g in self._rust_composite_groups)
         self._all_elements_rust = n_rust == len(elem_list)
 
-    def _rust_batch_overwrite_ke_me(self):
-        """Replace Python-computed ke/me arrays with Rust batch results.
-
-        When the Rust backend covers all elements, this overwrites the per-element
-        stiffness and mass matrices that ``_precompute_elements()`` computed in
-        Python.  The result is identical (validated by tests) but much faster for
-        large meshes.
-        """
-        if not self._has_rust or not self._all_elements_rust:
-            return
-        if self._is_mixed_mesh:
-            # Mixed mesh: overwrite individual lists
-            self._rust_batch_overwrite_lists()
-            return
-
-        ndof = self._ke_array.shape[1]
-        n_elem = self._ke_array.shape[0]
-
-        # Overwrite with isotropic Rust batch results
-        for g in self._rust_groups:
-            indices = np.array(
-                [i for i, _ in enumerate(range(g["n_elem"]))],
-                dtype=np.intp,
-            )
-            # Find the original element indices from the dofs mapping
-            # The group stores the original element index from the element list
-            # We need to reconstruct which rows of _ke_array correspond to this group
-            pass  # Will be populated below
-
-        # For now: compute Rust ke/me and write directly into the arrays
-        # using the element ordering from the groups
-        for g in self._rust_groups:
-            if g["etype"] == "MITC3":
-                ke_flat = self._fsc.batch_ke_mitc3(
-                    g["coords"], g["E"], g["nu"], g["thickness"],
-                    g["shear_correction"],
-                )
-                me_flat = self._fsc.batch_me_mitc3(
-                    g["coords"], g["E"], g["nu"], g["rho"],
-                    g["thickness"], g["shear_correction"],
-                )
-                elem_ndof = 18
-            else:
-                ke_flat = self._fsc.batch_ke_mitc4(
-                    g["coords"], g["E"], g["nu"], g["thickness"],
-                    g["shear_correction"],
-                )
-                me_flat = self._fsc.batch_me_mitc4(
-                    g["coords"], g["E"], g["nu"], g["rho"],
-                    g["thickness"], g["shear_correction"],
-                )
-                elem_ndof = 24
-
-            ke_arr = np.asarray(ke_flat).reshape(g["n_elem"], elem_ndof, elem_ndof)
-            me_arr = np.asarray(me_flat).reshape(g["n_elem"], elem_ndof, elem_ndof)
-
-            # Map group-local indices back to the global element array
-            # _rust_groups stores original indices from _element_map iteration
-            orig_indices = self._rust_group_indices(g)
-            for local_i, global_i in enumerate(orig_indices):
-                self._ke_array[global_i] = ke_arr[local_i]
-                self._me_array[global_i] = me_arr[local_i]
-
-        for g in self._rust_composite_groups:
-            if g["etype"] == "MITC3_composite":
-                ke_flat = self._fsc.batch_ke_mitc3_composite(
-                    g["coords"], g["cm"], g["cb"], g["cs"],
-                    g["thickness"], g["e_equiv"],
-                )
-                me_flat = self._fsc.batch_me_mitc3_composite(
-                    g["coords"], g["mass_per_area"], g["rotational_inertia"],
-                )
-                elem_ndof = 18
-            else:
-                ke_flat = self._fsc.batch_ke_mitc4_composite(
-                    g["coords"], g["cm"], g["cb"], g["cs"],
-                    g["thickness"], g["e_equiv"],
-                )
-                me_flat = self._fsc.batch_me_mitc4_composite(
-                    g["coords"], g["mass_per_area"], g["rotational_inertia"],
-                )
-                elem_ndof = 24
-
-            ke_arr = np.asarray(ke_flat).reshape(g["n_elem"], elem_ndof, elem_ndof)
-            me_arr = np.asarray(me_flat).reshape(g["n_elem"], elem_ndof, elem_ndof)
-
-            orig_indices = self._rust_group_indices(g)
-            for local_i, global_i in enumerate(orig_indices):
-                self._ke_array[global_i] = ke_arr[local_i]
-                self._me_array[global_i] = me_arr[local_i]
-
-    def _rust_batch_overwrite_lists(self):
-        """Overwrite ke/me lists for mixed meshes with Rust batch results."""
-        for g in self._rust_groups:
-            if g["etype"] == "MITC3":
-                ke_flat = self._fsc.batch_ke_mitc3(
-                    g["coords"], g["E"], g["nu"], g["thickness"],
-                    g["shear_correction"],
-                )
-                me_flat = self._fsc.batch_me_mitc3(
-                    g["coords"], g["E"], g["nu"], g["rho"],
-                    g["thickness"], g["shear_correction"],
-                )
-                elem_ndof = 18
-            else:
-                ke_flat = self._fsc.batch_ke_mitc4(
-                    g["coords"], g["E"], g["nu"], g["thickness"],
-                    g["shear_correction"],
-                )
-                me_flat = self._fsc.batch_me_mitc4(
-                    g["coords"], g["E"], g["nu"], g["rho"],
-                    g["thickness"], g["shear_correction"],
-                )
-                elem_ndof = 24
-
-            ke_arr = np.asarray(ke_flat).reshape(g["n_elem"], elem_ndof, elem_ndof)
-            me_arr = np.asarray(me_flat).reshape(g["n_elem"], elem_ndof, elem_ndof)
-
-            orig_indices = self._rust_group_indices(g)
-            for local_i, global_i in enumerate(orig_indices):
-                self._ke_list[global_i] = ke_arr[local_i]
-                self._me_list[global_i] = me_arr[local_i]
-
-        for g in self._rust_composite_groups:
-            if g["etype"] == "MITC3_composite":
-                ke_flat = self._fsc.batch_ke_mitc3_composite(
-                    g["coords"], g["cm"], g["cb"], g["cs"],
-                    g["thickness"], g["e_equiv"],
-                )
-                me_flat = self._fsc.batch_me_mitc3_composite(
-                    g["coords"], g["mass_per_area"], g["rotational_inertia"],
-                )
-                elem_ndof = 18
-            else:
-                ke_flat = self._fsc.batch_ke_mitc4_composite(
-                    g["coords"], g["cm"], g["cb"], g["cs"],
-                    g["thickness"], g["e_equiv"],
-                )
-                me_flat = self._fsc.batch_me_mitc4_composite(
-                    g["coords"], g["mass_per_area"], g["rotational_inertia"],
-                )
-                elem_ndof = 24
-
-            ke_arr = np.asarray(ke_flat).reshape(g["n_elem"], elem_ndof, elem_ndof)
-            me_arr = np.asarray(me_flat).reshape(g["n_elem"], elem_ndof, elem_ndof)
-
-            orig_indices = self._rust_group_indices(g)
-            for local_i, global_i in enumerate(orig_indices):
-                self._ke_list[global_i] = ke_arr[local_i]
-                self._me_list[global_i] = me_arr[local_i]
-
     def _build_py_mesh_assembler(self):
         """Build a PyMeshAssembler (Rust) from the precomputed element data.
 
-        This provides a single unified Rust assembler as an alternative to the
-        group-based batch approach. The ``self._rust`` attribute is set when
-        construction succeeds; otherwise it is ``None`` and fallback paths are used.
+        This provides a single unified Rust assembler. The ``self._rust`` attribute
+        is set when construction succeeds; otherwise it is ``None``.
         """
         self._rust = None
-        if not self._has_rust:
-            return
 
         try:
             from fem_shell_core import PyMeshAssembler  # noqa: PLC0415
         except ImportError:
+            logger.warning("[assembler._build_py_mesh_assembler] fem_shell_core not available — Rust assembler disabled")
             return
 
         from fem_shell.elements.MITC3 import MITC3  # noqa: PLC0415
@@ -598,6 +437,8 @@ class MeshAssembler:
             WEDGE6,
             WEDGE15,
         )
+
+        logger.info("[assembler._build_py_mesh_assembler] building node_coords for %d nodes", self.mesh.node_count)
 
         # Build node_coords array (n_nodes × 3)
         node_id_to_index = self.mesh.node_id_to_index
@@ -620,7 +461,16 @@ class MeshAssembler:
             PYRAMID5: 305, PYRAMID13: 313,
         }
 
-        for fem_elem in self._element_map.values():
+        n_elems = len(self._element_map)
+        logger.info("[assembler._build_py_mesh_assembler] iterating %d elements for connectivity/materials", n_elems)
+        _t_iter = time.perf_counter()
+        _unknown_types = []
+
+        for i, fem_elem in enumerate(self._element_map.values()):
+            if i % max(n_elems // 10, 1) == 0:
+                logger.info("[assembler._build_py_mesh_assembler] connectivity %d/%d (%.0f%%) elapsed=%.2fs",
+                            i, n_elems, 100 * i / n_elems, time.perf_counter() - _t_iter)
+
             # 0-based node indices
             conn = [node_id_to_index[nid] for nid in fem_elem.node_ids]
             connectivity.append(conn)
@@ -637,6 +487,8 @@ class MeshAssembler:
                 code = _SOLID_TYPE_CODE[elem_cls]
             else:
                 # Unknown element type — fall back to None assembler
+                _unknown_types.append(elem_cls.__name__)
+                logger.error("[assembler._build_py_mesh_assembler] unknown element type: %s at index %d", elem_cls.__name__, i)
                 self._rust = None
                 return
             elem_types.append(code)
@@ -686,22 +538,20 @@ class MeshAssembler:
                 }
             materials_list.append(mat_dict)
 
+        logger.info("[assembler._build_py_mesh_assembler] connectivity loop done in %.2fs, calling PyMeshAssembler()", time.perf_counter() - _t_iter)
+
         try:
+            _t_rust = time.perf_counter()
             self._rust = PyMeshAssembler(
                 node_coords,
                 connectivity,
                 elem_types,
                 materials_list,
             )
-        except Exception:  # noqa: BLE001
+            logger.info("[assembler._build_py_mesh_assembler] PyMeshAssembler() constructed in %.2fs", time.perf_counter() - _t_rust)
+        except Exception as exc:  # noqa: BLE001
+            logger.error("[assembler._build_py_mesh_assembler] PyMeshAssembler() FAILED: %s", exc)
             self._rust = None
-
-    @staticmethod
-    def _rust_group_indices(g):
-        """Extract original element indices stored during group preparation."""
-        # The group preparation stores dofs array; we need the original element
-        # indices. We store them during _prepare_rust_batch_data as 'orig_indices'.
-        return g.get("orig_indices", list(range(g["n_elem"])))
 
     def _coo_to_petsc(
         self, rows: np.ndarray, cols: np.ndarray, vals: np.ndarray
@@ -764,46 +614,14 @@ class MeshAssembler:
 
         Notes
         -----
-        Performs parallel assembly using local element contributions.
-        Matrix entries are accumulated using ADD_VALUES mode.
-        Supports both uniform and mixed-element meshes.
-
-        When the Rust backend (``fem_shell_core``) is available and all
-        elements are covered, assembly uses COO triplets from Rust for
-        significantly faster sparse-matrix construction.
+        Uses the PyMeshAssembler (Rust) unified assembler exclusively.
+        Raises RuntimeError if the Rust assembler is not available.
         """
-        # PyMeshAssembler fast-path (unified Rust assembler)
         if self._rust is not None:
             rows, cols, vals = self._rust.assemble_k()
             return self._coo_to_petsc(rows, cols, vals)
 
-        # Rust fast-path: COO assembly from precomputed element matrices
-        if self._has_rust and self._all_elements_rust and not self._is_mixed_mesh:
-            ndof = self._dofs_array.shape[1]
-            ke_flat = np.ascontiguousarray(self._ke_array, dtype=np.float64).ravel()
-            rows, cols, vals = self._fsc.coo_assembly(self._dofs_array, ke_flat, ndof)
-            return self._coo_to_petsc(rows, cols, vals)
-
-        K = self._create_petsc_matrix()
-        K.setOption(PETSc.Mat.Option.NEW_NONZERO_ALLOCATION_ERR, False)
-
-        if self._is_mixed_mesh:
-            # Mixed mesh: use lists
-            for dofs, ke in zip(self._dofs_list, self._ke_list):
-                dofs_int = dofs.astype(PETSc.IntType)
-                ke_flat = ke.flatten(order="C")
-                K.setValuesLocal(dofs_int, dofs_int, ke_flat, addv=PETSc.InsertMode.ADD_VALUES)
-        else:
-            # Uniform mesh: use arrays (more efficient)
-            for e in range(self._dofs_array.shape[0]):
-                dofs = self._dofs_array[e].astype(PETSc.IntType)
-                ke = self._ke_array[e].flatten(order="C")  # Row-major flattening
-
-                # Use block insertion for better performance
-                K.setValuesLocal(dofs, dofs, ke, addv=PETSc.InsertMode.ADD_VALUES)
-
-        K.assemble()
-        return K
+        raise RuntimeError("Rust assembler not available — cannot assemble K")
 
     def assemble_mass_matrix(self) -> PETSc.Mat:
         """
@@ -816,42 +634,14 @@ class MeshAssembler:
 
         Notes
         -----
-        Supports both uniform and mixed-element meshes.
-
-        When the Rust backend is available the COO fast-path is used,
-        mirroring :meth:`assemble_stiffness_matrix`.
+        Uses the PyMeshAssembler (Rust) unified assembler exclusively.
+        Raises RuntimeError if the Rust assembler is not available.
         """
-        # PyMeshAssembler fast-path
         if self._rust is not None:
             rows, cols, vals = self._rust.assemble_m()
             return self._coo_to_petsc(rows, cols, vals)
 
-        # Rust fast-path: COO assembly from precomputed element matrices
-        if self._has_rust and self._all_elements_rust and not self._is_mixed_mesh:
-            ndof = self._dofs_array.shape[1]
-            me_flat = np.ascontiguousarray(self._me_array, dtype=np.float64).ravel()
-            rows, cols, vals = self._fsc.coo_assembly(self._dofs_array, me_flat, ndof)
-            return self._coo_to_petsc(rows, cols, vals)
-
-        M = self._create_petsc_matrix()
-        M.setOption(PETSc.Mat.Option.NEW_NONZERO_ALLOCATION_ERR, False)
-
-        if self._is_mixed_mesh:
-            # Mixed mesh: use lists
-            for dofs, me in zip(self._dofs_list, self._me_list):
-                dofs_int = dofs.astype(PETSc.IntType)
-                me_flat = me.flatten(order="C")
-                M.setValuesLocal(dofs_int, dofs_int, me_flat, addv=PETSc.InsertMode.ADD_VALUES)
-        else:
-            # Uniform mesh: use arrays
-            for e in range(self._dofs_array.shape[0]):
-                dofs = self._dofs_array[e].astype(PETSc.IntType)
-                me = self._me_array[e].flatten(order="C")
-
-                M.setValuesLocal(dofs, dofs, me, addv=PETSc.InsertMode.ADD_VALUES)
-
-        M.assemble()
-        return M
+        raise RuntimeError("Rust assembler not available — cannot assemble M")
 
     def assemble_load_vector(self, load_condition) -> PETSc.Vec:
         """
@@ -1068,48 +858,9 @@ class MeshAssembler:
             rows, cols, vals = self._rust.assemble_kt(u_c)
             return self._coo_to_petsc(rows, cols, vals)
 
-        if not self._has_rust or not self._rust_groups:
-            raise RuntimeError(
-                "Rust backend (fem_shell_core) required for tangent stiffness assembly. "
-                "Install with: cd crates/fem_shell_core && maturin develop --release"
-            )
-
-        all_rows, all_cols, all_vals = [], [], []
-
-        for g in self._rust_groups:
-            # Gather per-element displacements from the global vector
-            u_local = np.ascontiguousarray(u[g["dofs"]], dtype=np.float64)
-
-            if g["etype"] == "MITC3":
-                kt_flat = self._fsc.batch_kt_mitc3(
-                    g["coords"],
-                    u_local,
-                    g["E"],
-                    g["nu"],
-                    g["thickness"],
-                    g["shear_correction"],
-                )
-            else:
-                kt_flat = self._fsc.batch_kt_mitc4(
-                    g["coords"],
-                    u_local,
-                    g["E"],
-                    g["nu"],
-                    g["thickness"],
-                    g["shear_correction"],
-                )
-
-            rows, cols, vals = self._fsc.coo_assembly(
-                g["dofs"], kt_flat, g["ndof"]
-            )
-            all_rows.append(rows)
-            all_cols.append(cols)
-            all_vals.append(vals)
-
-        return self._coo_to_petsc(
-            np.concatenate(all_rows),
-            np.concatenate(all_cols),
-            np.concatenate(all_vals),
+        raise RuntimeError(
+            "Rust backend (fem_shell_core) required for tangent stiffness assembly. "
+            "Install with: cd crates/fem_shell_core && maturin develop --release"
         )
 
     def assemble_internal_forces(
@@ -1149,45 +900,7 @@ class MeshAssembler:
             vec.setArray(fint)
             return vec
 
-        if not self._has_rust or not self._rust_groups:
-            raise RuntimeError(
-                "Rust backend (fem_shell_core) required for internal force assembly. "
-                "Install with: cd crates/fem_shell_core && maturin develop --release"
-            )
-
-        fint = np.zeros(self.dofs_count, dtype=np.float64)
-
-        for g in self._rust_groups:
-            u_local = np.ascontiguousarray(u[g["dofs"]], dtype=np.float64)
-
-            if g["etype"] == "MITC3":
-                fint_flat = self._fsc.batch_fint_mitc3(
-                    g["coords"],
-                    u_local,
-                    g["E"],
-                    g["nu"],
-                    g["thickness"],
-                    g["shear_correction"],
-                    nonlinear,
-                )
-                fint_local = fint_flat.reshape(-1, 18)
-            else:
-                fint_flat = self._fsc.batch_fint_mitc4(
-                    g["coords"],
-                    u_local,
-                    g["E"],
-                    g["nu"],
-                    g["thickness"],
-                    g["shear_correction"],
-                    nonlinear,
-                )
-                fint_local = fint_flat.reshape(-1, 24)
-
-            # Scatter into global vector (handles shared DOFs correctly)
-            np.add.at(fint, g["dofs"], fint_local)
-
-        vec = PETSc.Vec().create(self.comm)
-        vec.setSizes(self.dofs_count)
-        vec.setUp()
-        vec.setArray(fint)
-        return vec
+        raise RuntimeError(
+            "Rust backend (fem_shell_core) required for internal force assembly. "
+            "Install with: cd crates/fem_shell_core && maturin develop --release"
+        )

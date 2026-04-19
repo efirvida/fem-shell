@@ -1,3 +1,5 @@
+import logging
+import time
 from pathlib import Path
 from typing import Dict, Optional, Tuple
 from xml.etree.ElementTree import Element, SubElement, ElementTree
@@ -10,6 +12,8 @@ from slepc4py import SLEPc
 from fem_shell.core.bc import BoundaryConditionManager
 from fem_shell.core.mesh import MeshModel
 from fem_shell.solvers.solver import Solver
+
+logger = logging.getLogger(__name__)
 
 
 class ModalSolver(Solver):
@@ -26,19 +30,50 @@ class ModalSolver(Solver):
         self.participation_factors: Optional[np.ndarray] = None
 
     def solve(self) -> Tuple[np.ndarray, np.ndarray]:
+        _t0 = time.perf_counter()
+        logger.info("[modal] START solve() — num_modes=%d", self.num_modes)
+
+        logger.info("[modal] assembling K...")
+        _t = time.perf_counter()
         K = self.domain.assemble_stiffness_matrix()
+        logger.info("[modal] K assembled in %.2fs — size=%s", time.perf_counter() - _t, K.getSize())
+
+        logger.info("[modal] assembling M...")
+        _t = time.perf_counter()
         M = self.domain.assemble_mass_matrix()
+        logger.info("[modal] M assembled in %.2fs — size=%s", time.perf_counter() - _t, M.getSize())
+
+        # Quick mass sanity check for consistent QUAD4/MITC4 mass matrix.
+        # For a consistent shell mass matrix: tr(M_trans) = 3 * (4/9) * total_mass
+        # (each of 4 nodes contributes integral(N_i^2)*area = area/9, times 3 DOFs).
+        # So: total_mass ≈ tr(M_trans) * 9/4 / 3 = tr(M_trans) * 3/4.
+        # We approximate tr(M_trans) ≈ tr(M) * (3/dofs_per_node) (translation fraction).
+        try:
+            m_diag = M.getDiagonal()
+            m_trace = m_diag.sum()
+            dofs_per_node = self.domain.dofs_per_node
+            # Fraction of DOFs that are translational (first 3 of each 6-DOF node)
+            trans_fraction = 3.0 / dofs_per_node if dofs_per_node > 0 else 0.5
+            total_mass_estimate = m_trace * trans_fraction * (9.0 / 4.0) / 3.0
+            logger.info(
+                "[modal] mass sanity check: tr(M)=%.1f, estimated total mass=%.1f kg (expected ~65000 kg)",
+                m_trace, total_mass_estimate,
+            )
+        except Exception as exc:
+            logger.warning("[modal] mass sanity check failed: %s", exc)
 
         F = K.createVecRight()
         F.set(0.0)
 
+        logger.info("[modal] applying boundary conditions...")
+        _t = time.perf_counter()
         self.bc_applier = BoundaryConditionManager(
             K, F, M, self.domain.dofs_per_node
         )
         self.bc_applier.apply_dirichlet(self.dirichlet_conditions)
         K_red, F_red, M_red = self.bc_applier.reduced_system
-
         n_red = K_red.getSize()[0]
+        logger.info("[modal] BC applied in %.2fs — reduced system size=%d", time.perf_counter() - _t, n_red)
         eff_num_modes = min(self.num_modes + 5, n_red)
 
         # Configure SLEPc eigensolver
@@ -64,7 +99,10 @@ class ModalSolver(Solver):
         eps.setFromOptions()
 
         try:
+            logger.info("[modal] SLEPc eps.solve() starting — eff_num_modes=%d reduced_size=%d", eff_num_modes, n_red)
+            _t = time.perf_counter()
             eps.solve()
+            logger.info("[modal] SLEPc eps.solve() done in %.2fs", time.perf_counter() - _t)
         except Exception as exc:
             self._cleanup(eps, K_red, M_red, F_red, F)
             raise RuntimeError(
