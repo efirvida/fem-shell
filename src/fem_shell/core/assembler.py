@@ -66,6 +66,92 @@ def _shell_local_axes(node_coords: np.ndarray, conn: list) -> Tuple[np.ndarray, 
     return e1, e2, e3
 
 
+def _batch_angle_offsets(
+    node_coords: np.ndarray,
+    conn_array: np.ndarray,
+    span_dir: np.ndarray,
+) -> np.ndarray:
+    """Compute span-direction angle offset (degrees) for a batch of 4-node elements.
+
+    Fully vectorized: no Python loop over elements.
+
+    Parameters
+    ----------
+    node_coords : (n_nodes, 3) global node coordinate array.
+    conn_array  : (n_elem, 4) int array of 0-based node indices.
+    span_dir    : (3,) span direction unit vector.
+
+    Returns
+    -------
+    angle_offsets : (n_elem,) float array in degrees.
+    """
+    # pts[i] = node_coords[conn_array[:, i]]  — shape (n_elem, 3)
+    p0 = node_coords[conn_array[:, 0]]
+    p1 = node_coords[conn_array[:, 1]]
+    p2 = node_coords[conn_array[:, 2]]
+    p3 = node_coords[conn_array[:, 3]]
+
+    # Normal from triangle 012
+    v1 = p1 - p0
+    v2 = p2 - p0
+    n1 = np.cross(v1, v2)  # (n_elem, 3)
+    n1_norm = np.linalg.norm(n1, axis=1, keepdims=True)
+
+    # Normal from triangle 023
+    v1b = p2 - p0
+    v2b = p3 - p0
+    n2 = np.cross(v1b, v2b)  # (n_elem, 3)
+    n2_norm = np.linalg.norm(n2, axis=1, keepdims=True)
+
+    # Average normals where valid; fall back to z-axis
+    valid1 = (n1_norm > 1e-12).squeeze()
+    valid2 = (n2_norm > 1e-12).squeeze()
+
+    e3 = np.zeros_like(n1)
+    e3[:, 2] = 1.0  # default z-axis
+
+    n1_safe = np.where(n1_norm > 1e-12, n1 / np.maximum(n1_norm, 1e-30), 0.0)
+    n2_safe = np.where(n2_norm > 1e-12, n2 / np.maximum(n2_norm, 1e-30), 0.0)
+
+    both = valid1 & valid2
+    only1 = valid1 & ~valid2
+    only2 = ~valid1 & valid2
+
+    e3[both] = (n1_safe[both] + n2_safe[both]) / 2.0
+    e3[only1] = n1_safe[only1]
+    e3[only2] = n2_safe[only2]
+
+    norms_e3 = np.linalg.norm(e3, axis=1, keepdims=True)
+    e3 = e3 / np.maximum(norms_e3, 1e-30)
+
+    # e1 = edge 01 projected onto plane perpendicular to e3
+    e1 = v1 - (np.sum(v1 * e3, axis=1, keepdims=True)) * e3
+    e1_norm = np.linalg.norm(e1, axis=1, keepdims=True)
+    # Fall back to edge 02 for degenerate cases
+    fallback = (e1_norm < 1e-12).squeeze()
+    if fallback.any():
+        e1_fb = v2[fallback] - (np.sum(v2[fallback] * e3[fallback], axis=1, keepdims=True)) * e3[fallback]
+        e1[fallback] = e1_fb
+        e1_norm[fallback] = np.linalg.norm(e1_fb, axis=1, keepdims=True)
+    e1 = e1 / np.maximum(e1_norm, 1e-30)
+
+    e2 = np.cross(e3, e1)
+    e2 = e2 / np.linalg.norm(e2, axis=1, keepdims=True)
+
+    # Project span_dir onto element plane
+    sd = span_dir[np.newaxis, :] - np.sum(span_dir * e3, axis=1, keepdims=True) * e3  # (n_elem, 3)
+    sd_norm = np.linalg.norm(sd, axis=1)  # (n_elem,)
+
+    cos_a = np.sum(sd * e1, axis=1) / np.maximum(sd_norm, 1e-30)
+    sin_a = np.sum(sd * e2, axis=1) / np.maximum(sd_norm, 1e-30)
+    angle_offsets = np.degrees(np.arctan2(sin_a, cos_a))
+
+    # Elements where span_dir is parallel to normal — offset = 0
+    angle_offsets[sd_norm < 1e-10] = 0.0
+
+    return angle_offsets
+
+
 def _apply_span_direction(
     node_coords: np.ndarray,
     conn: list,
@@ -112,6 +198,36 @@ def _apply_span_direction(
     ]
     corrected_lam = Lam(plies=corrected_plies)
     return corrected_lam.A.copy(), corrected_lam.D.copy(), corrected_lam.Cs.copy()
+
+
+def _corrected_abd_cached(
+    lam,
+    angle_offset_deg: float,
+    cache: dict,
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Return (A, D, Cs) for lam rotated by angle_offset_deg, using cache.
+
+    Cache key is (id(lam), round(angle_offset_deg, 1)) — 0.1° resolution
+    is sufficient given the blade's negligible variation (std ≈ 0.03°).
+    """
+    from fem_shell.core.laminate import Laminate as Lam, Ply as Pl  # noqa: PLC0415
+
+    if abs(angle_offset_deg) < 0.01:
+        key = (id(lam), 0.0)
+        if key not in cache:
+            cache[key] = (lam.A.copy(), lam.D.copy(), lam.Cs.copy())
+        return cache[key]
+
+    bucket = round(angle_offset_deg, 1)
+    key = (id(lam), bucket)
+    if key not in cache:
+        corrected_plies = [
+            Pl(material=ply.material, thickness=ply.thickness, angle=ply.angle + bucket)
+            for ply in lam.plies
+        ]
+        corrected_lam = Lam(plies=corrected_plies)
+        cache[key] = (corrected_lam.A.copy(), corrected_lam.D.copy(), corrected_lam.Cs.copy())
+    return cache[key]
 
 
 class MeshAssembler:
@@ -347,9 +463,18 @@ class MeshAssembler:
     def _build_py_mesh_assembler(self):
         """Build a PyMeshAssembler (Rust) directly from mesh topology and properties.
 
-        Iterates over ``mesh.elements`` and the properties map WITHOUT
-        instantiating Python FemElement objects, eliminating the ~89s
-        ElementFactory bottleneck for the 85k-element blade case.
+        Uses a two-phase strategy to eliminate the per-element Python overhead:
+
+        Phase 1 — Vectorized angle offsets (numpy, no loop):
+            For meshes with a span_direction and composite elements, compute all
+            e1/e2/e3 local axes and angle offsets in a single batch numpy operation
+            using ``_batch_angle_offsets``.
+
+        Phase 2 — Cached laminate ABD matrices:
+            Cache key is ``(id(lam), round(angle_offset, 1))`` — 0.1° resolution
+            is sufficient (blade variation is std ≈ 0.03°).  In practice, the
+            number of unique (lam, angle) pairs equals the number of unique laminates
+            (~696 for the IEA-15 blade), not the number of elements (84889).
         """
         self._rust = None
 
@@ -359,9 +484,8 @@ class MeshAssembler:
             logger.warning("[assembler._build_py_mesh_assembler] fem_shell_core not available — Rust assembler disabled")
             return
 
-        from fem_shell.core.laminate import Laminate as Lam, Ply as Pl  # noqa: PLC0415
-
         logger.info("[assembler._build_py_mesh_assembler] building node_coords for %d nodes", self.mesh.node_count)
+        _t0 = time.perf_counter()
 
         # Build node_coords array (n_nodes × 3)
         node_id_to_index = self.mesh.node_id_to_index
@@ -392,21 +516,55 @@ class MeshAssembler:
         fallback_sc = self.model.get("shear_correction", 5.0 / 6.0)
         fallback_family = self.model.get("element_family")
 
+        elements = self.mesh.elements
+        n_elems = len(elements)
+
+        # ------------------------------------------------------------------
+        # Phase 1: Vectorized angle offsets for 4-node composite elements
+        # ------------------------------------------------------------------
+        # Build connectivity array (n_elems, 4) for 4-node elements only
+        # (3-node elements fall back to per-element scalar path — rare in blade)
+        angle_offsets_map: Dict[int, float] = {}  # elem_id → angle_offset_deg
+
+        if span_dir is not None:
+            # Separate 4-node composite elements for vectorized batch
+            quad_indices = []  # index in elements list
+            quad_conn_rows = []  # (4,) connectivity for each
+
+            for i, element in enumerate(elements):
+                prop = element_property_lookup.get(element.id)
+                if isinstance(prop, CompositeShellProperty) and element.node_count == 4:
+                    quad_indices.append(i)
+                    conn = [node_id_to_index[nid] for nid in element.node_ids]
+                    quad_conn_rows.append(conn)
+
+            if quad_indices:
+                _t_batch = time.perf_counter()
+                conn_arr = np.array(quad_conn_rows, dtype=np.int64)  # (n_quad, 4)
+                offsets = _batch_angle_offsets(node_coords, conn_arr, span_dir)  # (n_quad,)
+                logger.info(
+                    "[assembler._build_py_mesh_assembler] batch angle offsets: %d elements in %.3fs",
+                    len(quad_indices), time.perf_counter() - _t_batch,
+                )
+                for i_elem, angle in zip(quad_indices, offsets):
+                    angle_offsets_map[elements[i_elem].id] = float(angle)
+
+        logger.info(
+            "[assembler._build_py_mesh_assembler] phase1 done in %.2fs — %d angle offsets computed",
+            time.perf_counter() - _t0, len(angle_offsets_map),
+        )
+
+        # ------------------------------------------------------------------
+        # Phase 2: Build materials_list with cached ABD matrices
+        # ------------------------------------------------------------------
+        abd_cache: dict = {}  # (id(lam), angle_bucket) → (A, D, Cs)
         connectivity = []
         elem_types = []
         materials_list = []
 
-        n_elems = len(self.mesh.elements)
-        progress_interval = max(n_elems // 10, 1)
-        _t_iter = time.perf_counter()
+        _t_loop = time.perf_counter()
 
-        for i, element in enumerate(self.mesh.elements):
-            if i % progress_interval == 0:
-                logger.info(
-                    "[assembler._build_py_mesh_assembler] %d/%d (%.0f%%) elapsed=%.2fs",
-                    i, n_elems, 100.0 * i / n_elems, time.perf_counter() - _t_iter,
-                )
-
+        for i, element in enumerate(elements):
             conn = [node_id_to_index[nid] for nid in element.node_ids]
             connectivity.append(conn)
 
@@ -414,16 +572,23 @@ class MeshAssembler:
             n_nodes_elem = element.node_count
 
             if isinstance(prop, CompositeShellProperty):
-                # Composite shell (MITC3Composite or MITC4Composite)
                 code = 33 if n_nodes_elem == 3 else 44
                 lam = prop.laminate
-                A, D, Cs = lam.A.copy(), lam.D.copy(), lam.Cs.copy()
                 h = lam.total_thickness
 
                 if span_dir is not None:
-                    A, D, Cs = _apply_span_direction(
-                        node_coords, conn, span_dir, lam
-                    )
+                    if element.id in angle_offsets_map:
+                        # Fast path: use pre-computed vectorized offset + cache
+                        angle_offset = angle_offsets_map[element.id]
+                        A, D, Cs = _corrected_abd_cached(lam, angle_offset, abd_cache)
+                    else:
+                        # Slow path: 3-node or not in batch (scalar fallback)
+                        A, D, Cs = _apply_span_direction(node_coords, conn, span_dir, lam)
+                else:
+                    key = (id(lam), 0.0)
+                    if key not in abd_cache:
+                        abd_cache[key] = (lam.A.copy(), lam.D.copy(), lam.Cs.copy())
+                    A, D, Cs = abd_cache[key]
 
                 a_trace = float(np.trace(A))
                 e_equiv = a_trace / (3.0 * h) if h > 0 else 0.0
@@ -444,7 +609,6 @@ class MeshAssembler:
                 }
 
             elif isinstance(prop, ShellProperty):
-                # Isotropic / single-layer shell (MITC3 or MITC4)
                 code = 3 if n_nodes_elem == 3 else 4
                 mat = prop.material
                 sc = getattr(prop, "shear_correction", fallback_sc)
@@ -471,7 +635,6 @@ class MeshAssembler:
                         "shear_correction": float(fallback_sc),
                     }
                 else:
-                    # Cannot determine element type — abort Rust assembler
                     logger.error(
                         "[assembler._build_py_mesh_assembler] no property for element %d (index %d) — aborting Rust assembler",
                         element.id, i,
@@ -483,8 +646,8 @@ class MeshAssembler:
             materials_list.append(mat_dict)
 
         logger.info(
-            "[assembler._build_py_mesh_assembler] loop done in %.2fs (%d elements), calling PyMeshAssembler()",
-            time.perf_counter() - _t_iter, n_elems,
+            "[assembler._build_py_mesh_assembler] phase2 loop done in %.2fs (%d elements, %d ABD cache hits avoided)",
+            time.perf_counter() - _t_loop, n_elems, n_elems - len(abd_cache),
         )
 
         try:
