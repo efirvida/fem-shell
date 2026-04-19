@@ -263,22 +263,16 @@ class TestNewtonRaphsonConsistency:
 
 
 class TestRustGroupCoverage:
-    """Verify _prepare_rust_batch_data sets up groups correctly."""
+    """Verify the Rust assembler is wired up correctly via PyMeshAssembler."""
 
-    def test_all_elements_covered(self, assembler):
+    def test_rust_flags(self, assembler):
         assert assembler._has_rust
         assert assembler._all_elements_rust
-        assert len(assembler._rust_groups) >= 1
 
-    def test_group_element_count(self, assembler):
-        total = sum(g["n_elem"] for g in assembler._rust_groups)
-        assert total == len(assembler._element_map)
+    def test_py_mesh_assembler_built(self, assembler):
+        """_rust must be a PyMeshAssembler instance after __init__."""
+        assert assembler._rust is not None
 
-    def test_group_coords_shape(self, assembler):
-        for g in assembler._rust_groups:
-            if g["etype"] == "MITC3":
-                assert g["coords"].shape[1] == 9
-                assert g["dofs"].shape[1] == 18
-            else:
-                assert g["coords"].shape[1] == 12
-                assert g["dofs"].shape[1] == 24
+    def test_rust_groups_stub_empty(self, assembler):
+        """_rust_groups is kept as an empty list (dead-code stub) for back-compat."""
+        assert assembler._rust_groups == []

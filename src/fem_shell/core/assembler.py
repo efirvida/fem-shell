@@ -1,16 +1,117 @@
 import logging
 import time
-from typing import Dict, Iterable, Optional
+from typing import Dict, Iterable, Optional, Tuple
 
 import numpy as np
 from mpi4py import MPI
 from petsc4py import PETSc
 
 from fem_shell.core.mesh import MeshModel
-from fem_shell.core.properties import ShellPropertyType
+from fem_shell.core.properties import CompositeShellProperty, ShellProperty, ShellPropertyType
 from fem_shell.elements import ElementFactory, ElementFamily, FemElement
 
 logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Module-level helpers (no FemElement instantiation)
+# ---------------------------------------------------------------------------
+
+def _shell_local_axes(node_coords: np.ndarray, conn: list) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Compute local orthonormal axes (e1, e2, e3) for a shell element.
+
+    Replicates the logic in MITC4._compute_local_coordinates / MITC3 without
+    instantiating any Python element object.  Works for 3-node and 4-node elements.
+
+    Parameters
+    ----------
+    node_coords : (n_nodes_total, 3) float array — global node coordinates.
+    conn        : list of 0-based indices into node_coords for this element.
+
+    Returns
+    -------
+    e1, e2, e3 : unit vectors defining the local coordinate system.
+    """
+    pts = [node_coords[c] for c in conn]
+
+    normals = []
+    v1 = pts[1] - pts[0]
+    v2 = pts[2] - pts[0]
+    n1 = np.cross(v1, v2)
+    if np.linalg.norm(n1) > 1e-12:
+        normals.append(n1 / np.linalg.norm(n1))
+
+    if len(pts) >= 4:
+        v1b = pts[2] - pts[0]
+        v2b = pts[3] - pts[0]
+        n2 = np.cross(v1b, v2b)
+        if np.linalg.norm(n2) > 1e-12:
+            normals.append(n2 / np.linalg.norm(n2))
+
+    if normals:
+        e3 = np.mean(normals, axis=0)
+        e3 /= np.linalg.norm(e3)
+    else:
+        e3 = np.array([0.0, 0.0, 1.0])
+
+    e1 = pts[1] - pts[0]
+    e1 = e1 - np.dot(e1, e3) * e3
+    if np.linalg.norm(e1) < 1e-12:
+        e1 = pts[2] - pts[0]
+        e1 = e1 - np.dot(e1, e3) * e3
+    e1 /= np.linalg.norm(e1)
+
+    e2 = np.cross(e3, e1)
+    e2 /= np.linalg.norm(e2)
+    return e1, e2, e3
+
+
+def _apply_span_direction(
+    node_coords: np.ndarray,
+    conn: list,
+    span_dir: np.ndarray,
+    lam,
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Return corrected (A, D, Cs) matrices for a laminate given a span direction.
+
+    Replicates MITC4Composite._recompute_abd_for_span without instantiating
+    the element object.  If the angle offset is negligible (< 0.01°) returns
+    the original laminate matrices.
+
+    Parameters
+    ----------
+    node_coords : global node coordinate array (n_nodes_total, 3).
+    conn        : 0-based connectivity indices for this element.
+    span_dir    : 3-vector span direction in global coordinates.
+    lam         : Laminate object with .plies, .A, .D, .Cs.
+
+    Returns
+    -------
+    A, D, Cs : (3,3), (3,3), (2,2) corrected stiffness matrices.
+    """
+    from fem_shell.core.laminate import Laminate as Lam, Ply as Pl  # noqa: PLC0415
+
+    e1, e2, e3 = _shell_local_axes(node_coords, conn)
+
+    sd = span_dir - float(np.dot(span_dir, e3)) * e3
+    sd_len = float(np.linalg.norm(sd))
+    if sd_len < 1e-10:
+        return lam.A.copy(), lam.D.copy(), lam.Cs.copy()
+
+    sd_hat = sd / sd_len
+    cos_a = float(np.dot(sd_hat, e1))
+    sin_a = float(np.dot(sd_hat, e2))
+    angle_offset_deg = float(np.degrees(np.arctan2(sin_a, cos_a)))
+
+    if abs(angle_offset_deg) < 0.01:
+        return lam.A.copy(), lam.D.copy(), lam.Cs.copy()
+
+    corrected_plies = [
+        Pl(material=ply.material, thickness=ply.thickness, angle=ply.angle + angle_offset_deg)
+        for ply in lam.plies
+    ]
+    corrected_lam = Lam(plies=corrected_plies)
+    return corrected_lam.A.copy(), corrected_lam.D.copy(), corrected_lam.Cs.copy()
 
 
 class MeshAssembler:
@@ -36,6 +137,7 @@ class MeshAssembler:
         self.model = model["elements"]
         self.comm = MPI.COMM_WORLD
         self._element_map: Dict[int, FemElement] = {}
+        self._element_map_built: bool = False  # lazy flag
         self._dofs_array: np.ndarray = None
         self._node_dofs_map: Dict[int, Iterable] = {}
         self.dofs_per_node: int = 0
@@ -48,7 +150,7 @@ class MeshAssembler:
 
         t1 = time.perf_counter()
         self._precompute_elements()
-        logger.info("[assembler] _precompute_elements done in %.2fs — elements=%d", time.perf_counter() - t1, len(self._element_map))
+        logger.info("[assembler] _precompute_elements done in %.2fs — elements=%d", time.perf_counter() - t1, len(self.mesh.elements))
 
         t2 = time.perf_counter()
         self._compute_sparsity_pattern()
@@ -73,32 +175,23 @@ class MeshAssembler:
     }
 
     def _precompute_elements(self):
-        """Precompute element DOF connectivity arrays.
+        """Compute element DOF connectivity without instantiating FemElement objects.
 
-        Uses mesh.node_id_to_index mapping to ensure DOF indices are consecutive
-        starting from 0, regardless of the original node IDs in the mesh.
-        
-        CRITICAL FIX FOR MIXED MESHES:
-        We must first determine the MAXIMUM DOFs per node required by any element type
-        in the model. This defines the "global stride".
-        
-        If we used variable strides (e.g. node_idx * 3 for solids, node_idx * 6 for shells),
-        we would get index collisions (aliasing) where different nodes map to the
-        same DOF index.
+        Builds DOF arrays directly from mesh topology and the known dofs_per_node
+        derived from the element family declaration.  ElementFactory is no longer
+        called here — element Python objects are created lazily on first demand.
         """
         elements = self.mesh.elements
         if not elements:
             return
 
         # --- Determine global maximum stride from element family ---
-        # For uniform-family meshes (the common case) this is O(1).
-        # For mixed meshes we inspect all families present in the model.
         element_family = self.model.get("element_family")
         if element_family is not None and element_family in self._FAMILY_PROPERTIES:
-            # Fast path: single known family
             self.dofs_per_node, self.spatial_dim = self._FAMILY_PROPERTIES[element_family]
         else:
-            # Mixed / unknown family: probe with a single element per distinct node count
+            # Mixed / unknown family: probe with one element per distinct node count.
+            # This is O(distinct_node_counts) — typically 1-3 probes, not 85k.
             max_dofs_per_node = 0
             max_spatial_dim = 0
             seen_node_counts = set()
@@ -115,134 +208,33 @@ class MeshAssembler:
             self.dofs_per_node = max_dofs_per_node
             self.spatial_dim = max_spatial_dim
 
-        # --- Assemble element data (single pass) ---
-        dofs_list = []
-        ke_list = []
-        me_list = []
-        dof_sizes = set()
-
+        # --- Build DOF arrays directly from mesh topology ---
         node_id_to_index = self.mesh.node_id_to_index
-        n_elements = len(elements)
-        progress_interval = max(n_elements // 10, 1)
-        _t_loop_start = time.perf_counter()
-        _t_factory = 0.0
-        _t_dofs = 0.0
-        _t_km = 0.0
+        dpn = self.dofs_per_node
+        dofs_list = []
+        dof_sizes = set()
+        _t0 = time.perf_counter()
 
-        # Build per-element property lookup from properties map (if provided).
-        # Maps element_id -> ShellPropertyType for O(1) access in the loop.
-        properties_map: Optional[Dict[str, ShellPropertyType]] = self.model.get("properties")
-        element_property_lookup: Dict[int, ShellPropertyType] = {}
-        if properties_map is not None:
-            for set_name, prop in properties_map.items():
-                if set_name in self.mesh.element_sets:
-                    for elem in self.mesh.element_sets[set_name].elements:
-                        element_property_lookup[elem.id] = prop
-
-        for idx, element in enumerate(elements):
-            if idx % progress_interval == 0:
-                elapsed = time.perf_counter() - _t_loop_start
-                rate = idx / elapsed if elapsed > 0 else 0
-                eta = (n_elements - idx) / rate if rate > 0 else 0
-                logger.info(
-                    "[assembler._precompute] %d/%d (%.0f%%) | elapsed=%.1fs rate=%.0f/s ETA=%.1fs"
-                    " | t_factory=%.2fs t_dofs=%.2fs t_km=%.2fs",
-                    idx, n_elements, 100 * idx / n_elements,
-                    elapsed, rate, eta,
-                    _t_factory, _t_dofs, _t_km,
-                )
-                print(
-                    f"\r  Precomputing element matrices... {idx}/{n_elements}"
-                    f" ({100 * idx // n_elements}%)",
-                    end="",
-                    flush=True,
-                )
-
-            shell_property = None
-            # Base model for the factory: always strip the 'properties' key
-            # since it is consumed by the assembler, not the element constructor.
-            element_model = {k: v for k, v in self.model.items() if k != "properties"}
-
-            if element.id in element_property_lookup:
-                # New path: per-element-set property via ShellPropertyType
-                shell_property = element_property_lookup[element.id]
-                # Strip legacy keys that conflict with shell_property kwargs
-                element_model = {
-                    k: v
-                    for k, v in element_model.items()
-                    if k not in ("material", "thickness", "laminate")
-                }
-            elif (
-                element.thickness is not None
-                and element_model.get("element_family") == ElementFamily.SHELL
-            ):
-                # Deprecated path: per-element thickness override from mesh
-                import warnings
-
-                warnings.warn(
-                    "Per-element thickness via MeshElement.thickness is deprecated. "
-                    "Use a 'properties' dict mapping element-set names to "
-                    "ShellProperty / CompositeShellProperty instead.",
-                    DeprecationWarning,
-                    stacklevel=1,
-                )
-                element_model = {**element_model, "thickness": element.thickness}
-
-            _t0 = time.perf_counter()
-            fem_element = ElementFactory.get_element(
-                mesh_element=element, shell_property=shell_property, **element_model
-            )
-            _t_factory += time.perf_counter() - _t0
-
-            if not fem_element:
-                continue
-
-            # Remap DOFs using the GLOBAL stride to avoid aliasing
-            _t0 = time.perf_counter()
-            remapped_dof_indices = {}
-            for node_id in fem_element.node_ids:
-                node_index = node_id_to_index[node_id]
-                
-                # ALWAYS use the global max stride
-                start_dof = node_index * self.dofs_per_node
-                
-                # The element takes only the DOFs it needs (e.g. 3) from the block of 6
-                # This leaves the angular DOFs (3-5) "empty" for solid nodes, which is fine.
-                element_dofs_count = fem_element.dofs_per_node
-                
-                # We simply map to the first N slots of the node's block
-                end_dof = start_dof + element_dofs_count
-                remapped_dof_indices[node_id] = tuple(range(start_dof, end_dof))
-
-            self._node_dofs_map.update(remapped_dof_indices)
-
+        for element in elements:
+            node_ids = element.node_ids
             dofs = np.array(
-                [dof for node_id in fem_element.node_ids for dof in remapped_dof_indices[node_id]],
+                [node_id_to_index[nid] * dpn + d for nid in node_ids for d in range(dpn)],
                 dtype=np.int64,
             )
             dof_sizes.add(len(dofs))
-            _t_dofs += time.perf_counter() - _t0
-
-            self._element_map[element.id] = fem_element
             dofs_list.append(dofs)
+            # Populate _node_dofs_map for legacy callers
+            for nid in node_ids:
+                if nid not in self._node_dofs_map:
+                    start = node_id_to_index[nid] * dpn
+                    self._node_dofs_map[nid] = tuple(range(start, start + dpn))
 
-            # NOTE: K and M are NOT computed here — assembly is done entirely
-            # by the Rust PyMeshAssembler. Computing them in Python would be
-            # dead code and waste ~165s on 85k composite elements.
-            _t_km += 0.0  # kept for timing instrumentation consistency
-
-        print(
-            f"\r  Precomputing element matrices... {n_elements}/{n_elements} (100%)",
-            flush=True,
-        )
         logger.info(
-            "[assembler._precompute] DONE total=%.2fs | t_factory=%.2fs t_dofs=%.2fs t_km=%.2fs",
-            time.perf_counter() - _t_loop_start, _t_factory, _t_dofs, _t_km,
+            "[assembler._precompute] DOF arrays built in %.2fs — %d elements, dofs_per_node=%d",
+            time.perf_counter() - _t0, len(elements), dpn,
         )
 
-        # Check if all elements have the same DOF count (uniform mesh)
         self._is_mixed_mesh = len(dof_sizes) > 1
-
         if self._is_mixed_mesh:
             self._dofs_list = dofs_list
             self._dofs_array = None
@@ -280,139 +272,84 @@ class MeshAssembler:
         self._row_nnz = np.array([len(s) for s in nnz], dtype=PETSc.IntType)
 
     def _prepare_rust_batch_data(self):
-        """Prepare element groups for Rust batch computation.
-
-        Groups elements by (element_type, E, nu, thickness, shear_correction)
-        for batch processing metadata. This populates ``_rust_groups``,
-        ``_rust_composite_groups``, ``_has_rust``, and ``_all_elements_rust``
-        which are used by tests and introspection code.
-
-        NOTE: The actual K/M assembly now goes through ``self._rust``
-        (PyMeshAssembler) exclusively. These groups are kept for compatibility.
-        """
+        """Stub kept for backward compatibility. No-op since batch groups are
+        no longer used — all K/M assembly goes through ``self._rust`` directly."""
         self._rust_groups = []
         self._rust_composite_groups = []
         self._has_rust = False
         self._all_elements_rust = False
-
         try:
             import fem_shell_core  # noqa: F401
-
             self._has_rust = True
+            self._all_elements_rust = True
         except ImportError:
+            pass
+
+    # ------------------------------------------------------------------
+    # Lazy element map: only built when needed for body loads / stress stiffening
+    # ------------------------------------------------------------------
+
+    def _ensure_element_map(self) -> None:
+        """Build ``_element_map`` on first demand.
+
+        The element map is expensive to construct (~89s for 85k elements) and is
+        only needed for body-load assembly and geometric stiffness.  All K/M
+        assembly goes through ``self._rust`` (PyMeshAssembler) and does not
+        require Python element objects.
+        """
+        if self._element_map_built:
             return
 
-        from fem_shell.elements.MITC3 import MITC3
-        from fem_shell.elements.MITC3_composite import MITC3Composite
-        from fem_shell.elements.MITC4 import MITC4
-        from fem_shell.elements.MITC4_composite import MITC4Composite
+        logger.info("[assembler._ensure_element_map] building element map lazily (%d elements)…", len(self.mesh.elements))
+        _t0 = time.perf_counter()
 
-        groups: dict = {}
-        composite_groups: dict = {}
-        elem_list = list(self._element_map.values())
+        elements = self.mesh.elements
+        node_id_to_index = self.mesh.node_id_to_index
 
-        for e, fem_elem in enumerate(elem_list):
-            if isinstance(fem_elem, MITC3Composite):
-                key = "MITC3_composite"
-                if key not in composite_groups:
-                    composite_groups[key] = {"indices": [], "coords": [], "etype": key}
-                composite_groups[key]["indices"].append(e)
-                composite_groups[key]["coords"].append(fem_elem._initial_coords.ravel())
-                continue
+        # Build property lookup
+        properties_map: Optional[Dict[str, ShellPropertyType]] = self.model.get("properties")
+        element_property_lookup: Dict[int, ShellPropertyType] = {}
+        if properties_map is not None:
+            for set_name, prop in properties_map.items():
+                if set_name in self.mesh.element_sets:
+                    for elem in self.mesh.element_sets[set_name].elements:
+                        element_property_lookup[elem.id] = prop
 
-            if isinstance(fem_elem, MITC4Composite):
-                key = "MITC4_composite"
-                if key not in composite_groups:
-                    composite_groups[key] = {"indices": [], "coords": [], "etype": key}
-                composite_groups[key]["indices"].append(e)
-                composite_groups[key]["coords"].append(fem_elem._initial_coords.ravel())
-                continue
+        for element in elements:
+            shell_property = element_property_lookup.get(element.id)
+            element_model = {k: v for k, v in self.model.items() if k != "properties"}
 
-            if isinstance(fem_elem, MITC3):
-                etype = "MITC3"
-            elif isinstance(fem_elem, MITC4):
-                etype = "MITC4"
-            else:
-                continue
-
-            mat = fem_elem.material
-            sc = getattr(fem_elem, "_shear_correction_factor", 5.0 / 6.0)
-            key = (etype, mat.E, mat.nu, mat.rho, fem_elem.thickness, sc)
-
-            if key not in groups:
-                groups[key] = {
-                    "indices": [],
-                    "coords": [],
-                    "etype": etype,
-                    "E": mat.E,
-                    "nu": mat.nu,
-                    "rho": mat.rho,
-                    "thickness": fem_elem.thickness,
-                    "shear_correction": sc,
-                }
-            groups[key]["indices"].append(e)
-            groups[key]["coords"].append(fem_elem._initial_coords.ravel())
-
-        # Build isotropic groups
-        for g in groups.values():
-            indices = np.array(g["indices"], dtype=np.intp)
-            ndof = 18 if g["etype"] == "MITC3" else 24
-
-            if self._is_mixed_mesh:
-                dofs = np.array(
-                    [self._dofs_list[i] for i in indices], dtype=np.int64
+            if shell_property is not None:
+                element_model = {k: v for k, v in element_model.items()
+                                 if k not in ("material", "thickness", "laminate")}
+            elif (element.thickness is not None
+                  and element_model.get("element_family") == ElementFamily.SHELL):
+                import warnings
+                warnings.warn(
+                    "Per-element thickness via MeshElement.thickness is deprecated. "
+                    "Use a 'properties' dict mapping element-set names to "
+                    "ShellProperty / CompositeShellProperty instead.",
+                    DeprecationWarning,
+                    stacklevel=2,
                 )
-            else:
-                dofs = self._dofs_array[indices].copy()
+                element_model = {**element_model, "thickness": element.thickness}
 
-            self._rust_groups.append(
-                {
-                    "etype": g["etype"],
-                    "coords": np.array(g["coords"], dtype=np.float64),
-                    "dofs": dofs,
-                    "ndof": ndof,
-                    "E": g["E"],
-                    "nu": g["nu"],
-                    "rho": g["rho"],
-                    "thickness": g["thickness"],
-                    "shear_correction": g["shear_correction"],
-                    "n_elem": len(indices),
-                    "orig_indices": indices.tolist(),
-                }
+            fem_element = ElementFactory.get_element(
+                mesh_element=element, shell_property=shell_property, **element_model
             )
+            if fem_element:
+                self._element_map[element.id] = fem_element
 
-        # Build composite groups
-        for g in composite_groups.values():
-            indices = np.array(g["indices"], dtype=np.intp)
-            ndof = 18 if g["etype"] == "MITC3_composite" else 24
-
-            if self._is_mixed_mesh:
-                dofs = np.array(
-                    [self._dofs_list[i] for i in indices], dtype=np.int64
-                )
-            else:
-                dofs = self._dofs_array[indices].copy()
-
-            self._rust_composite_groups.append(
-                {
-                    "etype": g["etype"],
-                    "coords": np.array(g["coords"], dtype=np.float64),
-                    "dofs": dofs,
-                    "ndof": ndof,
-                    "n_elem": len(indices),
-                    "orig_indices": indices.tolist(),
-                }
-            )
-
-        n_rust = sum(g["n_elem"] for g in self._rust_groups)
-        n_rust += sum(g["n_elem"] for g in self._rust_composite_groups)
-        self._all_elements_rust = n_rust == len(elem_list)
+        self._element_map_built = True
+        logger.info("[assembler._ensure_element_map] built %d elements in %.2fs",
+                    len(self._element_map), time.perf_counter() - _t0)
 
     def _build_py_mesh_assembler(self):
-        """Build a PyMeshAssembler (Rust) from the precomputed element data.
+        """Build a PyMeshAssembler (Rust) directly from mesh topology and properties.
 
-        This provides a single unified Rust assembler. The ``self._rust`` attribute
-        is set when construction succeeds; otherwise it is ``None``.
+        Iterates over ``mesh.elements`` and the properties map WITHOUT
+        instantiating Python FemElement objects, eliminating the ~89s
+        ElementFactory bottleneck for the 85k-element blade case.
         """
         self._rust = None
 
@@ -422,21 +359,7 @@ class MeshAssembler:
             logger.warning("[assembler._build_py_mesh_assembler] fem_shell_core not available — Rust assembler disabled")
             return
 
-        from fem_shell.elements.MITC3 import MITC3  # noqa: PLC0415
-        from fem_shell.elements.MITC3_composite import MITC3Composite  # noqa: PLC0415
-        from fem_shell.elements.MITC4 import MITC4  # noqa: PLC0415
-        from fem_shell.elements.MITC4_composite import MITC4Composite  # noqa: PLC0415
-        from fem_shell.elements.QUAD import QUAD4, QUAD8, QUAD9  # noqa: PLC0415
-        from fem_shell.elements.SOLID import (  # noqa: PLC0415
-            HEXA8,
-            HEXA20,
-            PYRAMID5,
-            PYRAMID13,
-            TETRA4,
-            TETRA10,
-            WEDGE6,
-            WEDGE15,
-        )
+        from fem_shell.core.laminate import Laminate as Lam, Ply as Pl  # noqa: PLC0415
 
         logger.info("[assembler._build_py_mesh_assembler] building node_coords for %d nodes", self.mesh.node_count)
 
@@ -448,97 +371,121 @@ class MeshAssembler:
             idx = node_id_to_index[node.id]
             node_coords[idx, :] = node.coords[:3]
 
-        # Build connectivity and material lists ordered by element_map
+        # Build per-element property lookup
+        properties_map: Optional[Dict[str, ShellPropertyType]] = self.model.get("properties")
+        element_property_lookup: Dict[int, ShellPropertyType] = {}
+        if properties_map is not None:
+            for set_name, prop in properties_map.items():
+                if set_name in self.mesh.element_sets:
+                    for elem in self.mesh.element_sets[set_name].elements:
+                        element_property_lookup[elem.id] = prop
+
+        # span_direction for fibre orientation correction
+        span_dir_raw = self.model.get("span_direction")
+        span_dir: Optional[np.ndarray] = (
+            np.asarray(span_dir_raw, dtype=np.float64) if span_dir_raw is not None else None
+        )
+
+        # Fallback for non-composite / non-property elements (isotropic path)
+        fallback_material = self.model.get("material")
+        fallback_thickness = self.model.get("thickness", 1.0)
+        fallback_sc = self.model.get("shear_correction", 5.0 / 6.0)
+        fallback_family = self.model.get("element_family")
+
         connectivity = []
         elem_types = []
         materials_list = []
 
-        _QUAD_TYPE_CODE = {QUAD4: 104, QUAD8: 108, QUAD9: 109}
-        _SOLID_TYPE_CODE = {
-            HEXA8: 208, HEXA20: 220,
-            TETRA4: 304, TETRA10: 310,
-            WEDGE6: 306, WEDGE15: 315,
-            PYRAMID5: 305, PYRAMID13: 313,
-        }
-
-        n_elems = len(self._element_map)
-        logger.info("[assembler._build_py_mesh_assembler] iterating %d elements for connectivity/materials", n_elems)
+        n_elems = len(self.mesh.elements)
+        progress_interval = max(n_elems // 10, 1)
         _t_iter = time.perf_counter()
-        _unknown_types = []
 
-        for i, fem_elem in enumerate(self._element_map.values()):
-            if i % max(n_elems // 10, 1) == 0:
-                logger.info("[assembler._build_py_mesh_assembler] connectivity %d/%d (%.0f%%) elapsed=%.2fs",
-                            i, n_elems, 100 * i / n_elems, time.perf_counter() - _t_iter)
+        for i, element in enumerate(self.mesh.elements):
+            if i % progress_interval == 0:
+                logger.info(
+                    "[assembler._build_py_mesh_assembler] %d/%d (%.0f%%) elapsed=%.2fs",
+                    i, n_elems, 100.0 * i / n_elems, time.perf_counter() - _t_iter,
+                )
 
-            # 0-based node indices
-            conn = [node_id_to_index[nid] for nid in fem_elem.node_ids]
+            conn = [node_id_to_index[nid] for nid in element.node_ids]
             connectivity.append(conn)
 
-            # Determine element type code
-            elem_cls = type(fem_elem)
-            if isinstance(fem_elem, (MITC3, MITC3Composite)):
-                code = 33 if isinstance(fem_elem, MITC3Composite) else 3
-            elif isinstance(fem_elem, (MITC4, MITC4Composite)):
-                code = 44 if isinstance(fem_elem, MITC4Composite) else 4
-            elif elem_cls in _QUAD_TYPE_CODE:
-                code = _QUAD_TYPE_CODE[elem_cls]
-            elif elem_cls in _SOLID_TYPE_CODE:
-                code = _SOLID_TYPE_CODE[elem_cls]
-            else:
-                # Unknown element type — fall back to None assembler
-                _unknown_types.append(elem_cls.__name__)
-                logger.error("[assembler._build_py_mesh_assembler] unknown element type: %s at index %d", elem_cls.__name__, i)
-                self._rust = None
-                return
-            elem_types.append(code)
+            prop = element_property_lookup.get(element.id)
+            n_nodes_elem = element.node_count
 
-            # Build material dict
-            if isinstance(fem_elem, MITC3Composite) or isinstance(fem_elem, MITC4Composite):
-                h = fem_elem.thickness
-                a_trace = np.trace(fem_elem._A_matrix)
+            if isinstance(prop, CompositeShellProperty):
+                # Composite shell (MITC3Composite or MITC4Composite)
+                code = 33 if n_nodes_elem == 3 else 44
+                lam = prop.laminate
+                A, D, Cs = lam.A.copy(), lam.D.copy(), lam.Cs.copy()
+                h = lam.total_thickness
+
+                if span_dir is not None:
+                    A, D, Cs = _apply_span_direction(
+                        node_coords, conn, span_dir, lam
+                    )
+
+                a_trace = float(np.trace(A))
                 e_equiv = a_trace / (3.0 * h) if h > 0 else 0.0
+                mpa = sum(ply.material.rho * ply.thickness for ply in lam.plies)
+                rot_inertia = sum(
+                    ply.material.rho * (ply.z_top**3 - ply.z_bottom**3) / 3.0
+                    for ply in lam.plies
+                )
                 mat_dict = {
                     "type": "composite",
-                    "cm": fem_elem._A_matrix.ravel().tolist(),
-                    "cb": fem_elem._D_matrix.ravel().tolist(),
-                    "cs": fem_elem._Cs_matrix.ravel().tolist(),
+                    "cm": A.ravel().tolist(),
+                    "cb": D.ravel().tolist(),
+                    "cs": Cs.ravel().tolist(),
                     "thickness": h,
                     "e_equiv": e_equiv,
-                    "mass_per_area": fem_elem._mass_per_area(),
-                    "rotational_inertia": fem_elem._rotational_inertia(),
+                    "mass_per_area": mpa,
+                    "rotational_inertia": rot_inertia,
                 }
-            elif isinstance(fem_elem, (QUAD4, QUAD8, QUAD9)):
-                mat = fem_elem.material
-                mat_dict = {
-                    "type": "plane_stress",
-                    "e": mat.E,
-                    "nu": mat.nu,
-                    "rho": mat.rho,
-                    "thickness": getattr(fem_elem, "thickness", 1.0),
-                }
-            elif isinstance(fem_elem, (HEXA8, HEXA20, TETRA4, TETRA10, WEDGE6, WEDGE15, PYRAMID5, PYRAMID13)):
-                mat = fem_elem.material
-                mat_dict = {
-                    "type": "solid_3d",
-                    "e": mat.E,
-                    "nu": mat.nu,
-                    "rho": mat.rho,
-                }
-            else:
-                mat = fem_elem.material
-                sc = getattr(fem_elem, "_shear_correction_factor", 5.0 / 6.0)
+
+            elif isinstance(prop, ShellProperty):
+                # Isotropic / single-layer shell (MITC3 or MITC4)
+                code = 3 if n_nodes_elem == 3 else 4
+                mat = prop.material
+                sc = getattr(prop, "shear_correction", fallback_sc)
                 mat_dict = {
                     "type": "isotropic",
-                    "e": mat.E,
-                    "nu": mat.nu,
-                    "rho": mat.rho,
-                    "thickness": fem_elem.thickness,
-                    "shear_correction": sc,
+                    "e": float(mat.E),
+                    "nu": float(mat.nu),
+                    "rho": float(mat.rho),
+                    "thickness": float(prop.thickness),
+                    "shear_correction": float(sc),
                 }
+
+            else:
+                # No property in lookup — use legacy model fields or skip
+                if fallback_family == ElementFamily.SHELL and fallback_material is not None:
+                    code = 3 if n_nodes_elem == 3 else 4
+                    mat = fallback_material
+                    mat_dict = {
+                        "type": "isotropic",
+                        "e": float(mat.E),
+                        "nu": float(mat.nu),
+                        "rho": float(mat.rho),
+                        "thickness": float(fallback_thickness),
+                        "shear_correction": float(fallback_sc),
+                    }
+                else:
+                    # Cannot determine element type — abort Rust assembler
+                    logger.error(
+                        "[assembler._build_py_mesh_assembler] no property for element %d (index %d) — aborting Rust assembler",
+                        element.id, i,
+                    )
+                    self._rust = None
+                    return
+
+            elem_types.append(code)
             materials_list.append(mat_dict)
 
-        logger.info("[assembler._build_py_mesh_assembler] connectivity loop done in %.2fs, calling PyMeshAssembler()", time.perf_counter() - _t_iter)
+        logger.info(
+            "[assembler._build_py_mesh_assembler] loop done in %.2fs (%d elements), calling PyMeshAssembler()",
+            time.perf_counter() - _t_iter, n_elems,
+        )
 
         try:
             _t_rust = time.perf_counter()
@@ -667,6 +614,9 @@ class MeshAssembler:
         f.setUp()
         f.zeroEntries()
 
+        # Ensure element map is built (lazy — only constructed on first body-load call)
+        self._ensure_element_map()
+
         # Compute element load vectors
         fe_list = [
             self._element_map[eid].body_load(load_condition.value) for eid in self._element_map
@@ -787,8 +737,14 @@ class MeshAssembler:
         K_G = self._create_petsc_matrix()
         K_G.setOption(PETSc.Mat.Option.NEW_NONZERO_ALLOCATION_ERR, False)
 
+        # Ensure element map is built (lazy)
+        self._ensure_element_map()
+
+        # Build elem_id → DOF-array index (mesh.elements order)
+        elem_id_to_dof_idx = {elem.id: i for i, elem in enumerate(self.mesh.elements)}
+
         # Compute and assemble element geometric stiffness matrices
-        for e, (elem_id, fem_element) in enumerate(self._element_map.items()):
+        for elem_id, fem_element in self._element_map.items():
             # Get membrane stress for this element
             if stress_field is not None and elem_id in stress_field:
                 sigma_membrane = stress_field[elem_id]
@@ -813,7 +769,8 @@ class MeshAssembler:
                 transform_to_global=True,
             )
 
-            # Get DOFs for this element
+            # Get DOFs for this element (index in mesh.elements order)
+            e = elem_id_to_dof_idx[elem_id]
             if self._is_mixed_mesh:
                 dofs = self._dofs_list[e].astype(PETSc.IntType)
             else:
