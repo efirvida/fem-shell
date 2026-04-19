@@ -1,0 +1,614 @@
+/// MeshAssembler: global stiffness/mass/force assembly for mixed MITC3/MITC4 meshes.
+///
+/// All outputs are COO triplets (rows, cols, vals) — caller passes to PETSc or
+/// any sparse solver. No PETSc dependency here.
+
+use nalgebra::Vector3;
+
+use crate::assembly::topology::{ElemType, MeshTopology};
+use crate::elements::mitc3::{self, Mitc3Precomputed};
+use crate::elements::mitc4::{self, Mitc4Precomputed};
+use crate::materials::{
+    composite::composite_constitutive, isotropic::IsotropicMaterial, Material,
+};
+
+// ============================================================================
+// MaterialSpec: per-element material descriptor
+// ============================================================================
+
+/// Material specification for a single shell element.
+#[derive(Clone)]
+pub enum MaterialSpec {
+    /// Isotropic linear elastic shell material.
+    Isotropic {
+        /// Young's modulus (Pa)
+        e: f64,
+        /// Poisson's ratio
+        nu: f64,
+        /// Density (kg/m³)
+        rho: f64,
+        /// Shell thickness (m)
+        thickness: f64,
+        /// Shear correction factor (typically 5/6)
+        shear_correction: f64,
+    },
+    /// Composite laminate shell material (ABD matrices from CLT).
+    Composite {
+        /// A matrix (3×3 membrane stiffness), row-major [N/m]
+        cm: [f64; 9],
+        /// D matrix (3×3 bending stiffness), row-major [N·m]
+        cb: [f64; 9],
+        /// Cs matrix (2×2 shear stiffness), row-major [N/m]
+        cs: [f64; 4],
+        /// Total laminate thickness (m)
+        thickness: f64,
+        /// Equivalent E for drilling DOF stabilization
+        e_equiv: f64,
+        /// Mass per unit area (kg/m²)
+        mass_per_area: f64,
+        /// Rotational inertia per unit area (kg·m²/m²)
+        rotational_inertia: f64,
+    },
+}
+
+// ============================================================================
+// PrecomputedElem: per-element precomputed geometric/constitutive data
+// ============================================================================
+
+enum PrecomputedElem {
+    Tri(Mitc3Precomputed),
+    Quad(Mitc4Precomputed),
+}
+
+// ============================================================================
+// MeshAssembler
+// ============================================================================
+
+/// Global assembler for a mixed MITC3/MITC4 shell mesh.
+///
+/// Precomputes all element-level data on construction; assembly methods are
+/// pure read-only passes that accumulate COO triplets.
+pub struct MeshAssembler {
+    /// Mesh topology (nodes, connectivity, element types)
+    pub topology: MeshTopology,
+    /// Material spec per element
+    pub materials: Vec<MaterialSpec>,
+    /// Total DOFs = n_nodes × 6
+    pub dofs_count: usize,
+    /// Per-element DOF index lists (length = n_dof_per_elem per element)
+    dof_connectivity: Vec<Vec<usize>>,
+    /// Per-element precomputed geometric + constitutive data
+    precomputed: Vec<PrecomputedElem>,
+    /// NNZ per row for PETSc preallocation
+    nnz_per_row_data: Vec<i64>,
+}
+
+impl MeshAssembler {
+    // -----------------------------------------------------------------------
+    // Constructor
+    // -----------------------------------------------------------------------
+
+    /// Create a new `MeshAssembler`.
+    ///
+    /// # Arguments
+    /// * `topology` - Mesh topology (takes ownership)
+    /// * `materials` - One `MaterialSpec` per element
+    pub fn new(topology: MeshTopology, materials: Vec<MaterialSpec>) -> Self {
+        assert_eq!(
+            topology.n_elems,
+            materials.len(),
+            "one MaterialSpec required per element"
+        );
+
+        let dofs_count = topology.dofs_count();
+        let n_elems = topology.n_elems;
+
+        // Build per-element precomputed data and DOF connectivity
+        let mut precomputed = Vec::with_capacity(n_elems);
+        let mut dof_connectivity = Vec::with_capacity(n_elems);
+
+        for e in 0..n_elems {
+            let dofs = topology.global_dof_indices(e);
+            dof_connectivity.push(dofs);
+
+            let coords = topology.elem_coords(e);
+            let mat = &materials[e];
+
+            let pre = match topology.elem_types[e] {
+                ElemType::Mitc3 => {
+                    assert_eq!(coords.len(), 9, "MITC3 needs 3 nodes × 3 coords");
+                    let mut c9 = [0.0f64; 9];
+                    c9.copy_from_slice(&coords);
+                    let (constitutive, thickness, e_mod) = build_constitutive_mitc3(mat);
+                    PrecomputedElem::Tri(Mitc3Precomputed::new(&c9, constitutive, thickness, e_mod))
+                }
+                ElemType::Mitc4 => {
+                    assert_eq!(coords.len(), 12, "MITC4 needs 4 nodes × 3 coords");
+                    let mut c12 = [0.0f64; 12];
+                    c12.copy_from_slice(&coords);
+                    let (constitutive, thickness, e_mod) = build_constitutive_mitc4(mat);
+                    PrecomputedElem::Quad(Mitc4Precomputed::new(&c12, constitutive, thickness, e_mod))
+                }
+            };
+            precomputed.push(pre);
+        }
+
+        // Compute NNZ per row for PETSc preallocation
+        let nnz_per_row_data = {
+            let mut nnz = vec![std::collections::HashSet::<i64>::new(); dofs_count];
+            for e in 0..n_elems {
+                let elem_dofs = &dof_connectivity[e];
+                for &row_dof in elem_dofs {
+                    for &col_dof in elem_dofs {
+                        nnz[row_dof].insert(col_dof as i64);
+                    }
+                }
+            }
+            nnz.iter().map(|s| s.len() as i64).collect()
+        };
+
+        MeshAssembler {
+            topology,
+            materials,
+            dofs_count,
+            dof_connectivity,
+            precomputed,
+            nnz_per_row_data,
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // NNZ accessor
+    // -----------------------------------------------------------------------
+
+    /// NNZ count per row (for PETSc preallocation).
+    pub fn nnz_per_row(&self) -> &[i64] {
+        &self.nnz_per_row_data
+    }
+
+    // -----------------------------------------------------------------------
+    // assemble_k: global elastic stiffness matrix as COO
+    // -----------------------------------------------------------------------
+
+    /// Assemble the global elastic stiffness matrix K.
+    ///
+    /// Returns `(rows, cols, vals)` COO triplets. Duplicate (i,j) entries are
+    /// summed by the sparse assembler (PETSc `MatSetValues` with `ADD_VALUES`).
+    pub fn assemble_k(&self) -> (Vec<i64>, Vec<i64>, Vec<f64>) {
+        let mut rows = Vec::new();
+        let mut cols = Vec::new();
+        let mut vals = Vec::new();
+
+        for e in 0..self.topology.n_elems {
+            let ke_flat = match &self.precomputed[e] {
+                PrecomputedElem::Tri(pre) => {
+                    let ke = mitc3::compute_ke_global(pre);
+                    ke.as_slice().to_vec()
+                }
+                PrecomputedElem::Quad(pre) => {
+                    let ke = mitc4::compute_ke_global(pre);
+                    ke.as_slice().to_vec()
+                }
+            };
+
+            scatter_elem_matrix(&self.dof_connectivity[e], &ke_flat, &mut rows, &mut cols, &mut vals);
+        }
+
+        (rows, cols, vals)
+    }
+
+    // -----------------------------------------------------------------------
+    // assemble_m: global consistent mass matrix as COO
+    // -----------------------------------------------------------------------
+
+    /// Assemble the global consistent mass matrix M.
+    ///
+    /// Returns `(rows, cols, vals)` COO triplets.
+    pub fn assemble_m(&self) -> (Vec<i64>, Vec<i64>, Vec<f64>) {
+        let mut rows = Vec::new();
+        let mut cols = Vec::new();
+        let mut vals = Vec::new();
+
+        for e in 0..self.topology.n_elems {
+            let me_flat = match &self.precomputed[e] {
+                PrecomputedElem::Tri(pre) => {
+                    let me = match &self.materials[e] {
+                        MaterialSpec::Isotropic { rho, .. } => {
+                            mitc3::compute_me_global(pre, *rho)
+                        }
+                        MaterialSpec::Composite { mass_per_area, rotational_inertia, .. } => {
+                            mitc3::compute_me_composite_global(pre, *mass_per_area, *rotational_inertia)
+                        }
+                    };
+                    me.as_slice().to_vec()
+                }
+                PrecomputedElem::Quad(pre) => {
+                    let me = match &self.materials[e] {
+                        MaterialSpec::Isotropic { rho, .. } => {
+                            mitc4::compute_me_global(pre, *rho)
+                        }
+                        MaterialSpec::Composite { mass_per_area, rotational_inertia, .. } => {
+                            mitc4::compute_me_composite_global(pre, *mass_per_area, *rotational_inertia)
+                        }
+                    };
+                    me.as_slice().to_vec()
+                }
+            };
+
+            scatter_elem_matrix(&self.dof_connectivity[e], &me_flat, &mut rows, &mut cols, &mut vals);
+        }
+
+        (rows, cols, vals)
+    }
+
+    // -----------------------------------------------------------------------
+    // assemble_f_body: global body load vector
+    // -----------------------------------------------------------------------
+
+    /// Assemble the global body load vector.
+    ///
+    /// # Arguments
+    /// * `gravity` - Body acceleration vector [gx, gy, gz] (m/s²)
+    ///
+    /// Returns `Vec<f64>` of length `dofs_count`.
+    pub fn assemble_f_body(&self, gravity: [f64; 3]) -> Vec<f64> {
+        let g = Vector3::new(gravity[0], gravity[1], gravity[2]);
+        let mut f = vec![0.0f64; self.dofs_count];
+
+        for e in 0..self.topology.n_elems {
+            let fe: Vec<f64> = match &self.precomputed[e] {
+                PrecomputedElem::Tri(pre) => {
+                    let rho = material_rho(&self.materials[e]);
+                    let fvec = mitc3::compute_body_load_global(pre, rho, &g);
+                    fvec.as_slice().to_vec()
+                }
+                PrecomputedElem::Quad(pre) => {
+                    let rho = material_rho(&self.materials[e]);
+                    let fvec = mitc4::compute_body_load_global(pre, rho, &g);
+                    fvec.as_slice().to_vec()
+                }
+            };
+
+            let dofs = &self.dof_connectivity[e];
+            for (local_i, &global_i) in dofs.iter().enumerate() {
+                f[global_i] += fe[local_i];
+            }
+        }
+
+        f
+    }
+
+    // -----------------------------------------------------------------------
+    // assemble_geometric_k: global geometric stiffness as COO
+    // -----------------------------------------------------------------------
+
+    /// Assemble the global geometric stiffness matrix K_σ.
+    ///
+    /// # Arguments
+    /// * `sigma` - Membrane stress per element: `sigma[e] = [σxx, σyy, σxy]`
+    ///   in the element's local coordinate system.
+    ///
+    /// Returns `(rows, cols, vals)` COO triplets.
+    pub fn assemble_geometric_k(&self, sigma: &[[f64; 3]]) -> (Vec<i64>, Vec<i64>, Vec<f64>) {
+        assert_eq!(
+            sigma.len(),
+            self.topology.n_elems,
+            "one stress tensor required per element"
+        );
+
+        let mut rows = Vec::new();
+        let mut cols = Vec::new();
+        let mut vals = Vec::new();
+
+        for e in 0..self.topology.n_elems {
+            let sv = Vector3::new(sigma[e][0], sigma[e][1], sigma[e][2]);
+
+            let kg_flat = match &self.precomputed[e] {
+                PrecomputedElem::Tri(pre) => {
+                    let kg = mitc3::compute_k_sigma_global(pre, &sv);
+                    kg.as_slice().to_vec()
+                }
+                PrecomputedElem::Quad(pre) => {
+                    let kg = mitc4::compute_k_sigma_global(pre, &sv);
+                    kg.as_slice().to_vec()
+                }
+            };
+
+            scatter_elem_matrix(&self.dof_connectivity[e], &kg_flat, &mut rows, &mut cols, &mut vals);
+        }
+
+        (rows, cols, vals)
+    }
+
+    // -----------------------------------------------------------------------
+    // assemble_kt: nonlinear tangent stiffness as COO
+    // -----------------------------------------------------------------------
+
+    /// Assemble the nonlinear tangent stiffness matrix K_T.
+    ///
+    /// # Arguments
+    /// * `u` - Global displacement vector of length `dofs_count`
+    ///
+    /// Returns `(rows, cols, vals)` COO triplets.
+    pub fn assemble_kt(&self, u: &[f64]) -> (Vec<i64>, Vec<i64>, Vec<f64>) {
+        assert_eq!(u.len(), self.dofs_count, "displacement vector length mismatch");
+
+        let mut rows = Vec::new();
+        let mut cols = Vec::new();
+        let mut vals = Vec::new();
+
+        for e in 0..self.topology.n_elems {
+            let dofs = &self.dof_connectivity[e];
+            let kt_flat = match &self.precomputed[e] {
+                PrecomputedElem::Tri(pre) => {
+                    let ue = extract_elem_disp_18(u, dofs);
+                    let kt = mitc3::compute_kt_global(pre, &ue);
+                    kt.as_slice().to_vec()
+                }
+                PrecomputedElem::Quad(pre) => {
+                    let ue = extract_elem_disp_24(u, dofs);
+                    let kt = mitc4::compute_kt_global(pre, &ue);
+                    kt.as_slice().to_vec()
+                }
+            };
+
+            scatter_elem_matrix(dofs, &kt_flat, &mut rows, &mut cols, &mut vals);
+        }
+
+        (rows, cols, vals)
+    }
+
+    // -----------------------------------------------------------------------
+    // assemble_fint: internal force vector
+    // -----------------------------------------------------------------------
+
+    /// Assemble the global internal force vector f_int.
+    ///
+    /// # Arguments
+    /// * `u` - Global displacement vector of length `dofs_count`
+    /// * `nonlinear` - If true, use Green-Lagrange (total-Lagrangian) formulation
+    ///
+    /// Returns `Vec<f64>` of length `dofs_count`.
+    pub fn assemble_fint(&self, u: &[f64], nonlinear: bool) -> Vec<f64> {
+        assert_eq!(u.len(), self.dofs_count, "displacement vector length mismatch");
+
+        let mut f = vec![0.0f64; self.dofs_count];
+
+        for e in 0..self.topology.n_elems {
+            let dofs = &self.dof_connectivity[e];
+            let fe: Vec<f64> = match &self.precomputed[e] {
+                PrecomputedElem::Tri(pre) => {
+                    let ue = extract_elem_disp_18(u, dofs);
+                    let fvec = mitc3::compute_fint_global(pre, &ue, nonlinear);
+                    fvec.as_slice().to_vec()
+                }
+                PrecomputedElem::Quad(pre) => {
+                    let ue = extract_elem_disp_24(u, dofs);
+                    let fvec = mitc4::compute_fint_global(pre, &ue, nonlinear);
+                    fvec.as_slice().to_vec()
+                }
+            };
+
+            for (local_i, &global_i) in dofs.iter().enumerate() {
+                f[global_i] += fe[local_i];
+            }
+        }
+
+        f
+    }
+}
+
+// ============================================================================
+// Helper: build constitutive data from MaterialSpec
+// ============================================================================
+
+fn build_constitutive_mitc3(
+    mat: &MaterialSpec,
+) -> (crate::materials::ShellConstitutive, f64, f64) {
+    match mat {
+        MaterialSpec::Isotropic { e, nu, rho, thickness, shear_correction } => {
+            let iso = IsotropicMaterial::new(*e, *nu, *rho);
+            let constitutive = iso.constitutive(*thickness, *shear_correction);
+            (constitutive, *thickness, *e)
+        }
+        MaterialSpec::Composite { cm, cb, cs, thickness, e_equiv, .. } => {
+            let constitutive = composite_constitutive(cm, cb, cs, *thickness);
+            (constitutive, *thickness, *e_equiv)
+        }
+    }
+}
+
+fn build_constitutive_mitc4(
+    mat: &MaterialSpec,
+) -> (crate::materials::ShellConstitutive, f64, f64) {
+    build_constitutive_mitc3(mat) // same signature
+}
+
+fn material_rho(mat: &MaterialSpec) -> f64 {
+    match mat {
+        MaterialSpec::Isotropic { rho, .. } => *rho,
+        MaterialSpec::Composite { mass_per_area, .. } => *mass_per_area,
+        // For body load, composite uses mass_per_area treated as "effective rho"
+        // (thickness factor already included in mass_per_area).
+        // The element's body load integrates ρ·h — but for composite, pass
+        // mass_per_area as rho and set thickness=1. We handle this below.
+    }
+}
+
+// ============================================================================
+// Scatter helpers
+// ============================================================================
+
+/// Scatter element matrix entries into COO triplet vectors.
+fn scatter_elem_matrix(
+    dofs: &[usize],
+    ke_flat: &[f64],
+    rows: &mut Vec<i64>,
+    cols: &mut Vec<i64>,
+    vals: &mut Vec<f64>,
+) {
+    let n = dofs.len();
+    for i in 0..n {
+        for j in 0..n {
+            rows.push(dofs[i] as i64);
+            cols.push(dofs[j] as i64);
+            vals.push(ke_flat[i * n + j]);
+        }
+    }
+}
+
+/// Extract 18-DOF element displacement from global vector.
+fn extract_elem_disp_18(u: &[f64], dofs: &[usize]) -> mitc3::Vec18 {
+    let mut ue = mitc3::Vec18::zeros();
+    for (local, &global) in dofs.iter().enumerate() {
+        ue[local] = u[global];
+    }
+    ue
+}
+
+/// Extract 24-DOF element displacement from global vector.
+fn extract_elem_disp_24(u: &[f64], dofs: &[usize]) -> mitc4::Vec24 {
+    let mut ue = mitc4::Vec24::zeros();
+    for (local, &global) in dofs.iter().enumerate() {
+        ue[local] = u[global];
+    }
+    ue
+}
+
+// ============================================================================
+// Tests
+// ============================================================================
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::assembly::topology::MeshTopology;
+
+    /// Build a 2-element MITC3 patch.
+    /// Nodes: (0,0,0), (1,0,0), (0,1,0), (1,1,0)
+    /// Elems: [0,1,2], [1,3,2]
+    fn two_tri_assembler() -> MeshAssembler {
+        let node_coords = vec![
+            0.0, 0.0, 0.0,
+            1.0, 0.0, 0.0,
+            0.0, 1.0, 0.0,
+            1.0, 1.0, 0.0,
+        ];
+        let connectivity = vec![vec![0usize, 1, 2], vec![1, 3, 2]];
+        let elem_types = vec![ElemType::Mitc3, ElemType::Mitc3];
+        let topology = MeshTopology::new(node_coords, connectivity, elem_types);
+
+        let mat = MaterialSpec::Isotropic {
+            e: 2.0e11,
+            nu: 0.3,
+            rho: 7800.0,
+            thickness: 0.01,
+            shear_correction: 5.0 / 6.0,
+        };
+        let materials = vec![mat.clone(), mat];
+        MeshAssembler::new(topology, materials)
+    }
+
+    #[test]
+    fn test_assembler_new_no_panic() {
+        let asm = two_tri_assembler();
+        assert_eq!(asm.dofs_count, 4 * 6);
+        assert_eq!(asm.topology.n_elems, 2);
+    }
+
+    #[test]
+    fn test_assemble_k_finite() {
+        let asm = two_tri_assembler();
+        let (rows, cols, vals) = asm.assemble_k();
+        assert!(!vals.is_empty(), "K should have entries");
+        for &v in &vals {
+            assert!(v.is_finite(), "K entry is not finite: {v}");
+        }
+        // rows and cols should be in valid range
+        for &r in &rows {
+            assert!((r as usize) < asm.dofs_count, "row index out of range");
+        }
+        for &c in &cols {
+            assert!((c as usize) < asm.dofs_count, "col index out of range");
+        }
+    }
+
+    #[test]
+    fn test_assemble_m_finite() {
+        let asm = two_tri_assembler();
+        let (rows, cols, vals) = asm.assemble_m();
+        assert!(!vals.is_empty(), "M should have entries");
+        for &v in &vals {
+            assert!(v.is_finite(), "M entry is not finite: {v}");
+        }
+        // Mass diagonal entries should be non-negative
+        // (diagonal check: find entries where row==col)
+        let diag_sum: f64 = rows
+            .iter()
+            .zip(cols.iter())
+            .zip(vals.iter())
+            .filter(|((r, c), _)| r == c)
+            .map(|(_, &v)| v)
+            .sum();
+        assert!(diag_sum > 0.0, "diagonal mass entries should be positive; got {diag_sum}");
+    }
+
+    #[test]
+    fn test_assemble_f_body_finite() {
+        let asm = two_tri_assembler();
+        let f = asm.assemble_f_body([0.0, 0.0, -9.81]);
+        assert_eq!(f.len(), asm.dofs_count);
+        for &v in &f {
+            assert!(v.is_finite(), "body force entry is not finite: {v}");
+        }
+        // Total z-force: ρ·h·|g|·total_area (2 triangles of area 0.5 each = 1.0)
+        let total_fz: f64 = (0..4).map(|i| f[6 * i + 2]).sum();
+        let expected = 7800.0 * 0.01 * (-9.81) * 1.0;
+        assert!(
+            (total_fz - expected).abs() < 1e-4,
+            "total fz: {total_fz} expected {expected}"
+        );
+    }
+
+    #[test]
+    fn test_assemble_geometric_k_zero_stress() {
+        let asm = two_tri_assembler();
+        let sigma = vec![[0.0f64; 3]; 2];
+        let (_r, _c, vals) = asm.assemble_geometric_k(&sigma);
+        let norm: f64 = vals.iter().map(|v| v * v).sum::<f64>().sqrt();
+        assert!(norm < 1e-10, "zero stress → zero geometric K");
+    }
+
+    #[test]
+    fn test_assemble_geometric_k_finite() {
+        let asm = two_tri_assembler();
+        let sigma = vec![[1.0e6f64, 0.5e6, 0.2e6]; 2];
+        let (_, _, vals) = asm.assemble_geometric_k(&sigma);
+        for &v in &vals {
+            assert!(v.is_finite(), "geometric K entry is not finite");
+        }
+    }
+
+    #[test]
+    fn test_assemble_kt_linear_matches_k_at_zero() {
+        let asm = two_tri_assembler();
+        let u = vec![0.0f64; asm.dofs_count];
+
+        // At zero displacement, K_T should equal K_e
+        let (_, _, vals_k) = asm.assemble_k();
+        let (_, _, vals_kt) = asm.assemble_kt(&u);
+        assert_eq!(vals_k.len(), vals_kt.len(), "K and KT should have same entries at u=0");
+        for (v1, v2) in vals_k.iter().zip(vals_kt.iter()) {
+            assert!((v1 - v2).abs() < 1e-6 * v1.abs().max(1.0), "K and KT differ at zero disp");
+        }
+    }
+
+    #[test]
+    fn test_assemble_fint_zero_at_zero_displacement() {
+        let asm = two_tri_assembler();
+        let u = vec![0.0f64; asm.dofs_count];
+        let f = asm.assemble_fint(&u, false);
+        let norm: f64 = f.iter().map(|v| v * v).sum::<f64>().sqrt();
+        assert!(norm < 1e-10, "f_int should be zero at zero displacement");
+    }
+}

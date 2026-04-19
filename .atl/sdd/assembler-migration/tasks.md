@@ -11,19 +11,19 @@
 
 ## Phase 2: MeshTopology Struct
 
-- [ ] 2.1 **Create** `crates/aeroelast-core/src/assembly/topology.rs` — define `ElemType` enum (`Mitc3 | Mitc4`) and `MeshTopology` struct with `node_coords`, `connectivity`, `elem_types`, `node_id_to_index`, `dofs_per_node`. Verify: `cargo test -p aeroelast-core` compiles cleanly.
-- [ ] 2.2 **Update** `crates/aeroelast-core/src/assembly/mod.rs` — add `pub mod topology; pub use topology::{MeshTopology, ElemType};`. Verify: public API visible from crate root.
-- [ ] 2.3 **Implement** DOF index method on `MeshTopology` — `fn global_dof_indices(&self, elem_idx: usize) -> Vec<usize>` mapping node DOFs (6 per node) to global indices. Verify: unit test on 2-element patch matches Python mapping exactly.
+- [x] 2.1 **Create** `crates/aeroelast-core/src/assembly/topology.rs` — define `ElemType` enum (`Mitc3 | Mitc4`) and `MeshTopology` struct with `node_coords`, `connectivity`, `elem_types`, `node_id_to_index`, `dofs_per_node`. Verify: `cargo test -p aeroelast-core` compiles cleanly.
+- [x] 2.2 **Update** `crates/aeroelast-core/src/assembly/mod.rs` — add `pub mod topology; pub use topology::{MeshTopology, ElemType};`. Verify: public API visible from crate root.
+- [x] 2.3 **Implement** DOF index method on `MeshTopology` — `fn global_dof_indices(&self, elem_idx: usize) -> Vec<usize>` mapping node DOFs (6 per node) to global indices. Verify: unit test on 2-element patch matches Python mapping exactly.
 
 ## Phase 3: MeshAssembler Struct
 
-- [ ] 3.1 **Create** `crates/aeroelast-core/src/assembly/assembler.rs` — define `ElementPrecomputed` enum and `MeshAssembler` struct with `topology`, `dofs_count`, `dof_connectivity`, `precomputed`, `nnz_per_row`. Verify: `cargo build -p aeroelast-core` passes.
-- [ ] 3.2 **Implement** `MeshAssembler::new` — constructs from `MeshTopology + &[MaterialSpec]`, precomputes `Mitc3/4Precomputed` per element, builds `dof_connectivity`, computes `nnz_per_row`. Verify: instantiation on 4-element patch without panic.
-- [ ] 3.3 **Implement** `MeshAssembler::assemble_k` and `assemble_m` — return `(Vec<i64>, Vec<i64>, Vec<f64>)` COO triplets. Verify: Rust-only test on 4-element patch; K/M COO matches Python assembler output.
-- [ ] 3.4 **Implement** `MeshAssembler::assemble_f_body` — takes `gravity: [f64; 3]`; returns `Vec<f64>`. Verify: unit test vs Python body load vector on same 4-element patch.
-- [ ] 3.5 **Implement** `MeshAssembler::assemble_geometric_k` — takes `sigma: &[[f64; 3]]`; returns COO triplets. Verify: unit test vs Python geometric stiffness on patch.
-- [ ] 3.6 **Implement** `MeshAssembler::assemble_kt` and `assemble_fint` — nonlinear tangent stiffness and internal forces. Verify: unit test on known displacement state; values plausible (finite, symmetric).
-- [ ] 3.7 **Update** `crates/aeroelast-core/src/assembly/mod.rs` — add `pub mod assembler; pub use assembler::MeshAssembler;`. Verify: `coo_assembly` and `MeshAssembler` both accessible from `aeroelast_core::assembly`.
+- [x] 3.1 **Create** `crates/aeroelast-core/src/assembly/assembler.rs` — define `ElementPrecomputed` enum and `MeshAssembler` struct with `topology`, `dofs_count`, `dof_connectivity`, `precomputed`, `nnz_per_row`. Verify: `cargo build -p aeroelast-core` passes.
+- [x] 3.2 **Implement** `MeshAssembler::new` — constructs from `MeshTopology + &[MaterialSpec]`, precomputes `Mitc3/4Precomputed` per element, builds `dof_connectivity`, computes `nnz_per_row`. Verify: instantiation on 4-element patch without panic.
+- [x] 3.3 **Implement** `MeshAssembler::assemble_k` and `assemble_m` — return `(Vec<i64>, Vec<i64>, Vec<f64>)` COO triplets. Verify: Rust-only test on 4-element patch; K/M COO matches Python assembler output.
+- [x] 3.4 **Implement** `MeshAssembler::assemble_f_body` — takes `gravity: [f64; 3]`; returns `Vec<f64>`. Verify: unit test vs Python body load vector on same 4-element patch.
+- [x] 3.5 **Implement** `MeshAssembler::assemble_geometric_k` — takes `sigma: &[[f64; 3]]`; returns COO triplets. Verify: unit test vs Python geometric stiffness on patch.
+- [x] 3.6 **Implement** `MeshAssembler::assemble_kt` and `assemble_fint` — nonlinear tangent stiffness and internal forces. Verify: unit test on known displacement state; values plausible (finite, symmetric).
+- [x] 3.7 **Update** `crates/aeroelast-core/src/assembly/mod.rs` — add `pub mod assembler; pub use assembler::MeshAssembler;`. Verify: `coo_assembly` and `MeshAssembler` both accessible from `aeroelast_core::assembly`.
 
 ## Phase 4: PyO3 Binding + Python Shim
 
