@@ -880,6 +880,8 @@ pub struct PyMeshAssembler {
 /// Expected keys (isotropic): type="isotropic", e, nu, rho, thickness, shear_correction
 /// Expected keys (composite): type="composite", cm=[9], cb=[9], cs=[4],
 ///                            thickness, e_equiv, mass_per_area, rotational_inertia
+/// Expected keys (plane_stress): type="plane_stress", e, nu, rho, thickness
+/// Expected keys (solid_3d): type="solid_3d", e, nu, rho
 fn parse_material(py: Python, obj: &Py<PyAny>) -> PyResult<MaterialSpec> {
     let dict = obj.bind(py);
     let mat_type: String = dict.get_item("type")
@@ -921,8 +923,24 @@ fn parse_material(py: Python, obj: &Py<PyAny>) -> PyResult<MaterialSpec> {
 
             Ok(MaterialSpec::Composite { cm, cb, cs, thickness, e_equiv, mass_per_area, rotational_inertia })
         }
+        "plane_stress" => {
+            let e: f64 = dict.get_item("e")?.extract()?;
+            let nu: f64 = dict.get_item("nu")?.extract()?;
+            let rho: f64 = dict.get_item("rho")?.extract()?;
+            let thickness: f64 = dict.get_item("thickness")
+                .ok()
+                .and_then(|v| v.extract::<f64>().ok())
+                .unwrap_or(1.0);
+            Ok(MaterialSpec::PlaneStress { e, nu, rho, thickness })
+        }
+        "solid_3d" => {
+            let e: f64 = dict.get_item("e")?.extract()?;
+            let nu: f64 = dict.get_item("nu")?.extract()?;
+            let rho: f64 = dict.get_item("rho")?.extract()?;
+            Ok(MaterialSpec::Solid3D { e, nu, rho })
+        }
         other => Err(pyo3::exceptions::PyValueError::new_err(format!(
-            "unknown material type '{}', expected 'isotropic' or 'composite'", other
+            "unknown material type '{}', expected 'isotropic', 'composite', 'plane_stress', or 'solid_3d'", other
         ))),
     }
 }
@@ -938,16 +956,25 @@ impl PyMeshAssembler {
     /// connectivity : list[list[int]]
     ///     Per-element node index lists (0-based).
     /// elem_types : list[int]
-    ///     Element type per element: 3 = MITC3, 4 = MITC4.
+    ///     Element type code per element:
+    ///       3   = MITC3,       4   = MITC4
+    ///       33  = MITC3Composite, 44 = MITC4Composite
+    ///       104 = QUAD4,       108 = QUAD8,       109 = QUAD9
+    ///       208 = HEXA8,       220 = HEXA20
+    ///       304 = TETRA4,      310 = TETRA10
+    ///       306 = WEDGE6,      315 = WEDGE15
+    ///       305 = PYRAMID5,    313 = PYRAMID13
     /// materials : list[dict]
-    ///     Per-element material dicts with keys:
-    ///     isotropic — {type, e, nu, rho, thickness, shear_correction}
-    ///     composite — {type, cm, cb, cs, thickness, e_equiv, mass_per_area, rotational_inertia}
+    ///     Per-element material dicts.  Supported types:
+    ///     isotropic   — {type, e, nu, rho, thickness, shear_correction}
+    ///     composite   — {type, cm, cb, cs, thickness, e_equiv, mass_per_area, rotational_inertia}
+    ///     plane_stress — {type, e, nu, rho, thickness}
+    ///     solid_3d    — {type, e, nu, rho}
     #[new]
     pub fn new(
         node_coords: PyReadonlyArray2<f64>,
         connectivity: Vec<Vec<usize>>,
-        elem_types: Vec<u8>,
+        elem_types: Vec<u16>,
         materials: Vec<Py<PyAny>>,
         py: Python,
     ) -> PyResult<Self> {
@@ -966,10 +993,23 @@ impl PyMeshAssembler {
         let rust_elem_types: Vec<ElemType> = elem_types
             .iter()
             .map(|&t| match t {
-                3 => Ok(ElemType::Mitc3),
-                4 => Ok(ElemType::Mitc4),
+                3   => Ok(ElemType::Mitc3),
+                4   => Ok(ElemType::Mitc4),
+                33  => Ok(ElemType::Mitc3Composite),
+                44  => Ok(ElemType::Mitc4Composite),
+                104 => Ok(ElemType::Quad4),
+                108 => Ok(ElemType::Quad8),
+                109 => Ok(ElemType::Quad9),
+                208 => Ok(ElemType::Hexa8),
+                220 => Ok(ElemType::Hexa20),
+                304 => Ok(ElemType::Tetra4),
+                310 => Ok(ElemType::Tetra10),
+                306 => Ok(ElemType::Wedge6),
+                315 => Ok(ElemType::Wedge15),
+                305 => Ok(ElemType::Pyramid5),
+                313 => Ok(ElemType::Pyramid13),
                 other => Err(pyo3::exceptions::PyValueError::new_err(format!(
-                    "unknown elem_type {}: expected 3 (MITC3) or 4 (MITC4)", other
+                    "unknown elem_type code {}: see PyMeshAssembler docstring for valid codes", other
                 ))),
             })
             .collect::<PyResult<Vec<_>>>()?;

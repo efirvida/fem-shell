@@ -587,6 +587,17 @@ class MeshAssembler:
         from fem_shell.elements.MITC3_composite import MITC3Composite  # noqa: PLC0415
         from fem_shell.elements.MITC4 import MITC4  # noqa: PLC0415
         from fem_shell.elements.MITC4_composite import MITC4Composite  # noqa: PLC0415
+        from fem_shell.elements.QUAD import QUAD4, QUAD8, QUAD9  # noqa: PLC0415
+        from fem_shell.elements.SOLID import (  # noqa: PLC0415
+            HEXA8,
+            HEXA20,
+            PYRAMID5,
+            PYRAMID13,
+            TETRA4,
+            TETRA10,
+            WEDGE6,
+            WEDGE15,
+        )
 
         # Build node_coords array (n_nodes × 3)
         node_id_to_index = self.mesh.node_id_to_index
@@ -601,15 +612,34 @@ class MeshAssembler:
         elem_types = []
         materials_list = []
 
+        _QUAD_TYPE_CODE = {QUAD4: 104, QUAD8: 108, QUAD9: 109}
+        _SOLID_TYPE_CODE = {
+            HEXA8: 208, HEXA20: 220,
+            TETRA4: 304, TETRA10: 310,
+            WEDGE6: 306, WEDGE15: 315,
+            PYRAMID5: 305, PYRAMID13: 313,
+        }
+
         for fem_elem in self._element_map.values():
             # 0-based node indices
             conn = [node_id_to_index[nid] for nid in fem_elem.node_ids]
             connectivity.append(conn)
 
+            # Determine element type code
+            elem_cls = type(fem_elem)
             if isinstance(fem_elem, (MITC3, MITC3Composite)):
-                elem_types.append(3)
+                code = 33 if isinstance(fem_elem, MITC3Composite) else 3
+            elif isinstance(fem_elem, (MITC4, MITC4Composite)):
+                code = 44 if isinstance(fem_elem, MITC4Composite) else 4
+            elif elem_cls in _QUAD_TYPE_CODE:
+                code = _QUAD_TYPE_CODE[elem_cls]
+            elif elem_cls in _SOLID_TYPE_CODE:
+                code = _SOLID_TYPE_CODE[elem_cls]
             else:
-                elem_types.append(4)
+                # Unknown element type — fall back to None assembler
+                self._rust = None
+                return
+            elem_types.append(code)
 
             # Build material dict
             if isinstance(fem_elem, MITC3Composite) or isinstance(fem_elem, MITC4Composite):
@@ -625,6 +655,23 @@ class MeshAssembler:
                     "e_equiv": e_equiv,
                     "mass_per_area": fem_elem._mass_per_area(),
                     "rotational_inertia": fem_elem._rotational_inertia(),
+                }
+            elif isinstance(fem_elem, (QUAD4, QUAD8, QUAD9)):
+                mat = fem_elem.material
+                mat_dict = {
+                    "type": "plane_stress",
+                    "e": mat.E,
+                    "nu": mat.nu,
+                    "rho": mat.rho,
+                    "thickness": getattr(fem_elem, "thickness", 1.0),
+                }
+            elif isinstance(fem_elem, (HEXA8, HEXA20, TETRA4, TETRA10, WEDGE6, WEDGE15, PYRAMID5, PYRAMID13)):
+                mat = fem_elem.material
+                mat_dict = {
+                    "type": "solid_3d",
+                    "e": mat.E,
+                    "nu": mat.nu,
+                    "rho": mat.rho,
                 }
             else:
                 mat = fem_elem.material
