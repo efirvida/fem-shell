@@ -21,6 +21,15 @@ where:
     b: Body force vector
 """
 
+import warnings
+
+warnings.warn(
+    "Direct import from fem_shell.elements.QUAD is deprecated. "
+    "Use 'from fem_shell.elements import QUAD4, QUAD8, QUAD9' instead.",
+    DeprecationWarning,
+    stacklevel=2,
+)
+
 from functools import cached_property
 from typing import Tuple
 

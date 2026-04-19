@@ -32,6 +32,15 @@ Stress vector (Voigt notation):
     σ = [σxx, σyy, σzz, τxy, τyz, τzx]ᵀ
 """
 
+import warnings
+
+warnings.warn(
+    "Direct import from fem_shell.elements.SOLID is deprecated. "
+    "Use 'from fem_shell.elements import HEXA8, TETRA4, ...' instead.",
+    DeprecationWarning,
+    stacklevel=2,
+)
+
 from abc import abstractmethod
 from functools import cached_property
 from typing import Optional, Tuple, Union

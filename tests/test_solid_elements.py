@@ -12,7 +12,7 @@ import numpy as np
 import pytest
 
 from fem_shell.core.material import IsotropicMaterial, OrthotropicMaterial, Material
-from fem_shell.elements.SOLID import (
+from fem_shell.elements import (
     SolidElement,
     WEDGE6,
     WEDGE15,

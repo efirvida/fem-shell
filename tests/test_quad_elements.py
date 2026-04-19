@@ -4,7 +4,7 @@ import numpy as np
 import pytest
 
 from fem_shell.core.material import IsotropicMaterial
-from fem_shell.elements.QUAD import QUAD4, QUAD8, QUAD9
+from fem_shell.elements import QUAD4, QUAD8, QUAD9
 
 
 def check_stiffness_matrix(K, expected_size, tol=1e-6):

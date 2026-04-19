@@ -23,7 +23,7 @@ from fem_shell.core.mesh.generators import (
     MixedElementBeamMesh,
     PyramidTransitionMesh,
 )
-from fem_shell.elements.SOLID import (
+from fem_shell.elements import (
     HEXA8,
     HEXA20,
     PYRAMID5,
