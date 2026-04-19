@@ -505,4 +505,163 @@ mod tests {
             }
         }
     }
+
+    // -----------------------------------------------------------------------
+    // Higher-order solid elements
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn hexa20_ke_generic_matches_original() {
+        use crate::elements::solid::{hexa20_ke, Hexa20Ref};
+        let coords: [[f64; 3]; 20] = [
+            // corners: same as HEXA8
+            [-1.0,-1.0,-1.0],[1.0,-1.0,-1.0],[1.0,1.0,-1.0],[-1.0,1.0,-1.0],
+            [-1.0,-1.0, 1.0],[1.0,-1.0, 1.0],[1.0,1.0, 1.0],[-1.0,1.0, 1.0],
+            // bottom face edge midpoints
+            [0.0,-1.0,-1.0],[1.0,0.0,-1.0],[0.0,1.0,-1.0],[-1.0,0.0,-1.0],
+            // top face edge midpoints
+            [0.0,-1.0, 1.0],[1.0,0.0, 1.0],[0.0,1.0, 1.0],[-1.0,0.0, 1.0],
+            // vertical edge midpoints
+            [-1.0,-1.0, 0.0],[1.0,-1.0, 0.0],[1.0,1.0, 0.0],[-1.0,1.0, 0.0],
+        ];
+        let e = 2.1e11; let nu = 0.3;
+        let orig = hexa20_ke(&coords, e, nu);
+        let c_mat = isotropic_c_6x6(e, nu);
+        let mut ke_flat = [0.0f64; 3600]; // 60*60
+        integrate_ke_3d_flat(&Hexa20Ref, &coords, &c_mat, &mut ke_flat);
+        for i in 0..60 { for j in 0..60 {
+            let diff = (orig[(i,j)] - ke_flat[i*60+j]).abs();
+            let scale = orig[(i,j)].abs().max(1.0);
+            assert!(diff/scale < 1e-6, "HEXA20 Ke [{i},{j}]: {} vs {}", orig[(i,j)], ke_flat[i*60+j]);
+        }}
+    }
+
+    #[test]
+    fn tetra4_ke_generic_matches_original() {
+        use crate::elements::solid::{tetra4_ke, Tetra4Ref};
+        let coords: [[f64; 3]; 4] = [
+            [0.0,0.0,0.0],[1.0,0.0,0.0],[0.0,1.0,0.0],[0.0,0.0,1.0],
+        ];
+        let e = 2.1e11; let nu = 0.3;
+        let orig = tetra4_ke(&coords, e, nu);
+        let c_mat = isotropic_c_6x6(e, nu);
+        let mut ke_flat = [0.0f64; 144]; // 12*12
+        integrate_ke_3d_flat(&Tetra4Ref, &coords, &c_mat, &mut ke_flat);
+        for i in 0..12 { for j in 0..12 {
+            let diff = (orig[(i,j)] - ke_flat[i*12+j]).abs();
+            let scale = orig[(i,j)].abs().max(1.0);
+            assert!(diff/scale < 1e-6, "TETRA4 Ke [{i},{j}]: {} vs {}", orig[(i,j)], ke_flat[i*12+j]);
+        }}
+    }
+
+    #[test]
+    fn tetra10_ke_generic_matches_original() {
+        use crate::elements::solid::{tetra10_ke, Tetra10Ref};
+        let coords: [[f64; 3]; 10] = [
+            [0.0,0.0,0.0],[1.0,0.0,0.0],[0.0,1.0,0.0],[0.0,0.0,1.0],
+            [0.5,0.0,0.0],[0.5,0.5,0.0],[0.0,0.5,0.0],
+            [0.0,0.0,0.5],[0.5,0.0,0.5],[0.0,0.5,0.5],
+        ];
+        let e = 2.1e11; let nu = 0.3;
+        let orig = tetra10_ke(&coords, e, nu);
+        let c_mat = isotropic_c_6x6(e, nu);
+        let mut ke_flat = [0.0f64; 900]; // 30*30
+        integrate_ke_3d_flat(&Tetra10Ref, &coords, &c_mat, &mut ke_flat);
+        for i in 0..30 { for j in 0..30 {
+            let diff = (orig[(i,j)] - ke_flat[i*30+j]).abs();
+            let scale = orig[(i,j)].abs().max(1.0);
+            assert!(diff/scale < 1e-6, "TETRA10 Ke [{i},{j}]: {} vs {}", orig[(i,j)], ke_flat[i*30+j]);
+        }}
+    }
+
+    #[test]
+    fn wedge6_ke_generic_matches_original() {
+        use crate::elements::solid::{wedge6_ke, Wedge6Ref};
+        let coords: [[f64; 3]; 6] = [
+            [0.0,0.0,-1.0],[1.0,0.0,-1.0],[0.0,1.0,-1.0],
+            [0.0,0.0, 1.0],[1.0,0.0, 1.0],[0.0,1.0, 1.0],
+        ];
+        let e = 2.1e11; let nu = 0.3;
+        let orig = wedge6_ke(&coords, e, nu);
+        let c_mat = isotropic_c_6x6(e, nu);
+        let mut ke_flat = [0.0f64; 324]; // 18*18
+        integrate_ke_3d_flat(&Wedge6Ref, &coords, &c_mat, &mut ke_flat);
+        for i in 0..18 { for j in 0..18 {
+            let diff = (orig[(i,j)] - ke_flat[i*18+j]).abs();
+            let scale = orig[(i,j)].abs().max(1.0);
+            assert!(diff/scale < 1e-6, "WEDGE6 Ke [{i},{j}]: {} vs {}", orig[(i,j)], ke_flat[i*18+j]);
+        }}
+    }
+
+    #[test]
+    fn wedge15_ke_generic_matches_original() {
+        use crate::elements::solid::{wedge15_ke, Wedge15Ref};
+        // Use reference element geometry (identity-ish Jacobian) for robustness
+        let coords: [[f64; 3]; 15] = [
+            // bottom corners
+            [0.0,0.0,-1.0],[1.0,0.0,-1.0],[0.0,1.0,-1.0],
+            // top corners
+            [0.0,0.0, 1.0],[1.0,0.0, 1.0],[0.0,1.0, 1.0],
+            // bottom edge midpoints: N6=edge01, N7=edge02, N8=vert0, N9=edge12
+            [0.5,0.0,-1.0],[0.0,0.5,-1.0],[0.0,0.0,0.0],[0.5,0.5,-1.0],
+            // vertical edge midpoints: N10=vert1, N11=vert2
+            [1.0,0.0,0.0],[0.0,1.0,0.0],
+            // top edge midpoints: N12=edge34, N13=edge35, N14=edge45
+            [0.5,0.0,1.0],[0.0,0.5,1.0],[0.5,0.5,1.0],
+        ];
+        let e = 2.1e11; let nu = 0.3;
+        let orig = wedge15_ke(&coords, e, nu);
+        let c_mat = isotropic_c_6x6(e, nu);
+        let mut ke_flat = [0.0f64; 2025]; // 45*45
+        integrate_ke_3d_flat(&Wedge15Ref, &coords, &c_mat, &mut ke_flat);
+        // Use relative tolerance w.r.t. max diagonal for near-zero entries
+        let diag_max: f64 = (0..45).map(|i| orig[(i,i)].abs()).fold(0.0f64, f64::max);
+        for i in 0..45 { for j in 0..45 {
+            let diff = (orig[(i,j)] - ke_flat[i*45+j]).abs();
+            let scale = orig[(i,j)].abs().max(diag_max * 1e-6).max(1.0);
+            assert!(diff/scale < 1e-4, "WEDGE15 Ke [{i},{j}]: {} vs {}", orig[(i,j)], ke_flat[i*45+j]);
+        }}
+    }
+
+    #[test]
+    fn pyramid5_ke_generic_matches_original() {
+        use crate::elements::solid::{pyramid5_ke, Pyramid5Ref};
+        let coords: [[f64; 3]; 5] = [
+            [-1.0,-1.0,0.0],[1.0,-1.0,0.0],[1.0,1.0,0.0],[-1.0,1.0,0.0],
+            [0.0,0.0,1.0],
+        ];
+        let e = 2.1e11; let nu = 0.3;
+        let orig = pyramid5_ke(&coords, e, nu);
+        let c_mat = isotropic_c_6x6(e, nu);
+        let mut ke_flat = [0.0f64; 225]; // 15*15
+        integrate_ke_3d_flat(&Pyramid5Ref, &coords, &c_mat, &mut ke_flat);
+        for i in 0..15 { for j in 0..15 {
+            let diff = (orig[(i,j)] - ke_flat[i*15+j]).abs();
+            let scale = orig[(i,j)].abs().max(1.0);
+            assert!(diff/scale < 1e-6, "PYRAMID5 Ke [{i},{j}]: {} vs {}", orig[(i,j)], ke_flat[i*15+j]);
+        }}
+    }
+
+    #[test]
+    fn pyramid13_ke_generic_matches_original() {
+        use crate::elements::solid::{pyramid13_ke, Pyramid13Ref};
+        let coords: [[f64; 3]; 13] = [
+            [-1.0,-1.0,0.0],[1.0,-1.0,0.0],[1.0,1.0,0.0],[-1.0,1.0,0.0],
+            [0.0,0.0,1.0],
+            // base edge midpoints
+            [0.0,-1.0,0.0],[1.0,0.0,0.0],[0.0,1.0,0.0],[-1.0,0.0,0.0],
+            // lateral edge midpoints
+            [-0.5,-0.5,0.5],[0.5,-0.5,0.5],[0.5,0.5,0.5],[-0.5,0.5,0.5],
+        ];
+        let e = 2.1e11; let nu = 0.3;
+        let orig = pyramid13_ke(&coords, e, nu);
+        let c_mat = isotropic_c_6x6(e, nu);
+        let mut ke_flat = [0.0f64; 1521]; // 39*39
+        integrate_ke_3d_flat(&Pyramid13Ref, &coords, &c_mat, &mut ke_flat);
+        for i in 0..39 { for j in 0..39 {
+            let diff = (orig[(i,j)] - ke_flat[i*39+j]).abs();
+            let scale = orig[(i,j)].abs().max(1.0);
+            assert!(diff/scale < 1e-6, "PYRAMID13 Ke [{i},{j}]: {} vs {}", orig[(i,j)], ke_flat[i*39+j]);
+        }}
+    }
 }

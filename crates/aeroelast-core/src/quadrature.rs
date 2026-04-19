@@ -338,6 +338,129 @@ pub static GAUSS3X3_W: [f64; 9] = [
 // Static 3D Gauss point/weight arrays (for ReferenceElement3D trait impls)
 // ============================================================================
 
+/// 3×3×3 Gauss rule on [−1,1]³: 27 points.
+pub static GAUSS3X3X3_PTS: [[f64; 3]; 27] = {
+    const P: [f64; 3] = [-0.774_596_669_241_483_4, 0.0, 0.774_596_669_241_483_4];
+    let mut pts = [[0.0f64; 3]; 27];
+    let mut idx = 0;
+    let mut ki = 0;
+    while ki < 3 {
+        let mut kj = 0;
+        while kj < 3 {
+            let mut kk = 0;
+            while kk < 3 {
+                pts[idx] = [P[ki], P[kj], P[kk]];
+                idx += 1;
+                kk += 1;
+            }
+            kj += 1;
+        }
+        ki += 1;
+    }
+    pts
+};
+/// 3×3×3 Gauss weights: w_i * w_j * w_k.
+pub static GAUSS3X3X3_W: [f64; 27] = {
+    const W: [f64; 3] = [5.0 / 9.0, 8.0 / 9.0, 5.0 / 9.0];
+    let mut wts = [0.0f64; 27];
+    let mut idx = 0;
+    let mut ki = 0;
+    while ki < 3 {
+        let mut kj = 0;
+        while kj < 3 {
+            let mut kk = 0;
+            while kk < 3 {
+                wts[idx] = W[ki] * W[kj] * W[kk];
+                idx += 1;
+                kk += 1;
+            }
+            kj += 1;
+        }
+        ki += 1;
+    }
+    wts
+};
+
+/// TETRA4 quadrature points as a static slice (1 point: centroid).
+pub static TETRA4_GP_PTS: [[f64; 3]; 1] = [[0.25, 0.25, 0.25]];
+/// TETRA4 quadrature weights as a static slice.
+pub static TETRA4_GP_W: [f64; 1] = [1.0 / 6.0];
+
+/// TETRA10 quadrature points as a static slice (4 points).
+pub static TETRA10_GP_PTS: [[f64; 3]; 4] = TETRA10_GP;
+/// TETRA10 quadrature weights as a static slice (all equal 1/24).
+pub static TETRA10_GP_W: [f64; 4] = [1.0 / 24.0; 4];
+
+/// WEDGE6 combined quadrature points (3 tri × 2 lin = 6 pts).
+pub static WEDGE6_GP_PTS: [[f64; 3]; 6] = {
+    const TRI_XI:  [f64; 3] = [1.0/6.0, 2.0/3.0, 1.0/6.0];
+    const TRI_ETA: [f64; 3] = [1.0/6.0, 1.0/6.0, 2.0/3.0];
+    const LIN:     [f64; 2] = [-0.577_350_269_189_625_8, 0.577_350_269_189_625_8];
+    let mut pts = [[0.0f64; 3]; 6];
+    let mut idx = 0;
+    let mut t = 0;
+    while t < 3 {
+        let mut z = 0;
+        while z < 2 {
+            pts[idx] = [TRI_XI[t], TRI_ETA[t], LIN[z]];
+            idx += 1;
+            z += 1;
+        }
+        t += 1;
+    }
+    pts
+};
+/// WEDGE6 combined quadrature weights: TRI3_W × LIN2_W × 2 = 1/3 each.
+pub static WEDGE6_GP_W: [f64; 6] = [1.0/3.0; 6];
+
+/// WEDGE15 combined quadrature points (7 tri × 3 lin = 21 pts).
+pub static WEDGE15_GP_PTS: [[f64; 3]; 21] = {
+    const TXI: [f64; 7] = [
+        1.0/3.0, 0.797_426_985_353_087, 0.101_286_507_323_456,
+        0.101_286_507_323_456, 0.470_142_064_105_115, 0.470_142_064_105_115, 0.059_715_871_789_770,
+    ];
+    const TETA: [f64; 7] = [
+        1.0/3.0, 0.101_286_507_323_456, 0.797_426_985_353_087,
+        0.101_286_507_323_456, 0.059_715_871_789_770, 0.470_142_064_105_115, 0.470_142_064_105_115,
+    ];
+    const LZETA: [f64; 3] = [-0.774_596_669_241_483, 0.0, 0.774_596_669_241_483];
+    let mut pts = [[0.0f64; 3]; 21];
+    let mut idx = 0;
+    let mut t = 0;
+    while t < 7 {
+        let mut z = 0;
+        while z < 3 {
+            pts[idx] = [TXI[t], TETA[t], LZETA[z]];
+            idx += 1;
+            z += 1;
+        }
+        t += 1;
+    }
+    pts
+};
+/// WEDGE15 combined quadrature weights: tri_w × lin_w × 2 for each of 21 pts.
+pub static WEDGE15_GP_W: [f64; 21] = {
+    const TW: [f64; 7] = [
+        0.225 * 0.5,
+        0.125_939_180_544_827 * 0.5, 0.125_939_180_544_827 * 0.5, 0.125_939_180_544_827 * 0.5,
+        0.132_394_152_788_506 * 0.5, 0.132_394_152_788_506 * 0.5, 0.132_394_152_788_506 * 0.5,
+    ];
+    const LW: [f64; 3] = [5.0/9.0, 8.0/9.0, 5.0/9.0];
+    let mut wts = [0.0f64; 21];
+    let mut idx = 0;
+    let mut t = 0;
+    while t < 7 {
+        let mut z = 0;
+        while z < 3 {
+            wts[idx] = TW[t] * LW[z] * 2.0;
+            idx += 1;
+            z += 1;
+        }
+        t += 1;
+    }
+    wts
+};
+
 /// 2×2×2 Gauss rule on [−1,1]³: 8 points, all weights = 1.
 pub static GAUSS2X2X2_PTS: [[f64; 3]; 8] = [
     [-0.577_350_269_189_625_8, -0.577_350_269_189_625_8, -0.577_350_269_189_625_8],

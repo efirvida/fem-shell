@@ -15,6 +15,9 @@ use crate::quadrature::{
     WEDGE15_TRI_XI, WEDGE15_TRI_ETA, WEDGE15_TRI_W, WEDGE15_LIN_ZETA, WEDGE15_LIN_W,
     PYRAMID5_GP, PYRAMID5_W, PYRAMID13_GP, PYRAMID13_W,
     GAUSS2X2X2_PTS, GAUSS2X2X2_W,
+    GAUSS3X3X3_PTS, GAUSS3X3X3_W,
+    TETRA4_GP_PTS, TETRA4_GP_W, TETRA10_GP_PTS, TETRA10_GP_W,
+    WEDGE6_GP_PTS, WEDGE6_GP_W, WEDGE15_GP_PTS, WEDGE15_GP_W,
 };
 use super::reference::ReferenceElement3D;
 
@@ -1333,6 +1336,118 @@ impl ReferenceElement3D<8> for Hexa8Ref {
     }
     fn gauss_points(&self) -> &'static [[f64; 3]] { &GAUSS2X2X2_PTS }
     fn gauss_weights(&self) -> &'static [f64]     { &GAUSS2X2X2_W  }
+}
+
+/// Zero-size marker type for HEXA20 reference element.
+pub struct Hexa20Ref;
+
+impl ReferenceElement3D<20> for Hexa20Ref {
+    #[inline]
+    fn shape_functions(&self, xi: f64, eta: f64, zeta: f64) -> [f64; 20] {
+        hexa20_shape(xi, eta, zeta)
+    }
+    #[inline]
+    fn shape_derivs(&self, xi: f64, eta: f64, zeta: f64) -> ([f64; 20], [f64; 20], [f64; 20]) {
+        hexa20_derivs(xi, eta, zeta)
+    }
+    fn gauss_points(&self) -> &'static [[f64; 3]] { &GAUSS3X3X3_PTS }
+    fn gauss_weights(&self) -> &'static [f64]     { &GAUSS3X3X3_W  }
+}
+
+/// Zero-size marker type for TETRA4 reference element.
+pub struct Tetra4Ref;
+
+impl ReferenceElement3D<4> for Tetra4Ref {
+    #[inline]
+    fn shape_functions(&self, xi: f64, eta: f64, zeta: f64) -> [f64; 4] {
+        tetra4_shape(xi, eta, zeta)
+    }
+    #[inline]
+    fn shape_derivs(&self, _xi: f64, _eta: f64, _zeta: f64) -> ([f64; 4], [f64; 4], [f64; 4]) {
+        tetra4_derivs()
+    }
+    fn gauss_points(&self) -> &'static [[f64; 3]] { &TETRA4_GP_PTS }
+    fn gauss_weights(&self) -> &'static [f64]     { &TETRA4_GP_W  }
+}
+
+/// Zero-size marker type for TETRA10 reference element.
+pub struct Tetra10Ref;
+
+impl ReferenceElement3D<10> for Tetra10Ref {
+    #[inline]
+    fn shape_functions(&self, xi: f64, eta: f64, zeta: f64) -> [f64; 10] {
+        tetra10_shape(xi, eta, zeta)
+    }
+    #[inline]
+    fn shape_derivs(&self, xi: f64, eta: f64, zeta: f64) -> ([f64; 10], [f64; 10], [f64; 10]) {
+        tetra10_derivs(xi, eta, zeta)
+    }
+    fn gauss_points(&self) -> &'static [[f64; 3]] { &TETRA10_GP_PTS }
+    fn gauss_weights(&self) -> &'static [f64]     { &TETRA10_GP_W  }
+}
+
+/// Zero-size marker type for WEDGE6 reference element.
+pub struct Wedge6Ref;
+
+impl ReferenceElement3D<6> for Wedge6Ref {
+    #[inline]
+    fn shape_functions(&self, xi: f64, eta: f64, zeta: f64) -> [f64; 6] {
+        wedge6_shape(xi, eta, zeta)
+    }
+    #[inline]
+    fn shape_derivs(&self, xi: f64, eta: f64, zeta: f64) -> ([f64; 6], [f64; 6], [f64; 6]) {
+        wedge6_derivs(xi, eta, zeta)
+    }
+    fn gauss_points(&self) -> &'static [[f64; 3]] { &WEDGE6_GP_PTS }
+    fn gauss_weights(&self) -> &'static [f64]     { &WEDGE6_GP_W  }
+}
+
+/// Zero-size marker type for WEDGE15 reference element.
+pub struct Wedge15Ref;
+
+impl ReferenceElement3D<15> for Wedge15Ref {
+    #[inline]
+    fn shape_functions(&self, xi: f64, eta: f64, zeta: f64) -> [f64; 15] {
+        wedge15_shape(xi, eta, zeta)
+    }
+    #[inline]
+    fn shape_derivs(&self, xi: f64, eta: f64, zeta: f64) -> ([f64; 15], [f64; 15], [f64; 15]) {
+        wedge15_derivs(xi, eta, zeta)
+    }
+    fn gauss_points(&self) -> &'static [[f64; 3]] { &WEDGE15_GP_PTS }
+    fn gauss_weights(&self) -> &'static [f64]     { &WEDGE15_GP_W  }
+}
+
+/// Zero-size marker type for PYRAMID5 reference element.
+pub struct Pyramid5Ref;
+
+impl ReferenceElement3D<5> for Pyramid5Ref {
+    #[inline]
+    fn shape_functions(&self, xi: f64, eta: f64, zeta: f64) -> [f64; 5] {
+        pyramid5_shape(xi, eta, zeta)
+    }
+    #[inline]
+    fn shape_derivs(&self, xi: f64, eta: f64, zeta: f64) -> ([f64; 5], [f64; 5], [f64; 5]) {
+        pyramid5_derivs(xi, eta, zeta)
+    }
+    fn gauss_points(&self) -> &'static [[f64; 3]] { &PYRAMID5_GP }
+    fn gauss_weights(&self) -> &'static [f64]     { &PYRAMID5_W  }
+}
+
+/// Zero-size marker type for PYRAMID13 reference element.
+pub struct Pyramid13Ref;
+
+impl ReferenceElement3D<13> for Pyramid13Ref {
+    #[inline]
+    fn shape_functions(&self, xi: f64, eta: f64, zeta: f64) -> [f64; 13] {
+        pyramid13_shape(xi, eta, zeta)
+    }
+    #[inline]
+    fn shape_derivs(&self, xi: f64, eta: f64, zeta: f64) -> ([f64; 13], [f64; 13], [f64; 13]) {
+        pyramid13_derivs(xi, eta, zeta)
+    }
+    fn gauss_points(&self) -> &'static [[f64; 3]] { &PYRAMID13_GP }
+    fn gauss_weights(&self) -> &'static [f64]     { &PYRAMID13_W  }
 }
 
 // ============================================================================
