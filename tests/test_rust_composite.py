@@ -1,8 +1,9 @@
 """
 Tests for Rust composite element integration.
 
-Validates that Rust batch composite functions produce the same K and M
-matrices as the Python MITC3Composite / MITC4Composite elements.
+Validates composite shell elements (MITC3, MITC4) using the Rust batch
+functions and PyMeshAssembler. All tests use physical sanity checks only —
+no Python MITC3Composite / MITC4Composite class imports.
 """
 
 import numpy as np
@@ -14,12 +15,11 @@ from fem_shell.core.laminate import (
     Laminate,
     create_laminate_from_angles,
 )
-from fem_shell.elements.MITC3_composite import MITC3Composite
-from fem_shell.elements.MITC4_composite import MITC4Composite
 
 # Try importing Rust backend
 try:
     import fem_shell_core as fsc
+    from fem_shell_core import PyMeshAssembler
 
     HAS_RUST = True
 except ImportError:
@@ -103,15 +103,15 @@ def quad_coords_3d():
 
 
 # =============================================================================
-# Helper: call Rust and compare to Python
+# Helpers: call Rust batch functions
 # =============================================================================
 
 
 def _rust_ke_mitc3(coords, laminate):
-    """Compute MITC3 composite stiffness via Rust."""
+    """Compute MITC3 composite stiffness via Rust batch function."""
     n = 1
     coords_flat = coords.ravel()[np.newaxis, :]  # (1, 9)
-    cm = laminate.A.ravel()[np.newaxis, :]  # (1, 9)
+    cm = laminate.A.ravel()[np.newaxis, :]        # (1, 9)
     cb = laminate.D.ravel()[np.newaxis, :]
     cs = laminate.Cs.ravel()[np.newaxis, :]
     h = laminate.total_thickness
@@ -126,7 +126,7 @@ def _rust_ke_mitc3(coords, laminate):
 
 
 def _rust_me_mitc3(coords, laminate):
-    """Compute MITC3 composite mass via Rust."""
+    """Compute MITC3 composite mass via Rust batch function."""
     coords_flat = coords.ravel()[np.newaxis, :]
     mpa = sum(p.material.rho * p.thickness for p in laminate.plies)
     ri = sum(
@@ -140,7 +140,7 @@ def _rust_me_mitc3(coords, laminate):
 
 
 def _rust_ke_mitc4(coords, laminate):
-    """Compute MITC4 composite stiffness via Rust."""
+    """Compute MITC4 composite stiffness via Rust batch function."""
     coords_flat = coords.ravel()[np.newaxis, :]
     cm = laminate.A.ravel()[np.newaxis, :]
     cb = laminate.D.ravel()[np.newaxis, :]
@@ -157,7 +157,7 @@ def _rust_ke_mitc4(coords, laminate):
 
 
 def _rust_me_mitc4(coords, laminate):
-    """Compute MITC4 composite mass via Rust."""
+    """Compute MITC4 composite mass via Rust batch function."""
     coords_flat = coords.ravel()[np.newaxis, :]
     mpa = sum(p.material.rho * p.thickness for p in laminate.plies)
     ri = sum(
@@ -170,240 +170,165 @@ def _rust_me_mitc4(coords, laminate):
     return np.asarray(me_flat).reshape(24, 24)
 
 
+def _dense_from_asm(asm, which: str) -> np.ndarray:
+    if which == "K":
+        rows, cols, vals = asm.assemble_k()
+    else:
+        rows, cols, vals = asm.assemble_m()
+    n = asm.dofs_count
+    mat = np.zeros((n, n))
+    for r, c, v in zip(rows, cols, vals):
+        mat[r, c] += v
+    return mat
+
+
+def _laminate_to_mat_dict(laminate) -> dict:
+    """Convert laminate to composite material dict for PyMeshAssembler."""
+    h = laminate.total_thickness
+    a_trace = np.trace(laminate.A)
+    e_equiv = a_trace / (3.0 * h)
+    mpa = sum(p.material.rho * p.thickness for p in laminate.plies)
+    ri = sum(
+        p.material.rho * (p.z_top ** 3 - p.z_bottom ** 3) / 3
+        for p in laminate.plies
+    )
+    return {
+        "type": "composite",
+        "cm": laminate.A.ravel().tolist(),
+        "cb": laminate.D.ravel().tolist(),
+        "cs": laminate.Cs.ravel().tolist(),
+        "thickness": h,
+        "e_equiv": e_equiv,
+        "mass_per_area": mpa,
+        "rotational_inertia": ri,
+    }
+
+
 # =============================================================================
-# Tests: MITC3 Composite — K stiffness
+# Tests: Batch functions — MITC3 composite
 # =============================================================================
 
 
-class TestMITC3CompositeKe:
-    """Test MITC3 composite stiffness Rust vs Python."""
+class TestMITC3BatchSanity:
+    """Physical sanity checks for MITC3 composite batch functions."""
 
-    def test_symmetric_crossply(self, carbon_epoxy, ply_thickness, tri_coords):
-        """[0/90/90/0] symmetric cross-ply laminate."""
-        laminate = create_laminate_from_angles(
-            carbon_epoxy, ply_thickness, [0, 90, 90, 0]
+    def test_ke_shape_and_symmetry(self, carbon_epoxy, ply_thickness, tri_coords):
+        laminate = create_laminate_from_angles(carbon_epoxy, ply_thickness, [0, 90, 90, 0])
+        ke = _rust_ke_mitc3(tri_coords, laminate)
+        assert ke.shape == (18, 18), f"Expected (18,18), got {ke.shape}"
+        np.testing.assert_allclose(ke, ke.T, atol=1e-6, err_msg="K not symmetric")
+
+    def test_ke_positive_semidefinite(self, carbon_epoxy, ply_thickness, tri_coords):
+        laminate = create_laminate_from_angles(carbon_epoxy, ply_thickness, [0, 90, 90, 0])
+        ke = _rust_ke_mitc3(tri_coords, laminate)
+        eigvals = np.linalg.eigvalsh(ke)
+        assert np.all(eigvals >= -1e-6 * max(eigvals)), (
+            f"Negative eigenvalue: {eigvals.min():.4e}"
         )
-        py_elem = MITC3Composite(tri_coords, (1, 2, 3), laminate)
-        py_ke = py_elem.K
 
-        rust_ke = _rust_ke_mitc3(tri_coords, laminate)
+    def test_me_shape_and_symmetry(self, carbon_epoxy, ply_thickness, tri_coords):
+        laminate = create_laminate_from_angles(carbon_epoxy, ply_thickness, [0, 90, 90, 0])
+        me = _rust_me_mitc3(tri_coords, laminate)
+        assert me.shape == (18, 18)
+        np.testing.assert_allclose(me, me.T, atol=1e-10, err_msg="M not symmetric")
 
-        assert rust_ke.shape == (18, 18)
-        assert np.allclose(rust_ke, rust_ke.T, atol=1e-6), "K not symmetric"
-        # Allow some tolerance for drilling stiffness differences
-        rel_err = np.linalg.norm(rust_ke - py_ke) / np.linalg.norm(py_ke)
-        assert rel_err < 0.02, f"Relative error {rel_err:.4e} too large"
+    def test_me_positive_semidefinite(self, carbon_epoxy, ply_thickness, tri_coords):
+        laminate = create_laminate_from_angles(carbon_epoxy, ply_thickness, [0, 90, 90, 0])
+        me = _rust_me_mitc3(tri_coords, laminate)
+        eigvals = np.linalg.eigvalsh(me)
+        assert np.all(eigvals >= -1e-10), f"Negative eigenvalue: {eigvals.min():.4e}"
 
-    def test_unidirectional_0(self, carbon_epoxy, ply_thickness, tri_coords):
-        """Single 0° ply."""
-        laminate = create_laminate_from_angles(
-            carbon_epoxy, ply_thickness, [0]
-        )
-        py_elem = MITC3Composite(tri_coords, (1, 2, 3), laminate)
-        py_ke = py_elem.K
+    def test_unidirectional_0_symmetry(self, carbon_epoxy, ply_thickness, tri_coords):
+        laminate = create_laminate_from_angles(carbon_epoxy, ply_thickness, [0])
+        ke = _rust_ke_mitc3(tri_coords, laminate)
+        np.testing.assert_allclose(ke, ke.T, atol=1e-6)
 
-        rust_ke = _rust_ke_mitc3(tri_coords, laminate)
-        rel_err = np.linalg.norm(rust_ke - py_ke) / np.linalg.norm(py_ke)
-        assert rel_err < 0.02, f"Relative error {rel_err:.4e}"
-
-    def test_quasi_isotropic(self, carbon_epoxy, ply_thickness, tri_coords):
-        """[0/45/-45/90]s quasi-isotropic."""
+    def test_quasi_isotropic_symmetry(self, carbon_epoxy, ply_thickness, tri_coords):
         laminate = create_laminate_from_angles(
             carbon_epoxy, ply_thickness, [0, 45, -45, 90, 90, -45, 45, 0]
         )
-        py_elem = MITC3Composite(tri_coords, (1, 2, 3), laminate)
-        py_ke = py_elem.K
+        ke = _rust_ke_mitc3(tri_coords, laminate)
+        np.testing.assert_allclose(ke, ke.T, atol=1e-6)
 
-        rust_ke = _rust_ke_mitc3(tri_coords, laminate)
-        rel_err = np.linalg.norm(rust_ke - py_ke) / np.linalg.norm(py_ke)
-        assert rel_err < 0.02, f"Relative error {rel_err:.4e}"
+    def test_3d_element_symmetry(self, carbon_epoxy, ply_thickness, tri_coords_3d):
+        laminate = create_laminate_from_angles(carbon_epoxy, ply_thickness, [0, 90, 90, 0])
+        ke = _rust_ke_mitc3(tri_coords_3d, laminate)
+        np.testing.assert_allclose(ke, ke.T, atol=1e-6)
 
-    def test_3d_element(self, carbon_epoxy, ply_thickness, tri_coords_3d):
-        """Element in 3D space (not aligned with XY plane)."""
-        laminate = create_laminate_from_angles(
-            carbon_epoxy, ply_thickness, [0, 90, 90, 0]
-        )
-        py_elem = MITC3Composite(tri_coords_3d, (1, 2, 3), laminate)
-        py_ke = py_elem.K
-
-        rust_ke = _rust_ke_mitc3(tri_coords_3d, laminate)
-        rel_err = np.linalg.norm(rust_ke - py_ke) / np.linalg.norm(py_ke)
-        assert rel_err < 0.02, f"Relative error {rel_err:.4e}"
-
-    def test_glass_epoxy(self, glass_epoxy, ply_thickness, tri_coords):
-        """Glass/Epoxy material."""
-        laminate = create_laminate_from_angles(
-            glass_epoxy, ply_thickness, [0, 45, -45, 0]
-        )
-        py_elem = MITC3Composite(tri_coords, (1, 2, 3), laminate)
-        py_ke = py_elem.K
-
-        rust_ke = _rust_ke_mitc3(tri_coords, laminate)
-        rel_err = np.linalg.norm(rust_ke - py_ke) / np.linalg.norm(py_ke)
-        assert rel_err < 0.02, f"Relative error {rel_err:.4e}"
+    def test_glass_epoxy_symmetry(self, glass_epoxy, ply_thickness, tri_coords):
+        laminate = create_laminate_from_angles(glass_epoxy, ply_thickness, [0, 45, -45, 0])
+        ke = _rust_ke_mitc3(tri_coords, laminate)
+        np.testing.assert_allclose(ke, ke.T, atol=1e-6)
 
 
 # =============================================================================
-# Tests: MITC3 Composite — M mass
+# Tests: Batch functions — MITC4 composite
 # =============================================================================
 
 
-class TestMITC3CompositeMe:
-    """Test MITC3 composite mass Rust vs Python."""
+class TestMITC4BatchSanity:
+    """Physical sanity checks for MITC4 composite batch functions."""
 
-    def test_symmetric_crossply(self, carbon_epoxy, ply_thickness, tri_coords):
-        laminate = create_laminate_from_angles(
-            carbon_epoxy, ply_thickness, [0, 90, 90, 0]
+    def test_ke_shape_and_symmetry(self, carbon_epoxy, ply_thickness, quad_coords):
+        laminate = create_laminate_from_angles(carbon_epoxy, ply_thickness, [0, 90, 90, 0])
+        ke = _rust_ke_mitc4(quad_coords, laminate)
+        assert ke.shape == (24, 24)
+        np.testing.assert_allclose(ke, ke.T, atol=1e-6)
+
+    def test_ke_positive_semidefinite(self, carbon_epoxy, ply_thickness, quad_coords):
+        laminate = create_laminate_from_angles(carbon_epoxy, ply_thickness, [0, 90, 90, 0])
+        ke = _rust_ke_mitc4(quad_coords, laminate)
+        eigvals = np.linalg.eigvalsh(ke)
+        assert np.all(eigvals >= -1e-6 * max(eigvals)), (
+            f"Negative eigenvalue: {eigvals.min():.4e}"
         )
-        py_elem = MITC3Composite(tri_coords, (1, 2, 3), laminate)
-        py_me = py_elem.M
 
-        rust_me = _rust_me_mitc3(tri_coords, laminate)
+    def test_me_shape_and_symmetry(self, carbon_epoxy, ply_thickness, quad_coords):
+        laminate = create_laminate_from_angles(carbon_epoxy, ply_thickness, [0, 90, 90, 0])
+        me = _rust_me_mitc4(quad_coords, laminate)
+        assert me.shape == (24, 24)
+        np.testing.assert_allclose(me, me.T, atol=1e-10)
 
-        assert rust_me.shape == (18, 18)
-        assert np.allclose(rust_me, rust_me.T, atol=1e-10), "M not symmetric"
-        rel_err = np.linalg.norm(rust_me - py_me) / np.linalg.norm(py_me)
-        assert rel_err < 1e-10, f"Relative error {rel_err:.4e}"
+    def test_me_positive_semidefinite(self, carbon_epoxy, ply_thickness, quad_coords):
+        laminate = create_laminate_from_angles(carbon_epoxy, ply_thickness, [0, 90, 90, 0])
+        me = _rust_me_mitc4(quad_coords, laminate)
+        eigvals = np.linalg.eigvalsh(me)
+        assert np.all(eigvals >= -1e-10), f"Negative eigenvalue: {eigvals.min():.4e}"
 
-    def test_quasi_isotropic(self, carbon_epoxy, ply_thickness, tri_coords):
+    def test_unidirectional_45_symmetry(self, carbon_epoxy, ply_thickness, quad_coords):
+        laminate = create_laminate_from_angles(carbon_epoxy, ply_thickness, [45])
+        ke = _rust_ke_mitc4(quad_coords, laminate)
+        np.testing.assert_allclose(ke, ke.T, atol=1e-6)
+
+    def test_quasi_isotropic_symmetry(self, carbon_epoxy, ply_thickness, quad_coords):
         laminate = create_laminate_from_angles(
             carbon_epoxy, ply_thickness, [0, 45, -45, 90, 90, -45, 45, 0]
         )
-        py_elem = MITC3Composite(tri_coords, (1, 2, 3), laminate)
-        py_me = py_elem.M
+        ke = _rust_ke_mitc4(quad_coords, laminate)
+        np.testing.assert_allclose(ke, ke.T, atol=1e-6)
 
-        rust_me = _rust_me_mitc3(tri_coords, laminate)
-        rel_err = np.linalg.norm(rust_me - py_me) / np.linalg.norm(py_me)
-        assert rel_err < 1e-10, f"Relative error {rel_err:.4e}"
+    def test_3d_element_symmetry(self, carbon_epoxy, ply_thickness, quad_coords_3d):
+        laminate = create_laminate_from_angles(carbon_epoxy, ply_thickness, [0, 90, 90, 0])
+        ke = _rust_ke_mitc4(quad_coords_3d, laminate)
+        np.testing.assert_allclose(ke, ke.T, atol=1e-6)
 
-    def test_3d_element(self, carbon_epoxy, ply_thickness, tri_coords_3d):
-        laminate = create_laminate_from_angles(
-            carbon_epoxy, ply_thickness, [0, 90, 90, 0]
-        )
-        py_elem = MITC3Composite(tri_coords_3d, (1, 2, 3), laminate)
-        py_me = py_elem.M
-
-        rust_me = _rust_me_mitc3(tri_coords_3d, laminate)
-        rel_err = np.linalg.norm(rust_me - py_me) / np.linalg.norm(py_me)
-        assert rel_err < 1e-10, f"Relative error {rel_err:.4e}"
+    def test_glass_epoxy_angle_ply_symmetry(self, glass_epoxy, ply_thickness, quad_coords):
+        laminate = create_laminate_from_angles(glass_epoxy, ply_thickness, [45, -45, -45, 45])
+        ke = _rust_ke_mitc4(quad_coords, laminate)
+        np.testing.assert_allclose(ke, ke.T, atol=1e-6)
 
 
 # =============================================================================
-# Tests: MITC4 Composite — K stiffness
-# =============================================================================
-
-
-class TestMITC4CompositeKe:
-    """Test MITC4 composite stiffness Rust vs Python."""
-
-    def test_symmetric_crossply(self, carbon_epoxy, ply_thickness, quad_coords):
-        laminate = create_laminate_from_angles(
-            carbon_epoxy, ply_thickness, [0, 90, 90, 0]
-        )
-        py_elem = MITC4Composite(quad_coords, (1, 2, 3, 4), laminate)
-        py_ke = py_elem.K
-
-        rust_ke = _rust_ke_mitc4(quad_coords, laminate)
-
-        assert rust_ke.shape == (24, 24)
-        assert np.allclose(rust_ke, rust_ke.T, atol=1e-6), "K not symmetric"
-        rel_err = np.linalg.norm(rust_ke - py_ke) / np.linalg.norm(py_ke)
-        assert rel_err < 0.02, f"Relative error {rel_err:.4e}"
-
-    def test_unidirectional_45(self, carbon_epoxy, ply_thickness, quad_coords):
-        """Single 45° ply — anisotropic in-plane behavior."""
-        laminate = create_laminate_from_angles(
-            carbon_epoxy, ply_thickness, [45]
-        )
-        py_elem = MITC4Composite(quad_coords, (1, 2, 3, 4), laminate)
-        py_ke = py_elem.K
-
-        rust_ke = _rust_ke_mitc4(quad_coords, laminate)
-        rel_err = np.linalg.norm(rust_ke - py_ke) / np.linalg.norm(py_ke)
-        assert rel_err < 0.02, f"Relative error {rel_err:.4e}"
-
-    def test_quasi_isotropic(self, carbon_epoxy, ply_thickness, quad_coords):
-        laminate = create_laminate_from_angles(
-            carbon_epoxy, ply_thickness, [0, 45, -45, 90, 90, -45, 45, 0]
-        )
-        py_elem = MITC4Composite(quad_coords, (1, 2, 3, 4), laminate)
-        py_ke = py_elem.K
-
-        rust_ke = _rust_ke_mitc4(quad_coords, laminate)
-        rel_err = np.linalg.norm(rust_ke - py_ke) / np.linalg.norm(py_ke)
-        assert rel_err < 0.02, f"Relative error {rel_err:.4e}"
-
-    def test_3d_element(self, carbon_epoxy, ply_thickness, quad_coords_3d):
-        laminate = create_laminate_from_angles(
-            carbon_epoxy, ply_thickness, [0, 90, 90, 0]
-        )
-        py_elem = MITC4Composite(quad_coords_3d, (1, 2, 3, 4), laminate)
-        py_ke = py_elem.K
-
-        rust_ke = _rust_ke_mitc4(quad_coords_3d, laminate)
-        rel_err = np.linalg.norm(rust_ke - py_ke) / np.linalg.norm(py_ke)
-        assert rel_err < 0.02, f"Relative error {rel_err:.4e}"
-
-    def test_glass_epoxy_angle_ply(self, glass_epoxy, ply_thickness, quad_coords):
-        """[+45/-45/-45/+45] angle-ply glass/epoxy."""
-        laminate = create_laminate_from_angles(
-            glass_epoxy, ply_thickness, [45, -45, -45, 45]
-        )
-        py_elem = MITC4Composite(quad_coords, (1, 2, 3, 4), laminate)
-        py_ke = py_elem.K
-
-        rust_ke = _rust_ke_mitc4(quad_coords, laminate)
-        rel_err = np.linalg.norm(rust_ke - py_ke) / np.linalg.norm(py_ke)
-        assert rel_err < 0.02, f"Relative error {rel_err:.4e}"
-
-
-# =============================================================================
-# Tests: MITC4 Composite — M mass
-# =============================================================================
-
-
-class TestMITC4CompositeMe:
-    """Test MITC4 composite mass Rust vs Python."""
-
-    def test_symmetric_crossply(self, carbon_epoxy, ply_thickness, quad_coords):
-        laminate = create_laminate_from_angles(
-            carbon_epoxy, ply_thickness, [0, 90, 90, 0]
-        )
-        py_elem = MITC4Composite(quad_coords, (1, 2, 3, 4), laminate)
-        py_me = py_elem.M
-
-        rust_me = _rust_me_mitc4(quad_coords, laminate)
-
-        assert rust_me.shape == (24, 24)
-        assert np.allclose(rust_me, rust_me.T, atol=1e-10), "M not symmetric"
-        rel_err = np.linalg.norm(rust_me - py_me) / np.linalg.norm(py_me)
-        assert rel_err < 1e-10, f"Relative error {rel_err:.4e}"
-
-    def test_3d_element(self, carbon_epoxy, ply_thickness, quad_coords_3d):
-        laminate = create_laminate_from_angles(
-            carbon_epoxy, ply_thickness, [0, 90, 90, 0]
-        )
-        py_elem = MITC4Composite(quad_coords_3d, (1, 2, 3, 4), laminate)
-        py_me = py_elem.M
-
-        rust_me = _rust_me_mitc4(quad_coords_3d, laminate)
-        rel_err = np.linalg.norm(rust_me - py_me) / np.linalg.norm(py_me)
-        assert rel_err < 1e-10, f"Relative error {rel_err:.4e}"
-
-
-# =============================================================================
-# Tests: Batch processing (multiple elements)
+# Tests: Batch processing (multiple elements) — sanity only
 # =============================================================================
 
 
 class TestBatchComposite:
-    """Test batch processing with multiple composite elements."""
+    """Batch processing sanity: symmetry and PSD for multiple elements."""
 
     def test_batch_ke_mitc3_multiple(self, carbon_epoxy, ply_thickness):
-        """Multiple MITC3 elements with same laminate."""
-        laminate = create_laminate_from_angles(
-            carbon_epoxy, ply_thickness, [0, 90, 90, 0]
-        )
+        """Multiple MITC3 elements — all K must be symmetric and PSD."""
+        laminate = create_laminate_from_angles(carbon_epoxy, ply_thickness, [0, 90, 90, 0])
         coords_list = [
             np.array([[0, 0, 0], [1, 0, 0], [0, 1, 0]], dtype=float),
             np.array([[1, 0, 0], [2, 0, 0], [1, 1, 0]], dtype=float),
@@ -415,8 +340,7 @@ class TestBatchComposite:
         cb = np.tile(laminate.D.ravel(), (n, 1))
         cs = np.tile(laminate.Cs.ravel(), (n, 1))
         h = laminate.total_thickness
-        a_trace = np.trace(laminate.A)
-        e_equiv = a_trace / (3.0 * h)
+        e_equiv = np.trace(laminate.A) / (3.0 * h)
 
         ke_flat = fsc.batch_ke_mitc3_composite(
             coords_batch, cm, cb, cs,
@@ -424,16 +348,17 @@ class TestBatchComposite:
         )
         ke_batch = np.asarray(ke_flat).reshape(n, 18, 18)
 
-        for i, c in enumerate(coords_list):
-            py_elem = MITC3Composite(c, (1, 2, 3), laminate)
-            rel_err = np.linalg.norm(ke_batch[i] - py_elem.K) / np.linalg.norm(py_elem.K)
-            assert rel_err < 0.02, f"Element {i}: relative error {rel_err:.4e}"
+        for i, ke in enumerate(ke_batch):
+            np.testing.assert_allclose(ke, ke.T, atol=1e-6,
+                                       err_msg=f"Element {i}: K not symmetric")
+            eigvals = np.linalg.eigvalsh(ke)
+            assert np.all(eigvals >= -1e-6 * max(eigvals)), (
+                f"Element {i}: negative eigenvalue {eigvals.min():.4e}"
+            )
 
     def test_batch_ke_mitc4_multiple(self, carbon_epoxy, ply_thickness):
-        """Multiple MITC4 elements with same laminate."""
-        laminate = create_laminate_from_angles(
-            carbon_epoxy, ply_thickness, [0, 45, -45, 0]
-        )
+        """Multiple MITC4 elements — all K must be symmetric and PSD."""
+        laminate = create_laminate_from_angles(carbon_epoxy, ply_thickness, [0, 45, -45, 0])
         coords_list = [
             np.array([[0, 0, 0], [1, 0, 0], [1, 1, 0], [0, 1, 0]], dtype=float),
             np.array([[1, 0, 0], [2, 0, 0], [2, 1, 0], [1, 1, 0]], dtype=float),
@@ -445,8 +370,7 @@ class TestBatchComposite:
         cb = np.tile(laminate.D.ravel(), (n, 1))
         cs = np.tile(laminate.Cs.ravel(), (n, 1))
         h = laminate.total_thickness
-        a_trace = np.trace(laminate.A)
-        e_equiv = a_trace / (3.0 * h)
+        e_equiv = np.trace(laminate.A) / (3.0 * h)
 
         ke_flat = fsc.batch_ke_mitc4_composite(
             coords_batch, cm, cb, cs,
@@ -454,10 +378,13 @@ class TestBatchComposite:
         )
         ke_batch = np.asarray(ke_flat).reshape(n, 24, 24)
 
-        for i, c in enumerate(coords_list):
-            py_elem = MITC4Composite(c, (1, 2, 3, 4), laminate)
-            rel_err = np.linalg.norm(ke_batch[i] - py_elem.K) / np.linalg.norm(py_elem.K)
-            assert rel_err < 0.02, f"Element {i}: relative error {rel_err:.4e}"
+        for i, ke in enumerate(ke_batch):
+            np.testing.assert_allclose(ke, ke.T, atol=1e-6,
+                                       err_msg=f"Element {i}: K not symmetric")
+            eigvals = np.linalg.eigvalsh(ke)
+            assert np.all(eigvals >= -1e-6 * max(eigvals)), (
+                f"Element {i}: negative eigenvalue {eigvals.min():.4e}"
+            )
 
 
 # =============================================================================
@@ -466,13 +393,11 @@ class TestBatchComposite:
 
 
 class TestCompositeSanity:
-    """Physical sanity checks for composite elements."""
+    """Physical sanity checks for composite elements (Rust-only)."""
 
     def test_ke_positive_semidefinite(self, carbon_epoxy, ply_thickness, tri_coords):
         """Stiffness eigenvalues should be non-negative."""
-        laminate = create_laminate_from_angles(
-            carbon_epoxy, ply_thickness, [0, 90, 90, 0]
-        )
+        laminate = create_laminate_from_angles(carbon_epoxy, ply_thickness, [0, 90, 90, 0])
         rust_ke = _rust_ke_mitc3(tri_coords, laminate)
         eigvals = np.linalg.eigvalsh(rust_ke)
         assert np.all(eigvals >= -1e-6 * max(eigvals)), \
@@ -480,9 +405,7 @@ class TestCompositeSanity:
 
     def test_me_positive_semidefinite(self, carbon_epoxy, ply_thickness, tri_coords):
         """Mass eigenvalues should be non-negative."""
-        laminate = create_laminate_from_angles(
-            carbon_epoxy, ply_thickness, [0, 90, 90, 0]
-        )
+        laminate = create_laminate_from_angles(carbon_epoxy, ply_thickness, [0, 90, 90, 0])
         rust_me = _rust_me_mitc3(tri_coords, laminate)
         eigvals = np.linalg.eigvalsh(rust_me)
         assert np.all(eigvals >= -1e-10), f"Negative eigenvalue: {eigvals.min():.4e}"
@@ -508,3 +431,41 @@ class TestCompositeSanity:
 
         assert np.linalg.norm(ke_thick) > np.linalg.norm(ke_thin), \
             "Thicker laminate should be stiffer"
+
+    def test_assembler_composite_mitc3_symmetry(
+        self, carbon_epoxy, ply_thickness, tri_coords
+    ):
+        """PyMeshAssembler with composite material gives symmetric K/M."""
+        laminate = create_laminate_from_angles(carbon_epoxy, ply_thickness, [0, 90, 90, 0])
+        mat_dict = _laminate_to_mat_dict(laminate)
+
+        asm = PyMeshAssembler(
+            node_coords=tri_coords,
+            connectivity=[[0, 1, 2]],
+            elem_types=[3],   # MITC3 = 3
+            materials=[mat_dict],
+        )
+        K = _dense_from_asm(asm, "K")
+        M = _dense_from_asm(asm, "M")
+
+        np.testing.assert_allclose(K, K.T, atol=1e-6, err_msg="K not symmetric")
+        np.testing.assert_allclose(M, M.T, atol=1e-10, err_msg="M not symmetric")
+
+    def test_assembler_composite_mitc4_symmetry(
+        self, carbon_epoxy, ply_thickness, quad_coords
+    ):
+        """PyMeshAssembler with composite material gives symmetric K/M (MITC4)."""
+        laminate = create_laminate_from_angles(carbon_epoxy, ply_thickness, [0, 45, -45, 0])
+        mat_dict = _laminate_to_mat_dict(laminate)
+
+        asm = PyMeshAssembler(
+            node_coords=quad_coords,
+            connectivity=[[0, 1, 2, 3]],
+            elem_types=[44],   # MITC4Composite = 44
+            materials=[mat_dict],
+        )
+        K = _dense_from_asm(asm, "K")
+        M = _dense_from_asm(asm, "M")
+
+        np.testing.assert_allclose(K, K.T, atol=1e-6, err_msg="K not symmetric")
+        np.testing.assert_allclose(M, M.T, atol=1e-10, err_msg="M not symmetric")

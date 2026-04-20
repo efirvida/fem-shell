@@ -1,367 +1,233 @@
-"""Test suite for QUAD family finite elements (QUAD4, QUAD8, QUAD9)."""
+"""Test suite for QUAD plane-stress elements via Rust PyMeshAssembler.
+
+Tests stiffness/mass matrix properties (symmetry, rigid body modes, PSD)
+and rigid body mode verification for QUAD4, QUAD8, QUAD9.
+
+No Python element class imports — Rust assembler is the sole source of truth.
+"""
+
+from __future__ import annotations
 
 import numpy as np
 import pytest
 
-from fem_shell.core.material import IsotropicMaterial
-from fem_shell.elements import QUAD4, QUAD8, QUAD9
+fem_shell_core = pytest.importorskip("fem_shell_core", reason="Rust backend not available")
+
+from fem_shell_core import PyMeshAssembler  # noqa: E402
 
 
-def check_stiffness_matrix(K, expected_size, tol=1e-6):
-    """
-    Verify stiffness matrix properties.
+# =============================================================================
+# Helper
+# =============================================================================
 
-    Parameters
-    ----------
-    K : np.ndarray
-        Stiffness matrix to check.
-    expected_size : int
-        Expected matrix size (n_dofs × n_dofs).
-    tol : float, optional
-        Numerical tolerance for comparisons.
+def _build_dense(asm: PyMeshAssembler, which: str) -> np.ndarray:
+    """Assemble K or M into a dense matrix from COO triplets."""
+    if which == "K":
+        rows, cols, vals = asm.assemble_k()
+    else:
+        rows, cols, vals = asm.assemble_m()
+    n = asm.dofs_count
+    mat = np.zeros((n, n))
+    for r, c, v in zip(rows, cols, vals):
+        mat[r, c] += v
+    return mat
 
-    Raises
-    ------
-    AssertionError
-        If matrix doesn't meet required properties.
-    """
-    # Check matrix dimensions
-    assert K.shape == (expected_size, expected_size), (
-        f"Expected size {expected_size}x{expected_size}, got {K.shape}"
-    )
 
-    # Verify symmetry
-    assert np.allclose(K, K.T, atol=tol), (
-        f"Matrix not symmetric. Max asymmetry: {np.max(np.abs(K - K.T))}"
-    )
-
-    # Check eigenvalues (rigid body modes and positive definiteness)
-    eigvals = np.linalg.eigvalsh(K)
-    max_eigval = np.max(np.abs(eigvals))
-    # Use relative tolerance for detecting zero eigenvalues
-    zero_threshold = max_eigval * 1e-10 if max_eigval > 0 else 1e-10
-    zero_eigvals = np.sum(np.abs(eigvals) < zero_threshold)  # Count rigid body modes
-    assert zero_eigvals == 3, (
-        f"Expected 3 rigid modes, found {zero_eigvals}. Eigenvalues: {eigvals[:5]}"
-    )
-
-    # Verify positive semi-definiteness (excluding rigid modes)
-    non_zero_eigvals = eigvals[zero_eigvals:]
-    assert np.all(non_zero_eigvals > -zero_threshold), (
-        f"Negative eigenvalues found: {non_zero_eigvals[non_zero_eigvals < 0]}"
+def _make_assembler(nodes_3d: np.ndarray, connectivity: list,
+                    elem_type_code: int, mat_dict: dict) -> PyMeshAssembler:
+    return PyMeshAssembler(
+        node_coords=nodes_3d,
+        connectivity=[connectivity],
+        elem_types=[elem_type_code],
+        materials=[mat_dict],
     )
 
 
-@pytest.fixture
-def sample_material():
-    """Create an isotropic material sample for testing."""
-    return IsotropicMaterial(name="steel", E=210e9, nu=0.3, rho=7800)
+# =============================================================================
+# Node coordinates — in the XY plane (z=0), but passed as 3D
+# =============================================================================
+
+def _quad4_nodes_3d():
+    """Unit square QUAD4 in XY plane."""
+    return np.array([
+        [0.0, 0.0, 0.0],
+        [1.0, 0.0, 0.0],
+        [1.0, 1.0, 0.0],
+        [0.0, 1.0, 0.0],
+    ])
 
 
-@pytest.fixture
-def quad4_nodes():
-    """
-    Return nodes for a standard QUAD4 element in natural coordinates.
-
-    Node ordering:
-        3 --------- 2
-        |           |
-        |  (0,0)    |
-        |           |
-        0 --------- 1
-    """
-    return np.array([[-1, -1], [1, -1], [1, 1], [-1, 1]])
-
-
-@pytest.fixture
-def quad8_nodes():
-    """
-    Return nodes for a standard QUAD8 element in natural coordinates.
-
-    Node ordering:
-        3 --- 6 --- 2
-        |           |
-        7  (0,0)    5
-        |           |
-        0 --- 4 --- 1
-    """
-    return np.array(
-        [
-            [-1, -1],
-            [1, -1],
-            [1, 1],
-            [-1, 1],  # Corner nodes
-            [0, -1],
-            [1, 0],
-            [0, 1],
-            [-1, 0],  # Mid-side nodes
-        ]
-    )
+def _quad8_nodes_3d():
+    """QUAD8 unit square with midside nodes."""
+    return np.array([
+        [0.0, 0.0, 0.0],
+        [1.0, 0.0, 0.0],
+        [1.0, 1.0, 0.0],
+        [0.0, 1.0, 0.0],
+        [0.5, 0.0, 0.0],
+        [1.0, 0.5, 0.0],
+        [0.5, 1.0, 0.0],
+        [0.0, 0.5, 0.0],
+    ])
 
 
-@pytest.fixture
-def quad9_nodes():
-    """
-    Return nodes for a standard QUAD9 element in natural coordinates.
-
-    Node ordering:
-        3 --- 6 --- 2
-        |    8      |
-        7  (0,0)    5
-        |           |
-        0 --- 4 --- 1
-    """
-    return np.array(
-        [
-            [-1, -1],
-            [1, -1],
-            [1, 1],
-            [-1, 1],  # Corner nodes
-            [0, -1],
-            [1, 0],
-            [0, 1],
-            [-1, 0],  # Mid-side nodes
-            [0, 0],  # Center node
-        ]
-    )
+def _quad9_nodes_3d():
+    """QUAD9 unit square with midside + center nodes."""
+    return np.array([
+        [0.0, 0.0, 0.0],
+        [1.0, 0.0, 0.0],
+        [1.0, 1.0, 0.0],
+        [0.0, 1.0, 0.0],
+        [0.5, 0.0, 0.0],
+        [1.0, 0.5, 0.0],
+        [0.5, 1.0, 0.0],
+        [0.0, 0.5, 0.0],
+        [0.5, 0.5, 0.0],
+    ])
 
 
-# Element test configurations
-ELEMENT_CONFIGS = {
-    "QUAD4": {
-        "class": QUAD4,
-        "nodes": "quad4_nodes",
-        "connectivity": (0, 1, 2, 3),
-        "dofs": 8,
-        "shape_funcs": {
-            (-1, -1): [1, 0, 0, 0],
-            (1, -1): [0, 1, 0, 0],
-            (1, 1): [0, 0, 1, 0],
-            (-1, 1): [0, 0, 0, 1],
-            (0, 0): [0.25, 0.25, 0.25, 0.25],
-        },
-        "has_derivatives": True,
+# =============================================================================
+# Element configurations
+# =============================================================================
+
+STEEL_PLANE = {"type": "plane_stress", "e": 210e9, "nu": 0.3, "rho": 7800.0, "thickness": 0.01}
+
+QUAD_CONFIGS = {
+    "Quad4": {
+        "nodes_fn": _quad4_nodes_3d,
+        "code": 104,
+        "n_nodes": 4,
+        "n_dofs": 8,   # 2 DOFs per node (plane stress)
+        "rigid_modes": 3,
     },
-    "QUAD8": {
-        "class": QUAD8,
-        "nodes": "quad8_nodes",
-        "connectivity": (0, 1, 2, 3, 4, 5, 6, 7),
-        "dofs": 16,
-        "shape_funcs": {
-            (-1, -1): [1, 0, 0, 0, 0, 0, 0, 0],
-            (1, -1): [0, 1, 0, 0, 0, 0, 0, 0],
-            (0, -1): [0, 0, 0, 0, 1, 0, 0, 0],
-            (1, 0): [0, 0, 0, 0, 0, 1, 0, 0],
-        },
-        "has_derivatives": False,
+    "Quad8": {
+        "nodes_fn": _quad8_nodes_3d,
+        "code": 108,
+        "n_nodes": 8,
+        "n_dofs": 16,
+        "rigid_modes": 3,
     },
-    "QUAD9": {
-        "class": QUAD9,
-        "nodes": "quad9_nodes",
-        "connectivity": (0, 1, 2, 3, 4, 5, 6, 7, 8),
-        "dofs": 18,
-        "shape_funcs": {
-            (-1, -1): [1, 0, 0, 0, 0, 0, 0, 0, 0],
-            (0, -1): [0, 0, 0, 0, 1, 0, 0, 0, 0],
-            (0, 0): [0, 0, 0, 0, 0, 0, 0, 0, 1],
-        },
-        "has_derivatives": False,
-        "n_int_points": 9,
+    "Quad9": {
+        "nodes_fn": _quad9_nodes_3d,
+        "code": 109,
+        "n_nodes": 9,
+        "n_dofs": 18,
+        "rigid_modes": 3,
     },
 }
 
 
-@pytest.fixture(params=list(ELEMENT_CONFIGS.keys()))
-def element_setup(request, sample_material, quad4_nodes, quad8_nodes, quad9_nodes):
-    """
-    Fixture providing element test data for parametrized tests.
-
-    Parameters
-    ----------
-    request : pytest.FixtureRequest
-        Pytest request object providing parameterization.
-    """
-    config = ELEMENT_CONFIGS[request.param]
-    nodes = {
-        "quad4_nodes": quad4_nodes,
-        "quad8_nodes": quad8_nodes,
-        "quad9_nodes": quad9_nodes,
-    }[config["nodes"]]
-
-    element = config["class"](nodes, config["connectivity"], sample_material)
-
-    return {
-        "element": element,
-        "name": request.param,
-        "expected_dofs": config["dofs"],
-        "shape_funcs": config["shape_funcs"],
-        "has_derivatives": config.get("has_derivatives", False),
-        "n_int_points": config.get("n_int_points", None),
-    }
+@pytest.fixture(params=list(QUAD_CONFIGS.keys()))
+def quad_setup(request):
+    """Parametrized fixture for QUAD element types."""
+    name = request.param
+    cfg = QUAD_CONFIGS[name]
+    nodes = cfg["nodes_fn"]()
+    conn = list(range(cfg["n_nodes"]))
+    asm = _make_assembler(nodes, conn, cfg["code"], STEEL_PLANE)
+    return {"name": name, "cfg": cfg, "nodes": nodes, "asm": asm}
 
 
-def test_shape_functions(element_setup):
-    """Verify shape functions at specific natural coordinates."""
-    elem = element_setup["element"]
-    for (xi, eta), expected in element_setup["shape_funcs"].items():
-        computed = elem.shape_functions(xi, eta)
-        assert np.allclose(computed, expected), (
-            f"{element_setup['name']} shape functions failed at ({xi}, {eta})\n"
-            f"Expected: {expected}\nGot: {computed}"
+# =============================================================================
+# Stiffness matrix tests
+# =============================================================================
+
+
+class TestStiffnessMatrix:
+    """K: dimensions, symmetry, 3 rigid body modes, PSD."""
+
+    def test_dimensions(self, quad_setup):
+        K = _build_dense(quad_setup["asm"], "K")
+        n = quad_setup["cfg"]["n_dofs"]
+        assert K.shape == (n, n), f"{quad_setup['name']}: expected ({n},{n}), got {K.shape}"
+
+    def test_symmetry(self, quad_setup):
+        K = _build_dense(quad_setup["asm"], "K")
+        np.testing.assert_allclose(K, K.T, atol=1e-6,
+                                   err_msg=f"{quad_setup['name']}: K not symmetric")
+
+    def test_rigid_body_modes(self, quad_setup):
+        """Plane stress K has 3 rigid body modes (tx, ty, rz)."""
+        K = _build_dense(quad_setup["asm"], "K")
+        eigvals = np.sort(np.abs(np.linalg.eigvalsh(K)))
+        max_eig = eigvals[-1]
+        threshold = max_eig * 1e-10 if max_eig > 0 else 1e-10
+        zero_count = int(np.sum(eigvals < threshold))
+        expected = quad_setup["cfg"]["rigid_modes"]
+        assert zero_count == expected, (
+            f"{quad_setup['name']}: expected {expected} rigid modes, "
+            f"found {zero_count}. Smallest 5 eigvals: {eigvals[:5]}"
         )
 
-
-def test_jacobian(element_setup):
-    """Test Jacobian computation at element center."""
-    elem = element_setup["element"]
-    J, detJ, invJ = elem._compute_jacobian(0, 0)
-
-    # For standard elements, Jacobian should be identity
-    assert np.allclose(J, np.eye(2)), f"Jacobian not identity for {element_setup['name']}:\n{J}"
-    assert np.isclose(detJ, 1.0), "Jacobian determinant should be 1"
-    assert np.allclose(invJ, np.eye(2)), "Inverse Jacobian should be identity"
+    def test_positive_semi_definite(self, quad_setup):
+        K = _build_dense(quad_setup["asm"], "K")
+        eigvals = np.linalg.eigvalsh(K)
+        threshold = -np.max(np.abs(eigvals)) * 1e-10
+        neg = eigvals[eigvals < threshold]
+        assert len(neg) == 0, f"{quad_setup['name']}: negative eigenvalues: {neg}"
 
 
-def test_stiffness_matrix(element_setup):
-    """Verify stiffness matrix properties."""
-    elem = element_setup["element"]
-    check_stiffness_matrix(elem.K, element_setup["expected_dofs"])
+# =============================================================================
+# Mass matrix tests
+# =============================================================================
 
 
-def test_mass_matrix(element_setup):
-    """Check mass matrix symmetry and positive definiteness."""
-    elem = element_setup["element"]
-    if hasattr(elem, "M"):
-        M = elem.M
-        assert np.allclose(M, M.T), "Mass matrix must be symmetric"
+class TestMassMatrix:
+    """M: symmetry, positive semi-definite."""
+
+    def test_symmetry(self, quad_setup):
+        M = _build_dense(quad_setup["asm"], "M")
+        np.testing.assert_allclose(M, M.T, atol=1e-10,
+                                   err_msg=f"{quad_setup['name']}: M not symmetric")
+
+    def test_positive_semi_definite(self, quad_setup):
+        M = _build_dense(quad_setup["asm"], "M")
         eigvals = np.linalg.eigvalsh(M)
-        assert np.all(eigvals > -1e-10), "Mass matrix must be positive semi-definite"
-
-
-def test_body_load(element_setup):
-    """Verify body load vector properties."""
-    elem = element_setup["element"]
-    load_vector = elem.body_load(np.array([1, 2]))
-
-    assert load_vector.shape == (element_setup["expected_dofs"],), "Load vector size mismatch"
-
-    # For QUAD4, check load distribution symmetry
-    if element_setup["name"] == "QUAD4":
-        assert np.isclose(load_vector[0], load_vector[2]), "X-load not symmetric"
-        assert np.isclose(load_vector[1], load_vector[3]), "Y-load not symmetric"
-
-
-def test_shape_derivatives(element_setup):
-    """Test shape function derivatives if implemented."""
-    if element_setup["has_derivatives"]:
-        elem = element_setup["element"]
-        dN_dxi, dN_deta = elem.shape_function_derivatives(0, 0)
-
-        # Expected values for QUAD4 at center
-        expected_dxi = np.array([-0.25, 0.25, 0.25, -0.25])
-        expected_deta = np.array([-0.25, -0.25, 0.25, 0.25])
-
-        assert np.allclose(dN_dxi, expected_dxi), "dN/dxi mismatch"
-        assert np.allclose(dN_deta, expected_deta), "dN/deta mismatch"
-
-
-def test_integration_points(element_setup):
-    """Verify integration scheme properties."""
-    if element_setup["n_int_points"] is not None:
-        elem = element_setup["element"]
-        points, weights = elem.integration_points
-
-        assert len(points) == element_setup["n_int_points"], "Wrong number of points"
-        assert len(weights) == element_setup["n_int_points"], "Wrong number of weights"
-
-        # Total weight should equal element area in natural coordinates (4)
-        assert np.isclose(sum(weights), 4.0), "Weights should sum to element area"
-
-
-@pytest.mark.parametrize("element_type", ["QUAD9"])
-def test_distorted_jacobian(element_type, sample_material, quad9_nodes):
-    """Test Jacobian remains positive for distorted elements."""
-    if element_type == "QUAD9":
-        # Create a deliberately distorted element
-        distorted_nodes = np.array(
-            [
-                [0, 0],
-                [2, 0.1],
-                [2.1, 2],
-                [0, 1.9],  # Corners
-                [1, 0],
-                [2, 1],
-                [1, 2],
-                [0, 1],  # Midsides
-                [1, 1],  # Center
-            ]
-        )
-
-        elem = QUAD9(distorted_nodes, range(9), sample_material)
-
-        # Verify Jacobian at all integration points
-        for xi, eta in elem.integration_points[0]:
-            _, detJ, _ = elem._compute_jacobian(xi, eta)
-            assert detJ > 0, f"Negative Jacobian at ({xi}, {eta})"
-
-
-@pytest.mark.parametrize("element_type", ["QUAD4", "QUAD8", "QUAD9"])
-def test_B_matrix(element_type, sample_material, quad4_nodes, quad8_nodes, quad9_nodes):
-    """Verify strain-displacement matrix computation."""
-    # Setup element based on type
-    if element_type == "QUAD4":
-        elem = QUAD4(quad4_nodes, (0, 1, 2, 3), sample_material)
-        expected_dx = np.array([-0.25, 0.25, 0.25, -0.25])
-        expected_dy = np.array([-0.25, -0.25, 0.25, 0.25])
-    elif element_type == "QUAD8":
-        elem = QUAD8(quad8_nodes, range(8), sample_material)
-        expected_dx = np.array([0.0, 0.0, 0.0, 0.0, 0.0, 0.5, 0.0, -0.5])
-        expected_dy = np.array([0.0, 0.0, 0.0, 0.0, -0.5, 0.0, 0.5, 0.0])
-    elif element_type == "QUAD9":
-        elem = QUAD9(quad9_nodes, range(9), sample_material)
-        expected_dx = np.array([0.0, 0.0, 0.0, 0.0, 0.0, 0.5, 0.0, -0.5, 0.0])
-        expected_dy = np.array([0.0, 0.0, 0.0, 0.0, -0.5, 0.0, 0.5, 0.0, 0.0])
-
-    B = elem.compute_B_matrix(0, 0)
-
-    # Check derivatives in B matrix
-    assert np.allclose(B[0, 0::2], expected_dx), f"{element_type} dN/dx mismatch"
-    assert np.allclose(B[1, 1::2], expected_dy), f"{element_type} dN/dy mismatch"
-
-
-def test_rigid_body_modes(element_setup):
-    """Verify stiffness matrix has correct rigid body modes."""
-    elem = element_setup["element"]
-    K = elem.K
-    coords = elem.node_coords
-
-    # Define rigid body modes (translation X, Y and rotation)
-    translation_x = np.array([1, 0] * len(coords))
-    translation_y = np.array([0, 1] * len(coords))
-    rotation = np.array([(-y, x) for x, y in coords]).flatten()
-
-    # Use relative tolerance based on matrix norm
-    K_norm = np.linalg.norm(K, ord="fro")
-    rel_tol = 1e-10  # Relative tolerance
-
-    # Check each mode produces zero strain energy
-    for i, mode in enumerate([translation_x, translation_y, rotation]):
-        residual = K @ mode
-        max_error = np.max(np.abs(residual))
-        # Use relative error check
-        rel_error = max_error / K_norm if K_norm > 0 else max_error
-        assert rel_error < rel_tol, (
-            f"Rigid mode {i} failed. Relative error: {rel_error}\n"
-            f"Max absolute error: {max_error}, K_norm: {K_norm}"
+        assert np.all(eigvals > -1e-10), (
+            f"{quad_setup['name']}: M has negative eigenvalue: {eigvals.min()}"
         )
 
 
-def test_constitutive_matrix(sample_material):
-    """Verify material matrix properties."""
-    # Using QUAD4 as representative for material matrix
-    nodes = np.array([[-1, -1], [1, -1], [1, 1], [-1, 1]])
-    elem = QUAD4(nodes, (0, 1, 2, 3), sample_material)
+# =============================================================================
+# Rigid body mode verification using node coordinates
+# =============================================================================
 
-    C = elem.C
-    assert np.allclose(C, C.T), "Material matrix must be symmetric"
-    assert np.all(np.linalg.eigvalsh(C) > 0), "Material matrix must be positive definite"
+
+class TestRigidBodyModes:
+    """K @ rigid_mode ≈ 0 for all 3 rigid modes."""
+
+    def test_rigid_modes_kx_ky_rz(self, quad_setup):
+        """All three plane rigid body modes should be in the null space of K."""
+        name = quad_setup["name"]
+        K = _build_dense(quad_setup["asm"], "K")
+        nodes = quad_setup["nodes"]  # (n_nodes, 3)
+        n_nodes = quad_setup["cfg"]["n_nodes"]
+
+        # Plane DOFs: [ux0, uy0, ux1, uy1, ...]
+        # Translation X: all ux=1, uy=0
+        tx = np.zeros(n_nodes * 2)
+        tx[0::2] = 1.0
+
+        # Translation Y: all ux=0, uy=1
+        ty = np.zeros(n_nodes * 2)
+        ty[1::2] = 1.0
+
+        # Rotation about Z: ux = -y, uy = x
+        rz = np.zeros(n_nodes * 2)
+        for i in range(n_nodes):
+            x, y = nodes[i, 0], nodes[i, 1]
+            rz[2 * i]     = -y
+            rz[2 * i + 1] =  x
+
+        K_norm = np.linalg.norm(K, ord="fro")
+        for label, mode in [("tx", tx), ("ty", ty), ("rz", rz)]:
+            residual = K @ mode
+            rel_err = np.max(np.abs(residual)) / K_norm if K_norm > 0 else np.max(np.abs(residual))
+            assert rel_err < 1e-10, (
+                f"{name}: rigid mode {label} not in null space. "
+                f"Relative error: {rel_err:.4e}"
+            )
+
+
+if __name__ == "__main__":
+    pytest.main([__file__, "-v", "--tb=short"])
