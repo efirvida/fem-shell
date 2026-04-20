@@ -260,6 +260,9 @@ class MeshAssembler:
         self.spatial_dim: int = 0
         self.dofs_count: int = 0
         self._row_nnz: Optional[np.ndarray] = None
+        self._node_coords: Optional[np.ndarray] = None  # (n_nodes, 3) — set in _build_py_mesh_assembler
+        self._rho_per_elem: Optional[np.ndarray] = None  # (n_elems,) — set in _build_py_mesh_assembler
+        self._elem_node_conn: Optional[list] = None      # list of lists — set in _build_py_mesh_assembler
 
         t0 = time.perf_counter()
         logger.info("[assembler] START __init__ — nodes=%d", mesh.node_count)
@@ -520,6 +523,7 @@ class MeshAssembler:
         for node in self.mesh.nodes:
             idx = node_id_to_index[node.id]
             node_coords[idx, :] = node.coords[:3]
+        self._node_coords = node_coords  # cache for vectorized centrifugal prestress
 
         # Build per-element property lookup
         properties_map: Optional[Dict[str, ShellPropertyType]] = self.model.get("properties")
@@ -676,6 +680,14 @@ class MeshAssembler:
             time.perf_counter() - _t_loop, n_elems, n_elems - len(abd_cache),
         )
 
+        # Cache per-element rho and node connectivity for vectorized centrifugal prestress
+        # (avoids _ensure_element_map in assemble_geometric_stiffness)
+        self._rho_per_elem = np.array(
+            [m.get("rho", m.get("mass_per_area", 0.0)) for m in materials_list],
+            dtype=np.float64,
+        )
+        self._elem_node_conn = connectivity  # list of lists (0-based node indices)
+
         try:
             _t_rust = time.perf_counter()
             self._rust = PyMeshAssembler(
@@ -786,46 +798,60 @@ class MeshAssembler:
         Parameters
         ----------
         load_condition : LoadCondition
-            The loading condition to apply
+           The loading condition to apply
 
         Returns
         -------
         PETSc.Vec
-            Distributed load vector
+           Distributed load vector
 
         Notes
         -----
         Supports both nodal and distributed loading conditions.
-        Supports both uniform and mixed-element meshes.
+        Uses Rust batch assembly when available (fast-path via PyMeshAssembler).
+        Falls back to Python per-element loop for non-body loads or when Rust
+        backend is not available.
         """
+        load_value = load_condition.value
+
+        # ------------------------------------------------------------------
+        # Rust fast-path: body load (gravity-like [fx, fy, fz] body force)
+        # ------------------------------------------------------------------
+        if self._rust is not None and np.ndim(load_value) == 1 and len(load_value) == 3:
+           gravity = np.asarray(load_value, dtype=np.float64)
+           f_dense = self._rust.assemble_f_body(gravity)  # (dofs_count,) numpy array
+           f = PETSc.Vec().create(self.comm)
+           f.setSizes(self.dofs_count)
+           f.setUp()
+           f.zeroEntries()
+           dofs_all = np.arange(self.dofs_count, dtype=PETSc.IntType)
+           f.setValuesLocal(dofs_all, f_dense.astype(PETSc.ScalarType), addv=PETSc.InsertMode.ADD_VALUES)
+           f.assemble()
+           return f
+
+        # ------------------------------------------------------------------
+        # Python fallback: per-element body_load (non-uniform or nodal loads)
+        # ------------------------------------------------------------------
         f = PETSc.Vec().create(self.comm)
         f.setSizes(self.dofs_count)
         f.setUp()
         f.zeroEntries()
 
-        # Ensure element map is built (lazy — only constructed on first body-load call)
         self._ensure_element_map()
 
-        # Compute element load vectors
         fe_list = [
-            self._element_map[eid].body_load(load_condition.value) for eid in self._element_map
+           self._element_map[eid].body_load(load_value) for eid in self._element_map
         ]
 
         if self._is_mixed_mesh:
-            # Mixed mesh: iterate directly over lists
-            for dofs, fe in zip(self._dofs_list, fe_list):
-                dofs_int = dofs.astype(PETSc.IntType)
-                f.setValuesLocal(dofs_int, fe, addv=PETSc.InsertMode.ADD_VALUES)
+           for dofs, fe in zip(self._dofs_list, fe_list):
+              dofs_int = dofs.astype(PETSc.IntType)
+              f.setValuesLocal(dofs_int, fe, addv=PETSc.InsertMode.ADD_VALUES)
         else:
-            # Uniform mesh: use arrays
-            fe_array = np.array(fe_list, dtype=PETSc.ScalarType)
-
-            for e in range(fe_array.shape[0]):
-                dofs = self._dofs_array[e].astype(PETSc.IntType)
-                fe = fe_array[e]
-
-                # Use local-to-global mapping if using mesh partitioning
-                f.setValuesLocal(dofs, fe, addv=PETSc.InsertMode.ADD_VALUES)
+           fe_array = np.array(fe_list, dtype=PETSc.ScalarType)
+           for e in range(fe_array.shape[0]):
+              dofs = self._dofs_array[e].astype(PETSc.IntType)
+              f.setValuesLocal(dofs, fe_array[e], addv=PETSc.InsertMode.ADD_VALUES)
 
         f.assemble()
         return f
@@ -905,7 +931,6 @@ class MeshAssembler:
         >>> stress_field = {elem_id: np.array([1e6, 0, 0]) for elem_id in element_ids}
         >>> K_G = assembler.assemble_geometric_stiffness(stress_field=stress_field)
         """
-        # Validate inputs
         if stress_field is None and omega is None:
             raise ValueError(
                 "Either 'stress_field' or 'omega' must be provided for geometric stiffness"
@@ -917,56 +942,113 @@ class MeshAssembler:
         if rotation_center is None:
             rotation_center = np.array([0.0, 0.0, 0.0])
 
-        # Normalize rotation axis
         rotation_axis = np.asarray(rotation_axis, dtype=float)
         rotation_axis = rotation_axis / np.linalg.norm(rotation_axis)
         rotation_center = np.asarray(rotation_center, dtype=float)
 
-        # Create PETSc matrix
+        # ------------------------------------------------------------------
+        # Rust fast-path (requires PyMeshAssembler + cached arrays)
+        # ------------------------------------------------------------------
+        if (
+            self._rust is not None
+            and self._node_coords is not None
+            and self._elem_node_conn is not None
+            and self._rho_per_elem is not None
+        ):
+            elements = self.mesh.elements
+            n_elems = len(elements)
+            sigma_array = np.zeros((n_elems, 3), dtype=np.float64)
+
+            if stress_field is not None:
+                # Map elem_id → index, then fill sigma_array from stress_field dict
+                for i, element in enumerate(elements):
+                    if element.id in stress_field:
+                        sv = stress_field[element.id]
+                        sv = np.asarray(sv, dtype=np.float64).ravel()
+                        sigma_array[i, :3] = sv[:3]
+            else:
+                # Vectorized centrifugal prestress (no FemElement instantiation)
+                axis = rotation_axis  # already normalized
+                center = rotation_center
+                node_coords = self._node_coords
+                rho_arr = self._rho_per_elem
+
+                for i, (element, conn) in enumerate(zip(elements, self._elem_node_conn)):
+                    coords = node_coords[conn]           # (n_nodes_e, 3)
+                    centroid = coords.mean(axis=0)       # (3,)
+
+                    # Radial distance from rotation axis
+                    r_vec = centroid - center
+                    r_parallel = np.dot(r_vec, axis) * axis
+                    r_radial_vec = r_vec - r_parallel
+                    r_radial = np.linalg.norm(r_radial_vec)
+
+                    if r_radial < 1e-10:
+                        continue  # on rotation axis — no centrifugal stress
+
+                    radial_dir = r_radial_vec / r_radial
+
+                    # Characteristic length: sqrt(element area projected on local plane)
+                    if len(conn) >= 4:
+                        v1 = coords[2] - coords[0]
+                        v2 = coords[3] - coords[1]
+                    else:
+                        v1 = coords[1] - coords[0]
+                        v2 = coords[2] - coords[0]
+                    area = 0.5 * np.linalg.norm(np.cross(v1, v2))
+                    L_char = np.sqrt(max(area, 1e-20))
+
+                    rho = rho_arr[i]
+                    sigma_cf = rho * omega**2 * r_radial * L_char
+
+                    # Local axes (T matrix 3×3) — reuse module-level helper
+                    e1, e2, _e3 = _shell_local_axes(node_coords, conn)
+                    # Project radial direction onto local x-y plane
+                    cos_theta = np.dot(radial_dir, e1)
+                    sin_theta = np.dot(radial_dir, e2)
+
+                    sigma_array[i, 0] = sigma_cf * cos_theta**2       # σ_xx
+                    sigma_array[i, 1] = sigma_cf * sin_theta**2       # σ_yy
+                    sigma_array[i, 2] = sigma_cf * cos_theta * sin_theta  # σ_xy
+
+            rows, cols, vals = self._rust.assemble_geometric_k(sigma_array)
+            return self._coo_to_petsc(rows, cols, vals)
+
+        # ------------------------------------------------------------------
+        # Python fallback (per-element, requires _element_map)
+        # ------------------------------------------------------------------
         K_G = self._create_petsc_matrix()
         K_G.setOption(PETSc.Mat.Option.NEW_NONZERO_ALLOCATION_ERR, False)
 
-        # Ensure element map is built (lazy)
         self._ensure_element_map()
-
-        # Build elem_id → DOF-array index (mesh.elements order)
         elem_id_to_dof_idx = {elem.id: i for i, elem in enumerate(self.mesh.elements)}
 
-        # Compute and assemble element geometric stiffness matrices
         for elem_id, fem_element in self._element_map.items():
-            # Get membrane stress for this element
             if stress_field is not None and elem_id in stress_field:
                 sigma_membrane = stress_field[elem_id]
             elif omega is not None:
-                # Compute centrifugal prestress
                 sigma_membrane = fem_element.compute_centrifugal_prestress(
                     omega=omega,
                     rotation_axis=rotation_axis,
                     rotation_center=rotation_center,
                 )
             else:
-                # Skip elements without stress data
                 continue
 
-            # Skip if stress is negligible
             if np.max(np.abs(sigma_membrane)) < 1e-20:
                 continue
 
-            # Compute element geometric stiffness
             kg_e = fem_element.compute_geometric_stiffness(
                 sigma_membrane=sigma_membrane,
                 transform_to_global=True,
             )
 
-            # Get DOFs for this element (index in mesh.elements order)
             e = elem_id_to_dof_idx[elem_id]
             if self._is_mixed_mesh:
                 dofs = self._dofs_list[e].astype(PETSc.IntType)
             else:
                 dofs = self._dofs_array[e].astype(PETSc.IntType)
             kg_flat = kg_e.flatten(order="C")
-
-            # Assemble into global matrix
             K_G.setValuesLocal(dofs, dofs, kg_flat, addv=PETSc.InsertMode.ADD_VALUES)
 
         K_G.assemble()
