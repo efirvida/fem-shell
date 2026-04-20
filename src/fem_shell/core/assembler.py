@@ -12,6 +12,80 @@ from fem_shell.elements import ElementFamily
 logger = logging.getLogger(__name__)
 
 
+# ---------------------------------------------------------------------------
+# Lightweight proxy types that duck-type Python MeshModel nodes/elements
+# so that solvers can use domain.nodes / domain.elements without
+# holding a reference to the Python MeshModel.
+# ---------------------------------------------------------------------------
+
+class _NodeProxy:
+    """Minimal node proxy backed by a flat coords array."""
+    __slots__ = ("id", "x", "y", "z")
+
+    def __init__(self, node_id: int, x: float, y: float, z: float):
+        self.id = node_id
+        self.x = x
+        self.y = y
+        self.z = z
+
+    @property
+    def coords(self) -> np.ndarray:
+        return np.array([self.x, self.y, self.z], dtype=np.float64)
+
+
+class _NodeProxyList:
+    """Sequence of _NodeProxy objects built from Rust node_ids / coords_flat."""
+
+    def __init__(self, ids, coords_flat):
+        self._ids = ids
+        self._coords = np.asarray(coords_flat, dtype=np.float64).reshape(-1, 3)
+
+    def __len__(self):
+        return len(self._ids)
+
+    def __iter__(self):
+        for i, nid in enumerate(self._ids):
+            c = self._coords[i]
+            yield _NodeProxy(nid, float(c[0]), float(c[1]), float(c[2]))
+
+    def __getitem__(self, idx):
+        nid = self._ids[idx]
+        c = self._coords[idx]
+        return _NodeProxy(nid, float(c[0]), float(c[1]), float(c[2]))
+
+
+class _ElemProxy:
+    """Minimal element proxy with .id and .node_ids."""
+    __slots__ = ("id", "node_ids")
+
+    def __init__(self, elem_id: int, node_ids):
+        self.id = elem_id
+        self.node_ids = node_ids
+
+
+class _ElemProxyList:
+    """Sequence of _ElemProxy objects built from Rust element_ids (and optionally node_ids)."""
+
+    def __init__(self, ids, node_ids_per_elem=None):
+        self._ids = ids
+        self._nids = node_ids_per_elem  # list[list[int]] or None
+
+    def __len__(self):
+        return len(self._ids)
+
+    def __iter__(self):
+        if self._nids is not None:
+            for eid, nids in zip(self._ids, self._nids):
+                yield _ElemProxy(eid, nids)
+        else:
+            for eid in self._ids:
+                yield _ElemProxy(eid, [])
+
+    def __getitem__(self, idx):
+        nids = self._nids[idx] if self._nids is not None else []
+        return _ElemProxy(self._ids[idx], nids)
+
+
 class MeshAssembler:
     def __init__(self, mesh: MeshModel, model: Dict):
         """
@@ -35,12 +109,16 @@ class MeshAssembler:
         self.model = model["elements"]
         self.comm = MPI.COMM_WORLD
         self._dofs_array: np.ndarray = None
-        self._node_dofs_map: Dict[int, Iterable] = {}
+        self._legacy_node_dofs_map: Dict[int, Iterable] = {}  # filled by _precompute_elements, exposed via _node_dofs_map property
         self.dofs_per_node: int = 0
         self.spatial_dim: int = 0
         self.dofs_count: int = 0
         self._row_nnz: Optional[np.ndarray] = None
         self._rho_per_elem: Optional[np.ndarray] = None  # (n_elems,) — set in _build_py_mesh_assembler
+        self._rust_mesh = None  # RustMeshModel — set in _build_py_mesh_assembler
+        # Lazy caches for Rust-backed mesh proxies (replaces self.mesh accesses)
+        self._node_id_to_index_cache: Optional[Dict] = None
+        self._node_dofs_map_cache: Optional[Dict] = None
 
         t0 = time.perf_counter()
         logger.info("[assembler] START __init__ — nodes=%d", mesh.node_count)
@@ -99,6 +177,79 @@ class MeshAssembler:
             return ElementFamily.SOLID
         return ElementFamily.PLANE
 
+    # ------------------------------------------------------------------
+    # Rust-backed mesh property delegates
+    # These replace direct access to self.mesh (Python MeshModel) from solvers.
+    # All data comes from self._rust_mesh (RustMeshModel) when available,
+    # falling back to self.mesh for legacy callers.
+    # ------------------------------------------------------------------
+
+    @property
+    def node_count(self) -> int:
+        """Total number of nodes in the mesh."""
+        if self._rust_mesh is not None:
+            return self._rust_mesh.node_count
+        return self.mesh.node_count
+
+    @property
+    def node_id_to_index(self) -> Dict:
+        """Dict mapping node id → 0-based index (lazy, cached)."""
+        if self._node_id_to_index_cache is None:
+            if self._rust_mesh is not None:
+                ids = self._rust_mesh.node_ids()
+                self._node_id_to_index_cache = {nid: i for i, nid in enumerate(ids)}
+            else:
+                self._node_id_to_index_cache = self.mesh.node_id_to_index
+        return self._node_id_to_index_cache
+
+    @property
+    def nodes(self):
+        """Iterable of node proxies with .id, .x, .y, .z, .coords attributes.
+
+        When _rust_mesh is available the data comes from Rust (no Python MeshModel needed).
+        """
+        if self._rust_mesh is not None:
+            ids = self._rust_mesh.node_ids()
+            coords_flat = self._rust_mesh.node_coords_flat()
+            return _NodeProxyList(ids, coords_flat)
+        return self.mesh.nodes
+
+    @property
+    def coords_array(self) -> np.ndarray:
+        """Node coordinates as (n_nodes, 3) numpy array (row = node index order)."""
+        if self._rust_mesh is not None:
+            flat = np.asarray(self._rust_mesh.node_coords_flat(), dtype=np.float64)
+            return flat.reshape(-1, 3)
+        return self.mesh.coords_array
+
+    @property
+    def elements(self):
+        """Iterable of element proxies with .id and .node_ids attributes."""
+        if self._rust_mesh is not None:
+            return _ElemProxyList(
+                self._rust_mesh.element_ids(),
+                self._rust_mesh.element_node_ids() if hasattr(self._rust_mesh, "element_node_ids") else None,
+            )
+        return self.mesh.elements
+
+    @property
+    def _node_dofs_map(self) -> Dict:
+        """Dict mapping node id → tuple of global DOF indices (lazy, cached)."""
+        if self._node_dofs_map_cache is None:
+            dpn = self.dofs_per_node
+            if dpn == 0:
+                return {}
+            if self._rust_mesh is not None:
+                ids = self._rust_mesh.node_ids()
+                self._node_dofs_map_cache = {
+                    nid: tuple(range(i * dpn, i * dpn + dpn))
+                    for i, nid in enumerate(ids)
+                }
+            else:
+                # Fall back to the map built by _precompute_elements
+                self._node_dofs_map_cache = dict(self._legacy_node_dofs_map)
+        return self._node_dofs_map_cache
+
     def _precompute_elements(self):
         """Compute element DOF connectivity from mesh topology.
 
@@ -135,11 +286,11 @@ class MeshAssembler:
             )
             dof_sizes.add(len(dofs))
             dofs_list.append(dofs)
-            # Populate _node_dofs_map for legacy callers
+            # Populate _legacy_node_dofs_map for legacy callers
             for nid in node_ids:
-                if nid not in self._node_dofs_map:
+                if nid not in self._legacy_node_dofs_map:
                     start = node_id_to_index[nid] * dpn
-                    self._node_dofs_map[nid] = tuple(range(start, start + dpn))
+                    self._legacy_node_dofs_map[nid] = tuple(range(start, start + dpn))
 
         logger.info(
             "[assembler._precompute] DOF arrays built in %.2fs — %d elements, dofs_per_node=%d",
@@ -328,6 +479,7 @@ class MeshAssembler:
         if properties_map is not None:
             _t_fast = time.perf_counter()
             rust_mesh = self._mesh_to_rust(properties_map)
+            self._rust_mesh = rust_mesh  # keep reference for property delegates
             rust_properties = self._properties_to_rust(properties_map, RustLaminate, RustPly, RustMat)
             span_dir_raw = self.model.get("span_direction")
             span_dir_list = list(span_dir_raw) if span_dir_raw is not None else None

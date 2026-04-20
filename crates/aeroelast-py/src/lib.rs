@@ -2452,6 +2452,11 @@ impl PyMeshModel {
         Array1::from(ids).into_pyarray(py)
     }
 
+    /// Returns a list of node-id lists, one per element, in element order.
+    fn element_node_ids(&self) -> Vec<Vec<u64>> {
+        self.inner.elements.iter().map(|e| e.node_ids.clone()).collect()
+    }
+
     /// Node IDs for elements in a named element set. Returns flat list.
     fn element_set_node_ids(&self, set_name: &str) -> PyResult<Vec<u64>> {
         let set = self.inner.element_sets.get(set_name).ok_or_else(|| {
