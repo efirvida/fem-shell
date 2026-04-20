@@ -1182,10 +1182,89 @@ impl PyMeshAssembler {
             }
         }
 
-        // ── Phase 2: build MaterialSpec per element ───────────────────────────
-        // Cache: (PyLaminate ptr, angle_bucket_tenths: i32) → MaterialSpec
-        let mut abd_cache: HashMap<(usize, i32), MaterialSpec> = HashMap::new();
+        // ── Phase 2a: pre-compute MaterialSpec per (set, angle_bucket) ──────────
+        // This avoids PyO3 downcast + GIL ops inside the hot 86k-element loop.
+        // We extract all Python objects here (with GIL), compute ABD matrices,
+        // and cache the results in a pure-Rust HashMap indexed by (set_name, bucket).
+        //
+        // Key insight: there are only O(N_sets × N_angle_buckets) unique specs,
+        // not O(N_elements). For a blade with 722 sets and typical angle spread,
+        // this is ~722 cache misses total instead of ~86k PyO3 ops per run.
 
+        // Helper closure: compute MaterialSpec from a Laminate + angle_bucket_tenths
+        let compute_composite_spec = |lam: &Laminate, bucket_tenths: i32| -> PyResult<MaterialSpec> {
+            let corrected_lam = if bucket_tenths == 0 {
+                lam.clone()
+            } else {
+                let angle_deg = bucket_tenths as f64 / 10.0;
+                let corrected_plies: Vec<_> = lam.plies.iter().map(|p| {
+                    aeroelast_core::materials::laminate::Ply {
+                        material: p.material.clone(),
+                        thickness: p.thickness,
+                        angle: p.angle + angle_deg,
+                        z_bottom: p.z_bottom,
+                        z_top: p.z_top,
+                    }
+                }).collect();
+                Laminate::new(corrected_plies, lam.shear_correction_factor)
+                    .map_err(|e| pyo3::exceptions::PyValueError::new_err(e))?
+            };
+
+            let h = corrected_lam.total_thickness;
+            let a_trace = corrected_lam.a[(0,0)] + corrected_lam.a[(1,1)] + corrected_lam.a[(2,2)];
+            let e_equiv = if h > 0.0 { a_trace / (3.0 * h) } else { 0.0 };
+            let mass_per_area: f64 = corrected_lam.plies.iter()
+                .map(|p| p.material.density() * p.thickness)
+                .sum();
+            let rotational_inertia: f64 = corrected_lam.plies.iter()
+                .map(|p| p.material.density() * (p.z_top.powi(3) - p.z_bottom.powi(3)) / 3.0)
+                .sum();
+
+            let mut cm = [0.0f64; 9];
+            let mut cb = [0.0f64; 9];
+            let mut cs = [0.0f64; 4];
+            for ii in 0..3 { for jj in 0..3 {
+                cm[ii*3+jj] = corrected_lam.a[(ii, jj)];
+                cb[ii*3+jj] = corrected_lam.d[(ii, jj)];
+            }}
+            cs[0] = corrected_lam.cs[(0,0)];
+            cs[1] = corrected_lam.cs[(0,1)];
+            cs[2] = corrected_lam.cs[(1,0)];
+            cs[3] = corrected_lam.cs[(1,1)];
+
+            Ok(MaterialSpec::Composite { cm, cb, cs, thickness: h, e_equiv, mass_per_area, rotational_inertia })
+        };
+
+        // Enum to distinguish composite vs isotropic without PyO3 objects in hot path
+        #[derive(Clone)]
+        enum SetSpec {
+            Composite(Laminate),  // raw Laminate for angle-corrected lookup
+            Isotropic(MaterialSpec), // pre-parsed, no angle correction needed
+        }
+
+        // Pre-compute SetSpec per set (O(N_sets) PyO3 ops, not O(N_elements))
+        let mut set_to_setspec: HashMap<String, SetSpec> = HashMap::with_capacity(set_to_prop.len());
+        for (set_name, prop) in &set_to_prop {
+            let bound = prop.bind(py);
+            if let Ok(lam_ref) = bound.downcast::<PyLaminate>() {
+                let lam = lam_ref.borrow().inner.clone();
+                set_to_setspec.insert(set_name.clone(), SetSpec::Composite(lam));
+            } else {
+                let spec = parse_material(py, prop)?;
+                set_to_setspec.insert(set_name.clone(), SetSpec::Isotropic(spec));
+            }
+        }
+
+        // Pre-compute fallback spec if provided (avoids per-element parse)
+        let fallback_spec: Option<MaterialSpec> = fallback_material.as_ref()
+            .map(|fb| parse_material(py, fb))
+            .transpose()?;
+
+        // ABD cache: (set_name, angle_bucket_tenths) → MaterialSpec (composite only)
+        // bucket_tenths=0 covers the vast majority of elements when no span_direction.
+        let mut abd_cache: HashMap<(String, i32), MaterialSpec> = HashMap::new();
+
+        // ── Phase 2b: build MaterialSpec per element (pure Rust, no PyO3) ──────
         let n_elems = mesh.inner.elements.len();
         let mut rust_materials: Vec<MaterialSpec> = Vec::with_capacity(n_elems);
         let mut rust_elem_types: Vec<ElemType> = Vec::with_capacity(n_elems);
@@ -1193,87 +1272,43 @@ impl PyMeshAssembler {
         for (i, elem) in mesh.inner.elements.iter().enumerate() {
             let n_nodes_elem = elem.node_ids.len();
 
-            let prop_obj: Option<&Py<PyAny>> = elem_to_set.get(&elem.id)
-                .and_then(|s| set_to_prop.get(s));
+            let set_name_opt: Option<&String> = elem_to_set.get(&elem.id);
 
-            let (etype, mat_spec) = if let Some(prop) = prop_obj {
-                let bound = prop.bind(py);
-                if let Ok(lam_ref) = bound.downcast::<PyLaminate>() {
-                    // ── Composite shell ───────────────────────────────────────
-                    let etype = if n_nodes_elem == 3 { ElemType::Mitc3Composite } else { ElemType::Mitc4Composite };
-                    let ptr = prop.as_ptr() as usize; // stable identity for cache key
+            let (etype, mat_spec) = if let Some(set_name) = set_name_opt {
+                match set_to_setspec.get(set_name) {
+                    Some(SetSpec::Composite(lam)) => {
+                        // ── Composite shell ───────────────────────────────────
+                        let etype = if n_nodes_elem == 3 { ElemType::Mitc3Composite } else { ElemType::Mitc4Composite };
 
-                    let angle_offset = elem_angle_offsets.get(&elem.id).copied().unwrap_or(0.0);
-                    let bucket_tenths = (angle_offset * 10.0).round() as i32;
-                    let cache_key = (ptr, bucket_tenths);
+                        let angle_offset = elem_angle_offsets.get(&elem.id).copied().unwrap_or(0.0);
+                        let bucket_tenths = (angle_offset * 10.0).round() as i32;
 
-                    let spec = if let Some(cached) = abd_cache.get(&cache_key) {
-                        cached.clone()
-                    } else {
-                        // Apply angle offset to laminate
-                        let lam: &Laminate = &lam_ref.borrow().inner;
-                        let corrected_lam = if bucket_tenths == 0 {
-                            lam.clone()
+                        // Use (set_name, bucket) as cache key — pure Rust, no PyO3
+                        let spec = if let Some(cached) = abd_cache.get(&(set_name.clone(), bucket_tenths)) {
+                            cached.clone()
                         } else {
-                            let angle_deg = bucket_tenths as f64 / 10.0;
-                            let corrected_plies: Vec<_> = lam.plies.iter().map(|p| {
-                                aeroelast_core::materials::laminate::Ply {
-                                    material: p.material.clone(),
-                                    thickness: p.thickness,
-                                    angle: p.angle + angle_deg,
-                                    z_bottom: p.z_bottom,
-                                    z_top: p.z_top,
-                                }
-                            }).collect();
-                            // Recompute laminate with corrected angles
-                            Laminate::new(corrected_plies, lam.shear_correction_factor)
-                                .map_err(|e| pyo3::exceptions::PyValueError::new_err(e))?
+                            let spec = compute_composite_spec(lam, bucket_tenths)?;
+                            abd_cache.insert((set_name.clone(), bucket_tenths), spec.clone());
+                            spec
                         };
-
-                        let h = corrected_lam.total_thickness;
-                        let a_trace = corrected_lam.a[(0,0)] + corrected_lam.a[(1,1)] + corrected_lam.a[(2,2)];
-                        let e_equiv = if h > 0.0 { a_trace / (3.0 * h) } else { 0.0 };
-                        let mass_per_area: f64 = corrected_lam.plies.iter()
-                            .map(|p| p.material.density() * p.thickness)
-                            .sum();
-                        let rotational_inertia: f64 = corrected_lam.plies.iter()
-                            .map(|p| p.material.density() * (p.z_top.powi(3) - p.z_bottom.powi(3)) / 3.0)
-                            .sum();
-
-                        let mut cm = [0.0f64; 9];
-                        let mut cb = [0.0f64; 9];
-                        let mut cs = [0.0f64; 4];
-                        for ii in 0..3 { for jj in 0..3 {
-                            cm[ii*3+jj] = corrected_lam.a[(ii, jj)];
-                            cb[ii*3+jj] = corrected_lam.d[(ii, jj)];
-                        }}
-                        cs[0] = corrected_lam.cs[(0,0)];
-                        cs[1] = corrected_lam.cs[(0,1)];
-                        cs[2] = corrected_lam.cs[(1,0)];
-                        cs[3] = corrected_lam.cs[(1,1)];
-
-                        let spec = MaterialSpec::Composite {
-                            cm, cb, cs,
-                            thickness: h,
-                            e_equiv,
-                            mass_per_area,
-                            rotational_inertia,
-                        };
-                        abd_cache.insert(cache_key, spec.clone());
-                        spec
-                    };
-                    (etype, spec)
-                } else {
-                    // ── Isotropic dict ────────────────────────────────────────
-                    let etype = if n_nodes_elem == 3 { ElemType::Mitc3 } else { ElemType::Mitc4 };
-                    let spec = parse_material(py, prop)?;
-                    (etype, spec)
+                        (etype, spec)
+                    }
+                    Some(SetSpec::Isotropic(spec)) => {
+                        // ── Isotropic dict ────────────────────────────────────
+                        let etype = if n_nodes_elem == 3 { ElemType::Mitc3 } else { ElemType::Mitc4 };
+                        (etype, spec.clone())
+                    }
+                    None => {
+                        return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                            "element {} belongs to set '{}' which has no property",
+                            elem.id, set_name
+                        )));
+                    }
                 }
-            } else if let Some(ref fb) = fallback_material {
+            } else if let Some(ref fb_spec) = fallback_spec {
                 // ── Fallback isotropic ─────────────────────────────────────────
                 let etype = if n_nodes_elem == 3 { ElemType::Mitc3 } else { ElemType::Mitc4 };
-                let spec = parse_material(py, fb)?;
-                (etype, spec)
+                (etype, fb_spec.clone())
             } else {
                 return Err(pyo3::exceptions::PyValueError::new_err(format!(
                     "element {} has no property and no fallback_material was provided",
@@ -1309,7 +1344,6 @@ impl PyMeshAssembler {
             rust_elem_types.push(final_etype);
             rust_materials.push(mat_spec);
         }
-
         let topology = MeshTopology::new(flat_coords, connectivity, rust_elem_types);
         let inner = MeshAssembler::new(topology, rust_materials);
         Ok(PyMeshAssembler { inner })
@@ -1469,6 +1503,24 @@ impl PyMeshAssembler {
     /// Returns np.ndarray of length dofs_count (int64).
     pub fn nnz_per_row<'py>(&self, py: Python<'py>) -> pyo3::Bound<'py, PyArray1<i64>> {
         Array1::from(self.inner.nnz_per_row().to_vec()).into_pyarray(py)
+    }
+
+    /// Return mass-per-area (kg/m²) for each element.
+    ///
+    /// For composite elements this is Σ(ρ_k · t_k) over all plies.
+    /// For isotropic shell elements this is ρ (kg/m³) — the caller is
+    /// responsible for multiplying by thickness when needed.
+    ///
+    /// Returns
+    /// -------
+    /// np.ndarray shape (n_elems,), dtype float64
+    pub fn rho_per_elem<'py>(&self, py: Python<'py>) -> pyo3::Bound<'py, PyArray1<f64>> {
+        let rho: Vec<f64> = self.inner.materials.iter().map(|m| match m {
+            MaterialSpec::Composite { mass_per_area, .. } => *mass_per_area,
+            MaterialSpec::Isotropic { rho, .. } => *rho,
+            _ => 0.0,
+        }).collect();
+        Array1::from(rho).into_pyarray(py)
     }
 
     /// Assemble the geometric stiffness matrix K_σ from centrifugal loading.

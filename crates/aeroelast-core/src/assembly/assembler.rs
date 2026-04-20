@@ -114,8 +114,8 @@ pub struct MeshAssembler {
     dof_connectivity: Vec<Vec<usize>>,
     /// Per-element precomputed geometric + constitutive data
     precomputed: Vec<PrecomputedElem>,
-    /// NNZ per row for PETSc preallocation
-    nnz_per_row_data: Vec<i64>,
+    /// NNZ per row for PETSc preallocation — computed lazily on first access
+    nnz_per_row_data: std::sync::OnceLock<Vec<i64>>,
 }
 
 impl MeshAssembler {
@@ -223,19 +223,12 @@ impl MeshAssembler {
             precomputed.push(pre);
         }
 
-        // Compute NNZ per row for PETSc preallocation
-        let nnz_per_row_data = {
-            let mut nnz = vec![std::collections::HashSet::<i64>::new(); dofs_count];
-            for e in 0..n_elems {
-                let elem_dofs = &dof_connectivity[e];
-                for &row_dof in elem_dofs {
-                    for &col_dof in elem_dofs {
-                        nnz[row_dof].insert(col_dof as i64);
-                    }
-                }
-            }
-            nnz.iter().map(|s| s.len() as i64).collect()
-        };
+        // Compute NNZ per row for PETSc preallocation.
+        //
+        // Use Rayon parallel reduction: each thread builds a local
+        // Vec<HashSet<usize>> for a chunk of elements, then we merge.
+        // This is O(E × d²) total work but with ~N_cpus parallelism.
+        // REMOVED from constructor — computed lazily via nnz_per_row().
 
         MeshAssembler {
             topology,
@@ -243,7 +236,7 @@ impl MeshAssembler {
             dofs_count,
             dof_connectivity,
             precomputed,
-            nnz_per_row_data,
+            nnz_per_row_data: std::sync::OnceLock::new(),
         }
     }
 
@@ -252,8 +245,22 @@ impl MeshAssembler {
     // -----------------------------------------------------------------------
 
     /// NNZ count per row (for PETSc preallocation).
+    /// Computed lazily on first call — O(E × d²) with HashSet dedup.
     pub fn nnz_per_row(&self) -> &[i64] {
-        &self.nnz_per_row_data
+        self.nnz_per_row_data.get_or_init(|| {
+            let dofs_count = self.dofs_count;
+            let dofs_per_elem = self.dof_connectivity.first().map_or(0, |d| d.len());
+            let mut nnz: Vec<std::collections::HashSet<usize>> =
+                (0..dofs_count).map(|_| std::collections::HashSet::with_capacity(dofs_per_elem)).collect();
+            for elem_dofs in &self.dof_connectivity {
+                for &row_dof in elem_dofs {
+                    for &col_dof in elem_dofs {
+                        nnz[row_dof].insert(col_dof);
+                    }
+                }
+            }
+            nnz.iter().map(|s| s.len() as i64).collect()
+        })
     }
 
     // -----------------------------------------------------------------------
