@@ -7,11 +7,9 @@ import numpy as np
 import shapely as shp
 from scipy.interpolate import CubicSpline
 
-from fem_shell.core.laminate import Laminate, Ply
 from fem_shell.core.material import Material, OrthotropicMaterial
 from fem_shell.core.mesh import MeshModel
 from fem_shell.core.mesh.generators import BladeMesh, RotorMesh
-from fem_shell.core.properties import CompositeShellProperty, ShellProperty, ShellPropertyType
 from fem_shell.core.viewer import BladeGeometryVisualizer
 from fem_shell.elements import ElementFamily
 
@@ -98,82 +96,30 @@ class Blade:
             if elem.thickness is not None
         }
 
-    def get_element_properties(self) -> Dict[str, ShellPropertyType]:
-        """Build shell property definitions per element set from section layup data.
+     def get_element_properties(self) -> dict:
+         """Build shell property definitions per element set from section layup data.
 
-        Uses the WindIO/numad section and material data to construct
-        ``CompositeShellProperty`` (multi-ply laminates) or ``ShellProperty``
-        (single-layer isotropic) objects for each element set in the mesh.
+         Returns Rust-native types (``fem_shell_core.Laminate`` or isotropic
+         dict) directly — no intermediate Python ``Laminate``/``Ply`` objects.
 
-        Returns
-        -------
-        dict[str, ShellPropertyType]
-            Mapping of element-set name to the corresponding property.
-            Suitable for passing as ``model_config["elements"]["properties"]``.
+         Returns
+         -------
+         dict[str, fem_shell_core.Laminate | dict]
+             Mapping of element-set name to the corresponding property.
+             Suitable for passing directly to ``PyMeshAssembler.from_model()``.
 
-        Raises
-        ------
-        RuntimeError
-            If the mesh has not been generated yet.
-        KeyError
-            If a layer references a material name not present in the
-            numad material database.
-        """
-        if self.mesh is None or not self._numad_mesh:
-            raise RuntimeError("Mesh has not been generated yet. Call generate_mesh() first.")
+         Raises
+         ------
+         RuntimeError
+             If the mesh has not been generated yet.
+         KeyError
+             If a layer references a material name not present in the
+             numad material database.
+         """
+         if self.mesh is None or not self._numad_mesh:
+             raise RuntimeError("Mesh has not been generated yet. Call generate_mesh() first.")
 
-        # Build material lookup: name -> IsotropicMaterial | OrthotropicMaterial
-        mat_db: Dict[str, Union[Material, OrthotropicMaterial]] = {}
-        for mat_data in self._numad_mesh["materials"]:
-            mat_obj = material_factory(mat_data)
-            mat_db[mat_obj.name] = mat_obj
-
-        properties: Dict[str, ShellPropertyType] = {}
-
-        for section in self._numad_mesh["sections"]:
-            set_name = section["elementSet"]
-            layup = section["layup"]  # [[mat_name, thickness, angle], ...]
-
-            plies: List[Ply] = []
-            for mat_name, thickness, angle in layup:
-                mat = mat_db.get(mat_name)
-                if mat is None:
-                    raise KeyError(
-                        f"Material '{mat_name}' referenced in section '{set_name}' "
-                        f"not found in numad material database."
-                    )
-
-                # Ply requires an OrthotropicMaterial. If the material is
-                # isotropic we need to promote it.
-                if isinstance(mat, OrthotropicMaterial):
-                    ply_mat = mat
-                else:
-                    # IsotropicMaterial -> OrthotropicMaterial with G derived
-                    G = mat.E / (2.0 * (1.0 + mat.nu))
-                    ply_mat = OrthotropicMaterial(
-                        name=mat.name,
-                        E=(mat.E, mat.E, mat.E),
-                        G=(G, G, G),
-                        nu=(mat.nu, mat.nu, mat.nu),
-                        rho=mat.rho,
-                    )
-                plies.append(Ply(material=ply_mat, thickness=thickness, angle=angle))
-
-            if len(plies) == 1 and plies[0].angle == 0.0:
-                # Single layer with 0° angle: check if original material is isotropic
-                original_mat = mat_db[layup[0][0]]
-                from fem_shell.core.material import IsotropicMaterial
-                if isinstance(original_mat, IsotropicMaterial):
-                    properties[set_name] = ShellProperty(
-                        material=original_mat,
-                        thickness=plies[0].thickness,
-                    )
-                    continue
-
-            laminate = Laminate(plies=plies)
-            properties[set_name] = CompositeShellProperty(laminate=laminate)
-
-        return properties
+         return build_rust_properties(self._numad_mesh)
 
     def show_plots(self) -> None:
         """Display blade geometry plots."""
@@ -740,6 +686,101 @@ def material_factory(
         E = elastic_props["E"]
         nu = elastic_props["nu"]
         return Material(name=material_name, E=E, nu=nu, rho=density)
+
+
+def build_rust_properties(numad_data: dict) -> dict:
+    """Build a Rust-native properties map from NuMAD mesh data.
+
+    Converts section layup data directly to ``fem_shell_core`` types
+    (``Laminate`` / isotropic dict) — no Python ``Laminate``/``Ply``/
+    ``CompositeShellProperty`` objects are created.
+
+    Parameters
+    ----------
+    numad_data : dict
+        NuMAD mesh data with ``"materials"`` and ``"sections"`` keys.
+
+    Returns
+    -------
+    dict[str, fem_shell_core.Laminate | dict]
+        Suitable for passing directly to ``PyMeshAssembler.from_model()``.
+    """
+    from fem_shell_core import Laminate as RustLaminate, Ply as RustPly, OrthotropicMaterial as RustMat  # noqa: PLC0415
+
+    # ── material lookup: name → raw data dict ─────────────────────────────
+    mat_raw: Dict[str, dict] = {m["name"]: m for m in numad_data["materials"]}
+
+    properties: dict = {}
+
+    for section in numad_data["sections"]:
+        set_name = section["elementSet"]
+        layup = section["layup"]  # [[mat_name, thickness, angle], ...]
+
+        rust_plies = []
+        for mat_name, thickness, angle in layup:
+            m = mat_raw.get(mat_name)
+            if m is None:
+                raise KeyError(
+                    f"Material '{mat_name}' referenced in section '{set_name}' "
+                    "not found in numad material database."
+                )
+            elastic = m["elastic"]
+            rho = float(m["density"])
+
+            E_raw = elastic["E"]
+            nu_raw = elastic["nu"]
+            G_raw = elastic.get("G")
+
+            if isinstance(E_raw, Iterable) and not isinstance(E_raw, (str, float, int)):
+                E = tuple(float(v) for v in E_raw)
+                nu = tuple(float(v) for v in nu_raw)
+                G = tuple(float(v) for v in G_raw) if G_raw is not None else (
+                    E[0] / (2.0 * (1.0 + nu[0])),
+                    E[1] / (2.0 * (1.0 + nu[1])),
+                    E[2] / (2.0 * (1.0 + nu[2])),
+                )
+            else:
+                E_v = float(E_raw)
+                nu_v = float(nu_raw) if not isinstance(nu_raw, Iterable) else float(list(nu_raw)[0])
+                G_v = E_v / (2.0 * (1.0 + nu_v))
+                E, nu, G = (E_v, E_v, E_v), (nu_v, nu_v, nu_v), (G_v, G_v, G_v)
+
+            rust_mat = RustMat(E[0], E[1], E[2], G[0], G[1], G[2], nu[0], nu[1], nu[2], rho)
+            rust_plies.append(RustPly(rust_mat, float(thickness), float(angle)))
+
+        # Single isotropic ply at 0° → isotropic dict (lighter path in Rust)
+        if len(rust_plies) == 1 and rust_plies[0].angle == 0.0:
+            m = mat_raw[layup[0][0]]
+            elastic = m["elastic"]
+            E_raw = elastic["E"]
+            nu_raw = elastic["nu"]
+            is_iso = not isinstance(E_raw, Iterable) or isinstance(E_raw, (str, float, int))
+            if not is_iso:
+                E_list = list(E_raw)
+                nu_list = list(nu_raw)
+                G_list = list(elastic.get("G", []))
+                is_iso = (
+                    all(v == E_list[0] for v in E_list)
+                    and all(v == nu_list[0] for v in nu_list)
+                    and (not G_list or all(v == G_list[0] for v in G_list))
+                )
+            if is_iso:
+                E_v = float(E_list[0]) if isinstance(E_raw, Iterable) and not isinstance(E_raw, (str, float, int)) else float(E_raw)
+                nu_v = float(nu_list[0]) if isinstance(nu_raw, Iterable) and not isinstance(nu_raw, (str, float, int)) else float(nu_raw)
+                properties[set_name] = {
+                    "type": "isotropic",
+                    "e": E_v,
+                    "nu": nu_v,
+                    "rho": float(m["density"]),
+                    "thickness": float(layup[0][1]),
+                    "shear_correction": 5.0 / 6.0,
+                }
+                continue
+
+        scf = 5.0 / 6.0
+        properties[set_name] = RustLaminate(rust_plies, scf)
+
+    return properties
 
 
 @dataclass

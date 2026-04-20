@@ -909,69 +909,23 @@ class FSIRunner:
 
         return material
 
-    def _extract_blade_properties(self) -> Dict[str, Any]:
+    def _extract_blade_properties(self) -> dict:
         """Extract per-element-set composite properties from blade YAML.
 
-        Uses the same logic as ``Blade.get_element_properties()`` but
-        operates on the ``BladeMesh`` or ``RotorMesh`` generator's
-        numad mesh data.
+        Delegates to ``build_rust_properties()`` — returns Rust-native
+        ``fem_shell_core.Laminate`` / isotropic dict directly, with no
+        intermediate Python ``Laminate``/``Ply``/``CompositeShellProperty``.
 
         Returns
         -------
-        dict[str, ShellPropertyType]
-            Mapping of element-set name to composite shell property.
+        dict[str, fem_shell_core.Laminate | dict]
+            Mapping of element-set name to Rust property, ready for
+            ``PyMeshAssembler.from_model()``.
         """
-        from ...core.laminate import Laminate, Ply
-        from ...core.properties import CompositeShellProperty, ShellProperty
-        from ...models.blade.model import material_factory
+        from ...models.blade.model import build_rust_properties  # noqa: PLC0415
 
         numad_data = self._mesh_generator.numad_mesh_data
-
-        # Build material lookup from blade YAML materials
-        mat_db = {}
-        for mat_data in numad_data["materials"]:
-            mat_obj = material_factory(mat_data)
-            mat_db[mat_obj.name] = mat_obj
-
-        properties = {}
-        for section in numad_data["sections"]:
-            set_name = section["elementSet"]
-            layup = section["layup"]
-
-            plies = []
-            for mat_name, thickness, angle in layup:
-                mat = mat_db.get(mat_name)
-                if mat is None:
-                    raise KeyError(
-                        f"Material '{mat_name}' referenced in section "
-                        f"'{set_name}' not found in blade material database."
-                    )
-                if isinstance(mat, OrthotropicMaterial):
-                    ply_mat = mat
-                else:
-                    G = mat.E / (2.0 * (1.0 + mat.nu))
-                    ply_mat = OrthotropicMaterial(
-                        name=mat.name,
-                        E=(mat.E, mat.E, mat.E),
-                        G=(G, G, G),
-                        nu=(mat.nu, mat.nu, mat.nu),
-                        rho=mat.rho,
-                    )
-                plies.append(Ply(material=ply_mat, thickness=thickness, angle=angle))
-
-            if len(plies) == 1 and plies[0].angle == 0.0:
-                original_mat = mat_db[layup[0][0]]
-                if isinstance(original_mat, IsotropicMaterial):
-                    properties[set_name] = ShellProperty(
-                        material=original_mat,
-                        thickness=plies[0].thickness,
-                    )
-                    continue
-
-            laminate = Laminate(plies=plies)
-            properties[set_name] = CompositeShellProperty(laminate=laminate)
-
-        return properties
+        return build_rust_properties(numad_data)
 
     def _build_model_config(self) -> Dict[str, Any]:
         """Build the model configuration dictionary for the solver."""

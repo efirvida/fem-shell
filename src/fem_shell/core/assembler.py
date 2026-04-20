@@ -7,7 +7,6 @@ from mpi4py import MPI
 from petsc4py import PETSc
 
 from fem_shell.core.mesh import MeshModel
-from fem_shell.core.properties import CompositeShellProperty, ShellProperty, ShellPropertyType
 from fem_shell.elements import ElementFamily
 
 logger = logging.getLogger(__name__)
@@ -192,10 +191,26 @@ class MeshAssembler:
         # node_count per element — fast fromiter
         node_counts_arr = np.fromiter((e.node_count for e in elements), dtype=np.int8, count=len(elements))
 
-        # Per-element composite flag: build set of composite element ids
+        # Per-element composite flag: build set of composite element ids.
+        # A property is composite if it is a RustLaminate (fem_shell_core.Laminate)
+        # or a legacy Python CompositeShellProperty — anything that is NOT an
+        # isotropic dict.
+        try:
+            from fem_shell_core import Laminate as _RustLaminate  # noqa: PLC0415
+        except ImportError:
+            _RustLaminate = None
+        try:
+            from fem_shell.core.properties import CompositeShellProperty as _CSP  # noqa: PLC0415
+        except ImportError:
+            _CSP = None
+
         composite_elem_ids: set = set()
         for set_name, prop in properties_map.items():
-            if isinstance(prop, CompositeShellProperty) and set_name in mesh.element_sets:
+            is_composite = (
+                (_RustLaminate is not None and isinstance(prop, _RustLaminate))
+                or (_CSP is not None and isinstance(prop, _CSP))
+            )
+            if is_composite and set_name in mesh.element_sets:
                 composite_elem_ids.update(e.id for e in mesh.element_sets[set_name].elements)
 
         if composite_elem_ids:
@@ -237,13 +252,26 @@ class MeshAssembler:
     def _properties_to_rust(self, properties_map, RustLaminate, RustPly, RustMat):
         """Convert Python properties_map to a dict suitable for PyMeshAssembler.from_model().
 
-        Returns dict[str, RustLaminate | dict] where:
-        - CompositeShellProperty → RustLaminate
-        - ShellProperty → isotropic dict
+        If the map already contains Rust-native types (``fem_shell_core.Laminate``
+        or isotropic dicts) this is a no-op pass-through.  Python
+        ``CompositeShellProperty`` / ``ShellProperty`` objects are still
+        supported for backwards compatibility with callers that haven't
+        migrated yet.
+
+        Returns dict[str, RustLaminate | dict].
         """
+        try:
+            from fem_shell.core.properties import CompositeShellProperty, ShellProperty  # noqa: PLC0415
+            _has_py_props = True
+        except ImportError:
+            _has_py_props = False
+
         result = {}
         for set_name, prop in properties_map.items():
-            if isinstance(prop, CompositeShellProperty):
+            # Already Rust-native — pass through unchanged
+            if isinstance(prop, (RustLaminate, dict)):
+                result[set_name] = prop
+            elif _has_py_props and isinstance(prop, CompositeShellProperty):
                 lam = prop.laminate
                 rust_plies = []
                 for ply in lam.plies:
@@ -260,7 +288,7 @@ class MeshAssembler:
                     rust_plies.append(RustPly(rust_mat, float(ply.thickness), float(ply.angle)))
                 scf = float(getattr(lam, 'shear_correction_factor', 0.75))
                 result[set_name] = RustLaminate(rust_plies, scf)
-            elif isinstance(prop, ShellProperty):
+            elif _has_py_props and isinstance(prop, ShellProperty):
                 m = prop.material
                 result[set_name] = {
                     "type": "isotropic",
@@ -270,6 +298,8 @@ class MeshAssembler:
                     "thickness": float(prop.thickness),
                     "shear_correction": float(getattr(prop, 'shear_correction', 5.0 / 6.0)),
                 }
+            else:
+                result[set_name] = prop
         return result
 
     def _build_py_mesh_assembler(self):
@@ -292,7 +322,7 @@ class MeshAssembler:
             logger.warning("[assembler._build_py_mesh_assembler] fem_shell_core not available — Rust assembler disabled")
             return
 
-        properties_map: Optional[Dict[str, ShellPropertyType]] = self.model.get("properties")
+        properties_map: Optional[Dict] = self.model.get("properties")
 
         # ── COMPOSITE / MULTI-PROPERTY PATH: PyMeshAssembler.from_model() ─────
         if properties_map is not None:
