@@ -804,6 +804,10 @@ def _write_ccx_inp_file(
                 _write_ccx_static_step(
                     f, mesh, boundary_nodeset, load_nodeset, load_dof, load_magnitude
                 )
+            elif solver_type == "NonlinearStatic":
+                _write_ccx_nonlinear_static_step(
+                    f, mesh, boundary_nodeset, load_nodeset, load_dof, load_magnitude
+                )
             elif solver_type == "LinearDynamic":
                 _write_ccx_dynamic_step(
                     f, mesh, boundary_nodeset, load_nodeset, load_dof, load_magnitude, dt, t_end
@@ -1139,6 +1143,54 @@ def _write_ccx_static_step(
     f.write("** ===========================================\n")
     f.write("**\n")
     f.write("*STEP\n")
+    f.write("*STATIC\n")
+    f.write("**\n")
+
+    if load_nodeset:
+        load_nset = f"N{load_nodeset.upper()}"
+        f.write("*CLOAD\n")
+        f.write(f"{load_nset}, {load_dof}, {load_magnitude:.6E}\n")
+        f.write("**\n")
+
+    f.write("*NODE FILE\n")
+    f.write("U, RF\n")
+    f.write("*EL FILE\n")
+    f.write("S, E\n")
+    f.write("**\n")
+    f.write("*END STEP\n")
+
+
+def _write_ccx_nonlinear_static_step(
+    f,
+    mesh: "MeshModel",
+    boundary_nodeset: Optional[str],
+    load_nodeset: Optional[str],
+    load_dof: int,
+    load_magnitude: float,
+) -> None:
+    """Write boundary conditions and *STATIC, NLGEOM step with cload."""
+    f.write("**\n")
+    f.write("** ===========================================\n")
+    f.write("**          BOUNDARY CONDITIONS\n")
+    f.write("** ===========================================\n")
+    f.write("**\n")
+
+    if boundary_nodeset:
+        nset_name = f"N{boundary_nodeset.upper()}"
+        f.write("*BOUNDARY\n")
+        f.write(f"{nset_name}, 1, 6, 0.0\n")
+    else:
+        for name in mesh.node_sets:
+            f.write("*BOUNDARY\n")
+            f.write(f"N{name.upper()}, 1, 6, 0.0\n")
+            break
+
+    f.write("**\n")
+    f.write("** ===========================================\n")
+    f.write("**        NONLINEAR STATIC ANALYSIS\n")
+    f.write("** ===========================================\n")
+    f.write("**\n")
+    f.write("*STEP, NLGEOM\n")
     f.write("*STATIC\n")
     f.write("**\n")
 
