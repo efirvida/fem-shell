@@ -96,30 +96,30 @@ class Blade:
             if elem.thickness is not None
         }
 
-     def get_element_properties(self) -> dict:
-         """Build shell property definitions per element set from section layup data.
+    def get_element_properties(self) -> dict:
+        """Build shell property definitions per element set from section layup data.
 
-         Returns Rust-native types (``fem_shell_core.Laminate`` or isotropic
-         dict) directly — no intermediate Python ``Laminate``/``Ply`` objects.
+        Returns Rust-native types (``fem_shell_core.Laminate`` or isotropic
+        dict) directly — no intermediate Python ``Laminate``/``Ply`` objects.
 
-         Returns
-         -------
-         dict[str, fem_shell_core.Laminate | dict]
-             Mapping of element-set name to the corresponding property.
-             Suitable for passing directly to ``PyMeshAssembler.from_model()``.
+        Returns
+        -------
+        dict[str, fem_shell_core.Laminate | dict]
+            Mapping of element-set name to the corresponding property.
+            Suitable for passing directly to ``PyMeshAssembler.from_model()``.
 
-         Raises
-         ------
-         RuntimeError
-             If the mesh has not been generated yet.
-         KeyError
-             If a layer references a material name not present in the
-             numad material database.
-         """
-         if self.mesh is None or not self._numad_mesh:
-             raise RuntimeError("Mesh has not been generated yet. Call generate_mesh() first.")
+        Raises
+        ------
+        RuntimeError
+            If the mesh has not been generated yet.
+        KeyError
+            If a layer references a material name not present in the
+            numad material database.
+        """
+        if self.mesh is None or not self._numad_mesh:
+            raise RuntimeError("Mesh has not been generated yet. Call generate_mesh() first.")
 
-         return build_rust_properties(self._numad_mesh)
+        return build_rust_properties(self._numad_mesh)
 
     def show_plots(self) -> None:
         """Display blade geometry plots."""

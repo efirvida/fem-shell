@@ -150,7 +150,7 @@ class StressStiffenedFSISolver(LinearDynamicFSISolver):
         # Build stress_field dict expected by assemble_geometric_stiffness:
         #   {elem_id: np.array([σxx, σyy, σxy])}
         stress_field: dict[int, np.ndarray] = {}
-        for elem_id in (e.id for e in self.domain.mesh.elements):
+        for elem_id in (e.id for e in self.domain.elements):
             sigma_voigt = np.array(
                 [
                     elem_result.sigma_xx[elem_id],

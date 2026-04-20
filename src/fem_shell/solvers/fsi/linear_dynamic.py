@@ -836,12 +836,12 @@ class LinearDynamicFSISolver(LinearDynamicSolver):
         np.ndarray
             Full force array, shape (n_nodes, 3) for VTU visualization.
         """
-        n_nodes = self.domain.mesh.node_count
+        n_nodes = self.domain.node_count
         full_forces = np.zeros((n_nodes, 3), dtype=np.float64)
         dim = interface_forces.shape[1]
 
         # Get the proper node indices from the solver
-        node_id_to_index = self.domain.mesh.node_id_to_index
+        node_id_to_index = self.domain.node_id_to_index
         interface_node_indices = np.array(
             [node_id_to_index[nid] for nid in self._interface_node_ids], dtype=np.int64,
         )
@@ -887,7 +887,7 @@ class LinearDynamicFSISolver(LinearDynamicSolver):
         if not probe_cfg:
             return
 
-        coords = np.array([[n.x, n.y, n.z] for n in self.domain.mesh.nodes])
+        coords = np.array([[n.x, n.y, n.z] for n in self.domain.nodes])
         resolved: list[int] = []
         probe_table = Table(show_header=True, box=None, padding=(0, 1))
         probe_table.add_column("#", style="bold")
@@ -898,7 +898,7 @@ class LinearDynamicFSISolver(LinearDynamicSolver):
             pt = np.asarray(pt, dtype=float)
             dists = np.linalg.norm(coords - pt, axis=1)
             idx = int(np.argmin(dists))
-            node = self.domain.mesh.nodes[idx]
+            node = self.domain.nodes[idx]
             resolved.append(idx)
             probe_table.add_row(
                 str(i),
@@ -940,7 +940,7 @@ class LinearDynamicFSISolver(LinearDynamicSolver):
         csv_path = Path(output_folder) / "structural_report.csv"
         csv_path.parent.mkdir(parents=True, exist_ok=True)
 
-        nodes = self.domain.mesh.nodes
+        nodes = self.domain.nodes
         n_nodes = len(nodes)
         dofs_per_node = u_full.size // n_nodes
 
@@ -1017,7 +1017,7 @@ class LinearDynamicFSISolver(LinearDynamicSolver):
         if not self._probe_node_ids or not self._is_primary_rank():
             return
 
-        nodes = self.domain.mesh.nodes
+        nodes = self.domain.nodes
         n_nodes = len(nodes)
         dofs_per_node = u_full.size // n_nodes
         u_mat = u_full.reshape(n_nodes, dofs_per_node)
@@ -1321,7 +1321,7 @@ class LinearDynamicFSISolver(LinearDynamicSolver):
             and t == 0
         ):
             u_full_init = bc_manager.expand_solution(u).array.copy()
-            zeros_full = np.zeros((self.domain.mesh.node_count, 3), dtype=np.float64)
+            zeros_full = np.zeros((self.domain.node_count, 3), dtype=np.float64)
             initial_fields = {
                 "F_AERO": zeros_full,
                 "F_TOTAL": zeros_full.copy(),

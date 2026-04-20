@@ -1,13 +1,17 @@
+from __future__ import annotations
+
 import logging
 import time
-from typing import Dict, Iterable, Optional
+from typing import Dict, Optional, TYPE_CHECKING
 
 import numpy as np
 from mpi4py import MPI
 from petsc4py import PETSc
 
-from fem_shell.core.mesh import MeshModel
 from fem_shell.elements import ElementFamily
+
+if TYPE_CHECKING:
+    from fem_shell.core.mesh import MeshModel
 
 logger = logging.getLogger(__name__)
 
@@ -94,7 +98,8 @@ class MeshAssembler:
         Parameters
         ----------
         mesh : MeshModel
-            The computational mesh containing nodes and elements
+            The computational mesh containing nodes and elements.
+            Kept only for the `_mesh_to_rust()` conversion; not stored after init.
         model : Dict
             Material and element configuration dictionary
 
@@ -102,34 +107,43 @@ class MeshAssembler:
         ----------
         dofs_count : int
             Total number of degrees of freedom in the system
-        _dofs_array : np.ndarray
-            Element-to-DOF connectivity array
         """
-        self.mesh = mesh
         self.model = model["elements"]
         self.comm = MPI.COMM_WORLD
-        self._dofs_array: np.ndarray = None
-        self._legacy_node_dofs_map: Dict[int, Iterable] = {}  # filled by _precompute_elements, exposed via _node_dofs_map property
         self.dofs_per_node: int = 0
         self.spatial_dim: int = 0
         self.dofs_count: int = 0
         self._row_nnz: Optional[np.ndarray] = None
-        self._rho_per_elem: Optional[np.ndarray] = None  # (n_elems,) — set in _build_py_mesh_assembler
-        self._rust_mesh = None  # RustMeshModel — set in _build_py_mesh_assembler
-        # Lazy caches for Rust-backed mesh proxies (replaces self.mesh accesses)
+        self._rho_per_elem: Optional[np.ndarray] = None
+        self._rust_mesh = None   # RustMeshModel — set in _build_py_mesh_assembler
+        self._rust = None        # PyMeshAssembler — set in _build_py_mesh_assembler
+        # Lazy caches for Rust-backed mesh proxies
         self._node_id_to_index_cache: Optional[Dict] = None
         self._node_dofs_map_cache: Optional[Dict] = None
 
         t0 = time.perf_counter()
+
+        # Resolve dofs_per_node / spatial_dim from element_family declaration
+        element_family = self.model.get("element_family")
+        if element_family is not None and element_family in self._FAMILY_PROPERTIES:
+            self.dofs_per_node, self.spatial_dim = self._FAMILY_PROPERTIES[element_family]
+        else:
+            raise ValueError(
+                f"element_family must be one of {list(self._FAMILY_PROPERTIES.keys())} "
+                f"(got {element_family!r})."
+            )
+
         logger.info("[assembler] START __init__ — nodes=%d", mesh.node_count)
 
-        t1 = time.perf_counter()
-        self._precompute_elements()
-        logger.info("[assembler] _precompute_elements done in %.2fs — elements=%d", time.perf_counter() - t1, len(self.mesh.elements))
-
         t3 = time.perf_counter()
-        self._build_py_mesh_assembler()
+        self._build_py_mesh_assembler(mesh)
         logger.info("[assembler] _build_py_mesh_assembler done in %.2fs — rust=%s", time.perf_counter() - t3, self._rust is not None)
+
+        # dofs_count: prefer Rust authoritative value, fall back to geometry
+        if self._rust is not None:
+            self.dofs_count = self._rust.dofs_count
+        else:
+            self.dofs_count = mesh.node_count * self.dofs_per_node
 
         logger.info("[assembler] TOTAL __init__ done in %.2fs — dofs=%d", time.perf_counter() - t0, self.dofs_count)
 
@@ -245,264 +259,134 @@ class MeshAssembler:
                     nid: tuple(range(i * dpn, i * dpn + dpn))
                     for i, nid in enumerate(ids)
                 }
-            else:
-                # Fall back to the map built by _precompute_elements
-                self._node_dofs_map_cache = dict(self._legacy_node_dofs_map)
         return self._node_dofs_map_cache
 
-    def _precompute_elements(self):
-        """Compute element DOF connectivity from mesh topology.
+    def _build_py_mesh_assembler(self, mesh: MeshModel):
+        """Convert mesh + model config to PyMeshAssembler (Rust).
 
-        Builds DOF arrays directly from the known dofs_per_node
-        derived from the element family declaration.
+        Uses `PyMeshAssembler.from_model()` for the composite / multi-property
+        path (the normal production path).  Falls back to the direct
+        `PyMeshAssembler()` constructor for the legacy single-material isotropic
+        path.
+
+        The Python MeshModel `mesh` is consumed here; it is NOT stored on `self`.
         """
-        elements = self.mesh.elements
-        if not elements:
-            return
-
-        # --- Determine global maximum stride from element family ---
-        element_family = self.model.get("element_family")
-        if element_family is not None and element_family in self._FAMILY_PROPERTIES:
-            self.dofs_per_node, self.spatial_dim = self._FAMILY_PROPERTIES[element_family]
-        else:
-            raise ValueError(
-                f"element_family must be one of {list(self._FAMILY_PROPERTIES.keys())} "
-                f"(got {element_family!r}). Mixed meshes without explicit element_family "
-                "are not supported."
-            )
-
-        # --- Build DOF arrays directly from mesh topology ---
-        node_id_to_index = self.mesh.node_id_to_index
-        dpn = self.dofs_per_node
-        dofs_list = []
-        dof_sizes = set()
-        _t0 = time.perf_counter()
-
-        for element in elements:
-            node_ids = element.node_ids
-            dofs = np.array(
-                [node_id_to_index[nid] * dpn + d for nid in node_ids for d in range(dpn)],
-                dtype=np.int64,
-            )
-            dof_sizes.add(len(dofs))
-            dofs_list.append(dofs)
-            # Populate _legacy_node_dofs_map for legacy callers
-            for nid in node_ids:
-                if nid not in self._legacy_node_dofs_map:
-                    start = node_id_to_index[nid] * dpn
-                    self._legacy_node_dofs_map[nid] = tuple(range(start, start + dpn))
-
-        logger.info(
-            "[assembler._precompute] DOF arrays built in %.2fs — %d elements, dofs_per_node=%d",
-            time.perf_counter() - _t0, len(elements), dpn,
-        )
-
-        self._is_mixed_mesh = len(dof_sizes) > 1
-        if self._is_mixed_mesh:
-            self._dofs_list = dofs_list
-            self._dofs_array = None
-        else:
-            self._dofs_array = np.array(dofs_list, dtype=np.int64)
-            self._dofs_list = None
-
-        # K/M arrays are NOT stored — assembly is done by the Rust assembler.
-        self._ke_array = None
-        self._me_array = None
-        self._ke_list = None
-        self._me_list = None
-
-        self.dofs_count = self.mesh.node_count * self.dofs_per_node
-
-    # ------------------------------------------------------------------
-    # Lazy element map: only built when needed for body loads / stress stiffening
-    # ------------------------------------------------------------------
-
-    def _mesh_to_rust(self, properties_map):
-        """Convert Python MeshModel + properties_map to a Rust MeshModel.
-
-        Element type codes are set to composite (33/44) for elements in composite sets,
-        or isotropic (3/4) otherwise — matching what from_model() expects.
-
-        Vectorised with numpy to avoid per-element Python overhead (~86k elements).
-        """
-        from fem_shell_core import MeshModel as RustMeshModel  # noqa: PLC0415
-
-        mesh = self.mesh
-
-        # ── Nodes ─────────────────────────────────────────────────────────────
-        nodes = mesh.nodes
-        node_ids_list = [n.id for n in nodes]
-        # Stack (N, 3) then ravel to flat [x0,y0,z0, x1,y1,z1, ...]
-        coords_flat = np.stack([n.coords for n in nodes], axis=0).ravel().tolist()
-
-        # ── Elements ──────────────────────────────────────────────────────────
-        elements = mesh.elements
-        element_ids_arr = np.fromiter((e.id for e in elements), dtype=np.int64, count=len(elements))
-
-        # node_count per element — fast fromiter
-        node_counts_arr = np.fromiter((e.node_count for e in elements), dtype=np.int8, count=len(elements))
-
-        # Per-element composite flag: build set of composite element ids.
-        # A property is composite if it is a RustLaminate (fem_shell_core.Laminate)
-        # or a legacy Python CompositeShellProperty — anything that is NOT an
-        # isotropic dict.
-        try:
-            from fem_shell_core import Laminate as _RustLaminate  # noqa: PLC0415
-        except ImportError:
-            _RustLaminate = None
-        try:
-            from fem_shell.core.properties import CompositeShellProperty as _CSP  # noqa: PLC0415
-        except ImportError:
-            _CSP = None
-
-        composite_elem_ids: set = set()
-        for set_name, prop in properties_map.items():
-            is_composite = (
-                (_RustLaminate is not None and isinstance(prop, _RustLaminate))
-                or (_CSP is not None and isinstance(prop, _CSP))
-            )
-            if is_composite and set_name in mesh.element_sets:
-                composite_elem_ids.update(e.id for e in mesh.element_sets[set_name].elements)
-
-        if composite_elem_ids:
-            composite_arr = np.isin(element_ids_arr, np.fromiter(composite_elem_ids, dtype=np.int64))
-        else:
-            composite_arr = np.zeros(len(elements), dtype=bool)
-
-        # type code: tri composite=33, quad composite=44, tri iso=3, quad iso=4
-        is_tri = node_counts_arr == 3
-        type_codes = np.where(
-            composite_arr,
-            np.where(is_tri, 33, 44),
-            np.where(is_tri, 3, 4),
-        ).tolist()
-
-        element_ids_list = element_ids_arr.tolist()
-        element_node_ids_list = [list(e.node_ids) for e in elements]
-
-        # ── Sets ──────────────────────────────────────────────────────────────
-        rust_esets = {
-            name: [e.id for e in eset.elements]
-            for name, eset in mesh.element_sets.items()
-        }
-        rust_nsets = {
-            name: list(nset.node_ids)
-            for name, nset in mesh.node_sets.items()
-        }
-
-        return RustMeshModel.from_raw_data(
-            node_ids_list,
-            coords_flat,
-            element_ids_list,
-            element_node_ids_list,
-            type_codes,
-            rust_esets,
-            rust_nsets,
-        )
-
-    def _properties_to_rust(self, properties_map, RustLaminate, RustPly, RustMat):
-        """Convert Python properties_map to a dict suitable for PyMeshAssembler.from_model().
-
-        If the map already contains Rust-native types (``fem_shell_core.Laminate``
-        or isotropic dicts) this is a no-op pass-through.  Python
-        ``CompositeShellProperty`` / ``ShellProperty`` objects are still
-        supported for backwards compatibility with callers that haven't
-        migrated yet.
-
-        Returns dict[str, RustLaminate | dict].
-        """
-        try:
-            from fem_shell.core.properties import CompositeShellProperty, ShellProperty  # noqa: PLC0415
-            _has_py_props = True
-        except ImportError:
-            _has_py_props = False
-
-        result = {}
-        for set_name, prop in properties_map.items():
-            # Already Rust-native — pass through unchanged
-            if isinstance(prop, (RustLaminate, dict)):
-                result[set_name] = prop
-            elif _has_py_props and isinstance(prop, CompositeShellProperty):
-                lam = prop.laminate
-                rust_plies = []
-                for ply in lam.plies:
-                    m = ply.material
-                    E = m.E
-                    G = m.G
-                    nu = m.nu
-                    rust_mat = RustMat(
-                        float(E[0]), float(E[1]), float(E[2]),
-                        float(G[0]), float(G[1]), float(G[2]),
-                        float(nu[0]), float(nu[1]), float(nu[2]),
-                        float(m.rho),
-                    )
-                    rust_plies.append(RustPly(rust_mat, float(ply.thickness), float(ply.angle)))
-                scf = float(getattr(lam, 'shear_correction_factor', 0.75))
-                result[set_name] = RustLaminate(rust_plies, scf)
-            elif _has_py_props and isinstance(prop, ShellProperty):
-                m = prop.material
-                result[set_name] = {
-                    "type": "isotropic",
-                    "e": float(m.E),
-                    "nu": float(m.nu),
-                    "rho": float(m.rho),
-                    "thickness": float(prop.thickness),
-                    "shear_correction": float(getattr(prop, 'shear_correction', 5.0 / 6.0)),
-                }
-            else:
-                result[set_name] = prop
-        return result
-
-    def _build_py_mesh_assembler(self):
-        """Build a PyMeshAssembler (Rust) from mesh topology and properties.
-
-        When a ``properties`` map is present in the model config the Rust
-        ``PyMeshAssembler.from_model()`` fast-path is used exclusively —
-        no Python element loop.
-
-        For the legacy isotropic path (model has ``material`` / ``thickness``
-        instead of a properties map) the direct ``PyMeshAssembler()``
-        constructor is used, which still requires a Python loop to build the
-        materials list from model fields.
-        """
-        self._rust = None
-
         try:
             from fem_shell_core import PyMeshAssembler, MeshModel as RustMeshModel, Laminate as RustLaminate, Ply as RustPly, OrthotropicMaterial as RustMat  # noqa: PLC0415
         except ImportError:
-            logger.warning("[assembler._build_py_mesh_assembler] fem_shell_core not available — Rust assembler disabled")
+            logger.warning("[assembler] fem_shell_core not available — Rust assembler disabled")
             return
 
         properties_map: Optional[Dict] = self.model.get("properties")
 
-        # ── COMPOSITE / MULTI-PROPERTY PATH: PyMeshAssembler.from_model() ─────
+        # ── COMPOSITE / MULTI-PROPERTY PATH ───────────────────────────────────
         if properties_map is not None:
-            _t_fast = time.perf_counter()
-            rust_mesh = self._mesh_to_rust(properties_map)
-            self._rust_mesh = rust_mesh  # keep reference for property delegates
-            rust_properties = self._properties_to_rust(properties_map, RustLaminate, RustPly, RustMat)
+            _t = time.perf_counter()
+
+            # ── Convert Python MeshModel → RustMeshModel ──────────────────────
+            nodes = mesh.nodes
+            node_ids_list = [n.id for n in nodes]
+            coords_flat = np.stack([n.coords for n in nodes], axis=0).ravel().tolist()
+
+            elements = mesh.elements
+            element_ids_arr = np.fromiter((e.id for e in elements), dtype=np.int64, count=len(elements))
+            node_counts_arr = np.fromiter((e.node_count for e in elements), dtype=np.int8, count=len(elements))
+
+            try:
+                _RustLaminate = RustLaminate
+            except NameError:
+                _RustLaminate = None
+            try:
+                from fem_shell.core.properties import CompositeShellProperty as _CSP  # noqa: PLC0415
+            except ImportError:
+                _CSP = None
+
+            composite_elem_ids: set = set()
+            for set_name, prop in properties_map.items():
+                is_composite = (
+                    (_RustLaminate is not None and isinstance(prop, _RustLaminate))
+                    or (_CSP is not None and isinstance(prop, _CSP))
+                )
+                if is_composite and set_name in mesh.element_sets:
+                    composite_elem_ids.update(e.id for e in mesh.element_sets[set_name].elements)
+
+            if composite_elem_ids:
+                composite_arr = np.isin(element_ids_arr, np.fromiter(composite_elem_ids, dtype=np.int64))
+            else:
+                composite_arr = np.zeros(len(elements), dtype=bool)
+
+            is_tri = node_counts_arr == 3
+            type_codes = np.where(
+                composite_arr,
+                np.where(is_tri, 33, 44),
+                np.where(is_tri, 3, 4),
+            ).tolist()
+
+            rust_esets = {name: [e.id for e in eset.elements] for name, eset in mesh.element_sets.items()}
+            rust_nsets = {name: list(nset.node_ids) for name, nset in mesh.node_sets.items()}
+
+            rust_mesh = RustMeshModel.from_raw_data(
+                node_ids_list,
+                coords_flat,
+                element_ids_arr.tolist(),
+                [list(e.node_ids) for e in elements],
+                type_codes,
+                rust_esets,
+                rust_nsets,
+            )
+            self._rust_mesh = rust_mesh
+
+            # ── Convert properties_map to Rust-native types ───────────────────
+            try:
+                from fem_shell.core.properties import CompositeShellProperty, ShellProperty  # noqa: PLC0415
+                _has_py_props = True
+            except ImportError:
+                _has_py_props = False
+
+            rust_properties = {}
+            for set_name, prop in properties_map.items():
+                if isinstance(prop, (RustLaminate, dict)):
+                    rust_properties[set_name] = prop
+                elif _has_py_props and isinstance(prop, CompositeShellProperty):
+                    lam = prop.laminate
+                    rust_plies = []
+                    for ply in lam.plies:
+                        m = ply.material
+                        rust_mat = RustMat(
+                            float(m.E[0]), float(m.E[1]), float(m.E[2]),
+                            float(m.G[0]), float(m.G[1]), float(m.G[2]),
+                            float(m.nu[0]), float(m.nu[1]), float(m.nu[2]),
+                            float(m.rho),
+                        )
+                        rust_plies.append(RustPly(rust_mat, float(ply.thickness), float(ply.angle)))
+                    rust_properties[set_name] = RustLaminate(rust_plies, float(getattr(lam, 'shear_correction_factor', 0.75)))
+                elif _has_py_props and isinstance(prop, ShellProperty):
+                    m = prop.material
+                    rust_properties[set_name] = {
+                        "type": "isotropic",
+                        "e": float(m.E), "nu": float(m.nu), "rho": float(m.rho),
+                        "thickness": float(prop.thickness),
+                        "shear_correction": float(getattr(prop, 'shear_correction', 5.0 / 6.0)),
+                    }
+                else:
+                    rust_properties[set_name] = prop
+
             span_dir_raw = self.model.get("span_direction")
             span_dir_list = list(span_dir_raw) if span_dir_raw is not None else None
-            self._rust = PyMeshAssembler.from_model(
-                rust_mesh,
-                rust_properties,
-                span_dir_list,
-                None,  # fallback_material — handled via properties_map
-            )
+            self._rust = PyMeshAssembler.from_model(rust_mesh, rust_properties, span_dir_list, None)
             self._row_nnz = np.asarray(self._rust.nnz_per_row(), dtype=PETSc.IntType)
-            # _rho_per_elem: extracted from Rust MaterialSpec — no Python loop needed
             self._rho_per_elem = np.asarray(self._rust.rho_per_elem(), dtype=np.float64)
-            logger.info("[assembler._build_py_mesh_assembler] from_model() done in %.2fs", time.perf_counter() - _t_fast)
+            logger.info("[assembler] from_model() done in %.2fs", time.perf_counter() - _t)
             return
 
-        # ── LEGACY ISOTROPIC PATH: direct PyMeshAssembler() constructor ───────
-        logger.info("[assembler._build_py_mesh_assembler] isotropic path — %d nodes", self.mesh.node_count)
+        # ── LEGACY ISOTROPIC PATH ──────────────────────────────────────────────
+        logger.info("[assembler] isotropic path — %d nodes", mesh.node_count)
         _t0 = time.perf_counter()
 
-        node_id_to_index = self.mesh.node_id_to_index
-        n_nodes = self.mesh.node_count
+        node_id_to_index = mesh.node_id_to_index
+        n_nodes = mesh.node_count
         node_coords = np.zeros((n_nodes, 3), dtype=np.float64)
-        for node in self.mesh.nodes:
+        for node in mesh.nodes:
             idx = node_id_to_index[node.id]
             node_coords[idx, :] = node.coords[:3]
 
@@ -511,8 +395,7 @@ class MeshAssembler:
         fallback_sc = self.model.get("shear_correction", 5.0 / 6.0)
         fallback_family = self.model.get("element_family")
 
-        elements = self.mesh.elements
-        n_elems = len(elements)
+        elements = mesh.elements
         connectivity = []
         elem_types = []
         materials_list = []
@@ -527,17 +410,12 @@ class MeshAssembler:
                 mat = fallback_material
                 mat_dict = {
                     "type": "isotropic",
-                    "e": float(mat.E),
-                    "nu": float(mat.nu),
-                    "rho": float(mat.rho),
+                    "e": float(mat.E), "nu": float(mat.nu), "rho": float(mat.rho),
                     "thickness": float(fallback_thickness),
                     "shear_correction": float(fallback_sc),
                 }
             else:
-                logger.error(
-                    "[assembler._build_py_mesh_assembler] no property for element %d (index %d) — aborting Rust assembler",
-                    element.id, i,
-                )
+                logger.error("[assembler] no property for element %d (index %d) — aborting", element.id, i)
                 self._rust = None
                 return
 
@@ -545,22 +423,16 @@ class MeshAssembler:
             materials_list.append(mat_dict)
 
         self._rho_per_elem = np.array(
-            [m.get("rho", m.get("mass_per_area", 0.0)) for m in materials_list],
-            dtype=np.float64,
+            [m.get("rho", m.get("mass_per_area", 0.0)) for m in materials_list], dtype=np.float64
         )
 
         try:
             _t_rust = time.perf_counter()
-            self._rust = PyMeshAssembler(
-                node_coords,
-                connectivity,
-                elem_types,
-                materials_list,
-            )
-            logger.info("[assembler._build_py_mesh_assembler] PyMeshAssembler() constructed in %.2fs", time.perf_counter() - _t_rust)
+            self._rust = PyMeshAssembler(node_coords, connectivity, elem_types, materials_list)
+            logger.info("[assembler] PyMeshAssembler() constructed in %.2fs", time.perf_counter() - _t_rust)
             self._row_nnz = np.asarray(self._rust.nnz_per_row(), dtype=PETSc.IntType)
         except Exception as exc:  # noqa: BLE001
-            logger.error("[assembler._build_py_mesh_assembler] PyMeshAssembler() FAILED: %s", exc)
+            logger.error("[assembler] PyMeshAssembler() FAILED: %s", exc)
             self._rust = None
 
     def _coo_to_petsc(
@@ -773,7 +645,7 @@ class MeshAssembler:
             self._rust is not None
             and self._rho_per_elem is not None
         ):
-            elements = self.mesh.elements
+            elements = self.elements
             n_elems = len(elements)
             sigma_array = np.zeros((n_elems, 3), dtype=np.float64)
 

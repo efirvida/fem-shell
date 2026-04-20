@@ -358,12 +358,12 @@ class StressRecovery:
         else:
             self.u = np.asarray(u).copy()
         self.dofs_per_node = domain.dofs_per_node
-        self.n_nodes = len(domain.mesh.coords_array)
+        self.n_nodes = len(domain.coords_array)
         _rust = getattr(domain, "_rust", None)
         if _rust is None:
             raise RuntimeError("StressRecovery requires a live Rust assembler (domain._rust).")
         self.n_elements = _rust.n_elems
-        self._node_id_to_index = domain.mesh.node_id_to_index
+        self._node_id_to_index = domain.node_id_to_index
 
     # ------------------------------------------------------------------
     # Element-level stress  (centroid / single point)
@@ -522,7 +522,7 @@ class StressRecovery:
             weight_sum = np.zeros(n_nodes)
             has_solid = self.domain.model.get("element_family") == ElementFamily.SOLID
 
-            for elem_idx, mesh_elem in enumerate(self.domain.mesh.elements):
+            for elem_idx, mesh_elem in enumerate(self.domain.elements):
                 node_ids = mesh_elem.node_ids
                 for node_id in node_ids:
                     gn = self._node_id_to_index[node_id]
@@ -768,7 +768,7 @@ class StressRecovery:
             weight_sum = np.zeros(n_nodes)
             has_solid = self.domain.model.get("element_family") == ElementFamily.SOLID
 
-            for elem_idx, mesh_elem in enumerate(self.domain.mesh.elements):
+            for elem_idx, mesh_elem in enumerate(self.domain.elements):
                 node_ids = mesh_elem.node_ids
                 for node_id in node_ids:
                     gn = self._node_id_to_index[node_id]

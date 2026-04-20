@@ -1576,7 +1576,7 @@ class LinearDynamicFSIRotorSolver(LinearDynamicFSISolver):
         diag_vec = self.M.getDiagonal()
         mass_array = diag_vec.getArray(readonly=True)
 
-        nodes = self.domain.mesh.nodes
+        nodes = self.domain.nodes
         dofs_per_node = self.domain.dofs_per_node
         n_nodes = len(nodes)
 
@@ -1705,12 +1705,12 @@ class LinearDynamicFSIRotorSolver(LinearDynamicFSISolver):
         np.ndarray
             Full force array, shape (n_nodes, 3) for VTU visualization.
         """
-        n_nodes = self.domain.mesh.node_count
+        n_nodes = self.domain.node_count
         full_forces = np.zeros((n_nodes, 3), dtype=np.float64)
         dim = interface_forces.shape[1]
 
         # Get the proper node indices from the solver
-        node_id_to_index = self.domain.mesh.node_id_to_index
+        node_id_to_index = self.domain.node_id_to_index
         interface_node_indices = np.array(
             [node_id_to_index[nid] for nid in self._interface_node_ids], dtype=np.int64,
         )
@@ -2783,7 +2783,7 @@ class LinearDynamicFSIRotorSolver(LinearDynamicFSISolver):
                 "Extracted interface masses are ZERO. Falling back to average approximation."
             )
             total_mass = self.M.getDiagonal().sum() / self.domain.dofs_per_node
-            avg_mass = total_mass / self.domain.mesh.node_count
+            avg_mass = total_mass / self.domain.node_count
             interface_masses[:] = avg_mass
 
         # Compute gravity forces
