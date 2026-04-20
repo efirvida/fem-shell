@@ -1451,6 +1451,134 @@ impl ReferenceElement3D<13> for Pyramid13Ref {
 }
 
 // ============================================================================
+// Stress recovery: centroid stress for each element type
+// ============================================================================
+
+/// Compute stress and strain at the centroid of a HEXA8 element.
+/// Returns ([sx,sy,sz,sxy,syz,sxz], [exx,eyy,ezz,gxy,gyz,gzx])
+pub fn hexa8_centroid_stress(coords: &[[f64; 3]; 8], e: f64, nu: f64, u: &[f64]) -> ([f64; 6], [f64; 6]) {
+    let c_mat = isotropic_c(e, nu);
+    let (dxi, deta, dzeta) = hexa8_derivs(0.0, 0.0, 0.0);
+    let (_, _det_j, inv_j) = jacobian_3d(&dxi, &deta, &dzeta, coords);
+    let mut b = SMatrix::<f64, 6, 24>::zeros();
+    fill_b(&dxi, &deta, &dzeta, &inv_j, &mut b);
+    let u_vec = nalgebra::SVector::<f64, 24>::from_row_slice(u);
+    let eps = b * u_vec;
+    let sig = c_mat * eps;
+    let sigma6 = [sig[0], sig[1], sig[2], sig[3], sig[4], sig[5]];
+    let eps6 = [eps[0], eps[1], eps[2], eps[3], eps[4], eps[5]];
+    (sigma6, eps6)
+}
+
+/// Compute stress and strain at the centroid of a HEXA20 element.
+pub fn hexa20_centroid_stress(coords: &[[f64; 3]; 20], e: f64, nu: f64, u: &[f64]) -> ([f64; 6], [f64; 6]) {
+    let c_mat = isotropic_c(e, nu);
+    let (dxi, deta, dzeta) = hexa20_derivs(0.0, 0.0, 0.0);
+    let (_, _det_j, inv_j) = jacobian_3d(&dxi, &deta, &dzeta, coords);
+    let mut b = SMatrix::<f64, 6, 60>::zeros();
+    fill_b(&dxi, &deta, &dzeta, &inv_j, &mut b);
+    let u_vec = nalgebra::SVector::<f64, 60>::from_row_slice(u);
+    let eps = b * u_vec;
+    let sig = c_mat * eps;
+    let sigma6 = [sig[0], sig[1], sig[2], sig[3], sig[4], sig[5]];
+    let eps6 = [eps[0], eps[1], eps[2], eps[3], eps[4], eps[5]];
+    (sigma6, eps6)
+}
+
+/// Compute stress and strain at the centroid of a TETRA4 element.
+pub fn tetra4_centroid_stress(coords: &[[f64; 3]; 4], e: f64, nu: f64, u: &[f64]) -> ([f64; 6], [f64; 6]) {
+    let c_mat = isotropic_c(e, nu);
+    let (dxi, deta, dzeta) = tetra4_derivs();
+    let (_, _det_j, inv_j) = jacobian_3d(&dxi, &deta, &dzeta, coords);
+    let mut b = SMatrix::<f64, 6, 12>::zeros();
+    fill_b(&dxi, &deta, &dzeta, &inv_j, &mut b);
+    let u_vec = nalgebra::SVector::<f64, 12>::from_row_slice(u);
+    let eps = b * u_vec;
+    let sig = c_mat * eps;
+    let sigma6 = [sig[0], sig[1], sig[2], sig[3], sig[4], sig[5]];
+    let eps6 = [eps[0], eps[1], eps[2], eps[3], eps[4], eps[5]];
+    (sigma6, eps6)
+}
+
+/// Compute stress and strain at the centroid of a TETRA10 element.
+pub fn tetra10_centroid_stress(coords: &[[f64; 3]; 10], e: f64, nu: f64, u: &[f64]) -> ([f64; 6], [f64; 6]) {
+    let c_mat = isotropic_c(e, nu);
+    // Centroid of tetrahedron: (0.25, 0.25, 0.25)
+    let (dxi, deta, dzeta) = tetra10_derivs(0.25, 0.25, 0.25);
+    let (_, _det_j, inv_j) = jacobian_3d(&dxi, &deta, &dzeta, coords);
+    let mut b = SMatrix::<f64, 6, 30>::zeros();
+    fill_b(&dxi, &deta, &dzeta, &inv_j, &mut b);
+    let u_vec = nalgebra::SVector::<f64, 30>::from_row_slice(u);
+    let eps = b * u_vec;
+    let sig = c_mat * eps;
+    let sigma6 = [sig[0], sig[1], sig[2], sig[3], sig[4], sig[5]];
+    let eps6 = [eps[0], eps[1], eps[2], eps[3], eps[4], eps[5]];
+    (sigma6, eps6)
+}
+
+/// Compute stress and strain at the centroid of a WEDGE6 element.
+pub fn wedge6_centroid_stress(coords: &[[f64; 3]; 6], e: f64, nu: f64, u: &[f64]) -> ([f64; 6], [f64; 6]) {
+    let c_mat = isotropic_c(e, nu);
+    // Centroid of wedge: (1/3, 1/3, 0) in natural coords
+    let (dxi, deta, dzeta) = wedge6_derivs(1.0 / 3.0, 1.0 / 3.0, 0.0);
+    let (_, _det_j, inv_j) = jacobian_3d(&dxi, &deta, &dzeta, coords);
+    let mut b = SMatrix::<f64, 6, 18>::zeros();
+    fill_b(&dxi, &deta, &dzeta, &inv_j, &mut b);
+    let u_vec = nalgebra::SVector::<f64, 18>::from_row_slice(u);
+    let eps = b * u_vec;
+    let sig = c_mat * eps;
+    let sigma6 = [sig[0], sig[1], sig[2], sig[3], sig[4], sig[5]];
+    let eps6 = [eps[0], eps[1], eps[2], eps[3], eps[4], eps[5]];
+    (sigma6, eps6)
+}
+
+/// Compute stress and strain at the centroid of a WEDGE15 element.
+pub fn wedge15_centroid_stress(coords: &[[f64; 3]; 15], e: f64, nu: f64, u: &[f64]) -> ([f64; 6], [f64; 6]) {
+    let c_mat = isotropic_c(e, nu);
+    let (dxi, deta, dzeta) = wedge15_derivs(1.0 / 3.0, 1.0 / 3.0, 0.0);
+    let (_, _det_j, inv_j) = jacobian_3d(&dxi, &deta, &dzeta, coords);
+    let mut b = SMatrix::<f64, 6, 45>::zeros();
+    fill_b(&dxi, &deta, &dzeta, &inv_j, &mut b);
+    let u_vec = nalgebra::SVector::<f64, 45>::from_row_slice(u);
+    let eps = b * u_vec;
+    let sig = c_mat * eps;
+    let sigma6 = [sig[0], sig[1], sig[2], sig[3], sig[4], sig[5]];
+    let eps6 = [eps[0], eps[1], eps[2], eps[3], eps[4], eps[5]];
+    (sigma6, eps6)
+}
+
+/// Compute stress and strain at the centroid of a PYRAMID5 element.
+pub fn pyramid5_centroid_stress(coords: &[[f64; 3]; 5], e: f64, nu: f64, u: &[f64]) -> ([f64; 6], [f64; 6]) {
+    let c_mat = isotropic_c(e, nu);
+    // Centroid: (0, 0, 0.25) is a reasonable interior point for pyramid5
+    let (dxi, deta, dzeta) = pyramid5_derivs(0.0, 0.0, 0.25);
+    let (_, _det_j, inv_j) = jacobian_3d(&dxi, &deta, &dzeta, coords);
+    let mut b = SMatrix::<f64, 6, 15>::zeros();
+    fill_b(&dxi, &deta, &dzeta, &inv_j, &mut b);
+    let u_vec = nalgebra::SVector::<f64, 15>::from_row_slice(u);
+    let eps = b * u_vec;
+    let sig = c_mat * eps;
+    let sigma6 = [sig[0], sig[1], sig[2], sig[3], sig[4], sig[5]];
+    let eps6 = [eps[0], eps[1], eps[2], eps[3], eps[4], eps[5]];
+    (sigma6, eps6)
+}
+
+/// Compute stress and strain at the centroid of a PYRAMID13 element.
+pub fn pyramid13_centroid_stress(coords: &[[f64; 3]; 13], e: f64, nu: f64, u: &[f64]) -> ([f64; 6], [f64; 6]) {
+    let c_mat = isotropic_c(e, nu);
+    let (dxi, deta, dzeta) = pyramid13_derivs(0.0, 0.0, 0.25);
+    let (_, _det_j, inv_j) = jacobian_3d(&dxi, &deta, &dzeta, coords);
+    let mut b = SMatrix::<f64, 6, 39>::zeros();
+    fill_b(&dxi, &deta, &dzeta, &inv_j, &mut b);
+    let u_vec = nalgebra::SVector::<f64, 39>::from_row_slice(u);
+    let eps = b * u_vec;
+    let sig = c_mat * eps;
+    let sigma6 = [sig[0], sig[1], sig[2], sig[3], sig[4], sig[5]];
+    let eps6 = [eps[0], eps[1], eps[2], eps[3], eps[4], eps[5]];
+    (sigma6, eps6)
+}
+
+// ============================================================================
 // Unit tests
 // ============================================================================
 

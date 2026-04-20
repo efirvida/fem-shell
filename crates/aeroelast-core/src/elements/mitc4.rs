@@ -1386,6 +1386,69 @@ pub fn compute_centrifugal_prestress(
 }
 
 // ============================================================================
+// Stress / Strain Recovery
+// ============================================================================
+
+/// Compute element stress and strain at the element centroid (xi=0, eta=0).
+///
+/// Returns `([sx, sy, sxy, 0, 0, 0], [exx, eyy, exy, 0, 0, 0])` in the element's
+/// LOCAL coordinate system.
+///
+/// # Arguments
+/// * `u_global` - 24-DOF global displacement vector
+/// * `z_factor` - Normalized through-thickness position: 0.0=mid, ±0.5=top/bottom
+/// * `stress_type` - 0=membrane only, 1=bending only, 2=total
+pub fn compute_element_stress(
+    pre: &Mitc4Precomputed,
+    u_global: &Vec24,
+    z_factor: f64,
+    stress_type: u8,
+) -> ([f64; 6], [f64; 6]) {
+    let t24 = build_t24(pre);
+    let u_local = t24 * u_global;
+
+    // Evaluate at element centroid (xi=0, eta=0)
+    let xi = 0.0_f64;
+    let eta = 0.0_f64;
+
+    let (j_mat, _det_j) = compute_jacobian(&pre.local_coords, xi, eta);
+    let j_inv = j_mat.try_inverse().unwrap_or_else(|| Matrix2::identity());
+    let dh = compute_dh(&j_inv, xi, eta);
+
+    let cm_raw = &pre.constitutive.cm_raw;
+    let h = pre.thickness;
+
+    // Membrane
+    let bm = b_m_mitc4_plus(pre, xi, eta);
+    let eps_m = bm * &u_local;
+    let sig_m = cm_raw * eps_m;
+
+    // Bending
+    let bk = b_kappa(&dh);
+    let kappa = bk * &u_local;
+    let z = z_factor * h;
+    let sig_b = cm_raw * kappa * z;
+
+    // Total stress
+    let sig: nalgebra::Vector3<f64> = match stress_type {
+        0 => sig_m,
+        1 => sig_b,
+        _ => sig_m + sig_b,
+    };
+
+    // Total strain at centroid (membrane + bending)
+    let eps_total: nalgebra::Vector3<f64> = match stress_type {
+        0 => eps_m,
+        1 => kappa * z,
+        _ => eps_m + kappa * z,
+    };
+
+    let sigma6 = [sig[0], sig[1], 0.0, sig[2], 0.0, 0.0];
+    let eps6 = [eps_total[0], eps_total[1], 0.0, eps_total[2], 0.0, 0.0];
+    (sigma6, eps6)
+}
+
+// ============================================================================
 // Tests
 // ============================================================================
 

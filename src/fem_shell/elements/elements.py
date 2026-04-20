@@ -1,11 +1,10 @@
 from enum import IntEnum
-from typing import Dict, Iterable, List, Literal, Optional, Sequence, Tuple, Union
+from typing import Dict, Iterable, List, Literal, Sequence, Tuple, Union
 
 import numpy as np
 
 from fem_shell.core.material import MaterialType as Material
 from fem_shell.core.mesh import MeshElement
-from fem_shell.core.properties import CompositeShellProperty, ShellPropertyType
 
 
 class ElementFamily(IntEnum):
@@ -85,7 +84,7 @@ class ShellElement(FemElement):
         self.element_family = ElementFamily.SHELL
 
     def __repr__(self):
-        return f"<ShellElement id={self.id} name={self.name} thickens={self.thickens}>"
+        return f"<ShellElement id={self.id} name={self.name}>"
 
 
 class PlaneElement(FemElement):
@@ -102,162 +101,3 @@ class PlaneElement(FemElement):
 
     def __repr__(self):
         return f"<PlaneElement id={self.id} name={self.name}>"
-
-
-class ElementFactory:
-    """
-    Factory for creating finite element instances based on mesh and configuration.
-
-    The factory automatically selects the appropriate element type based on:
-    - Element family (SHELL, PLANE, or SOLID)
-    - Number of nodes (3 for triangular, 4 for quadrilateral, etc.)
-    - Material type (isotropic Material or Laminate for composites)
-    - Analysis type (linear or nonlinear)
-
-    Examples
-    --------
-    >>> # Isotropic shell element
-    >>> elem = ElementFactory.get_element(
-    ...     element_family=ElementFamily.SHELL,
-    ...     mesh_element=mesh_elem,
-    ...     material=material,
-    ...     thickness=0.01
-    ... )
-
-    >>> # Composite shell element (via ShellPropertyType - preferred)
-    >>> from fem_shell.core.properties import CompositeShellProperty
-    >>> prop = CompositeShellProperty(laminate=laminate)
-    >>> elem = ElementFactory.get_element(
-    ...     element_family=ElementFamily.SHELL,
-    ...     mesh_element=mesh_elem,
-    ...     shell_property=prop
-    ... )
-
-    >>> # Composite shell element (legacy: auto-detected from laminate kwarg)
-    >>> elem = ElementFactory.get_element(
-    ...     element_family=ElementFamily.SHELL,
-    ...     mesh_element=mesh_elem,
-    ...     laminate=laminate  # MITC4Composite or MITC3Composite used
-    ... )
-
-    >>> # Solid element (3D volumetric)
-    >>> elem = ElementFactory.get_element(
-    ...     element_family=ElementFamily.SOLID,
-    ...     mesh_element=mesh_elem,
-    ...     material=material  # Isotropic or Orthotropic
-    ... )
-
-    >>> # Nonlinear analysis
-    >>> elem = ElementFactory.get_element(
-    ...     element_family=ElementFamily.SHELL,
-    ...     mesh_element=mesh_elem,
-    ...     material=material,
-    ...     thickness=0.01,
-    ...     nonlinear=True
-    ... )
-    """
-
-    @staticmethod
-    def get_element(
-        element_family: ElementFamily,
-        mesh_element: MeshElement,
-        shell_property: Optional[ShellPropertyType] = None,
-        **kwargs,
-    ) -> FemElement | bool:
-        """
-        Create a finite element instance for the given mesh element.
-
-        Parameters
-        ----------
-        element_family : ElementFamily
-            The element family (SHELL, PLANE, or SOLID)
-        mesh_element : MeshElement
-            The mesh element containing node coordinates and IDs
-        shell_property : ShellPropertyType, optional
-            A ``ShellProperty`` or ``CompositeShellProperty`` instance.
-            When provided the factory uses ``isinstance`` dispatch to select
-            the correct element class (isotropic vs composite) and extracts
-            the constructor kwargs from the property object.  This is the
-            preferred path for new code.  Legacy ``laminate`` / ``material``
-            kwargs are still supported for backward compatibility.
-        **kwargs : dict
-            Additional parameters passed to element constructor.
-            Legacy shell kwargs (``material``, ``thickness``, ``laminate``)
-            are still accepted when *shell_property* is ``None``.
-
-        Returns
-        -------
-        FemElement or False
-            The created element instance, or False if element type not supported
-        """
-        from .MITC3 import MITC3
-        from .MITC3_composite import MITC3Composite
-        from .MITC4 import MITC4
-        from .MITC4_composite import MITC4Composite
-        from .QUAD import QUAD4, QUAD8, QUAD9
-        from .SOLID import HEXA8, HEXA20, PYRAMID5, PYRAMID13, TETRA4, TETRA10, WEDGE6, WEDGE15
-
-        # --- Resolve shell property into composite flag + constructor kwargs ---
-        if shell_property is not None:
-            # Type-safe dispatch via ShellPropertyType
-            prop_kwargs = shell_property.to_element_kwargs()
-            is_composite = isinstance(shell_property, CompositeShellProperty)
-            laminate = prop_kwargs.pop("laminate", None)
-            kwargs.update(prop_kwargs)
-        else:
-            # Legacy path: inspect kwargs directly
-            laminate = kwargs.pop("laminate", None)
-            is_composite = laminate is not None
-
-        # Extract span_direction — only forwarded to composite element constructors.
-        span_direction = kwargs.pop("span_direction", None)
-
-        # Shell element maps
-        SHELL_ELEMENT_MAP = {3: MITC3, 4: MITC4}
-        SHELL_COMPOSITE_MAP = {3: MITC3Composite, 4: MITC4Composite}
-
-        # Plane element map
-        PLANE_ELEMENT_MAP = {4: QUAD4, 8: QUAD8, 9: QUAD9}
-
-        # Solid element map
-        SOLID_ELEMENT_MAP = {
-            4: TETRA4,
-            5: PYRAMID5,
-            6: WEDGE6,
-            8: HEXA8,
-            10: TETRA10,
-            13: PYRAMID13,
-            15: WEDGE15,
-            20: HEXA20,
-        }
-
-        node_ids = mesh_element.node_ids
-        node_coords = mesh_element.node_coords
-        node_count = mesh_element.node_count
-
-        try:
-            if element_family == ElementFamily.SHELL:
-                if is_composite:
-                    # Composite shell element
-                    element_class = SHELL_COMPOSITE_MAP[node_count]
-                    return element_class(
-                        node_coords=node_coords, node_ids=node_ids,
-                        laminate=laminate, span_direction=span_direction, **kwargs
-                    )
-                else:
-                    # Isotropic shell element
-                    element_class = SHELL_ELEMENT_MAP[node_count]
-                    return element_class(node_coords=node_coords, node_ids=node_ids, **kwargs)
-
-            elif element_family == ElementFamily.PLANE:
-                element_class = PLANE_ELEMENT_MAP[node_count]
-                return element_class(node_coords=node_coords, node_ids=node_ids, **kwargs)
-
-            elif element_family == ElementFamily.SOLID:
-                element_class = SOLID_ELEMENT_MAP[node_count]
-                return element_class(node_coords=node_coords, node_ids=node_ids, **kwargs)
-            else:
-                raise NotImplementedError(f"Element family {element_family} not implemented")
-
-        except KeyError:
-            return False

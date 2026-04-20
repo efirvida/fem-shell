@@ -8,13 +8,13 @@ from petsc4py import PETSc
 
 from fem_shell.core.mesh import MeshModel
 from fem_shell.core.properties import CompositeShellProperty, ShellProperty, ShellPropertyType
-from fem_shell.elements import ElementFactory, ElementFamily, FemElement
+from fem_shell.elements import ElementFamily
 
 logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
-# Module-level helpers (no FemElement instantiation)
+# Module-level helpers
 # ---------------------------------------------------------------------------
 
 def _shell_local_axes(node_coords: np.ndarray, conn: list) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
@@ -252,8 +252,6 @@ class MeshAssembler:
         self.mesh = mesh
         self.model = model["elements"]
         self.comm = MPI.COMM_WORLD
-        self._element_map: Dict[int, FemElement] = {}
-        self._element_map_built: bool = False  # lazy flag
         self._dofs_array: np.ndarray = None
         self._node_dofs_map: Dict[int, Iterable] = {}
         self.dofs_per_node: int = 0
@@ -304,8 +302,7 @@ class MeshAssembler:
     def vector_form(self) -> Dict:
         """DOF vector layout for VTK output and solvers.
 
-        Derived from the element family declared in the model — never requires
-        instantiating a Python FemElement object.
+        Derived from the element family declared in the model.
         """
         family = self.model.get("element_family")
         if family in self._FAMILY_VECTOR_FORM:
@@ -331,11 +328,10 @@ class MeshAssembler:
         return ElementFamily.PLANE
 
     def _precompute_elements(self):
-        """Compute element DOF connectivity without instantiating FemElement objects.
+        """Compute element DOF connectivity from mesh topology.
 
-        Builds DOF arrays directly from mesh topology and the known dofs_per_node
-        derived from the element family declaration.  ElementFactory is no longer
-        called here — element Python objects are created lazily on first demand.
+        Builds DOF arrays directly from the known dofs_per_node
+        derived from the element family declaration.
         """
         elements = self.mesh.elements
         if not elements:
@@ -346,23 +342,11 @@ class MeshAssembler:
         if element_family is not None and element_family in self._FAMILY_PROPERTIES:
             self.dofs_per_node, self.spatial_dim = self._FAMILY_PROPERTIES[element_family]
         else:
-            # Mixed / unknown family: probe with one element per distinct node count.
-            # This is O(distinct_node_counts) — typically 1-3 probes, not 85k.
-            max_dofs_per_node = 0
-            max_spatial_dim = 0
-            seen_node_counts = set()
-            probe_model = {k: v for k, v in self.model.items() if k != "properties"}
-            for element in elements:
-                nc = element.node_count
-                if nc in seen_node_counts:
-                    continue
-                seen_node_counts.add(nc)
-                temp_elem = ElementFactory.get_element(mesh_element=element, **probe_model)
-                if temp_elem:
-                    max_dofs_per_node = max(max_dofs_per_node, temp_elem.dofs_per_node)
-                    max_spatial_dim = max(max_spatial_dim, temp_elem.spatial_dimmension)
-            self.dofs_per_node = max_dofs_per_node
-            self.spatial_dim = max_spatial_dim
+            raise ValueError(
+                f"element_family must be one of {list(self._FAMILY_PROPERTIES.keys())} "
+                f"(got {element_family!r}). Mixed meshes without explicit element_family "
+                "are not supported."
+            )
 
         # --- Build DOF arrays directly from mesh topology ---
         node_id_to_index = self.mesh.node_id_to_index
@@ -470,61 +454,6 @@ class MeshAssembler:
     # ------------------------------------------------------------------
     # Lazy element map: only built when needed for body loads / stress stiffening
     # ------------------------------------------------------------------
-
-    def _ensure_element_map(self) -> None:
-        """Build ``_element_map`` on first demand.
-
-        The element map is expensive to construct (~89s for 85k elements) and is
-        only needed for body-load assembly and geometric stiffness.  All K/M
-        assembly goes through ``self._rust`` (PyMeshAssembler) and does not
-        require Python element objects.
-        """
-        if self._element_map_built:
-            return
-
-        logger.info("[assembler._ensure_element_map] building element map lazily (%d elements)…", len(self.mesh.elements))
-        _t0 = time.perf_counter()
-
-        elements = self.mesh.elements
-        node_id_to_index = self.mesh.node_id_to_index
-
-        # Build property lookup
-        properties_map: Optional[Dict[str, ShellPropertyType]] = self.model.get("properties")
-        element_property_lookup: Dict[int, ShellPropertyType] = {}
-        if properties_map is not None:
-            for set_name, prop in properties_map.items():
-                if set_name in self.mesh.element_sets:
-                    for elem in self.mesh.element_sets[set_name].elements:
-                        element_property_lookup[elem.id] = prop
-
-        for element in elements:
-            shell_property = element_property_lookup.get(element.id)
-            element_model = {k: v for k, v in self.model.items() if k != "properties"}
-
-            if shell_property is not None:
-                element_model = {k: v for k, v in element_model.items()
-                                 if k not in ("material", "thickness", "laminate")}
-            elif (element.thickness is not None
-                  and element_model.get("element_family") == ElementFamily.SHELL):
-                import warnings
-                warnings.warn(
-                    "Per-element thickness via MeshElement.thickness is deprecated. "
-                    "Use a 'properties' dict mapping element-set names to "
-                    "ShellProperty / CompositeShellProperty instead.",
-                    DeprecationWarning,
-                    stacklevel=2,
-                )
-                element_model = {**element_model, "thickness": element.thickness}
-
-            fem_element = ElementFactory.get_element(
-                mesh_element=element, shell_property=shell_property, **element_model
-            )
-            if fem_element:
-                self._element_map[element.id] = fem_element
-
-        self._element_map_built = True
-        logger.info("[assembler._ensure_element_map] built %d elements in %.2fs",
-                    len(self._element_map), time.perf_counter() - _t0)
 
     def _build_py_mesh_assembler(self):
         """Build a PyMeshAssembler (Rust) directly from mesh topology and properties.
@@ -718,7 +647,6 @@ class MeshAssembler:
         )
 
         # Cache per-element rho and node connectivity for vectorized centrifugal prestress
-        # (avoids _ensure_element_map in assemble_geometric_stiffness)
         self._rho_per_elem = np.array(
             [m.get("rho", m.get("mass_per_area", 0.0)) for m in materials_list],
             dtype=np.float64,
@@ -867,31 +795,15 @@ class MeshAssembler:
            return f
 
         # ------------------------------------------------------------------
-        # Python fallback: per-element body_load (non-uniform or nodal loads)
+        # Non-body loads require Rust assembler (nodal/non-uniform not yet implemented)
         # ------------------------------------------------------------------
-        f = PETSc.Vec().create(self.comm)
-        f.setSizes(self.dofs_count)
-        f.setUp()
-        f.zeroEntries()
-
-        self._ensure_element_map()
-
-        fe_list = [
-           self._element_map[eid].body_load(load_value) for eid in self._element_map
-        ]
-
-        if self._is_mixed_mesh:
-           for dofs, fe in zip(self._dofs_list, fe_list):
-              dofs_int = dofs.astype(PETSc.IntType)
-              f.setValuesLocal(dofs_int, fe, addv=PETSc.InsertMode.ADD_VALUES)
-        else:
-           fe_array = np.array(fe_list, dtype=PETSc.ScalarType)
-           for e in range(fe_array.shape[0]):
-              dofs = self._dofs_array[e].astype(PETSc.IntType)
-              f.setValuesLocal(dofs, fe_array[e], addv=PETSc.InsertMode.ADD_VALUES)
-
-        f.assemble()
-        return f
+        raise NotImplementedError(
+            "assemble_load_vector: non-body-force loads (non-uniform or nodal) "
+            "require load_value to be a 3-element body-force vector [fx, fy, fz] "
+            "and a live Rust assembler. Got load_value with shape/type: "
+            f"{np.shape(load_value)} / {type(load_value).__name__}. "
+            "The Python per-element fallback has been removed."
+        )
 
     def assemble_geometric_stiffness(
         self,
@@ -1004,7 +916,7 @@ class MeshAssembler:
                         sv = np.asarray(sv, dtype=np.float64).ravel()
                         sigma_array[i, :3] = sv[:3]
             else:
-                # Vectorized centrifugal prestress (no FemElement instantiation)
+                # Vectorized centrifugal prestress
                 axis = rotation_axis  # already normalized
                 center = rotation_center
                 node_coords = self._node_coords
@@ -1052,44 +964,13 @@ class MeshAssembler:
             return self._coo_to_petsc(rows, cols, vals)
 
         # ------------------------------------------------------------------
-        # Python fallback (per-element, requires _element_map)
+        # Python fallback removed — Rust assembler required
         # ------------------------------------------------------------------
-        K_G = self._create_petsc_matrix()
-        K_G.setOption(PETSc.Mat.Option.NEW_NONZERO_ALLOCATION_ERR, False)
-
-        self._ensure_element_map()
-        elem_id_to_dof_idx = {elem.id: i for i, elem in enumerate(self.mesh.elements)}
-
-        for elem_id, fem_element in self._element_map.items():
-            if stress_field is not None and elem_id in stress_field:
-                sigma_membrane = stress_field[elem_id]
-            elif omega is not None:
-                sigma_membrane = fem_element.compute_centrifugal_prestress(
-                    omega=omega,
-                    rotation_axis=rotation_axis,
-                    rotation_center=rotation_center,
-                )
-            else:
-                continue
-
-            if np.max(np.abs(sigma_membrane)) < 1e-20:
-                continue
-
-            kg_e = fem_element.compute_geometric_stiffness(
-                sigma_membrane=sigma_membrane,
-                transform_to_global=True,
-            )
-
-            e = elem_id_to_dof_idx[elem_id]
-            if self._is_mixed_mesh:
-                dofs = self._dofs_list[e].astype(PETSc.IntType)
-            else:
-                dofs = self._dofs_array[e].astype(PETSc.IntType)
-            kg_flat = kg_e.flatten(order="C")
-            K_G.setValuesLocal(dofs, dofs, kg_flat, addv=PETSc.InsertMode.ADD_VALUES)
-
-        K_G.assemble()
-        return K_G
+        raise NotImplementedError(
+            "assemble_geometric_stiffness: the Python per-element fallback has been removed. "
+            "A live Rust assembler (self._rust) is required. "
+            "Ensure fem_shell_core is built and PyMeshAssembler initialised."
+        )
 
     # ------------------------------------------------------------------
     # Nonlinear assembly (Rust-accelerated)

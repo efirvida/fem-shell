@@ -465,9 +465,10 @@ class StressRecovery:
             self.u = np.asarray(u).copy()
         self.dofs_per_node = domain.dofs_per_node
         self.n_nodes = len(domain.mesh.coords_array)
-        # Prefer Rust assembler count to avoid triggering lazy _element_map build
         _rust = getattr(domain, "_rust", None)
-        self.n_elements = _rust.n_elems if _rust is not None else len(domain._element_map)
+        if _rust is None:
+            raise RuntimeError("StressRecovery requires a live Rust assembler (domain._rust).")
+        self.n_elements = _rust.n_elems
         self._node_id_to_index = domain.mesh.node_id_to_index
 
         # Pre-compute and cache extrapolation matrices for solid elements
@@ -816,8 +817,6 @@ class StressRecovery:
         # caller requests the canonical centroid point (0, 0).  The Rust
         # kernel evaluates exactly at the element centroid so it matches the
         # default gauss_point.  Non-default gauss_point values fall through
-        # to the pure-Python path below.
-        # ------------------------------------------------------------------
         _rust = getattr(self.domain, "_rust", None)
         if _rust is not None and r0 == 0.0 and s0 == 0.0:
             _Z_FACTOR = {
@@ -833,34 +832,15 @@ class StressRecovery:
             z_factor   = _Z_FACTOR.get(location, 0.0)
             stype_int  = _STRESS_TYPE.get(stress_type, 2)
             sigma_all, _ = _rust.compute_stress_field(self.u, z_factor, stype_int)
-            # Detect whether any solid elements are present
-            has_solid = any(self._is_solid(el) for el in self.domain._element_map.values())
+            from fem_shell.elements import ElementFamily  # noqa: PLC0415
+            has_solid = self.domain.model.get("element_family") == ElementFamily.SOLID
             return self._build_stress_result(sigma_all, is_3d=has_solid)
 
-        # ------------------------------------------------------------------
-        # Pure-Python fallback (non-centroid gauss_point or no Rust assembler)
-        # ------------------------------------------------------------------
-        # Pre-allocate for the maximum (6) components
-        sigma_all = np.zeros((n_elem, 6))
-        has_solid = False
-
-        for elem_idx, element in self.domain._element_map.items():
-            u_elem = self._extract_element_displacements(element)
-
-            if self._is_shell(element):
-                sig3 = self._compute_shell_stress(element, u_elem, r0, s0, location, stress_type)
-                # Voigt layout: [σ_xx, σ_yy, σ_zz, τ_xy, τ_yz, τ_zx]
-                # Shells return [σ_xx, σ_yy, τ_xy] — map to columns 0, 1, 3
-                sigma_all[elem_idx, 0] = sig3[0]
-                sigma_all[elem_idx, 1] = sig3[1]
-                sigma_all[elem_idx, 3] = sig3[2]
-
-            elif self._is_solid(element):
-                has_solid = True
-                sig_gp, _ = self._compute_solid_gauss_stresses(element, u_elem)
-                sigma_all[elem_idx, :] = sig_gp.mean(axis=0)
-
-        return self._build_stress_result(sigma_all, is_3d=has_solid)
+        raise NotImplementedError(
+            "compute_element_stresses: non-centroid gauss_point evaluation requires "
+            "r0=0.0, s0=0.0 and a live Rust assembler. "
+            "The Python per-element fallback has been removed."
+        )
 
     # ------------------------------------------------------------------
     # Nodal-averaged stress (the primary output)
@@ -938,76 +918,34 @@ class StressRecovery:
             sigma_elem, _ = _rust.compute_stress_field(self.u, z_factor, stype_int)
             # sigma_elem: (n_elems, 6) — one stress state per element
 
+            if smoothing == "area_weighted":
+                raise NotImplementedError(
+                    "compute_nodal_stresses: area_weighted smoothing requires "
+                    "Python element objects which have been removed. "
+                    "Use smoothing='average' instead."
+                )
+
             sigma_sum = np.zeros((n_nodes, 6))
             weight_sum = np.zeros(n_nodes)
-            has_solid = False
+            from fem_shell.elements import ElementFamily  # noqa: PLC0415
+            has_solid = self.domain.model.get("element_family") == ElementFamily.SOLID
 
-            for elem_idx, element in self.domain._element_map.items():
-                if smoothing == "area_weighted":
-                    weight = self._compute_element_weight(element)
-                else:
-                    weight = 1.0
-
-                node_ids = element.node_ids
-                for local_idx in range(element.node_count):
-                    gn = self._node_id_to_index[node_ids[local_idx]]
-                    sigma_sum[gn, :] += weight * sigma_elem[elem_idx, :]
-                    weight_sum[gn] += weight
-
-                if self._is_solid(element):
-                    has_solid = True
+            for elem_idx, mesh_elem in enumerate(self.domain.mesh.elements):
+                node_ids = mesh_elem.node_ids
+                for node_id in node_ids:
+                    gn = self._node_id_to_index[node_id]
+                    sigma_sum[gn, :] += sigma_elem[elem_idx, :]
+                    weight_sum[gn] += 1.0
 
             mask = weight_sum > 0
             sigma_avg = np.zeros((n_nodes, 6))
             sigma_avg[mask] = sigma_sum[mask] / weight_sum[mask, np.newaxis]
             return self._build_stress_result(sigma_avg, is_3d=has_solid)
 
-        # ------------------------------------------------------------------
-        # Pure-Python fallback
-        # ------------------------------------------------------------------
-        sigma_sum = np.zeros((n_nodes, 6))
-        weight_sum = np.zeros(n_nodes)
-        has_solid = False
-
-        for _ei, element in self.domain._element_map.items():
-            u_elem = self._extract_element_displacements(element)
-
-            if smoothing == "area_weighted":
-                weight = self._compute_element_weight(element)
-            else:
-                weight = 1.0
-
-            if self._is_shell(element):
-                node_coords = self._SHELL_NODE_COORDS.get(element.name)
-                if node_coords is None:
-                    raise ValueError(f"Unsupported shell element type: {element.name}")
-                for local_idx, (r, s) in enumerate(node_coords):
-                    sig3 = self._compute_shell_stress(element, u_elem, r, s, location, stress_type)
-                    gn = self._node_id_to_index[element.node_ids[local_idx]]
-                    # Voigt layout: [σ_xx, σ_yy, σ_zz, τ_xy, τ_yz, τ_zx]
-                    # Shells return [σ_xx, σ_yy, τ_xy] — map to columns 0, 1, 3
-                    sigma_sum[gn, 0] += weight * sig3[0]
-                    sigma_sum[gn, 1] += weight * sig3[1]
-                    sigma_sum[gn, 3] += weight * sig3[2]
-                    weight_sum[gn] += weight
-
-            elif self._is_solid(element):
-                has_solid = True
-                E_mat = self._get_extrapolation_matrix(element)
-                sig_gp, _ = self._compute_solid_gauss_stresses(element, u_elem)
-                # Extrapolate each component independently
-                sig_nodes = E_mat @ sig_gp  # (n_nodes_elem, 6)
-
-                for local_idx in range(element.node_count):
-                    gn = self._node_id_to_index[element.node_ids[local_idx]]
-                    sigma_sum[gn, :] += weight * sig_nodes[local_idx, :]
-                    weight_sum[gn] += weight
-
-        mask = weight_sum > 0
-        sigma_avg = np.zeros((n_nodes, 6))
-        sigma_avg[mask] = sigma_sum[mask] / weight_sum[mask, np.newaxis]
-
-        return self._build_stress_result(sigma_avg, is_3d=has_solid)
+        raise NotImplementedError(
+            "compute_nodal_stresses: requires a live Rust assembler (domain._rust). "
+            "The Python per-element fallback has been removed."
+        )
 
     # ------------------------------------------------------------------
     # Multi-layer shell convenience (TOP / MIDDLE / BOTTOM at once)
@@ -1177,32 +1115,15 @@ class StressRecovery:
             }
             z_factor = _Z_FACTOR.get(location, 0.0)
             _, eps_all = _rust.compute_stress_field(self.u, z_factor, 2)
-            has_solid = any(self._is_solid(el) for el in self.domain._element_map.values())
+            from fem_shell.elements import ElementFamily  # noqa: PLC0415
+            has_solid = self.domain.model.get("element_family") == ElementFamily.SOLID
             return self._build_strain_result(eps_all, is_3d=has_solid)
 
-        # ------------------------------------------------------------------
-        # Pure-Python fallback
-        # ------------------------------------------------------------------
-        eps_all = np.zeros((n_elem, 6))
-        has_solid = False
-
-        for elem_idx, element in self.domain._element_map.items():
-            u_elem = self._extract_element_displacements(element)
-
-            if self._is_shell(element):
-                eps3 = self._compute_shell_strain(element, u_elem, r0, s0, location)
-                # Voigt layout: [ε_xx, ε_yy, ε_zz, γ_xy, γ_yz, γ_zx]
-                # Shells return [ε_xx, ε_yy, γ_xy] — map to columns 0, 1, 3
-                eps_all[elem_idx, 0] = eps3[0]
-                eps_all[elem_idx, 1] = eps3[1]
-                eps_all[elem_idx, 3] = eps3[2]
-
-            elif self._is_solid(element):
-                has_solid = True
-                _, eps_gp = self._compute_solid_gauss_stresses(element, u_elem)
-                eps_all[elem_idx, :] = eps_gp.mean(axis=0)
-
-        return self._build_strain_result(eps_all, is_3d=has_solid)
+        raise NotImplementedError(
+            "compute_element_strains: non-centroid gauss_point evaluation requires "
+            "r0=0.0, s0=0.0 and a live Rust assembler. "
+            "The Python per-element fallback has been removed."
+        )
 
     def compute_nodal_strains(
         self,
@@ -1234,11 +1155,6 @@ class StressRecovery:
         """
         n_nodes = self.n_nodes
 
-        # ------------------------------------------------------------------
-        # Fast path: use Rust for element strain computation; averaging loop
-        # still runs in Python but avoids the costly per-element Python
-        # strain evaluation (the hot path in the original code).
-        # ------------------------------------------------------------------
         _rust = getattr(self.domain, "_rust", None)
         if _rust is not None:
             _Z_FACTOR_NE = {
@@ -1250,75 +1166,34 @@ class StressRecovery:
             _, eps_elem = _rust.compute_stress_field(self.u, z_factor, 2)
             # eps_elem: (n_elems, 6) — one strain state per element
 
+            if smoothing == "area_weighted":
+                raise NotImplementedError(
+                    "compute_nodal_strains: area_weighted smoothing requires "
+                    "Python element objects which have been removed. "
+                    "Use smoothing='average' instead."
+                )
+
             eps_sum = np.zeros((n_nodes, 6))
             weight_sum = np.zeros(n_nodes)
-            has_solid = False
+            from fem_shell.elements import ElementFamily  # noqa: PLC0415
+            has_solid = self.domain.model.get("element_family") == ElementFamily.SOLID
 
-            for elem_idx, element in self.domain._element_map.items():
-                if smoothing == "area_weighted":
-                    weight = self._compute_element_weight(element)
-                else:
-                    weight = 1.0
-
-                node_ids = element.node_ids
-                for local_idx in range(element.node_count):
-                    gn = self._node_id_to_index[node_ids[local_idx]]
-                    eps_sum[gn, :] += weight * eps_elem[elem_idx, :]
-                    weight_sum[gn] += weight
-
-                if self._is_solid(element):
-                    has_solid = True
+            for elem_idx, mesh_elem in enumerate(self.domain.mesh.elements):
+                node_ids = mesh_elem.node_ids
+                for node_id in node_ids:
+                    gn = self._node_id_to_index[node_id]
+                    eps_sum[gn, :] += eps_elem[elem_idx, :]
+                    weight_sum[gn] += 1.0
 
             mask = weight_sum > 0
             eps_avg = np.zeros((n_nodes, 6))
             eps_avg[mask] = eps_sum[mask] / weight_sum[mask, np.newaxis]
             return self._build_strain_result(eps_avg, is_3d=has_solid)
 
-        # ------------------------------------------------------------------
-        # Pure-Python fallback
-        # ------------------------------------------------------------------
-        eps_sum = np.zeros((n_nodes, 6))
-        weight_sum = np.zeros(n_nodes)
-        has_solid = False
-
-        for _ei, element in self.domain._element_map.items():
-            u_elem = self._extract_element_displacements(element)
-
-            if smoothing == "area_weighted":
-                weight = self._compute_element_weight(element)
-            else:
-                weight = 1.0
-
-            if self._is_shell(element):
-                node_coords = self._SHELL_NODE_COORDS.get(element.name)
-                if node_coords is None:
-                    raise ValueError(f"Unsupported shell element type: {element.name}")
-                for local_idx, (r, s) in enumerate(node_coords):
-                    eps3 = self._compute_shell_strain(element, u_elem, r, s, location)
-                    gn = self._node_id_to_index[element.node_ids[local_idx]]
-                    # Voigt layout: [ε_xx, ε_yy, ε_zz, γ_xy, γ_yz, γ_zx]
-                    # Shells return [ε_xx, ε_yy, γ_xy] — map to columns 0, 1, 3
-                    eps_sum[gn, 0] += weight * eps3[0]
-                    eps_sum[gn, 1] += weight * eps3[1]
-                    eps_sum[gn, 3] += weight * eps3[2]
-                    weight_sum[gn] += weight
-
-            elif self._is_solid(element):
-                has_solid = True
-                E_mat = self._get_extrapolation_matrix(element)
-                _, eps_gp = self._compute_solid_gauss_stresses(element, u_elem)
-                eps_nodes = E_mat @ eps_gp  # (n_nodes_elem, 6)
-
-                for local_idx in range(element.node_count):
-                    gn = self._node_id_to_index[element.node_ids[local_idx]]
-                    eps_sum[gn, :] += weight * eps_nodes[local_idx, :]
-                    weight_sum[gn] += weight
-
-        mask = weight_sum > 0
-        eps_avg = np.zeros((n_nodes, 6))
-        eps_avg[mask] = eps_sum[mask] / weight_sum[mask, np.newaxis]
-
-        return self._build_strain_result(eps_avg, is_3d=has_solid)
+        raise NotImplementedError(
+            "compute_nodal_strains: requires a live Rust assembler (domain._rust). "
+            "The Python per-element fallback has been removed."
+        )
 
     # ------------------------------------------------------------------
     # Derived quantities helpers

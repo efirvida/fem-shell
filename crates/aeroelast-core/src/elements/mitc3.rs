@@ -997,6 +997,61 @@ pub fn compute_centrifugal_prestress(
 }
 
 // ============================================================================
+// Stress / Strain Recovery
+// ============================================================================
+
+/// Compute element stress and strain at the element centroid (r=1/3, s=1/3).
+///
+/// Returns `([sx, sy, sxy, 0, 0, 0], [exx, eyy, exy, 0, 0, 0])`.
+///
+/// # Arguments
+/// * `u_global` - 18-DOF global displacement vector
+/// * `z_factor` - Normalized through-thickness position: 0.0=mid, ±0.5=top/bottom
+/// * `stress_type` - 0=membrane only, 1=bending only, 2=total
+pub fn compute_element_stress(
+    pre: &Mitc3Precomputed,
+    u_global: &Vec18,
+    z_factor: f64,
+    stress_type: u8,
+) -> ([f64; 6], [f64; 6]) {
+    let u_local = global_to_local_disp(u_global, &pre.t3);
+    let cm_raw = &pre.constitutive.cm_raw;
+    let h = pre.thickness;
+    let dh = &pre.dh;
+
+    // Membrane (constant for CST)
+    let bm = b_membrane(dh);
+    let eps_m = bm * &u_local;
+    let sig_m = cm_raw * eps_m;
+
+    // Bending at centroid (r=1/3, s=1/3)
+    let r_c = 1.0_f64 / 3.0;
+    let s_c = 1.0_f64 / 3.0;
+    let bk_ext = b_kappa_ext(r_c, s_c, &pre.j_inv);
+    // Extract the first 18 columns (condensed, ignoring bubble DOFs)
+    let bk18 = bk_ext.fixed_columns::<18>(0).into_owned();
+    let kappa = bk18 * &u_local;
+    let z = z_factor * h;
+    let sig_b = cm_raw * kappa * z;
+
+    // Apply stress_type flag
+    let sig: nalgebra::Vector3<f64> = match stress_type {
+        0 => sig_m,
+        1 => sig_b,
+        _ => sig_m + sig_b,
+    };
+    let eps_total: nalgebra::Vector3<f64> = match stress_type {
+        0 => eps_m,
+        1 => kappa * z,
+        _ => eps_m + kappa * z,
+    };
+
+    let sigma6 = [sig[0], sig[1], 0.0, sig[2], 0.0, 0.0];
+    let eps6 = [eps_total[0], eps_total[1], 0.0, eps_total[2], 0.0, 0.0];
+    (sigma6, eps6)
+}
+
+// ============================================================================
 // Tests
 // ============================================================================
 

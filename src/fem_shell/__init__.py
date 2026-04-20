@@ -59,7 +59,7 @@ from .constitutive import (
 # ---------------------------------------------------------------------------
 # Elements
 # ---------------------------------------------------------------------------
-from .elements import ElementFactory, ElementFamily, FemElement
+from .elements import ElementFamily, FemElement
 
 # ---------------------------------------------------------------------------
 # Solvers
@@ -131,7 +131,6 @@ __all__ = (
         # Configuration
         "FSISimulationConfig",
         # Elements
-        "ElementFactory",
         "ElementFamily",
         "FemElement",
         # Constitutive
