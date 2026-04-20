@@ -23,12 +23,12 @@ fem_shell_core = pytest.importorskip(
     "fem_shell_core", reason="Rust backend not available"
 )
 
-from fem_shell.core.assembler import MeshAssembler  # noqa: E402
-from fem_shell.core.bc import BoundaryConditionManager, DirichletCondition  # noqa: E402
-from fem_shell.core.material import IsotropicMaterial  # noqa: E402
-from fem_shell.core.mesh.entities import ElementType, MeshElement, Node  # noqa: E402
-from fem_shell.core.mesh.model import MeshModel  # noqa: E402
-from fem_shell.elements import ElementFamily  # noqa: E402
+from aeroelast.core.assembler import MeshAssembler  # noqa: E402
+from aeroelast.core.bc import BoundaryConditionManager, DirichletCondition  # noqa: E402
+from aeroelast.core.material import IsotropicMaterial  # noqa: E402
+from aeroelast.core.mesh.entities import ElementType, MeshElement, Node  # noqa: E402
+from aeroelast.core.mesh.model import MeshModel  # noqa: E402
+from aeroelast.elements import ElementFamily  # noqa: E402
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -554,10 +554,10 @@ class TestCompositeModal:
 
     @pytest.fixture(autouse=True)
     def setup(self):
-        from fem_shell.core.laminate import Laminate, Ply, create_laminate_from_angles
-        from fem_shell.core.material import OrthotropicMaterial
-        from fem_shell.core.mesh.entities import ElementSet
-        from fem_shell.core.properties import CompositeShellProperty
+        from aeroelast.core.laminate import Laminate, Ply, create_laminate_from_angles
+        from aeroelast.core.material import OrthotropicMaterial
+        from aeroelast.core.mesh.entities import ElementSet
+        from aeroelast.core.properties import CompositeShellProperty
 
         self.num_modes = 6
         self.nx, self.ny = 6, 4
@@ -657,10 +657,10 @@ class TestCompositeModalMITC3:
 
     @pytest.fixture(autouse=True)
     def setup(self):
-        from fem_shell.core.laminate import create_laminate_from_angles
-        from fem_shell.core.material import OrthotropicMaterial
-        from fem_shell.core.mesh.entities import ElementSet
-        from fem_shell.core.properties import CompositeShellProperty
+        from aeroelast.core.laminate import create_laminate_from_angles
+        from aeroelast.core.material import OrthotropicMaterial
+        from aeroelast.core.mesh.entities import ElementSet
+        from aeroelast.core.properties import CompositeShellProperty
 
         self.num_modes = 6
         self.nx, self.ny = 6, 4
@@ -735,10 +735,10 @@ class TestCompositeModal:
 
     @pytest.fixture(autouse=True)
     def setup(self):
-        from fem_shell.core.laminate import Laminate, Ply, create_laminate_from_angles
-        from fem_shell.core.material import OrthotropicMaterial
-        from fem_shell.core.mesh.entities import ElementSet
-        from fem_shell.core.properties import CompositeShellProperty
+        from aeroelast.core.laminate import Laminate, Ply, create_laminate_from_angles
+        from aeroelast.core.material import OrthotropicMaterial
+        from aeroelast.core.mesh.entities import ElementSet
+        from aeroelast.core.properties import CompositeShellProperty
 
         self.num_modes = 6
         self.nx, self.ny = 6, 4
@@ -838,10 +838,10 @@ class TestCompositeModalMITC3:
 
     @pytest.fixture(autouse=True)
     def setup(self):
-        from fem_shell.core.laminate import create_laminate_from_angles
-        from fem_shell.core.material import OrthotropicMaterial
-        from fem_shell.core.mesh.entities import ElementSet
-        from fem_shell.core.properties import CompositeShellProperty
+        from aeroelast.core.laminate import create_laminate_from_angles
+        from aeroelast.core.material import OrthotropicMaterial
+        from aeroelast.core.mesh.entities import ElementSet
+        from aeroelast.core.properties import CompositeShellProperty
 
         self.num_modes = 6
         self.nx, self.ny = 6, 4

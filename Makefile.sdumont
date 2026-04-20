@@ -98,7 +98,7 @@ all: module_load python slepc precice python_env ccblade openfoam
 
 module_load:
 	. /usr/share/lmod/lmod/init/bash; \
-	module purge; module load automake sqlite/3.32.3.sequana readline/8.2_sequana glu openssl/3.0.9_sequana gcc/14.2.0_sequana;
+	module purge; module load automake sqlite/3.32.3.sequana readline/8.2_sequana glu openssl/3.0.9_sequana gcc/14.2.0_sequana cmake/3.30.3_sequana;
 
 clean:
 	rm -rf $(VENV_DIR) $(SOURCES_DIR)/build $(SOURCES_DIR)/download.done
@@ -205,10 +205,10 @@ $(VENV_DIR)/.python.done: $(SOURCES_DIR)/download.done \
 #------------------------------------------------------------
 # Virtual Environment Setup
 #-------------------------------------------------------------------------------
-$(VENV_DIR)/.python_env.done: $(VENV_DIR)/.python.done
+$(VENV_DIR)/.python_env.done: $(VENV_DIR)/.python.done $(VENV_DIR)/.petsc.done $(VENV_DIR)/.slepc.done
 	@ln -sf $(VENV_DIR)/bin/pip3 $(VENV_DIR)/bin/pip
 	module purge
-	module load automake sqlite/3.32.3.sequana readline/8.2_sequana glu openssl/3.0.9_sequana gcc/14.2.0_sequana openfoam/v2506_openmpi-4.1.4_gnu gcc/14.2.0_sequana
+	module load automake sqlite/3.32.3.sequana readline/8.2_sequana glu openssl/3.0.9_sequana gcc/14.2.0_sequana openfoam/v2506_openmpi-4.1.4_gnu cmake/3.30.3_sequana
 	$(PIP_INSTALL) --upgrade pip setuptools wheel
 	$(PIP_INSTALL) numpy Cython
 	# Build mpi4py from source with proper MPI configuration
@@ -231,25 +231,12 @@ $(VENV_DIR)/.python_env.done: $(VENV_DIR)/.python.done
 		export LDFLAGS="-L/scratch/app/openmpi/4.1.4_gnu/lib" && \
 		LD_LIBRARY_PATH=$(VENV_DIR)/lib:$(VENV_DIR)/lib64:/usr/lib64/psm2-compat:/scratch/app/openmpi/4.1.4_gnu/lib \
 		$(VENV_DIR)/bin/python setup.py build_ext --mpi=mpi install
-	# Workaround: build petsc4py/slepc4py from source, bypassing pip's dependency resolution.
-	# pip download/install tries to pull 'petsc' as a build dep (setup.py setup_requires)
-	# which fails because it tries to configure PETSc from scratch.
-	# Instead: wget the sdist, patch dry_run issue, and build directly with setup.py.
-	mkdir -p $(BUILD_DIR)/petsc4py_build
-	cd $(BUILD_DIR)/petsc4py_build && \
-		wget -nc "https://files.pythonhosted.org/packages/source/p/petsc4py/petsc4py-$(PETSC_VERSION).tar.gz" && \
-		tar -xzf petsc4py-$(PETSC_VERSION).tar.gz && \
-		cd petsc4py-$(PETSC_VERSION) && \
-		sed -i '/dry_run=self\.dry_run/d' conf/confpetsc.py && \
+	# Build petsc4py/slepc4py from the same Git checkouts used for PETSc/SLEPc.
+	# This keeps Python bindings ABI/API-compatible with latest release branch.
+	cd $(BUILD_DIR)/petsc/src/binding/petsc4py && \
 		PETSC_DIR=$(VENV_DIR) PETSC_ARCH="" $(VENV_DIR)/bin/python setup.py install
-	
-	mkdir -p $(BUILD_DIR)/slepc4py_build
-	cd $(BUILD_DIR)/slepc4py_build && \
-		wget -nc "https://files.pythonhosted.org/packages/source/s/slepc4py/slepc4py-$(SLEPC_VERSION).tar.gz" && \
-		tar -xzf slepc4py-$(SLEPC_VERSION).tar.gz && \
-		cd slepc4py-$(SLEPC_VERSION) && \
-		sed -i '/dry_run=self\.dry_run/d' conf/confpetsc.py && \
-		sed -i '/dry_run=self\.dry_run/d' conf/confslepc.py && \
+
+	cd $(BUILD_DIR)/slepc/src/binding/slepc4py && \
 		PETSC_DIR=$(VENV_DIR) PETSC_ARCH="" SLEPC_DIR=$(VENV_DIR) $(VENV_DIR)/bin/python setup.py install
 
 	$(PIP_INSTALL) pyprecice==$(PRECICE_VERSION)
@@ -297,9 +284,15 @@ $(VENV_DIR)/.boost.done: $(SOURCES_DIR)/download.done
 $(VENV_DIR)/.petsc.done: $(VENV_DIR)/.boost.done
 	@echo "Installing PETSc..."
 	@mkdir -p $(BUILD_DIR)/petsc
-	@tar -xzf $(SOURCES_DIR)/$(PETSC_TAR) -C $(BUILD_DIR)/petsc --strip-components=1
+	@if [ -d $(BUILD_DIR)/petsc/.git ]; then \
+		git -C $(BUILD_DIR)/petsc fetch --all --tags && \
+		git -C $(BUILD_DIR)/petsc checkout release && \
+		git -C $(BUILD_DIR)/petsc reset --hard origin/release; \
+	else \
+		git clone -b release https://gitlab.com/petsc/petsc.git $(BUILD_DIR)/petsc; \
+	fi
 	module purge
-	module load automake sqlite/3.32.3.sequana readline/8.2_sequana glu openssl/3.0.9_sequana gcc/14.2.0_sequana openfoam/v2506_openmpi-4.1.4_gnu gcc/14.2.0_sequana
+	module load automake sqlite/3.32.3.sequana readline/8.2_sequana glu openssl/3.0.9_sequana gcc/14.2.0_sequana openfoam/v2506_openmpi-4.1.4_gnu cmake/3.30.3_sequana
 	@cd $(BUILD_DIR)/petsc && \
 		$(CONFIGURE_CMD) \
 			--with-shared-libraries=1 \
@@ -308,9 +301,13 @@ $(VENV_DIR)/.petsc.done: $(VENV_DIR)/.boost.done
 			--with-mpi-dir=/scratch/app/openmpi/4.1.4_gnu/ \
 			--with-fortran-bindings=1 \
 			--with-cxx-dialect=C++11 \
+			--with-cmake-exec=/scratch/app_sequana/cmake/3.30.3/bin/cmake \
 			--download-fblaslapack \
 			--download-metis \
 			--download-fftw \
+			--download-hdf5 \
+			--download-scalapack \
+			--download-mumps \
 			--download-ptscotch \
 			--download-zlib && \
 		make LD_LIBRARY_PATH=$(VENV_DIR)/lib:$(VENV_DIR)/lib64:/usr/lib64/psm2-compat -j$(NPROC) PETSC_DIR=$(BUILD_DIR)/petsc all && \
@@ -319,8 +316,13 @@ $(VENV_DIR)/.petsc.done: $(VENV_DIR)/.boost.done
 
 $(VENV_DIR)/.slepc.done: $(VENV_DIR)/.petsc.done
 	@echo "Installing SLEPc..."
-	@mkdir -p $(BUILD_DIR)/slepc
-	@tar -xzf $(SOURCES_DIR)/$(SLEPC_TAR) -C $(BUILD_DIR)/slepc --strip-components=1
+	@if [ -d $(BUILD_DIR)/slepc/.git ]; then \
+		git -C $(BUILD_DIR)/slepc fetch --all --tags && \
+		git -C $(BUILD_DIR)/slepc checkout release && \
+		git -C $(BUILD_DIR)/slepc reset --hard origin/release; \
+	else \
+		git clone -b release https://gitlab.com/slepc/slepc $(BUILD_DIR)/slepc; \
+	fi
 	@cd $(BUILD_DIR)/slepc && \
 		PETSC_DIR=$(VENV_DIR) SLEPC_DIR=$(BUILD_DIR)/slepc $(CONFIGURE_CMD) && \
 		make  LD_LIBRARY_PATH=$(VENV_DIR)/lib:$(VENV_DIR)/lib64:/usr/lib64/psm2-compat -j$(NPROC) PETSC_DIR=$(VENV_DIR) SLEPC_DIR=$(BUILD_DIR)/slepc all && \
@@ -359,7 +361,7 @@ $(VENV_DIR)/.precice.done: $(VENV_DIR)/.python.done $(VENV_DIR)/.petsc.done $(VE
 	-$(PIP_INSTALL) --upgrade pip 2>/dev/null || echo "WARNING: pip upgrade skipped (no network)"
 	-$(PIP_INSTALL) polars "numpy>=2" 2>/dev/null || echo "WARNING: polars/numpy install skipped (no network)"
 	module purge
-	module load automake sqlite/3.32.3.sequana readline/8.2_sequana glu openssl/3.0.9_sequana gcc/14.2.0_sequana openfoam/v2506_openmpi-4.1.4_gnu gcc/14.2.0_sequana
+	module load automake sqlite/3.32.3.sequana readline/8.2_sequana glu openssl/3.0.9_sequana gcc/14.2.0_sequana openfoam/v2506_openmpi-4.1.4_gnu cmake/3.30.3_sequana
 	@cd $(BUILD_DIR)/precice/build && \
 		$(CMAKE_CMD) .. -DCMAKE_BUILD_TYPE=Release \
 			-DCMAKE_CXX_COMPILER=/scratch/app_sequana/gcc/14.2.0/bin/g++ \

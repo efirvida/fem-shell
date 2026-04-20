@@ -15,7 +15,7 @@ from numpy.testing import assert_allclose, assert_array_almost_equal
 
 # Import the module directly to avoid triggering __init__.py which has PETSc deps
 _module_path = (
-    Path(__file__).parent.parent / "src" / "fem_shell" / "solvers" / "fsi_rotor_corotational.py"
+    Path(__file__).parent.parent / "src" / "aeroelast" / "solvers" / "fsi_rotor_corotational.py"
 )
 _spec = importlib.util.spec_from_file_location("fsi_rotor_corotational", _module_path)
 _module = importlib.util.module_from_spec(_spec)

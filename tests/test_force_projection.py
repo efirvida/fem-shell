@@ -10,11 +10,11 @@ a simple rectangular mesh to verify:
 import numpy as np
 import pytest
 
-from fem_shell.core.mesh.entities import ElementType, MeshElement, Node
-from fem_shell.core.mesh.model import MeshModel
-from fem_shell.models.blade.aerodynamics import AeroStation, AirfoilAero, BladeAero, PolarData
-from fem_shell.solvers.bem.engine import BEMResult
-from fem_shell.solvers.bem.force_projection import ForceProjector
+from aeroelast.core.mesh.entities import ElementType, MeshElement, Node
+from aeroelast.core.mesh.model import MeshModel
+from aeroelast.models.blade.aerodynamics import AeroStation, AirfoilAero, BladeAero, PolarData
+from aeroelast.solvers.bem.engine import BEMResult
+from aeroelast.solvers.bem.force_projection import ForceProjector
 
 # =====================================================================
 # Helpers

@@ -9,8 +9,8 @@ Tests cover:
 import numpy as np
 import pytest
 
-from fem_shell.models.blade.numad.mesh_gen.element_utils import get_vertex_normals
-from fem_shell.models.blade.numad.mesh_gen.mesh3d import create_offset_layers
+from aeroelast.models.blade.numad.mesh_gen.element_utils import get_vertex_normals
+from aeroelast.models.blade.numad.mesh_gen.mesh3d import create_offset_layers
 
 # ---------------------------------------------------------------------------
 # Helpers / synthetic geometry
@@ -213,7 +213,7 @@ class TestGetVolMesh:
 
     @pytest.fixture(scope="class")
     def vol_mesh(self, iea_numad_blade):
-        from fem_shell.models.blade.numad.mesh_gen import get_vol_mesh
+        from aeroelast.models.blade.numad.mesh_gen import get_vol_mesh
         return get_vol_mesh(
             iea_numad_blade,
             elementSize=self.ELEMENT_SIZE,
@@ -296,7 +296,7 @@ IEA_YAML = pathlib.Path(__file__).parent.parent / "examples" / "blade" / "bem" /
 @pytest.fixture(scope="module")
 def iea_blade():
     """Load the IEA-15-240-RWT numad Blade object once per module."""
-    from fem_shell.models.blade.numad import Blade as numadBlade
+    from aeroelast.models.blade.numad import Blade as numadBlade
     blade = numadBlade()
     blade.read_yaml(str(IEA_YAML))
     n_stations = blade.geometry.coordinates.shape[2]
@@ -343,7 +343,7 @@ def simple_hex_mesh():
 
 class TestTfiBlock:
     def test_shape(self, airfoil_loop):
-        from fem_shell.models.blade.numad.mesh_gen.cap_mesh import _tfi_block
+        from aeroelast.models.blade.numad.mesh_gen.cap_mesh import _tfi_block
 
         N, M = 5, 3
         lower = np.linspace([0, 0, 0], [1, 0, 0], N)
@@ -358,7 +358,7 @@ class TestTfiBlock:
 
     def test_corners_preserved(self):
         """Corner nodes of the TFI patch must match the boundary inputs exactly."""
-        from fem_shell.models.blade.numad.mesh_gen.cap_mesh import _tfi_block
+        from aeroelast.models.blade.numad.mesh_gen.cap_mesh import _tfi_block
 
         N, M = 4, 3
         lower = np.array([[0,0,0],[1,0,0],[2,0,0],[3,0,0]], dtype=float)
@@ -377,7 +377,7 @@ class TestTfiBlock:
 
 class TestGenerateCapQuads:
     def test_output_shapes(self, airfoil_loop):
-        from fem_shell.models.blade.numad.mesh_gen.cap_mesh import generate_cap_quads
+        from aeroelast.models.blade.numad.mesh_gen.cap_mesh import generate_cap_quads
 
         nodes, quads = generate_cap_quads(airfoil_loop, le_idx=18, n_rows=1)
 
@@ -386,14 +386,14 @@ class TestGenerateCapQuads:
 
     def test_no_duplicate_index_in_quads(self, airfoil_loop):
         """Every quad must reference 4 distinct node indices."""
-        from fem_shell.models.blade.numad.mesh_gen.cap_mesh import generate_cap_quads
+        from aeroelast.models.blade.numad.mesh_gen.cap_mesh import generate_cap_quads
 
         nodes, quads = generate_cap_quads(airfoil_loop, le_idx=18, n_rows=2)
         for q in quads:
             assert len(set(q.tolist())) == 4, f"Degenerate quad: {q}"
 
     def test_node_indices_in_range(self, airfoil_loop):
-        from fem_shell.models.blade.numad.mesh_gen.cap_mesh import generate_cap_quads
+        from aeroelast.models.blade.numad.mesh_gen.cap_mesh import generate_cap_quads
 
         nodes, quads = generate_cap_quads(airfoil_loop, le_idx=18, n_rows=2)
         assert quads.min() >= 0
@@ -401,7 +401,7 @@ class TestGenerateCapQuads:
 
     def test_outward_normal_enforced(self, airfoil_loop):
         """All quad normals must have a positive component along outward_normal."""
-        from fem_shell.models.blade.numad.mesh_gen.cap_mesh import generate_cap_quads
+        from aeroelast.models.blade.numad.mesh_gen.cap_mesh import generate_cap_quads
 
         out_n = np.array([0.0, 0.0, -1.0])
         nodes, quads = generate_cap_quads(airfoil_loop, le_idx=18, n_rows=1,
@@ -413,7 +413,7 @@ class TestGenerateCapQuads:
             assert np.dot(fn, out_n) >= 0.0, "Quad normal points inward"
 
     def test_n_rows_increases_node_count(self, airfoil_loop):
-        from fem_shell.models.blade.numad.mesh_gen.cap_mesh import generate_cap_quads
+        from aeroelast.models.blade.numad.mesh_gen.cap_mesh import generate_cap_quads
 
         n1, _ = generate_cap_quads(airfoil_loop, 18, n_rows=1)
         n2, _ = generate_cap_quads(airfoil_loop, 18, n_rows=3)
@@ -422,14 +422,14 @@ class TestGenerateCapQuads:
 
 class TestBuildCapMeshData:
     def test_node_offset_applied(self, airfoil_loop):
-        from fem_shell.models.blade.numad.mesh_gen.cap_mesh import build_cap_mesh_data
+        from aeroelast.models.blade.numad.mesh_gen.cap_mesh import build_cap_mesh_data
 
         offset = 500
         nodes, els = build_cap_mesh_data(airfoil_loop, 18, 2, [0, 0, -1], offset)
         assert els.min() >= offset
 
     def test_returns_correct_shapes(self, airfoil_loop):
-        from fem_shell.models.blade.numad.mesh_gen.cap_mesh import build_cap_mesh_data
+        from aeroelast.models.blade.numad.mesh_gen.cap_mesh import build_cap_mesh_data
 
         nodes, els = build_cap_mesh_data(airfoil_loop, 18, 1, [0, 0, 1], 0)
         assert nodes.shape[1] == 3
@@ -453,7 +453,7 @@ class TestGetVertexNormals:
         return nodes, elements
 
     def test_unit_normals(self):
-        from fem_shell.models.blade.numad.mesh_gen.element_utils import get_vertex_normals
+        from aeroelast.models.blade.numad.mesh_gen.element_utils import get_vertex_normals
 
         nodes, elements = self._make_flat_quad_mesh()
         normals = get_vertex_normals(nodes, elements)
@@ -464,7 +464,7 @@ class TestGetVertexNormals:
 
     def test_flat_xy_plane_points_z(self):
         """Normals of a flat XY-plane quad must point along ±Z."""
-        from fem_shell.models.blade.numad.mesh_gen.element_utils import get_vertex_normals
+        from aeroelast.models.blade.numad.mesh_gen.element_utils import get_vertex_normals
 
         nodes, elements = self._make_flat_quad_mesh()
         normals = get_vertex_normals(nodes, elements)
@@ -495,8 +495,8 @@ class TestCreateOffsetLayers:
         return {"nodes": surf_nodes, "elements": np.array(quads, dtype=int)}
 
     def test_output_shapes(self):
-        from fem_shell.models.blade.numad.mesh_gen.element_utils import get_vertex_normals
-        from fem_shell.models.blade.numad.mesh_gen.mesh3d import create_offset_layers
+        from aeroelast.models.blade.numad.mesh_gen.element_utils import get_vertex_normals
+        from aeroelast.models.blade.numad.mesh_gen.mesh3d import create_offset_layers
 
         shell = self._tube_shell()
         v_n = get_vertex_normals(shell["nodes"], shell["elements"])
@@ -510,8 +510,8 @@ class TestCreateOffsetLayers:
 
     def test_geometric_growth(self):
         """Outer node must be farther from surface than inner node."""
-        from fem_shell.models.blade.numad.mesh_gen.element_utils import get_vertex_normals
-        from fem_shell.models.blade.numad.mesh_gen.mesh3d import create_offset_layers
+        from aeroelast.models.blade.numad.mesh_gen.element_utils import get_vertex_normals
+        from aeroelast.models.blade.numad.mesh_gen.mesh3d import create_offset_layers
 
         shell = self._tube_shell(n_circ=4, n_span=2)
         v_n = get_vertex_normals(shell["nodes"], shell["elements"])
@@ -527,8 +527,8 @@ class TestCreateOffsetLayers:
         assert r_outer > r_surf
 
     def test_required_sets_present(self):
-        from fem_shell.models.blade.numad.mesh_gen.element_utils import get_vertex_normals
-        from fem_shell.models.blade.numad.mesh_gen.mesh3d import create_offset_layers
+        from aeroelast.models.blade.numad.mesh_gen.element_utils import get_vertex_normals
+        from aeroelast.models.blade.numad.mesh_gen.mesh3d import create_offset_layers
 
         shell = self._tube_shell()
         v_n = get_vertex_normals(shell["nodes"], shell["elements"])
@@ -545,8 +545,8 @@ class TestCreateOffsetLayers:
         This verifies the core property: t=1 → transverse component of
         blended normal is exactly radial → displacement direction is radial.
         """
-        from fem_shell.models.blade.numad.mesh_gen.element_utils import get_vertex_normals
-        from fem_shell.models.blade.numad.mesh_gen.mesh3d import create_offset_layers
+        from aeroelast.models.blade.numad.mesh_gen.element_utils import get_vertex_normals
+        from aeroelast.models.blade.numad.mesh_gen.mesh3d import create_offset_layers
 
         # Ellipse: a=2, b=1 — vertex normals differ from radial direction
         n_circ, n_span = 12, 3
@@ -601,7 +601,7 @@ class TestCreateOffsetLayers:
         vertex normals point purely in ±Z.  After blending, their XY positions
         must remain identical to the pure-normal-offset result.
         """
-        from fem_shell.models.blade.numad.mesh_gen.mesh3d import create_offset_layers
+        from aeroelast.models.blade.numad.mesh_gen.mesh3d import create_offset_layers
 
         n_circ, n_layers, t0 = 8, 4, 0.1
 
@@ -661,7 +661,7 @@ class TestCreateOffsetLayers:
 class TestMeshQuality:
     def test_perfect_alignment_zero_nonortho(self, simple_hex_mesh):
         """Aligned hex cells must report 0° non-orthogonality."""
-        from fem_shell.models.blade.numad.mesh_gen.mesh_quality import non_orthogonality
+        from aeroelast.models.blade.numad.mesh_gen.mesh_quality import non_orthogonality
 
         nodes, elements = simple_hex_mesh
         angles, _ = non_orthogonality(nodes, elements)
@@ -669,7 +669,7 @@ class TestMeshQuality:
         np.testing.assert_allclose(angles, 0.0, atol=1e-8)
 
     def test_quality_report_returns_bool(self, simple_hex_mesh):
-        from fem_shell.models.blade.numad.mesh_gen.mesh_quality import quality_report
+        from aeroelast.models.blade.numad.mesh_gen.mesh_quality import quality_report
 
         nodes, elements = simple_hex_mesh
         angles, passed = quality_report(nodes, elements)
@@ -679,7 +679,7 @@ class TestMeshQuality:
     def test_skewed_mesh_nonzero_nonortho(self, simple_hex_mesh):
         """Perturbing a non-shared node shifts only one cell's centroid,
         making the centroid-centroid vector diverge from the face normal."""
-        from fem_shell.models.blade.numad.mesh_gen.mesh_quality import non_orthogonality
+        from aeroelast.models.blade.numad.mesh_gen.mesh_quality import non_orthogonality
 
         nodes, elements = simple_hex_mesh
         nodes_skewed = nodes.copy()
@@ -694,8 +694,8 @@ class TestMeshQuality:
 
 class TestLaplacianSmooth:
     def test_free_nodes_move(self, airfoil_loop):
-        from fem_shell.models.blade.numad.mesh_gen.cap_mesh import generate_cap_quads
-        from fem_shell.models.blade.numad.mesh_gen.mesh_quality import laplacian_smooth
+        from aeroelast.models.blade.numad.mesh_gen.cap_mesh import generate_cap_quads
+        from aeroelast.models.blade.numad.mesh_gen.mesh_quality import laplacian_smooth
 
         nodes, quads = generate_cap_quads(airfoil_loop, 18, n_rows=3)
         fixed = list(range(len(airfoil_loop)))           # keep boundary loop fixed
@@ -707,8 +707,8 @@ class TestLaplacianSmooth:
         assert diff.max() > 1e-10, "No nodes moved after smoothing"
 
     def test_fixed_nodes_unchanged(self, airfoil_loop):
-        from fem_shell.models.blade.numad.mesh_gen.cap_mesh import generate_cap_quads
-        from fem_shell.models.blade.numad.mesh_gen.mesh_quality import laplacian_smooth
+        from aeroelast.models.blade.numad.mesh_gen.cap_mesh import generate_cap_quads
+        from aeroelast.models.blade.numad.mesh_gen.mesh_quality import laplacian_smooth
 
         nodes, quads = generate_cap_quads(airfoil_loop, 18, n_rows=2)
         fixed = list(range(len(airfoil_loop)))
@@ -717,8 +717,8 @@ class TestLaplacianSmooth:
         np.testing.assert_allclose(smoothed[fixed], nodes[fixed], atol=1e-12)
 
     def test_zero_iters_unchanged(self, airfoil_loop):
-        from fem_shell.models.blade.numad.mesh_gen.cap_mesh import generate_cap_quads
-        from fem_shell.models.blade.numad.mesh_gen.mesh_quality import laplacian_smooth
+        from aeroelast.models.blade.numad.mesh_gen.cap_mesh import generate_cap_quads
+        from aeroelast.models.blade.numad.mesh_gen.mesh_quality import laplacian_smooth
 
         nodes, quads = generate_cap_quads(airfoil_loop, 18, n_rows=2)
         smoothed = laplacian_smooth(nodes, quads, fixed_nodes=[], n_iter=0)
@@ -742,7 +742,7 @@ class TestExportVtk:
         }
 
     def test_vtu_file_created(self, simple_hex_mesh):
-        from fem_shell.models.blade.numad.mesh_gen.mesh_io import export_vtk
+        from aeroelast.models.blade.numad.mesh_gen.mesh_io import export_vtk
 
         meshdata = self._minimal_meshdata(simple_hex_mesh)
         with tempfile.TemporaryDirectory() as td:
@@ -752,7 +752,7 @@ class TestExportVtk:
             assert out.stat().st_size > 0
 
     def test_vtk_legacy_file_created(self, simple_hex_mesh):
-        from fem_shell.models.blade.numad.mesh_gen.mesh_io import export_vtk
+        from aeroelast.models.blade.numad.mesh_gen.mesh_io import export_vtk
 
         meshdata = self._minimal_meshdata(simple_hex_mesh)
         with tempfile.TemporaryDirectory() as td:
@@ -761,7 +761,7 @@ class TestExportVtk:
             assert out.exists()
 
     def test_directory_created_if_missing(self, simple_hex_mesh):
-        from fem_shell.models.blade.numad.mesh_gen.mesh_io import export_vtk
+        from aeroelast.models.blade.numad.mesh_gen.mesh_io import export_vtk
 
         meshdata = self._minimal_meshdata(simple_hex_mesh)
         with tempfile.TemporaryDirectory() as td:
@@ -770,7 +770,7 @@ class TestExportVtk:
             assert out.exists()
 
     def test_surface_vtk(self):
-        from fem_shell.models.blade.numad.mesh_gen.mesh_io import export_surface_vtk
+        from aeroelast.models.blade.numad.mesh_gen.mesh_io import export_surface_vtk
 
         # Build a tiny quad surface
         nodes = np.array([[0,0,0],[1,0,0],[1,1,0],[0,1,0]], dtype=float)
@@ -794,13 +794,13 @@ class TestGetVolMeshIEA:
     @pytest.fixture(scope="class")
     def shell_only(self, iea_blade):
         """Shell mesh without overset (default behaviour, backward-compatible)."""
-        from fem_shell.models.blade.numad.mesh_gen import get_vol_mesh
+        from aeroelast.models.blade.numad.mesh_gen import get_vol_mesh
         return get_vol_mesh(iea_blade, elementSize=1.0)
 
     @pytest.fixture(scope="class")
     def vol_mesh(self, iea_blade):
         """Closed volumetric mesh with 3 hex layers."""
-        from fem_shell.models.blade.numad.mesh_gen import get_vol_mesh
+        from aeroelast.models.blade.numad.mesh_gen import get_vol_mesh
         return get_vol_mesh(
             iea_blade,
             elementSize=1.0,
@@ -839,7 +839,7 @@ class TestGetVolMeshIEA:
 
     def test_vol_element_count(self, vol_mesh, iea_blade):
         """Vol mesh must have strictly more elements than a shell mesh."""
-        from fem_shell.models.blade.numad.mesh_gen import get_vol_mesh
+        from aeroelast.models.blade.numad.mesh_gen import get_vol_mesh
         shell = get_vol_mesh(iea_blade, elementSize=1.0)
         assert len(vol_mesh["elements"]) > len(shell["elements"])
 
@@ -859,7 +859,7 @@ class TestGetVolMeshIEA:
             assert key in vol_mesh, f"Missing metadata key: {key}"
 
     def test_vol_vtk_export(self, vol_mesh):
-        from fem_shell.models.blade.numad.mesh_gen.mesh_io import export_vtk
+        from aeroelast.models.blade.numad.mesh_gen.mesh_io import export_vtk
 
         with tempfile.TemporaryDirectory() as td:
             out = pathlib.Path(td) / "iea15mw_overset.vtu"
@@ -897,7 +897,7 @@ class TestGetVolMeshIEA:
     def test_total_thickness_matches_layers_equivalent(self, iea_blade):
         """Specifying total_thickness must yield the same n_layers as manual calculation."""
         import math
-        from fem_shell.models.blade.numad.mesh_gen import get_vol_mesh
+        from aeroelast.models.blade.numad.mesh_gen import get_vol_mesh
 
         t0, g = 0.05, 1.2
         total_t = 0.5
@@ -916,7 +916,7 @@ class TestGetVolMeshIEA:
 
     def test_total_thickness_and_layers_raises(self, iea_blade):
         """Supplying both overset_layers and overset_total_thickness must raise."""
-        from fem_shell.models.blade.numad.mesh_gen import get_vol_mesh
+        from aeroelast.models.blade.numad.mesh_gen import get_vol_mesh
 
         with pytest.raises(ValueError, match="not both"):
             get_vol_mesh(
@@ -931,7 +931,7 @@ class TestGetVolMeshIEA:
     def test_total_thickness_uniform_growth(self, iea_blade):
         """With growth=1.0, n_layers = ceil(total_thickness / first_thickness)."""
         import math
-        from fem_shell.models.blade.numad.mesh_gen import get_vol_mesh
+        from aeroelast.models.blade.numad.mesh_gen import get_vol_mesh
 
         t0, total_t = 0.1, 0.5
         n_expected = math.ceil(total_t / t0)
@@ -956,7 +956,7 @@ class TestCylBlendExp:
 
     @pytest.fixture(scope="class")
     def blended_mesh(self, iea_blade):
-        from fem_shell.models.blade.numad.mesh_gen import get_vol_mesh
+        from aeroelast.models.blade.numad.mesh_gen import get_vol_mesh
         return get_vol_mesh(
             iea_blade,
             elementSize=1.0,
@@ -969,7 +969,7 @@ class TestCylBlendExp:
 
     def test_cyl_blend_default_is_2(self, iea_blade):
         """get_vol_mesh must use cyl_blend_exp=2.0 when not specified."""
-        from fem_shell.models.blade.numad.mesh_gen import get_vol_mesh
+        from aeroelast.models.blade.numad.mesh_gen import get_vol_mesh
         import inspect
         sig = inspect.signature(get_vol_mesh)
         assert sig.parameters["overset_cyl_blend_exp"].default == 2.0
@@ -985,7 +985,7 @@ class TestCylBlendExp:
         compared to pure normal extrusion (any pre-existing degenerate elements
         from the surface mesh itself are irrelevant to the blend behaviour).
         """
-        from fem_shell.models.blade.numad.mesh_gen import get_vol_mesh
+        from aeroelast.models.blade.numad.mesh_gen import get_vol_mesh
 
         kwargs = dict(
             elementSize=1.0,
@@ -1030,7 +1030,7 @@ class TestOuterZone:
 
     @pytest.fixture(scope="class")
     def two_zone_mesh(self, iea_blade):
-        from fem_shell.models.blade.numad.mesh_gen import get_vol_mesh
+        from aeroelast.models.blade.numad.mesh_gen import get_vol_mesh
         return get_vol_mesh(
             iea_blade,
             elementSize=1.0,
@@ -1043,7 +1043,7 @@ class TestOuterZone:
 
     @pytest.fixture(scope="class")
     def bl_only_mesh(self, iea_blade):
-        from fem_shell.models.blade.numad.mesh_gen import get_vol_mesh
+        from aeroelast.models.blade.numad.mesh_gen import get_vol_mesh
         return get_vol_mesh(
             iea_blade,
             elementSize=1.0,

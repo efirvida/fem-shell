@@ -19,8 +19,8 @@ The tests validate:
 import numpy as np
 import pytest
 
-from fem_shell.core.material import OrthotropicMaterial
-from fem_shell.core.laminate import (
+from aeroelast.core.material import OrthotropicMaterial
+from aeroelast.core.laminate import (
     Ply,
     Laminate,
     StrengthProperties,
@@ -33,7 +33,7 @@ from fem_shell.core.laminate import (
     cross_ply_layup,
     angle_ply_layup,
 )
-from fem_shell.constitutive.failure import (
+from aeroelast.constitutive.failure import (
     FailureMode,
     FailureResult,
     tsai_wu_failure_index,
@@ -42,7 +42,7 @@ from fem_shell.constitutive.failure import (
     stress_transformation_matrix,
     strain_transformation_matrix,
 )
-from fem_shell.elements.MITC4_composite import MITC4Composite
+from aeroelast.elements.MITC4_composite import MITC4Composite
 
 
 # =============================================================================

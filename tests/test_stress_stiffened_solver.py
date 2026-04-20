@@ -24,20 +24,20 @@ import pytest
 petsc4py = pytest.importorskip("petsc4py", reason="PETSc not available")
 from petsc4py import PETSc  # noqa: E402
 
-from fem_shell.core.assembler import MeshAssembler
-from fem_shell.core.bc import BoundaryConditionManager, DirichletCondition
-from fem_shell.core.material import IsotropicMaterial
-from fem_shell.core.mesh.entities import ElementType, MeshElement, Node
-from fem_shell.core.mesh.model import MeshModel
-from fem_shell.elements import ElementFamily
-from fem_shell.postprocess.stress_recovery import StressLocation, StressRecovery, StressType
-from fem_shell.solvers.fsi.time_integration import NewmarkCoefficients
+from aeroelast.core.assembler import MeshAssembler
+from aeroelast.core.bc import BoundaryConditionManager, DirichletCondition
+from aeroelast.core.material import IsotropicMaterial
+from aeroelast.core.mesh.entities import ElementType, MeshElement, Node
+from aeroelast.core.mesh.model import MeshModel
+from aeroelast.elements import ElementFamily
+from aeroelast.postprocess.stress_recovery import StressLocation, StressRecovery, StressType
+from aeroelast.solvers.fsi.time_integration import NewmarkCoefficients
 
 # ---------------------------------------------------------------------------
 # Optional FSI solver import (needs preCICE at runtime)
 # ---------------------------------------------------------------------------
 try:
-    from fem_shell.solvers.fsi.stress_stiffened_dynamic import StressStiffenedFSISolver
+    from aeroelast.solvers.fsi.stress_stiffened_dynamic import StressStiffenedFSISolver
     _HAS_FSI = True
 except ImportError:
     _HAS_FSI = False
@@ -378,13 +378,13 @@ class TestStressStiffenedConfig:
     """Configuration and registration tests."""
 
     def test_solver_type_enum_exists(self):
-        from fem_shell.core.config import SolverType
+        from aeroelast.core.config import SolverType
         assert hasattr(SolverType, "STRESS_STIFFENED_DYNAMIC_FSI")
         assert SolverType.STRESS_STIFFENED_DYNAMIC_FSI.value == "StressStiffenedDynamicFSI"
 
     @_skip_fsi
     def test_solver_inherits_linear_dynamic(self):
-        from fem_shell.solvers.fsi.linear_dynamic import LinearDynamicFSISolver
+        from aeroelast.solvers.fsi.linear_dynamic import LinearDynamicFSISolver
         assert issubclass(StressStiffenedFSISolver, LinearDynamicFSISolver)
 
     @_skip_fsi

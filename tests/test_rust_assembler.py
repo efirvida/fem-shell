@@ -19,11 +19,11 @@ from petsc4py import PETSc  # noqa: E402
 
 fem_shell_core = pytest.importorskip("fem_shell_core", reason="Rust backend not available")
 
-from fem_shell.core.assembler import MeshAssembler  # noqa: E402
-from fem_shell.core.material import IsotropicMaterial  # noqa: E402
-from fem_shell.core.mesh.entities import ElementType, MeshElement, Node  # noqa: E402
-from fem_shell.core.mesh.model import MeshModel  # noqa: E402
-from fem_shell.elements import ElementFamily  # noqa: E402
+from aeroelast.core.assembler import MeshAssembler  # noqa: E402
+from aeroelast.core.material import IsotropicMaterial  # noqa: E402
+from aeroelast.core.mesh.entities import ElementType, MeshElement, Node  # noqa: E402
+from aeroelast.core.mesh.model import MeshModel  # noqa: E402
+from aeroelast.elements import ElementFamily  # noqa: E402
 
 # ---------------------------------------------------------------------------
 # Shared fixtures

@@ -26,17 +26,17 @@ import pytest
 from scipy.sparse import coo_matrix
 from scipy.sparse.linalg import spsolve
 
-from fem_shell.core.material import IsotropicMaterial
-from fem_shell.core.mesh.entities import ElementType, MeshElement, Node
-from fem_shell.core.mesh.generators import (
+from aeroelast.core.material import IsotropicMaterial
+from aeroelast.core.mesh.entities import ElementType, MeshElement, Node
+from aeroelast.core.mesh.generators import (
     CylindricalSurfaceMesh,
     HyperbolicParaboloidMesh,
     RaaschHookMesh,
     SphericalSurfaceMesh,
     SquareShapeMesh,
 )
-from fem_shell.core.mesh.model import MeshModel
-from fem_shell.elements import MITC3, MITC4
+from aeroelast.core.mesh.model import MeshModel
+from aeroelast.elements import MITC3, MITC4
 
 DOF = 6  # library convention: u,v,w,rx,ry,rz
 
@@ -105,7 +105,7 @@ def _save_mesh_vtk(mesh: MeshModel, filename: str) -> None:
 # -----------------------------------------------------------------------------
 # Mesh Generation Utilities
 # -----------------------------------------------------------------------------
-# The fem_shell.core.mesh.generators module provides mesh generators with support
+# The aeroelast.core.mesh.generators module provides mesh generators with support
 # for both regular and distorted meshes (distorted=True applies Ko2017 pattern),
 # as well as triangular elements (triangular=True):
 #
@@ -131,7 +131,7 @@ def _ratio_positions(n: int) -> np.ndarray:
 
 # -----------------------------------------------------------------------------
 # Generator-based mesh helpers
-# These functions wrap the generators from fem_shell.core.mesh.generators
+# These functions wrap the generators from aeroelast.core.mesh.generators
 # to provide meshes compatible with Ko2017 benchmarks.
 # -----------------------------------------------------------------------------
 

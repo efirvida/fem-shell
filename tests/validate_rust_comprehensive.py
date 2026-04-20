@@ -16,9 +16,9 @@ import numpy as np
 import sys
 sys.path.insert(0, "/scratch/leahk/eduardo.donestevez/fem-shell/src")
 
-from fem_shell.core.material import IsotropicMaterial, Material
-from fem_shell.elements.MITC3 import MITC3
-from fem_shell.elements.MITC4 import MITC4
+from aeroelast.core.material import IsotropicMaterial, Material
+from aeroelast.elements.MITC3 import MITC3
+from aeroelast.elements.MITC4 import MITC4
 import fem_shell_core
 
 PASS_COUNT = 0

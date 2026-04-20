@@ -12,7 +12,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from fem_shell.models.blade.aerodynamics import (
+from aeroelast.models.blade.aerodynamics import (
     AirfoilAero,
     BladeAero,
     PolarData,

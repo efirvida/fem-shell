@@ -15,8 +15,8 @@ import pytest
 
 ccblade = pytest.importorskip("ccblade", reason="ccblade not installed (pip install -e '.[bem]')")
 
-from fem_shell.models.blade.aerodynamics import load_blade_aero
-from fem_shell.solvers.bem.engine import BEMResult, BEMSolver
+from aeroelast.models.blade.aerodynamics import load_blade_aero
+from aeroelast.solvers.bem.engine import BEMResult, BEMSolver
 
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent
 IEA_YAML = str(_PROJECT_ROOT / "examples" / "blade" / "solid" / "IEA-15-240-RWT.yaml")

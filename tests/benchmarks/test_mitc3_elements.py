@@ -11,8 +11,8 @@ Validates that MITC3 (Triangular):
 import numpy as np
 import pytest
 
-from fem_shell.core.material import Material
-from fem_shell.elements.MITC3 import MITC3
+from aeroelast.core.material import Material
+from aeroelast.elements.MITC3 import MITC3
 
 
 class TestMITC3:

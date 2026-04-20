@@ -16,14 +16,14 @@ import pytest
 from scipy import sparse
 from scipy.sparse.linalg import spsolve
 
-from fem_shell.core.material import IsotropicMaterial
-from fem_shell.core.mesh.entities import ElementType
-from fem_shell.core.mesh.generators import (
+from aeroelast.core.material import IsotropicMaterial
+from aeroelast.core.mesh.entities import ElementType
+from aeroelast.core.mesh.generators import (
     BoxVolumeMesh,
     MixedElementBeamMesh,
     PyramidTransitionMesh,
 )
-from fem_shell.elements import (
+from aeroelast.elements import (
     HEXA8,
     HEXA20,
     PYRAMID5,
@@ -32,7 +32,7 @@ from fem_shell.elements import (
     WEDGE6,
     WEDGE15,
 )
-from fem_shell.elements.elements import ElementFactory, ElementFamily
+from aeroelast.elements.elements import ElementFactory, ElementFamily
 
 
 # =============================================================================
@@ -219,7 +219,7 @@ class TestElementFactorySolidElements:
 
     def test_factory_creates_hexa8(self, steel):
         """Factory should create HEXA8 from mesh element."""
-        from fem_shell.core.mesh.entities import MeshElement, Node
+        from aeroelast.core.mesh.entities import MeshElement, Node
 
         Node._id_counter = 0
 
@@ -247,7 +247,7 @@ class TestElementFactorySolidElements:
 
     def test_factory_creates_tetra4(self, steel):
         """Factory should create TETRA4 from mesh element."""
-        from fem_shell.core.mesh.entities import MeshElement, Node
+        from aeroelast.core.mesh.entities import MeshElement, Node
 
         Node._id_counter = 0
 
@@ -271,7 +271,7 @@ class TestElementFactorySolidElements:
 
     def test_factory_creates_wedge6(self, steel):
         """Factory should create WEDGE6 from mesh element."""
-        from fem_shell.core.mesh.entities import MeshElement, Node
+        from aeroelast.core.mesh.entities import MeshElement, Node
 
         Node._id_counter = 0
 
@@ -297,7 +297,7 @@ class TestElementFactorySolidElements:
 
     def test_factory_creates_pyramid5(self, steel):
         """Factory should create PYRAMID5 from mesh element."""
-        from fem_shell.core.mesh.entities import MeshElement, Node
+        from aeroelast.core.mesh.entities import MeshElement, Node
 
         Node._id_counter = 0
 

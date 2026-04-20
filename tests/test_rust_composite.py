@@ -9,8 +9,8 @@ no Python MITC3Composite / MITC4Composite class imports.
 import numpy as np
 import pytest
 
-from fem_shell.core.material import OrthotropicMaterial
-from fem_shell.core.laminate import (
+from aeroelast.core.material import OrthotropicMaterial
+from aeroelast.core.laminate import (
     Ply,
     Laminate,
     create_laminate_from_angles,

@@ -4,8 +4,8 @@ import time
 import sys
 sys.path.insert(0, "/scratch/leahk/eduardo.donestevez/fem-shell/src")
 
-from fem_shell.elements.MITC4 import MITC4
-from fem_shell.core.material import IsotropicMaterial
+from aeroelast.elements.MITC4 import MITC4
+from aeroelast.core.material import IsotropicMaterial
 import fem_shell_core
 
 # ============================================================================

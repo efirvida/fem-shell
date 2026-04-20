@@ -54,7 +54,7 @@ def iea_numad_blade(iea_blade_yaml):
     """Return a fully initialised numadBlade for the IEA-15-240-RWT."""
     import numpy as np
 
-    from fem_shell.models.blade.numad import Blade as numadBlade
+    from aeroelast.models.blade.numad import Blade as numadBlade
 
     # Same setup sequence used by BladeMesh.generate()
     blade = numadBlade()

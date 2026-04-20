@@ -1,5 +1,5 @@
 [project]
-name = "fem_shell"
+name = "aeroelast"
 version = "0.1.0"
 description = "Experimental FEM toolkit for shell, solid, and FSI simulations with optional preCICE coupling"
 authors = [
@@ -90,11 +90,11 @@ select = [
 ]
 
 [project.scripts]
-aeroelast = "fem_shell.cli.aeroelast:main"
-fem-shell-fsi = "fem_shell.cli.run_fsi:main"
-fem-shell-bem-fsi = "fem_shell.cli.run_bem_fsi:main"
-fem-shell-monitor = "fem_shell.cli.fsi_monitor:main"
-fem-shell-reconstruct-csv = "fem_shell.cli.reconstruct_rotor_csv:main"
+aeroelast = "aeroelast.cli.aeroelast:main"
+fem-shell-fsi = "aeroelast.cli.run_fsi:main"
+fem-shell-bem-fsi = "aeroelast.cli.run_bem_fsi:main"
+fem-shell-monitor = "aeroelast.cli.fsi_monitor:main"
+fem-shell-reconstruct-csv = "aeroelast.cli.reconstruct_rotor_csv:main"
 
 [project.optional-dependencies]
 dev = [
@@ -143,7 +143,7 @@ markers = [
 ]
 
 [tool.coverage.run]
-source = ["src/fem_shell"]
+source = ["src/aeroelast"]
 branch = true
 omit = [
     "*/tests/*",
