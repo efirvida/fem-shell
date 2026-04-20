@@ -30,6 +30,7 @@ pub mod petsc {
     pub mod infra;
     pub mod assembler;
     pub mod linear;
+    pub mod linear_dynamic;
     pub mod modal;
 }
 
@@ -38,4 +39,5 @@ pub use petsc::assembler::{assemble_from_coo, assemble_seq_aij, create_vec, ensu
 pub use petsc::infra::mat::{PetscError, PetscMat};
 pub use petsc::infra::vec::PetscVec;
 pub use petsc::linear::{linear_static_solve, LinearStaticResult};
+pub use petsc::linear_dynamic::{newmark_beta_solve, DynamicResult};
 pub use petsc::modal::{modal_solve, ModalResult};

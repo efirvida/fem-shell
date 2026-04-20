@@ -762,6 +762,143 @@ fn linear_static_solve_coo<'py>(
     Ok(Array1::from(u_full).into_pyarray(py))
 }
 
+/// Newmark-β dynamic solve from full-system COO triplets + free DOF list.
+///
+/// Integrates M·ü + C·u̇ + K·u = F(t) using the Newmark-β scheme.
+/// Rayleigh damping: C = η_k·K + η_m·M.
+///
+/// Args:
+///   k_rows, k_cols, k_vals  – COO triplets for the full stiffness matrix (i64 indices)
+///   m_rows, m_cols, m_vals  – COO triplets for the full mass matrix (i64 indices)
+///   f_history_flat          – force history, shape (n_steps+1, n_dof_total), row-major
+///   n_dof_total             – total DOF count (full system)
+///   free_dofs               – 1-D array of free DOF indices (i64, sorted)
+///   dt                      – time step (seconds)
+///   n_steps                 – number of time steps
+///   eta_k                   – Rayleigh stiffness proportional damping (default 0.0)
+///   eta_m                   – Rayleigh mass proportional damping (default 0.0)
+///   beta                    – Newmark-β parameter (default 0.25)
+///   gamma                   – Newmark-γ parameter (default 0.5)
+///
+/// Returns:
+///   (u_hist, v_hist, a_hist) each shape (n_steps+1, n_dof_total), row-major flat
+#[pyfunction]
+#[pyo3(signature = (k_rows, k_cols, k_vals, m_rows, m_cols, m_vals, f_history_flat, n_dof_total, free_dofs, dt, n_steps, eta_k=0.0, eta_m=0.0, beta=0.25, gamma=0.5))]
+#[allow(clippy::too_many_arguments)]
+fn newmark_beta_solve_coo<'py>(
+    py: Python<'py>,
+    k_rows: PyReadonlyArray1<'py, i64>,
+    k_cols: PyReadonlyArray1<'py, i64>,
+    k_vals: PyReadonlyArray1<'py, f64>,
+    m_rows: PyReadonlyArray1<'py, i64>,
+    m_cols: PyReadonlyArray1<'py, i64>,
+    m_vals: PyReadonlyArray1<'py, f64>,
+    f_history_flat: PyReadonlyArray2<'py, f64>,
+    n_dof_total: usize,
+    free_dofs: PyReadonlyArray1<'py, i64>,
+    dt: f64,
+    n_steps: usize,
+    eta_k: f64,
+    eta_m: f64,
+    beta: f64,
+    gamma: f64,
+) -> PyResult<(
+    Bound<'py, PyArray1<f64>>,
+    Bound<'py, PyArray1<f64>>,
+    Bound<'py, PyArray1<f64>>,
+)> {
+    let kr = k_rows.as_slice()?;
+    let kc = k_cols.as_slice()?;
+    let kv = k_vals.as_slice()?;
+    let mr = m_rows.as_slice()?;
+    let mc = m_cols.as_slice()?;
+    let mv = m_vals.as_slice()?;
+    let free = free_dofs.as_slice()?;
+    let f_arr = f_history_flat.as_array();
+
+    // ── Build free DOF remapping ─────────────────────────────────────────────
+    let mut free_sorted: Vec<i64> = free.to_vec();
+    free_sorted.sort_unstable();
+    let n_free = free_sorted.len();
+    let free_map: std::collections::HashMap<i64, i32> = free_sorted
+        .iter()
+        .enumerate()
+        .map(|(new_idx, &old_dof)| (old_dof, new_idx as i32))
+        .collect();
+
+    // ── Restrict K and M COO to free×free ────────────────────────────────────
+    let restrict = |rows: &[i64], cols: &[i64], vals: &[f64]| -> (Vec<i32>, Vec<i32>, Vec<f64>) {
+        let mut rr = Vec::new();
+        let mut cc = Vec::new();
+        let mut vv = Vec::new();
+        for ((r, c), v) in rows.iter().zip(cols.iter()).zip(vals.iter()) {
+            if let (Some(&ri), Some(&ci)) = (free_map.get(r), free_map.get(c)) {
+                rr.push(ri);
+                cc.push(ci);
+                vv.push(*v);
+            }
+        }
+        (rr, cc, vv)
+    };
+
+    let (rk, ck, vk) = restrict(kr, kc, kv);
+    let (rm, cm, vm) = restrict(mr, mc, mv);
+
+    // ── Restrict F history ───────────────────────────────────────────────────
+    let n_time = n_steps + 1;
+    if f_arr.nrows() != n_time {
+        return Err(pyo3::exceptions::PyValueError::new_err(format!(
+            "f_history_flat must have {} rows (n_steps+1), got {}",
+            n_time, f_arr.nrows()
+        )));
+    }
+    if f_arr.ncols() != n_dof_total {
+        return Err(pyo3::exceptions::PyValueError::new_err(format!(
+            "f_history_flat must have {} cols (n_dof_total), got {}",
+            n_dof_total, f_arr.ncols()
+        )));
+    }
+
+    let f_history_red: Vec<Vec<f64>> = (0..n_time)
+        .map(|t| free_sorted.iter().map(|&d| f_arr[[t, d as usize]]).collect())
+        .collect();
+
+    // ── Solve ────────────────────────────────────────────────────────────────
+    let result = aeroelast_solvers::petsc::linear_dynamic::newmark_beta_solve(
+        &rk, &ck, &vk,
+        &rm, &cm, &vm,
+        eta_k, eta_m,
+        &f_history_red,
+        dt,
+        n_steps,
+        n_free,
+        beta,
+        gamma,
+    )
+    .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))?;
+
+    // ── Expand histories to full DOF space ───────────────────────────────────
+    let expand = |hist: Vec<Vec<f64>>| -> Vec<f64> {
+        let mut out = vec![0.0f64; n_time * n_dof_total];
+        for (t, step) in hist.iter().enumerate() {
+            for (i, &global_dof) in free_sorted.iter().enumerate() {
+                out[t * n_dof_total + global_dof as usize] = step[i];
+            }
+        }
+        out
+    };
+
+    let u_flat = expand(result.displacements);
+    let v_flat = expand(result.velocities);
+    let a_flat = expand(result.accelerations);
+
+    Ok((
+        Array1::from(u_flat).into_pyarray(py),
+        Array1::from(v_flat).into_pyarray(py),
+        Array1::from(a_flat).into_pyarray(py),
+    ))
+}
+
 // ============================================================================
 // PETSc pipeline: assemble + modal solve via SLEPc
 // ============================================================================
@@ -2847,8 +2984,7 @@ impl PyLaminate {
 
 /// Register all aeroelast functions into a PyModule.
 pub fn register_module(m: &Bound<'_, PyModule>) -> PyResult<()> {
-    m.add_function(wrap_pyfunction!(batch_ke_mitc3, m)?)?;
-    m.add_function(wrap_pyfunction!(batch_me_mitc3, m)?)?;
+    m.add_function(wrap_pyfunction!(batch_ke_mitc3, m)?)?;    m.add_function(wrap_pyfunction!(batch_me_mitc3, m)?)?;
     m.add_function(wrap_pyfunction!(batch_kt_mitc3, m)?)?;
     m.add_function(wrap_pyfunction!(batch_fint_mitc3, m)?)?;
     m.add_function(wrap_pyfunction!(batch_ke_mitc4, m)?)?;
@@ -2887,7 +3023,9 @@ pub fn register_module(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(petsc_modal_solve, m)?)?;
     m.add_function(wrap_pyfunction!(modal_solve_coo, m)?)?;
     m.add_function(wrap_pyfunction!(linear_static_solve_coo, m)?)?;
+    m.add_function(wrap_pyfunction!(newmark_beta_solve_coo, m)?)?;
     m.add_class::<PyMeshModel>()?;
+
     m.add_class::<PyMeshAssembler>()?;
     m.add_class::<PyOrthotropicMaterial>()?;
     m.add_class::<PyPly>()?;
