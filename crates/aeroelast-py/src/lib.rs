@@ -680,6 +680,88 @@ fn compute_nnz<'py>(
     Array1::from(nnz).into_pyarray(py)
 }
 
+/// Linear static solve from full-system COO triplets + free DOF list.
+///
+/// Assembles the reduced stiffness matrix and load vector, solves K_red·u_red = F_red
+/// with PETSc KSP (CG + ICC), then expands the solution back to the full DOF space.
+///
+/// Args:
+///   k_rows, k_cols, k_vals  – COO triplets for the full stiffness matrix (i64 indices)
+///   f_full                  – full load vector (length n_dof_total)
+///   n_dof_total             – total DOF count (full system size)
+///   free_dofs               – 1-D array of free DOF indices (i64, sorted)
+///
+/// Returns:
+///   u_full: np.ndarray shape (n_dof_total,) — displacement at all DOFs (0 at constrained)
+#[pyfunction]
+fn linear_static_solve_coo<'py>(
+    py: Python<'py>,
+    k_rows: PyReadonlyArray1<'py, i64>,
+    k_cols: PyReadonlyArray1<'py, i64>,
+    k_vals: PyReadonlyArray1<'py, f64>,
+    f_full: PyReadonlyArray1<'py, f64>,
+    n_dof_total: usize,
+    free_dofs: PyReadonlyArray1<'py, i64>,
+) -> PyResult<Bound<'py, PyArray1<f64>>> {
+    let kr = k_rows.as_slice()?;
+    let kc = k_cols.as_slice()?;
+    let kv = k_vals.as_slice()?;
+    let f_arr = f_full.as_slice()?;
+    let free = free_dofs.as_slice()?;
+
+    // Build free DOF set and remapping: global → reduced index
+    let mut free_sorted: Vec<i64> = free.to_vec();
+    free_sorted.sort_unstable();
+    let n_free = free_sorted.len();
+    let free_map: std::collections::HashMap<i64, i32> = free_sorted
+        .iter()
+        .enumerate()
+        .map(|(new_idx, &old_dof)| (old_dof, new_idx as i32))
+        .collect();
+
+    // Restrict K COO to free×free submatrix and remap indices to [0, n_free)
+    let mut rr = Vec::new();
+    let mut cc = Vec::new();
+    let mut vv = Vec::new();
+    for ((r, c), v) in kr.iter().zip(kc.iter()).zip(kv.iter()) {
+        if let (Some(&ri), Some(&ci)) = (free_map.get(r), free_map.get(c)) {
+            rr.push(ri);
+            cc.push(ci);
+            vv.push(*v);
+        }
+    }
+
+    // Restrict F to free DOFs
+    let f_red: Vec<f64> = free_sorted.iter().map(|&d| f_arr[d as usize]).collect();
+
+    // Assemble PETSc K_red
+    let mat_k = aeroelast_solvers::petsc::assembler::assemble_seq_aij(&rr, &cc, &vv, n_free)
+        .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))?;
+
+    // Build PETSc F_red vector
+    let f_vec = aeroelast_solvers::petsc::linear::build_vec_from_slice(&f_red)
+        .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))?;
+
+    // Solve K_red · u_red = F_red
+    let result = aeroelast_solvers::petsc::linear::linear_static_solve(&mat_k, &f_vec, n_free)
+        .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))?;
+
+    if result.converged_reason <= 0 {
+        return Err(pyo3::exceptions::PyRuntimeError::new_err(format!(
+            "KSP did not converge: reason={}, iters={}, rnorm={:.3e}",
+            result.converged_reason, result.iterations, result.residual_norm
+        )));
+    }
+
+    // Expand u_red → u_full (0 at constrained DOFs)
+    let mut u_full = vec![0.0f64; n_dof_total];
+    for (i, &global_dof) in free_sorted.iter().enumerate() {
+        u_full[global_dof as usize] = result.displacements[i];
+    }
+
+    Ok(Array1::from(u_full).into_pyarray(py))
+}
+
 // ============================================================================
 // PETSc pipeline: assemble + modal solve via SLEPc
 // ============================================================================
@@ -2804,6 +2886,7 @@ pub fn register_module(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(petsc_assemble_matrix, m)?)?;
     m.add_function(wrap_pyfunction!(petsc_modal_solve, m)?)?;
     m.add_function(wrap_pyfunction!(modal_solve_coo, m)?)?;
+    m.add_function(wrap_pyfunction!(linear_static_solve_coo, m)?)?;
     m.add_class::<PyMeshModel>()?;
     m.add_class::<PyMeshAssembler>()?;
     m.add_class::<PyOrthotropicMaterial>()?;
