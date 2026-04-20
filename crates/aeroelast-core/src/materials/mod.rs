@@ -1,9 +1,18 @@
 pub mod composite;
+pub mod failure;
 pub mod isotropic;
-pub mod orthotropic;
 pub mod laminate;
+pub mod orthotropic;
 
 use nalgebra::{Matrix2, Matrix3};
+
+/// Element family classification.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ElementFamily {
+    Shell = 2,
+    Plane = 3,
+    Solid = 4,
+}
 
 /// Constitutive matrices for a shell element.
 ///

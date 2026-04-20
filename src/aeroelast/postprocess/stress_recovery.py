@@ -101,7 +101,7 @@ from typing import TYPE_CHECKING, Dict, Optional, Tuple
 
 import numpy as np
 
-from aeroelast.elements.elements import ElementFamily
+from aeroelast.elements import ElementFamily
 
 if TYPE_CHECKING:
     from aeroelast.core.assembler import MeshAssembler

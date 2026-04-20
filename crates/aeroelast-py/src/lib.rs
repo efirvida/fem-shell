@@ -2582,6 +2582,26 @@ impl PyMeshModel {
 // PyOrthotropicMaterial, PyPly, PyLaminate
 // ============================================================================
 
+// ============================================================================
+// ElementFamily
+// ============================================================================
+
+/// Element family classification exposed to Python.
+///
+/// Mirrors `aeroelast.elements.ElementFamily` (IntEnum).
+/// Values are kept identical for drop-in compatibility:
+///   SHELL = 2, PLANE = 3, SOLID = 4
+#[pyclass(name = "ElementFamily", eq, eq_int, hash, frozen)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+enum PyElementFamily {
+    #[pyo3(name = "SHELL")]
+    Shell = 2,
+    #[pyo3(name = "PLANE")]
+    Plane = 3,
+    #[pyo3(name = "SOLID")]
+    Solid = 4,
+}
+
 /// Python wrapper for `OrthotropicMaterial`.
 ///
 /// Mirrors the Python `OrthotropicMaterial` dataclass from `material.py`.
@@ -2789,6 +2809,7 @@ pub fn register_module(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyOrthotropicMaterial>()?;
     m.add_class::<PyPly>()?;
     m.add_class::<PyLaminate>()?;
+    m.add_class::<PyElementFamily>()?;
     Ok(())
 }
 

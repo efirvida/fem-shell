@@ -1,6 +1,3 @@
-from .elements import ElementFamily, FemElement
+from _aeroelast import ElementFamily
 
-__all__ = [
-    "ElementFamily",
-    "FemElement",
-]
+__all__ = ["ElementFamily"]
