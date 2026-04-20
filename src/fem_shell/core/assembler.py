@@ -172,46 +172,53 @@ class MeshAssembler:
 
         Element type codes are set to composite (33/44) for elements in composite sets,
         or isotropic (3/4) otherwise — matching what from_model() expects.
+
+        Vectorised with numpy to avoid per-element Python overhead (~86k elements).
         """
         from fem_shell_core import MeshModel as RustMeshModel  # noqa: PLC0415
 
         mesh = self.mesh
-        nid_to_idx = mesh.node_id_to_index
 
-        # Flat coords in node-index order
-        node_ids_list = [n.id for n in mesh.nodes]
-        coords_flat = []
-        for n in mesh.nodes:
-            c = n.coords
-            coords_flat.extend([float(c[0]), float(c[1]), float(c[2])])
+        # ── Nodes ─────────────────────────────────────────────────────────────
+        nodes = mesh.nodes
+        node_ids_list = [n.id for n in nodes]
+        # Stack (N, 3) then ravel to flat [x0,y0,z0, x1,y1,z1, ...]
+        coords_flat = np.stack([n.coords for n in nodes], axis=0).ravel().tolist()
 
-        # Per-element composite check: which element_ids are in composite sets?
+        # ── Elements ──────────────────────────────────────────────────────────
+        elements = mesh.elements
+        element_ids_arr = np.fromiter((e.id for e in elements), dtype=np.int64, count=len(elements))
+
+        # node_count per element — fast fromiter
+        node_counts_arr = np.fromiter((e.node_count for e in elements), dtype=np.int8, count=len(elements))
+
+        # Per-element composite flag: build set of composite element ids
         composite_elem_ids: set = set()
         for set_name, prop in properties_map.items():
             if isinstance(prop, CompositeShellProperty) and set_name in mesh.element_sets:
-                for elem in mesh.element_sets[set_name].elements:
-                    composite_elem_ids.add(elem.id)
+                composite_elem_ids.update(e.id for e in mesh.element_sets[set_name].elements)
 
-        element_ids_list = []
-        element_node_ids_list = []
-        element_type_codes_list = []
-        for elem in mesh.elements:
-            element_ids_list.append(elem.id)
-            element_node_ids_list.append(list(elem.node_ids))
-            n = elem.node_count
-            if elem.id in composite_elem_ids:
-                code = 33 if n == 3 else 44
-            else:
-                code = 3 if n == 3 else 4
-            element_type_codes_list.append(code)
+        if composite_elem_ids:
+            composite_arr = np.isin(element_ids_arr, np.fromiter(composite_elem_ids, dtype=np.int64))
+        else:
+            composite_arr = np.zeros(len(elements), dtype=bool)
 
-        # Element sets: {name: [elem_id, ...]}
+        # type code: tri composite=33, quad composite=44, tri iso=3, quad iso=4
+        is_tri = node_counts_arr == 3
+        type_codes = np.where(
+            composite_arr,
+            np.where(is_tri, 33, 44),
+            np.where(is_tri, 3, 4),
+        ).tolist()
+
+        element_ids_list = element_ids_arr.tolist()
+        element_node_ids_list = [list(e.node_ids) for e in elements]
+
+        # ── Sets ──────────────────────────────────────────────────────────────
         rust_esets = {
             name: [e.id for e in eset.elements]
             for name, eset in mesh.element_sets.items()
         }
-
-        # Node sets: {name: [node_id, ...]}
         rust_nsets = {
             name: list(nset.node_ids)
             for name, nset in mesh.node_sets.items()
@@ -222,7 +229,7 @@ class MeshAssembler:
             coords_flat,
             element_ids_list,
             element_node_ids_list,
-            element_type_codes_list,
+            type_codes,
             rust_esets,
             rust_nsets,
         )
@@ -301,22 +308,8 @@ class MeshAssembler:
                 None,  # fallback_material — handled via properties_map
             )
             self._row_nnz = np.asarray(self._rust.nnz_per_row(), dtype=PETSc.IntType)
-            # Build _rho_per_elem (one pass, O(n_elems))
-            elem_to_prop: Dict[int, ShellPropertyType] = {}
-            for set_name, prop in properties_map.items():
-                if set_name in self.mesh.element_sets:
-                    for elem in self.mesh.element_sets[set_name].elements:
-                        elem_to_prop[elem.id] = prop
-            rho_vals = []
-            for elem in self.mesh.elements:
-                prop = elem_to_prop.get(elem.id)
-                if isinstance(prop, CompositeShellProperty):
-                    rho_vals.append(sum(p.material.rho * p.thickness for p in prop.laminate.plies))
-                elif isinstance(prop, ShellProperty):
-                    rho_vals.append(float(prop.material.rho))
-                else:
-                    rho_vals.append(0.0)
-            self._rho_per_elem = np.array(rho_vals, dtype=np.float64)
+            # _rho_per_elem: extracted from Rust MaterialSpec — no Python loop needed
+            self._rho_per_elem = np.asarray(self._rust.rho_per_elem(), dtype=np.float64)
             logger.info("[assembler._build_py_mesh_assembler] from_model() done in %.2fs", time.perf_counter() - _t_fast)
             return
 
