@@ -914,6 +914,55 @@ class StressRecovery:
         """
         n_nodes = self.n_nodes
 
+        # ------------------------------------------------------------------
+        # Fast path: use Rust for element stress computation; averaging loop
+        # still runs in Python but avoids the costly per-element Python
+        # stress evaluation (the hot path in the original code).
+        # ------------------------------------------------------------------
+        _rust = getattr(self.domain, "_rust", None)
+        if _rust is not None:
+            _Z_FACTOR_NS = {
+                StressLocation.BOTTOM: -0.5,
+                StressLocation.MIDDLE:  0.0,
+                StressLocation.TOP:    +0.5,
+            }
+            _STRESS_TYPE_NS = {
+                StressType.MEMBRANE: 0,
+                StressType.BENDING:  1,
+                StressType.TOTAL:    2,
+            }
+            z_factor = _Z_FACTOR_NS.get(location, 0.0)
+            stype_int = _STRESS_TYPE_NS.get(stress_type, 2)
+            sigma_elem, _ = _rust.compute_stress_field(self.u, z_factor, stype_int)
+            # sigma_elem: (n_elems, 6) — one stress state per element
+
+            sigma_sum = np.zeros((n_nodes, 6))
+            weight_sum = np.zeros(n_nodes)
+            has_solid = False
+
+            for elem_idx, element in self.domain._element_map.items():
+                if smoothing == "area_weighted":
+                    weight = self._compute_element_weight(element)
+                else:
+                    weight = 1.0
+
+                node_ids = element.node_ids
+                for local_idx in range(element.node_count):
+                    gn = self._node_id_to_index[node_ids[local_idx]]
+                    sigma_sum[gn, :] += weight * sigma_elem[elem_idx, :]
+                    weight_sum[gn] += weight
+
+                if self._is_solid(element):
+                    has_solid = True
+
+            mask = weight_sum > 0
+            sigma_avg = np.zeros((n_nodes, 6))
+            sigma_avg[mask] = sigma_sum[mask] / weight_sum[mask, np.newaxis]
+            return self._build_stress_result(sigma_avg, is_3d=has_solid)
+
+        # ------------------------------------------------------------------
+        # Pure-Python fallback
+        # ------------------------------------------------------------------
         sigma_sum = np.zeros((n_nodes, 6))
         weight_sum = np.zeros(n_nodes)
         has_solid = False
@@ -1113,6 +1162,25 @@ class StressRecovery:
         r0, s0 = gauss_point
         n_elem = self.n_elements
 
+        # ------------------------------------------------------------------
+        # Fast path: delegate to the Rust assembler when available and the
+        # caller requests the canonical centroid point (0, 0).
+        # ------------------------------------------------------------------
+        _rust = getattr(self.domain, "_rust", None)
+        if _rust is not None and r0 == 0.0 and s0 == 0.0:
+            _Z_FACTOR = {
+                StressLocation.BOTTOM: -0.5,
+                StressLocation.MIDDLE:  0.0,
+                StressLocation.TOP:    +0.5,
+            }
+            z_factor = _Z_FACTOR.get(location, 0.0)
+            _, eps_all = _rust.compute_stress_field(self.u, z_factor, 2)
+            has_solid = any(self._is_solid(el) for el in self.domain._element_map.values())
+            return self._build_strain_result(eps_all, is_3d=has_solid)
+
+        # ------------------------------------------------------------------
+        # Pure-Python fallback
+        # ------------------------------------------------------------------
         eps_all = np.zeros((n_elem, 6))
         has_solid = False
 
@@ -1164,6 +1232,49 @@ class StressRecovery:
         """
         n_nodes = self.n_nodes
 
+        # ------------------------------------------------------------------
+        # Fast path: use Rust for element strain computation; averaging loop
+        # still runs in Python but avoids the costly per-element Python
+        # strain evaluation (the hot path in the original code).
+        # ------------------------------------------------------------------
+        _rust = getattr(self.domain, "_rust", None)
+        if _rust is not None:
+            _Z_FACTOR_NE = {
+                StressLocation.BOTTOM: -0.5,
+                StressLocation.MIDDLE:  0.0,
+                StressLocation.TOP:    +0.5,
+            }
+            z_factor = _Z_FACTOR_NE.get(location, 0.0)
+            _, eps_elem = _rust.compute_stress_field(self.u, z_factor, 2)
+            # eps_elem: (n_elems, 6) — one strain state per element
+
+            eps_sum = np.zeros((n_nodes, 6))
+            weight_sum = np.zeros(n_nodes)
+            has_solid = False
+
+            for elem_idx, element in self.domain._element_map.items():
+                if smoothing == "area_weighted":
+                    weight = self._compute_element_weight(element)
+                else:
+                    weight = 1.0
+
+                node_ids = element.node_ids
+                for local_idx in range(element.node_count):
+                    gn = self._node_id_to_index[node_ids[local_idx]]
+                    eps_sum[gn, :] += weight * eps_elem[elem_idx, :]
+                    weight_sum[gn] += weight
+
+                if self._is_solid(element):
+                    has_solid = True
+
+            mask = weight_sum > 0
+            eps_avg = np.zeros((n_nodes, 6))
+            eps_avg[mask] = eps_sum[mask] / weight_sum[mask, np.newaxis]
+            return self._build_strain_result(eps_avg, is_3d=has_solid)
+
+        # ------------------------------------------------------------------
+        # Pure-Python fallback
+        # ------------------------------------------------------------------
         eps_sum = np.zeros((n_nodes, 6))
         weight_sum = np.zeros(n_nodes)
         has_solid = False
