@@ -361,29 +361,158 @@ class MeshAssembler:
     # Lazy element map: only built when needed for body loads / stress stiffening
     # ------------------------------------------------------------------
 
+    def _mesh_to_rust(self, properties_map):
+        """Convert Python MeshModel + properties_map to a Rust MeshModel.
+
+        Element type codes are set to composite (33/44) for elements in composite sets,
+        or isotropic (3/4) otherwise — matching what from_model() expects.
+        """
+        from fem_shell_core import MeshModel as RustMeshModel  # noqa: PLC0415
+
+        mesh = self.mesh
+        nid_to_idx = mesh.node_id_to_index
+
+        # Flat coords in node-index order
+        node_ids_list = [n.id for n in mesh.nodes]
+        coords_flat = []
+        for n in mesh.nodes:
+            c = n.coords
+            coords_flat.extend([float(c[0]), float(c[1]), float(c[2])])
+
+        # Per-element composite check: which element_ids are in composite sets?
+        composite_elem_ids: set = set()
+        for set_name, prop in properties_map.items():
+            if isinstance(prop, CompositeShellProperty) and set_name in mesh.element_sets:
+                for elem in mesh.element_sets[set_name].elements:
+                    composite_elem_ids.add(elem.id)
+
+        element_ids_list = []
+        element_node_ids_list = []
+        element_type_codes_list = []
+        for elem in mesh.elements:
+            element_ids_list.append(elem.id)
+            element_node_ids_list.append(list(elem.node_ids))
+            n = elem.node_count
+            if elem.id in composite_elem_ids:
+                code = 33 if n == 3 else 44
+            else:
+                code = 3 if n == 3 else 4
+            element_type_codes_list.append(code)
+
+        # Element sets: {name: [elem_id, ...]}
+        rust_esets = {
+            name: [e.id for e in eset.elements]
+            for name, eset in mesh.element_sets.items()
+        }
+
+        # Node sets: {name: [node_id, ...]}
+        rust_nsets = {
+            name: list(nset.node_ids)
+            for name, nset in mesh.node_sets.items()
+        }
+
+        return RustMeshModel.from_raw_data(
+            node_ids_list,
+            coords_flat,
+            element_ids_list,
+            element_node_ids_list,
+            element_type_codes_list,
+            rust_esets,
+            rust_nsets,
+        )
+
+    def _properties_to_rust(self, properties_map, RustLaminate, RustPly, RustMat):
+        """Convert Python properties_map to a dict suitable for PyMeshAssembler.from_model().
+
+        Returns dict[str, RustLaminate | dict] where:
+        - CompositeShellProperty → RustLaminate
+        - ShellProperty → isotropic dict
+        """
+        result = {}
+        for set_name, prop in properties_map.items():
+            if isinstance(prop, CompositeShellProperty):
+                lam = prop.laminate
+                rust_plies = []
+                for ply in lam.plies:
+                    m = ply.material
+                    E = m.E
+                    G = m.G
+                    nu = m.nu
+                    rust_mat = RustMat(
+                        float(E[0]), float(E[1]), float(E[2]),
+                        float(G[0]), float(G[1]), float(G[2]),
+                        float(nu[0]), float(nu[1]), float(nu[2]),
+                        float(m.rho),
+                    )
+                    rust_plies.append(RustPly(rust_mat, float(ply.thickness), float(ply.angle)))
+                scf = float(getattr(lam, 'shear_correction_factor', 0.75))
+                result[set_name] = RustLaminate(rust_plies, scf)
+            elif isinstance(prop, ShellProperty):
+                m = prop.material
+                result[set_name] = {
+                    "type": "isotropic",
+                    "e": float(m.E),
+                    "nu": float(m.nu),
+                    "rho": float(m.rho),
+                    "thickness": float(prop.thickness),
+                    "shear_correction": float(getattr(prop, 'shear_correction', 5.0 / 6.0)),
+                }
+        return result
+
     def _build_py_mesh_assembler(self):
         """Build a PyMeshAssembler (Rust) directly from mesh topology and properties.
 
-        Uses a two-phase strategy to eliminate the per-element Python overhead:
+        Fast path: converts mesh + properties to Rust types and calls
+        ``PyMeshAssembler.from_model()`` — zero Python loops over elements.
 
-        Phase 1 — Vectorized angle offsets (numpy, no loop):
-            For meshes with a span_direction and composite elements, compute all
-            e1/e2/e3 local axes and angle offsets in a single batch numpy operation
-            using ``_batch_angle_offsets``.
-
-        Phase 2 — Cached laminate ABD matrices:
-            Cache key is ``(id(lam), round(angle_offset, 1))`` — 0.1° resolution
-            is sufficient (blade variation is std ≈ 0.03°).  In practice, the
-            number of unique (lam, angle) pairs equals the number of unique laminates
-            (~696 for the IEA-15 blade), not the number of elements (84889).
+        Fallback: two-phase Python strategy (vectorized angle offsets + cached ABD).
         """
         self._rust = None
 
         try:
-            from fem_shell_core import PyMeshAssembler  # noqa: PLC0415
+            from fem_shell_core import PyMeshAssembler, MeshModel as RustMeshModel, Laminate as RustLaminate, Ply as RustPly, OrthotropicMaterial as RustMat  # noqa: PLC0415
         except ImportError:
             logger.warning("[assembler._build_py_mesh_assembler] fem_shell_core not available — Rust assembler disabled")
             return
+
+        # ── FAST PATH: build via PyMeshAssembler.from_model() ─────────────────
+        properties_map: Optional[Dict[str, ShellPropertyType]] = self.model.get("properties")
+        if properties_map is not None:
+            try:
+                _t_fast = time.perf_counter()
+                rust_mesh = self._mesh_to_rust(properties_map)
+                rust_properties = self._properties_to_rust(properties_map, RustLaminate, RustPly, RustMat)
+                span_dir_raw = self.model.get("span_direction")
+                span_dir_list = list(span_dir_raw) if span_dir_raw is not None else None
+                self._rust = PyMeshAssembler.from_model(
+                    rust_mesh,
+                    rust_properties,
+                    span_dir_list,
+                    None,  # fallback_material — handled via properties_map
+                )
+                self._row_nnz = np.asarray(self._rust.nnz_per_row(), dtype=PETSc.IntType)
+                # Build _rho_per_elem from properties (one pass, O(n_elems))
+                elem_to_prop = {}
+                for set_name, prop in properties_map.items():
+                    if set_name in self.mesh.element_sets:
+                        for elem in self.mesh.element_sets[set_name].elements:
+                            elem_to_prop[elem.id] = prop
+                rho_vals = []
+                for elem in self.mesh.elements:
+                    prop = elem_to_prop.get(elem.id)
+                    if isinstance(prop, CompositeShellProperty):
+                        mpa = sum(p.material.rho * p.thickness for p in prop.laminate.plies)
+                        rho_vals.append(mpa)
+                    elif isinstance(prop, ShellProperty):
+                        rho_vals.append(float(prop.material.rho))
+                    else:
+                        rho_vals.append(0.0)
+                self._rho_per_elem = np.array(rho_vals, dtype=np.float64)
+                logger.info("[assembler._build_py_mesh_assembler] fast-path from_model() done in %.2fs", time.perf_counter() - _t_fast)
+                return
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("[assembler._build_py_mesh_assembler] fast-path failed (%s) — falling back to Python path", exc)
+                self._rust = None
 
         logger.info("[assembler._build_py_mesh_assembler] building node_coords for %d nodes", self.mesh.node_count)
         _t0 = time.perf_counter()

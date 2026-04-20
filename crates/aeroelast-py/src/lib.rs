@@ -1091,6 +1091,223 @@ impl PyMeshAssembler {
         Ok(PyMeshAssembler { inner })
     }
 
+    /// Build a `PyMeshAssembler` directly from a `PyMeshModel` + Python properties map.
+    ///
+    /// This replaces `_build_py_mesh_assembler` entirely — no Python loops for
+    /// node_coords, connectivity, or angle offsets. Only the properties dict is
+    /// still passed from Python.
+    ///
+    /// Parameters
+    /// ----------
+    /// mesh : MeshModel
+    ///     Rust-native mesh loaded via `MeshModel.from_hdf5(...)`.
+    /// properties : dict[str, PyLaminate | dict]
+    ///     Mapping from element-set name to property. Supported values:
+    ///     - `PyLaminate` instance → composite MITC3/4 element
+    ///     - dict with keys `type="isotropic"`, `e`, `nu`, `rho`, `thickness`[, `shear_correction`]
+    /// span_direction : list[float] | None
+    ///     3-component span direction for fibre angle correction. None to skip.
+    /// fallback_material : dict | None
+    ///     Isotropic material dict used for elements not in any property set.
+    ///     If None, elements without properties raise an error.
+    #[staticmethod]
+    #[pyo3(signature = (mesh, properties, span_direction=None, fallback_material=None))]
+    pub fn from_model(
+        mesh: &mut PyMeshModel,
+        properties: &pyo3::Bound<'_, pyo3::types::PyDict>,
+        span_direction: Option<Vec<f64>>,
+        fallback_material: Option<Py<PyAny>>,
+        py: Python,
+    ) -> PyResult<Self> {
+        use aeroelast_mesh::geometry::batch_angle_offsets;
+        use aeroelast_core::materials::laminate::Laminate;
+        use std::collections::HashMap;
+
+        // ── topology (all in Rust, no Python loops) ──────────────────────────
+        let flat_coords = mesh.inner.node_coords_flat().to_vec();
+        let (connectivity, code_i32) = mesh.inner.build_connectivity_arrays();
+
+        // ── per-element property lookup: elem_id → (set_name, property) ──────
+        // We build this from element_sets in MeshModel (already in Rust)
+        let mut elem_to_set: HashMap<u64, String> = HashMap::new();
+        for (set_name, eset) in &mesh.inner.element_sets {
+            for &eid in &eset.element_ids {
+                elem_to_set.insert(eid, set_name.clone());
+            }
+        }
+
+        // ── parse Python properties dict: set_name → MaterialSpec template ───
+        // We pre-compute ABD for each (laminate, angle_bucket) pair (the cache)
+        // Properties can be PyLaminate or dict
+        let mut set_to_prop: HashMap<String, Py<PyAny>> = HashMap::new();
+        for (key, val) in properties.iter() {
+            let set_name: String = key.extract()?;
+            set_to_prop.insert(set_name, val.unbind());
+        }
+
+        // ── Phase 1: batch angle offsets (Rayon parallel, pure Rust) ─────────
+        let span_dir: Option<[f64; 3]> = span_direction.as_ref().and_then(|v| {
+            if v.len() >= 3 { Some([v[0], v[1], v[2]]) } else { None }
+        });
+
+        // Only compute for composite quad4 elements that have a laminate property
+        let mut elem_angle_offsets: HashMap<u64, f64> = HashMap::new();
+        if let Some(sd) = span_dir {
+            // Identify composite quad4 elements
+            let quad_indices: Vec<usize> = mesh.inner.elements.iter().enumerate()
+                .filter_map(|(i, elem)| {
+                    let set = elem_to_set.get(&elem.id)?;
+                    let prop = set_to_prop.get(set)?;
+                    // Check if it's a PyLaminate (composite) and has 4 nodes
+                    let is_composite = prop.bind(py).is_instance_of::<PyLaminate>();
+                    if is_composite && elem.node_ids.len() == 4 { Some(i) } else { None }
+                })
+                .collect();
+
+            if !quad_indices.is_empty() {
+                let quad_conns: Vec<Vec<usize>> = quad_indices.iter()
+                    .map(|&i| connectivity[i].clone())
+                    .collect();
+                let offsets = batch_angle_offsets(&flat_coords, &quad_conns, sd);
+                for (i_local, &i_elem) in quad_indices.iter().enumerate() {
+                    elem_angle_offsets.insert(mesh.inner.elements[i_elem].id, offsets[i_local]);
+                }
+            }
+        }
+
+        // ── Phase 2: build MaterialSpec per element ───────────────────────────
+        // Cache: (PyLaminate ptr, angle_bucket_tenths: i32) → MaterialSpec
+        let mut abd_cache: HashMap<(usize, i32), MaterialSpec> = HashMap::new();
+
+        let n_elems = mesh.inner.elements.len();
+        let mut rust_materials: Vec<MaterialSpec> = Vec::with_capacity(n_elems);
+        let mut rust_elem_types: Vec<ElemType> = Vec::with_capacity(n_elems);
+
+        for (i, elem) in mesh.inner.elements.iter().enumerate() {
+            let n_nodes_elem = elem.node_ids.len();
+
+            let prop_obj: Option<&Py<PyAny>> = elem_to_set.get(&elem.id)
+                .and_then(|s| set_to_prop.get(s));
+
+            let (etype, mat_spec) = if let Some(prop) = prop_obj {
+                let bound = prop.bind(py);
+                if let Ok(lam_ref) = bound.downcast::<PyLaminate>() {
+                    // ── Composite shell ───────────────────────────────────────
+                    let etype = if n_nodes_elem == 3 { ElemType::Mitc3Composite } else { ElemType::Mitc4Composite };
+                    let ptr = prop.as_ptr() as usize; // stable identity for cache key
+
+                    let angle_offset = elem_angle_offsets.get(&elem.id).copied().unwrap_or(0.0);
+                    let bucket_tenths = (angle_offset * 10.0).round() as i32;
+                    let cache_key = (ptr, bucket_tenths);
+
+                    let spec = if let Some(cached) = abd_cache.get(&cache_key) {
+                        cached.clone()
+                    } else {
+                        // Apply angle offset to laminate
+                        let lam: &Laminate = &lam_ref.borrow().inner;
+                        let corrected_lam = if bucket_tenths == 0 {
+                            lam.clone()
+                        } else {
+                            let angle_deg = bucket_tenths as f64 / 10.0;
+                            let corrected_plies: Vec<_> = lam.plies.iter().map(|p| {
+                                aeroelast_core::materials::laminate::Ply {
+                                    material: p.material.clone(),
+                                    thickness: p.thickness,
+                                    angle: p.angle + angle_deg,
+                                    z_bottom: p.z_bottom,
+                                    z_top: p.z_top,
+                                }
+                            }).collect();
+                            // Recompute laminate with corrected angles
+                            Laminate::new(corrected_plies, lam.shear_correction_factor)
+                                .map_err(|e| pyo3::exceptions::PyValueError::new_err(e))?
+                        };
+
+                        let h = corrected_lam.total_thickness;
+                        let a_trace = corrected_lam.a[(0,0)] + corrected_lam.a[(1,1)] + corrected_lam.a[(2,2)];
+                        let e_equiv = if h > 0.0 { a_trace / (3.0 * h) } else { 0.0 };
+                        let mass_per_area: f64 = corrected_lam.plies.iter()
+                            .map(|p| p.material.density() * p.thickness)
+                            .sum();
+                        let rotational_inertia: f64 = corrected_lam.plies.iter()
+                            .map(|p| p.material.density() * (p.z_top.powi(3) - p.z_bottom.powi(3)) / 3.0)
+                            .sum();
+
+                        let mut cm = [0.0f64; 9];
+                        let mut cb = [0.0f64; 9];
+                        let mut cs = [0.0f64; 4];
+                        for ii in 0..3 { for jj in 0..3 {
+                            cm[ii*3+jj] = corrected_lam.a[(ii, jj)];
+                            cb[ii*3+jj] = corrected_lam.d[(ii, jj)];
+                        }}
+                        cs[0] = corrected_lam.cs[(0,0)];
+                        cs[1] = corrected_lam.cs[(0,1)];
+                        cs[2] = corrected_lam.cs[(1,0)];
+                        cs[3] = corrected_lam.cs[(1,1)];
+
+                        let spec = MaterialSpec::Composite {
+                            cm, cb, cs,
+                            thickness: h,
+                            e_equiv,
+                            mass_per_area,
+                            rotational_inertia,
+                        };
+                        abd_cache.insert(cache_key, spec.clone());
+                        spec
+                    };
+                    (etype, spec)
+                } else {
+                    // ── Isotropic dict ────────────────────────────────────────
+                    let etype = if n_nodes_elem == 3 { ElemType::Mitc3 } else { ElemType::Mitc4 };
+                    let spec = parse_material(py, prop)?;
+                    (etype, spec)
+                }
+            } else if let Some(ref fb) = fallback_material {
+                // ── Fallback isotropic ─────────────────────────────────────────
+                let etype = if n_nodes_elem == 3 { ElemType::Mitc3 } else { ElemType::Mitc4 };
+                let spec = parse_material(py, fb)?;
+                (etype, spec)
+            } else {
+                return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                    "element {} has no property and no fallback_material was provided",
+                    elem.id
+                )));
+            };
+
+            // Override elem_type from mesh entities (for solid elements etc.)
+            let final_etype = {
+                let mesh_code = code_i32[i];
+                match mesh_code as u16 {
+                    3   => ElemType::Mitc3,
+                    4   => ElemType::Mitc4,
+                    33  => ElemType::Mitc3Composite,
+                    44  => ElemType::Mitc4Composite,
+                    104 => ElemType::Quad4,
+                    108 => ElemType::Quad8,
+                    109 => ElemType::Quad9,
+                    208 => ElemType::Hexa8,
+                    220 => ElemType::Hexa20,
+                    304 => ElemType::Tetra4,
+                    310 => ElemType::Tetra10,
+                    306 => ElemType::Wedge6,
+                    315 => ElemType::Wedge15,
+                    305 => ElemType::Pyramid5,
+                    313 => ElemType::Pyramid13,
+                    // For shell elements loaded from HDF5 without composite info,
+                    // use the composite/isotropic determination from property
+                    _ => etype,
+                }
+            };
+
+            rust_elem_types.push(final_etype);
+            rust_materials.push(mat_spec);
+        }
+
+        let topology = MeshTopology::new(flat_coords, connectivity, rust_elem_types);
+        let inner = MeshAssembler::new(topology, rust_materials);
+        Ok(PyMeshAssembler { inner })
+    }
+
     /// Total number of DOFs in the system.
     #[getter]
     pub fn dofs_count(&self) -> usize {
@@ -2200,6 +2417,100 @@ impl PyMeshModel {
             self.inner.node_sets.len(),
             self.inner.element_sets.len(),
         )
+    }
+
+    /// Construct a MeshModel from raw Python data.
+    ///
+    /// Parameters
+    /// ----------
+    /// node_ids : list[int]
+    ///     Node IDs in index order.
+    /// node_coords_flat : list[float]
+    ///     Flat (n_nodes × 3) coordinate array — row-major.
+    /// element_ids : list[int]
+    ///     Element IDs in index order.
+    /// element_node_ids : list[list[int]]
+    ///     Per-element node-ID lists (variable length).
+    /// element_type_codes : list[int]
+    ///     Assembler type code per element (3, 4, 33, 44, 208, …).
+    /// element_sets : dict[str, list[int]]
+    ///     Named element sets — values are lists of element IDs.
+    /// node_sets : dict[str, list[int]]
+    ///     Named node sets — values are lists of node IDs.
+    #[staticmethod]
+    #[pyo3(signature = (node_ids, node_coords_flat, element_ids, element_node_ids, element_type_codes, element_sets, node_sets))]
+    fn from_raw_data(
+        node_ids: Vec<u64>,
+        node_coords_flat: Vec<f64>,
+        element_ids: Vec<u64>,
+        element_node_ids: Vec<Vec<u64>>,
+        element_type_codes: Vec<i32>,
+        element_sets: std::collections::HashMap<String, Vec<u64>>,
+        node_sets: std::collections::HashMap<String, Vec<u64>>,
+    ) -> PyResult<Self> {
+        use aeroelast_mesh::entities::{Element, ElementSet, ElementType, Node, NodeSet};
+        use aeroelast_mesh::model::MeshModel;
+
+        let n_nodes = node_ids.len();
+        if node_coords_flat.len() != n_nodes * 3 {
+            return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                "node_coords_flat length {} != node_ids.len() * 3 = {}",
+                node_coords_flat.len(), n_nodes * 3
+            )));
+        }
+
+        let mut model = MeshModel::new();
+
+        // Build nodes
+        for (i, &nid) in node_ids.iter().enumerate() {
+            let x = node_coords_flat[i * 3];
+            let y = node_coords_flat[i * 3 + 1];
+            let z = node_coords_flat[i * 3 + 2];
+            model.add_node(Node::new(nid, x, y, z))
+                .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
+        }
+
+        // Build elements
+        let elem_type_from_code = |code: i32, n_nodes_e: usize| -> ElementType {
+            match code {
+                3  => ElementType::Triangle3,
+                33 => ElementType::CompTri3,
+                4  => ElementType::Quad4,
+                44 => ElementType::CompQuad4,
+                104 => ElementType::Quad4,
+                108 => ElementType::Quad8,
+                109 => ElementType::Quad9,
+                208 => ElementType::Hexa8,
+                220 => ElementType::Hexa20,
+                304 => ElementType::Tetra4,
+                310 => ElementType::Tetra10,
+                306 => ElementType::Wedge6,
+                315 => ElementType::Wedge15,
+                305 => ElementType::Pyramid5,
+                313 => ElementType::Pyramid13,
+                _ => if n_nodes_e == 3 { ElementType::Triangle3 } else { ElementType::Quad4 },
+            }
+        };
+
+        for (i, &eid) in element_ids.iter().enumerate() {
+            let node_ids_elem = element_node_ids[i].clone();
+            let code = element_type_codes.get(i).copied().unwrap_or(0);
+            let etype = elem_type_from_code(code, node_ids_elem.len());
+            model.add_element(Element::new(eid, node_ids_elem, etype))
+                .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
+        }
+
+        // Build element sets
+        for (set_name, eids) in element_sets {
+            model.element_sets.insert(set_name.clone(), ElementSet::with_ids(set_name, eids));
+        }
+
+        // Build node sets
+        for (set_name, nids) in node_sets {
+            model.node_sets.insert(set_name.clone(), NodeSet::with_ids(set_name, nids));
+        }
+
+        Ok(PyMeshModel { inner: model })
     }
 }
 
