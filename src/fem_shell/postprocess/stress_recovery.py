@@ -465,7 +465,9 @@ class StressRecovery:
             self.u = np.asarray(u).copy()
         self.dofs_per_node = domain.dofs_per_node
         self.n_nodes = len(domain.mesh.coords_array)
-        self.n_elements = len(domain._element_map)
+        # Prefer Rust assembler count to avoid triggering lazy _element_map build
+        _rust = getattr(domain, "_rust", None)
+        self.n_elements = _rust.n_elems if _rust is not None else len(domain._element_map)
         self._node_id_to_index = domain.mesh.node_id_to_index
 
         # Pre-compute and cache extrapolation matrices for solid elements

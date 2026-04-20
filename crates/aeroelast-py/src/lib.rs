@@ -1033,6 +1033,16 @@ impl PyMeshAssembler {
         self.inner.dofs_count
     }
 
+    #[getter]
+    pub fn n_elems(&self) -> usize {
+        self.inner.topology.n_elems
+    }
+
+    #[getter]
+    pub fn n_nodes(&self) -> usize {
+        self.inner.topology.n_nodes
+    }
+
     /// Assemble the global elastic stiffness matrix K.
     ///
     /// Returns (rows, cols, vals) as numpy int64/float64 arrays.
