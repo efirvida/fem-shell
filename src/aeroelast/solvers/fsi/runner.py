@@ -237,6 +237,31 @@ class FSIRunner:
         if self.config.boundary_conditions and self.config.boundary_conditions.dirichlet:
             boundary_nodeset = self.config.boundary_conditions.dirichlet[0].nodeset
 
+        # Determine solver type for CalculiX step generation
+        solver_type = self.config.solver.type  # e.g. "Modal", "LinearStatic", "LinearDynamic"
+
+        # Load parameters: read from raw YAML loads section if available
+        load_nodeset = None
+        load_dof = 2
+        load_magnitude = 1000.0
+        if self.config_path is not None:
+            try:
+                import yaml as _yaml  # noqa: PLC0415
+                with open(self.config_path, "rt") as _f:
+                    _raw = _yaml.safe_load(_f)
+                _loads = _raw.get("loads", {})
+                _nodal = _loads.get("nodal", [])
+                if _nodal:
+                    load_nodeset = _nodal[0].get("nodeset", None)
+                    load_dof = int(_nodal[0].get("dof", 2))
+                    load_magnitude = float(_nodal[0].get("value", 1000.0))
+            except Exception:
+                pass  # Fall back to defaults
+
+        # Time parameters for dynamic analysis
+        dt = self.config.solver.time_step if self.config.solver.time_step is not None else 0.01
+        t_end = self.config.solver.total_time if self.config.solver.total_time is not None else 1.0
+
         write_ccx_mesh(
             self.mesh,
             output_path,
@@ -244,6 +269,12 @@ class FSIRunner:
             boundary_nodeset=boundary_nodeset,
             num_modes=num_modes,
             span_direction=span_direction,
+            solver_type=solver_type,
+            load_nodeset=load_nodeset,
+            load_dof=load_dof,
+            load_magnitude=load_magnitude,
+            dt=dt,
+            t_end=t_end,
         )
 
     def _print_header(self) -> None:

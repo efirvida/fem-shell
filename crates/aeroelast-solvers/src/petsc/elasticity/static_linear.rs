@@ -12,10 +12,10 @@
 /// The caller is responsible for applying Dirichlet BCs to K and F before
 /// calling `linear_static_solve`. This keeps the solver layer pure: it only
 /// knows about assembled matrices and vectors.
-use super::assembler::{create_vec, ensure_initialized};
-use super::infra::ffi::{self, PETSC_INFINITY};
-use super::infra::mat::{check, PetscError, PetscMat};
-use super::infra::vec::PetscVec;
+use super::super::assembler::{create_vec, ensure_initialized};
+use super::super::infra::ffi::{self, PETSC_INFINITY};
+use super::super::infra::mat::{check, PetscError, PetscMat};
+use super::super::infra::vec::PetscVec;
 
 // ── C-string constants ────────────────────────────────────────────────────────
 
@@ -147,63 +147,48 @@ pub fn linear_static_solve(
     }
 }
 
+// ── Public helpers ─────────────────────────────────────────────────────────────
+
+/// Build an assembled PETSc Vec from a Rust slice.
+///
+/// Allocates a vector of length `values.len()`, sets all entries via
+/// `VecSetValues` with INSERT_VALUES, and assembles it. The returned
+/// `PetscVec` is ready to use as RHS in a KSP solve.
+pub fn build_vec_from_slice(values: &[f64]) -> Result<PetscVec, PetscError> {
+    let n = values.len();
+    let v = create_vec(n)?;
+    let indices: Vec<i32> = (0..n as i32).collect();
+    unsafe {
+        check(
+            ffi::VecSetValues(
+                v.as_raw(),
+                n as i32,
+                indices.as_ptr(),
+                values.as_ptr(),
+                ffi::INSERT_VALUES,
+            ),
+            "VecSetValues",
+        )?;
+        check(ffi::VecAssemblyBegin(v.as_raw()), "VecAssemblyBegin")?;
+        check(ffi::VecAssemblyEnd(v.as_raw()), "VecAssemblyEnd")?;
+    }
+    Ok(v)
+}
+
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::petsc::assembler::{assemble_seq_aij, create_vec};
-    use crate::petsc::infra::ffi;
-    use crate::petsc::infra::mat::check;
-
-    /// Helper: build a PetscVec from a slice.
-    ///
-    /// Sets all values via VecSetValues + assemble so the vector is ready to use
-    /// as the RHS in a KSP solve.
-    fn vec_from_slice(values: &[f64]) -> Result<PetscVec, PetscError> {
-        let n = values.len();
-        let v = create_vec(n)?;
-
-        let indices: Vec<i32> = (0..n as i32).collect();
-
-        unsafe {
-            check(
-                ffi::VecSetValues(
-                    v.as_raw(),
-                    n as i32,
-                    indices.as_ptr(),
-                    values.as_ptr(),
-                    ffi::INSERT_VALUES,
-                ),
-                "VecSetValues",
-            )?;
-            check(ffi::VecAssemblyBegin(v.as_raw()), "VecAssemblyBegin")?;
-            check(ffi::VecAssemblyEnd(v.as_raw()), "VecAssemblyEnd")?;
-        }
-
-        Ok(v)
-    }
+    use crate::petsc::assembler::assemble_seq_aij;
 
     /// Patch test 1 × 1: K = [[2]], F = [4] → u = [2].
-    ///
-    /// Simplest possible SPD system. Verifies the full KSP pipeline compiles
-    /// and converges for a trivial case.
     #[test]
     fn test_1dof_trivial() {
-        let rows = vec![0i32];
-        let cols = vec![0i32];
-        let vals = vec![2.0f64];
-        let k = assemble_seq_aij(&rows, &cols, &vals, 1).expect("assemble K");
-
-        let f = vec_from_slice(&[4.0]).expect("build F");
-
+        let k = assemble_seq_aij(&[0i32], &[0i32], &[2.0f64], 1).expect("assemble K");
+        let f = build_vec_from_slice(&[4.0]).expect("build F");
         let result = linear_static_solve(&k, &f, 1).expect("solve");
-
-        assert!(
-            result.converged_reason > 0,
-            "KSP diverged: reason={}",
-            result.converged_reason
-        );
+        assert!(result.converged_reason > 0, "KSP diverged: reason={}", result.converged_reason);
         assert!(
             (result.displacements[0] - 2.0).abs() < 1e-8,
             "Expected u=2.0, got {}",
@@ -211,81 +196,45 @@ mod tests {
         );
     }
 
-    /// 3-DOF truss patch test.
+    /// 3-DOF diagonal patch test.
     ///
-    /// K is a diagonal SPD matrix (identity-like). The exact solution is
-    /// u[i] = F[i] / K[i,i].
-    ///
-    ///   K = diag(1, 4, 9)
-    ///   F = [1, 8, 27]
-    ///   u = [1, 2, 3]  (exact)
+    ///   K = diag(1, 4, 9),  F = [1, 8, 27]  →  u = [1, 2, 3]
     #[test]
     fn test_diagonal_3dof() {
         let rows = vec![0i32, 1, 2];
         let cols = vec![0i32, 1, 2];
         let vals = vec![1.0f64, 4.0, 9.0];
         let k = assemble_seq_aij(&rows, &cols, &vals, 3).expect("assemble K");
-
-        let f = vec_from_slice(&[1.0, 8.0, 27.0]).expect("build F");
-
+        let f = build_vec_from_slice(&[1.0, 8.0, 27.0]).expect("build F");
         let result = linear_static_solve(&k, &f, 3).expect("solve");
-
         assert!(
             result.converged_reason > 0,
             "KSP diverged: reason={}, iters={}, rnorm={}",
             result.converged_reason, result.iterations, result.residual_norm
         );
-
-        let expected = [1.0, 2.0, 3.0];
-        for (i, (&got, &exp)) in result.displacements.iter().zip(expected.iter()).enumerate() {
-            assert!(
-                (got - exp).abs() < 1e-8,
-                "DOF {i}: expected {exp}, got {got}"
-            );
+        for (i, (&got, &exp)) in result.displacements.iter().zip([1.0, 2.0, 3.0].iter()).enumerate() {
+            assert!((got - exp).abs() < 1e-8, "DOF {i}: expected {exp}, got {got}");
         }
     }
 
-    /// Cantilever-bar patch test (2 spring elements, 3 nodes, BC at node 0).
+    /// Cantilever-bar reduced system (2×2 SPD).
     ///
-    /// Spring stiffness k=1 for each element. Assembly:
-    ///
-    ///   Node: 0 ─[k=1]─ 1 ─[k=1]─ 2
-    ///
-    /// Global K (before BC):
-    ///   [ 1 -1  0]
-    ///   [-1  2 -1]
-    ///   [ 0 -1  1]
-    ///
-    /// After Dirichlet BC at DOF 0 (u0=0): eliminate row/col 0 → solve 2×2:
-    ///   K_red = [[2, -1], [-1, 1]]
-    ///   F_red = [0, 1]
-    ///   u_red = [1, 2]  → u = [0, 1, 2]
-    ///
-    /// Physical interpretation: unit load at the free end, unit spring stiffness.
+    ///   K_red = [[2, -1], [-1, 1]],  F_red = [0, 1]  →  u = [1, 2]
     #[test]
     fn test_cantilever_bar_reduced() {
-        // Reduced 2×2 system (DOF 0 already eliminated by BC)
         let rows = vec![0i32, 0, 1, 1];
         let cols = vec![0i32, 1, 0, 1];
         let vals = vec![2.0f64, -1.0, -1.0, 1.0];
         let k = assemble_seq_aij(&rows, &cols, &vals, 2).expect("assemble K_red");
-
-        let f = vec_from_slice(&[0.0, 1.0]).expect("build F_red");
-
+        let f = build_vec_from_slice(&[0.0, 1.0]).expect("build F_red");
         let result = linear_static_solve(&k, &f, 2).expect("solve");
-
         assert!(
             result.converged_reason > 0,
             "KSP diverged: reason={}, iters={}, rnorm={}",
             result.converged_reason, result.iterations, result.residual_norm
         );
-
-        let expected = [1.0, 2.0];
-        for (i, (&got, &exp)) in result.displacements.iter().zip(expected.iter()).enumerate() {
-            assert!(
-                (got - exp).abs() < 1e-7,
-                "DOF {i}: expected {exp}, got {got}"
-            );
+        for (i, (&got, &exp)) in result.displacements.iter().zip([1.0, 2.0].iter()).enumerate() {
+            assert!((got - exp).abs() < 1e-7, "DOF {i}: expected {exp}, got {got}");
         }
     }
 }

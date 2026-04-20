@@ -472,6 +472,12 @@ def write_ccx_mesh(
     boundary_nodeset: Optional[str] = None,
     num_modes: int = 10,
     span_direction: Optional[tuple] = None,
+    solver_type: str = "Modal",
+    load_nodeset: Optional[str] = None,
+    load_dof: int = 2,
+    load_magnitude: float = 1000.0,
+    dt: float = 0.01,
+    t_end: float = 1.0,
 ) -> None:
     """
     Write the mesh to CalculiX format following CGX conventions.
@@ -543,6 +549,12 @@ def write_ccx_mesh(
         boundary_nodeset=boundary_nodeset,
         num_modes=num_modes,
         span_direction=span_direction,
+        solver_type=solver_type,
+        load_nodeset=load_nodeset,
+        load_dof=load_dof,
+        load_magnitude=load_magnitude,
+        dt=dt,
+        t_end=t_end,
     )
 
     print("CalculiX mesh files written:")
@@ -750,6 +762,12 @@ def _write_ccx_inp_file(
     boundary_nodeset: Optional[str] = None,
     num_modes: int = 10,
     span_direction: Optional[tuple] = None,
+    solver_type: str = "Modal",
+    load_nodeset: Optional[str] = None,
+    load_dof: int = 2,
+    load_magnitude: float = 1000.0,
+    dt: float = 0.01,
+    t_end: float = 1.0,
 ) -> None:
     """Write the main .inp file with *INCLUDE statements and optional material/step."""
     with open(filename, "wt") as f:
@@ -782,7 +800,16 @@ def _write_ccx_inp_file(
             _write_ccx_materials(f, properties)
             _write_ccx_orientations(f, properties, span_direction=span_direction)
             _write_ccx_sections(f, properties, span_direction=span_direction)
-            _write_ccx_modal_step(f, mesh, boundary_nodeset, num_modes)
+            if solver_type == "LinearStatic":
+                _write_ccx_static_step(
+                    f, mesh, boundary_nodeset, load_nodeset, load_dof, load_magnitude
+                )
+            elif solver_type == "LinearDynamic":
+                _write_ccx_dynamic_step(
+                    f, mesh, boundary_nodeset, load_nodeset, load_dof, load_magnitude, dt, t_end
+                )
+            else:
+                _write_ccx_modal_step(f, mesh, boundary_nodeset, num_modes)
         else:
             # Legacy: placeholder comments
             _write_ccx_placeholder_comments(f, mesh)
@@ -814,12 +841,12 @@ def _write_ccx_materials(f, properties: Dict) -> None:
             # from the equivalent laminate properties.
             mat_name = f"MAT_{set_name}"
             if mat_name not in materials_out:
-                eq = prop.abd_matrix  # 6×6 numpy array via Rust
+                eq = prop.abd_matrix()  # 6×6 numpy array via Rust
                 # Emit a generic ENGINEERING CONSTANTS block using A-matrix
                 # equivalent moduli (approximate — adequate for CCX reference)
                 t = prop.total_thickness
-                E1 = float(prop.abd_matrix[0, 0]) / t if t > 0 else 1.0
-                E2 = float(prop.abd_matrix[1, 1]) / t if t > 0 else 1.0
+                E1 = float(eq[0, 0]) / t if t > 0 else 1.0
+                E2 = float(eq[1, 1]) / t if t > 0 else 1.0
                 materials_out[mat_name] = ("rust_laminate", prop)
         elif _has_py and isinstance(prop, CompositeShellProperty):
             for ply in prop.laminate.plies:
@@ -848,7 +875,7 @@ def _write_ccx_materials(f, properties: Dict) -> None:
             prop = entry[1]
             # Use equivalent orthotropic constants from ABD
             t = prop.total_thickness
-            a = prop.abd_matrix
+            a = prop.abd_matrix()
             E1 = float(a[0, 0]) / t if t > 0 else 1.0
             E2 = float(a[1, 1]) / t if t > 0 else 1.0
             E3 = E2
@@ -904,6 +931,10 @@ def _write_ccx_orientations(
     X axis is used as the reference and only non-zero angles are emitted.
     """
     try:
+        from _aeroelast import Laminate as _RL  # noqa: PLC0415
+    except ImportError:
+        _RL = None
+    try:
         from aeroelast.core.properties import CompositeShellProperty  # noqa: PLC0415
     except ImportError:
         CompositeShellProperty = None
@@ -911,7 +942,12 @@ def _write_ccx_orientations(
     # Collect unique ply angles; when a span direction is given, include 0°.
     angles: set = set()
     for prop in properties.values():
-        if _prop_is_composite(prop):
+        if _RL is not None and isinstance(prop, _RL):
+            # Rust Laminate: ply angles not exposed individually — emit 0° only
+            # (sections writer always uses ORI_P0_0 for Rust laminates)
+            if span_direction is not None:
+                angles.add(0.0)
+        elif _prop_is_composite(prop):
             if CompositeShellProperty is not None and isinstance(prop, CompositeShellProperty):
                 for ply in prop.laminate.plies:
                     if span_direction is not None or abs(ply.angle) > 1e-10:
@@ -1068,6 +1104,105 @@ def _write_ccx_modal_step(
     f.write("U\n")
     f.write("*EL FILE\n")
     f.write("S, E\n")
+    f.write("**\n")
+    f.write("*END STEP\n")
+
+
+def _write_ccx_static_step(
+    f,
+    mesh: "MeshModel",
+    boundary_nodeset: Optional[str],
+    load_nodeset: Optional[str],
+    load_dof: int,
+    load_magnitude: float,
+) -> None:
+    """Write boundary conditions and *STATIC step with cload."""
+    f.write("**\n")
+    f.write("** ===========================================\n")
+    f.write("**          BOUNDARY CONDITIONS\n")
+    f.write("** ===========================================\n")
+    f.write("**\n")
+
+    if boundary_nodeset:
+        nset_name = f"N{boundary_nodeset.upper()}"
+        f.write("*BOUNDARY\n")
+        f.write(f"{nset_name}, 1, 6, 0.0\n")
+    else:
+        for name in mesh.node_sets:
+            f.write("*BOUNDARY\n")
+            f.write(f"N{name.upper()}, 1, 6, 0.0\n")
+            break
+
+    f.write("**\n")
+    f.write("** ===========================================\n")
+    f.write("**           LINEAR STATIC ANALYSIS\n")
+    f.write("** ===========================================\n")
+    f.write("**\n")
+    f.write("*STEP\n")
+    f.write("*STATIC\n")
+    f.write("**\n")
+
+    if load_nodeset:
+        load_nset = f"N{load_nodeset.upper()}"
+        f.write("*CLOAD\n")
+        f.write(f"{load_nset}, {load_dof}, {load_magnitude:.6E}\n")
+        f.write("**\n")
+
+    f.write("*NODE FILE\n")
+    f.write("U, RF\n")
+    f.write("*EL FILE\n")
+    f.write("S, E\n")
+    f.write("**\n")
+    f.write("*END STEP\n")
+
+
+def _write_ccx_dynamic_step(
+    f,
+    mesh: "MeshModel",
+    boundary_nodeset: Optional[str],
+    load_nodeset: Optional[str],
+    load_dof: int,
+    load_magnitude: float,
+    dt: float,
+    t_end: float,
+) -> None:
+    """Write boundary conditions and *DYNAMIC step with cload."""
+    f.write("**\n")
+    f.write("** ===========================================\n")
+    f.write("**          BOUNDARY CONDITIONS\n")
+    f.write("** ===========================================\n")
+    f.write("**\n")
+
+    if boundary_nodeset:
+        nset_name = f"N{boundary_nodeset.upper()}"
+        f.write("*BOUNDARY\n")
+        f.write(f"{nset_name}, 1, 6, 0.0\n")
+    else:
+        for name in mesh.node_sets:
+            f.write("*BOUNDARY\n")
+            f.write(f"N{name.upper()}, 1, 6, 0.0\n")
+            break
+
+    f.write("**\n")
+    f.write("** ===========================================\n")
+    f.write("**          LINEAR DYNAMIC ANALYSIS\n")
+    f.write("** ===========================================\n")
+    f.write("**\n")
+    f.write("*STEP\n")
+    f.write("*DYNAMIC\n")
+    f.write(f"{dt:.6E}, {t_end:.6E}\n")
+    f.write("**\n")
+
+    if load_nodeset:
+        load_nset = f"N{load_nodeset.upper()}"
+        f.write("*CLOAD\n")
+        f.write(f"{load_nset}, {load_dof}, {load_magnitude:.6E}\n")
+        f.write("**\n")
+
+    f.write("*NODE FILE, FREQUENCY=10\n")
+    f.write("U, V\n")
+    f.write("*EL FILE, FREQUENCY=10\n")
+    f.write("S\n")
     f.write("**\n")
     f.write("*END STEP\n")
 

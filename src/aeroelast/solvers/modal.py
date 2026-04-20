@@ -6,8 +6,6 @@ from xml.etree.ElementTree import Element, SubElement, ElementTree
 
 import meshio
 import numpy as np
-from petsc4py import PETSc
-from slepc4py import SLEPc
 
 from aeroelast.core.bc import BoundaryConditionManager
 from aeroelast.core.mesh import MeshModel
@@ -19,252 +17,190 @@ logger = logging.getLogger(__name__)
 class ModalSolver(Solver):
     """Eigenvalue solver for natural frequencies and mode shapes.
 
-    Uses SLEPc shift-and-invert spectral transformation to solve the
-    generalized eigenvalue problem  K φ = ω² M φ  for the lowest modes.
+    Solves the generalized eigenvalue problem  K φ = ω² M φ  for the lowest
+    modes using Rust/SLEPc via _aeroelast.modal_solve_coo.
     """
 
     def __init__(self, mesh: MeshModel, fem_model_properties: dict):
         self.num_modes = fem_model_properties["solver"].get("num_modes", 2)
         super().__init__(mesh, fem_model_properties)
-        self.comm = PETSc.COMM_WORLD
         self.participation_factors: Optional[np.ndarray] = None
 
     def solve(self) -> Tuple[np.ndarray, np.ndarray]:
+        from _aeroelast import modal_solve_coo  # Rust/PyO3 binding
+
         _t0 = time.perf_counter()
         logger.info("[modal] START solve() — num_modes=%d", self.num_modes)
 
-        logger.info("[modal] assembling K...")
+        # ── Assemble K and M as COO triplets directly from the Rust assembler ──
+        logger.info("[modal] assembling K (COO)...")
         _t = time.perf_counter()
-        K = self.domain.assemble_stiffness_matrix()
-        logger.info("[modal] K assembled in %.2fs — size=%s", time.perf_counter() - _t, K.getSize())
+        k_rows, k_cols, k_vals = self.domain._rust.assemble_k()
+        n_dof_total = self.domain.dofs_count
+        logger.info("[modal] K assembled in %.2fs — nnz=%d, n_dof=%d",
+                    time.perf_counter() - _t, len(k_vals), n_dof_total)
 
-        logger.info("[modal] assembling M...")
+        logger.info("[modal] assembling M (COO)...")
         _t = time.perf_counter()
-        M = self.domain.assemble_mass_matrix()
-        logger.info("[modal] M assembled in %.2fs — size=%s", time.perf_counter() - _t, M.getSize())
+        m_rows, m_cols, m_vals = self.domain._rust.assemble_m()
+        logger.info("[modal] M assembled in %.2fs — nnz=%d", time.perf_counter() - _t, len(m_vals))
 
-        # Quick mass sanity check for consistent QUAD4/MITC4 mass matrix.
-        # For a consistent shell mass matrix: tr(M_trans) = 3 * (4/9) * total_mass
-        # (each of 4 nodes contributes integral(N_i^2)*area = area/9, times 3 DOFs).
-        # So: total_mass ≈ tr(M_trans) * 9/4 / 3 = tr(M_trans) * 3/4.
-        # We approximate tr(M_trans) ≈ tr(M) * (3/dofs_per_node) (translation fraction).
+        # Mass sanity check using COO diagonal
         try:
-            m_diag = M.getDiagonal()
-            m_trace = m_diag.sum()
+            diag_mask = k_rows == k_cols
+            m_trace = m_vals[m_rows == m_cols].sum()
             dofs_per_node = self.domain.dofs_per_node
-            # Fraction of DOFs that are translational (first 3 of each 6-DOF node)
             trans_fraction = 3.0 / dofs_per_node if dofs_per_node > 0 else 0.5
             total_mass_estimate = m_trace * trans_fraction * (9.0 / 4.0) / 3.0
             logger.info(
-                "[modal] mass sanity check: tr(M)=%.1f, estimated total mass=%.1f kg (expected ~65000 kg)",
+                "[modal] mass sanity check: tr(M)=%.1f, estimated total mass=%.1f kg",
                 m_trace, total_mass_estimate,
             )
         except Exception as exc:
             logger.warning("[modal] mass sanity check failed: %s", exc)
 
-        F = K.createVecRight()
-        F.set(0.0)
-
-        logger.info("[modal] applying boundary conditions...")
+        # ── Compute free DOFs via BoundaryConditionManager ────────────────────
+        # We still use BoundaryConditionManager to get free_dofs — it only needs
+        # to apply Dirichlet BCs conceptually; we pass dummy PETSc objects for
+        # the K/M needed by its constructor.
+        logger.info("[modal] computing free DOFs from BCs...")
         _t = time.perf_counter()
+        from petsc4py import PETSc
+        K_petsc = self.domain.assemble_stiffness_matrix()
+        F_petsc = K_petsc.createVecRight()
+        F_petsc.set(0.0)
         self.bc_applier = BoundaryConditionManager(
-            K, F, M, self.domain.dofs_per_node
+            K_petsc, F_petsc, None, self.domain.dofs_per_node
         )
         self.bc_applier.apply_dirichlet(self.dirichlet_conditions)
-        K_red, F_red, M_red = self.bc_applier.reduced_system
-        n_red = K_red.getSize()[0]
-        logger.info("[modal] BC applied in %.2fs — reduced system size=%d", time.perf_counter() - _t, n_red)
-        eff_num_modes = min(self.num_modes + 5, n_red)
+        free_dofs = np.array(sorted(self.bc_applier.free_dofs), dtype=np.int64)
+        K_petsc.destroy()
+        F_petsc.destroy()
+        logger.info("[modal] free DOFs: %d of %d (%.2fs)",
+                    len(free_dofs), n_dof_total, time.perf_counter() - _t)
 
-        # Configure SLEPc eigensolver
-        eps = SLEPc.EPS().create(self.comm)
-        eps.setOperators(K_red, M_red)
-        eps.setProblemType(SLEPc.EPS.ProblemType.GHEP)
+        # ── Rust eigenvalue solve ─────────────────────────────────────────────
+        logger.info("[modal] calling Rust modal_solve_coo — n_modes=%d", self.num_modes)
+        _t = time.perf_counter()
+        frequencies_hz, modes_flat = modal_solve_coo(
+            k_rows.astype(np.int64), k_cols.astype(np.int64), k_vals.astype(np.float64),
+            m_rows.astype(np.int64), m_cols.astype(np.int64), m_vals.astype(np.float64),
+            n_dof_total,
+            free_dofs,
+            self.num_modes,
+        )
+        logger.info("[modal] Rust solve done in %.2fs — %d modes converged",
+                    time.perf_counter() - _t, len(frequencies_hz))
 
-        eps.setWhichEigenpairs(SLEPc.EPS.Which.TARGET_MAGNITUDE)
-        eps.setTarget(0.0)
-
-        st = eps.getST()
-        st.setType(SLEPc.ST.Type.SINVERT)
-        st.setShift(0.0)
-
-        ksp = st.getKSP()
-        ksp.setType("preonly")
-        pc = ksp.getPC()
-        pc.setType("lu")
-        pc.setFactorSolverType("petsc")
-
-        eps.setDimensions(eff_num_modes, PETSc.DECIDE, PETSc.DECIDE)
-        eps.setTolerances(tol=1e-10, max_it=1000)
-        eps.setFromOptions()
-
-        try:
-            logger.info("[modal] SLEPc eps.solve() starting — eff_num_modes=%d reduced_size=%d", eff_num_modes, n_red)
-            _t = time.perf_counter()
-            eps.solve()
-            logger.info("[modal] SLEPc eps.solve() done in %.2fs", time.perf_counter() - _t)
-        except Exception as exc:
-            self._cleanup(eps, K_red, M_red, F_red, F)
+        if len(frequencies_hz) < self.num_modes:
             raise RuntimeError(
-                f"SLEPc eigenvalue solve failed: {exc}"
-            ) from exc
-
-        nconv = eps.getConverged()
-        if nconv < self.num_modes:
-            self._cleanup(eps, K_red, M_red, F_red, F)
-            raise RuntimeError(
-                f"Convergence insufficient: {nconv}/{self.num_modes} modes"
+                f"Convergence insufficient: {len(frequencies_hz)}/{self.num_modes} modes"
             )
 
-        eigvals, eigvecs = self._extract_eigenpairs(eps, nconv, K_red)
+        # modes_flat is (n_conv * n_free,) row-major — reshape to (n_free, n_conv)
+        n_conv = len(frequencies_hz)
+        n_free = len(free_dofs)
+        eigvecs_red = modes_flat.reshape(n_conv, n_free).T  # (n_free, n_conv)
 
-        # Compute participation factors BEFORE cleanup destroys M_red
-        self.participation_factors = self._compute_participation_factors(
-            eigvals, eigvecs, M_red
+        # eigenvalues ω² = (2π·f)²
+        eigvals = (2.0 * np.pi * frequencies_hz) ** 2
+
+        # ── Participation factors (NumPy, uses M COO → dense diagonal approx) ─
+        self.participation_factors = self._compute_participation_factors_coo(
+            eigvals, eigvecs_red, free_dofs,
+            m_rows, m_cols, m_vals, n_dof_total,
         )
 
-        self._cleanup(eps, K_red, M_red, F_red, F)
-        return self._postprocess_results(eigvals, eigvecs)
+        logger.info("[modal] total solve time: %.2fs", time.perf_counter() - _t0)
 
-    def _extract_eigenpairs(
-        self, eps: SLEPc.EPS, nconv: int, K_red: PETSc.Mat
-    ) -> Tuple[np.ndarray, np.ndarray]:
-        n_red = K_red.getSize()[0]
-        vr = K_red.createVecRight()
-        vi = K_red.createVecRight()
+        # ── Expand mode shapes to full DOF space ─────────────────────────────
+        full_modes = np.zeros((n_dof_total, n_conv))
+        full_modes[free_dofs, :] = eigvecs_red
 
-        eigvals = []
-        eigvecs = []
-        for i in range(nconv):
-            eigval = eps.getEigenpair(i, vr, vi)
-            eigvals.append(eigval.real)
-            eigvecs.append(vr.array.copy())
+        return frequencies_hz[: self.num_modes], full_modes[:, : self.num_modes]
 
-        vr.destroy()
-        vi.destroy()
-
-        return np.array(eigvals), np.column_stack(eigvecs)
-
-    def _postprocess_results(
-        self, eigvals: np.ndarray, eigvecs: np.ndarray
-    ) -> Tuple[np.ndarray, np.ndarray]:
-        valid = eigvals > 1e-8
-        eigvals = eigvals[valid]
-        eigvecs = eigvecs[:, valid]
-
-        idx = np.argsort(eigvals)
-        eigvals = eigvals[idx]
-        eigvecs = eigvecs[:, idx]
-
-        full_modes = np.zeros((self.domain.dofs_count, eigvecs.shape[1]))
-        full_modes[self.bc_applier.free_dofs, :] = eigvecs
-
-        frequencies = np.sqrt(eigvals) / (2 * np.pi)
-
-        return frequencies[: self.num_modes], full_modes[:, : self.num_modes]
-
-    @staticmethod
-    def _cleanup(eps, *mats_and_vecs):
-        eps.destroy()
-        for obj in mats_and_vecs:
-            if obj is not None:
-                obj.destroy()
-
-    def _compute_participation_factors(
+    def _compute_participation_factors_coo(
         self,
         eigvals: np.ndarray,
-        eigvecs: np.ndarray,
-        M_red: PETSc.Mat,
+        eigvecs_red: np.ndarray,
+        free_dofs: np.ndarray,
+        m_rows: np.ndarray,
+        m_cols: np.ndarray,
+        m_vals: np.ndarray,
+        n_dof_total: int,
     ) -> np.ndarray:
-        """Compute effective mass participation factors in reduced space.
+        """Compute effective mass participation factors using NumPy sparse M.
 
-        For each mode *i* and rigid-body direction *d*:
+        Identical physics to the PETSc version, but uses scipy COO→CSR
+        for sparse M·v products — no PETSc objects required.
 
-            Γ_i,d  = φᵢᵀ M rₐ
-            m_eff  = Γ² / (φᵢᵀ M φᵢ)
-            α_i,d  = m_eff / m_total
-
-        For shell elements (6 DOFs/node), computes factors for all 6
-        rigid-body modes: 3 translational (Ux, Uy, Uz) and 3 rotational
-        (Rx, Ry, Rz).  The rotational rigid-body vectors include the
-        translational coupling terms (e.g. rotation about Z:
-        ux = −y, uy = x, θz = 1).
-
-        Returns array of shape ``(n_modes, n_rb_dirs)`` with
-        percentage values (0–100).
+        Returns array of shape ``(n_modes, n_rb_dirs)`` with percentage values (0–100).
         """
-        valid = eigvals > 1e-8
-        vecs = eigvecs[:, valid]
-        idx = np.argsort(eigvals[valid])
-        vecs = vecs[:, idx]
+        from scipy.sparse import coo_matrix
+
+        n_free = len(free_dofs)
+
+        # Build free-DOF index map for restricting M to the reduced space
+        free_map = {int(g): i for i, g in enumerate(free_dofs)}
+        mask = np.array(
+            [(r in free_map and c in free_map) for r, c in zip(m_rows, m_cols)],
+            dtype=bool,
+        )
+        rr = np.array([free_map[int(r)] for r in m_rows[mask]], dtype=np.int32)
+        cc = np.array([free_map[int(c)] for c in m_cols[mask]], dtype=np.int32)
+        vv = m_vals[mask]
+        M_red_sp = coo_matrix((vv, (rr, cc)), shape=(n_free, n_free)).tocsr()
 
         dpn = self.domain.dofs_per_node
-        free_dofs = np.array(sorted(self.bc_applier.free_dofs))
 
-        # Translational rigid-body vectors (unit in each direction)
-        n_trans = min(dpn, 3)
+        # Rigid-body vectors in full space, then restricted to free DOFs
         r_vectors = []
+        n_trans = min(dpn, 3)
         for d in range(n_trans):
-            r_full = np.zeros(self.domain.dofs_count)
+            r_full = np.zeros(n_dof_total)
             r_full[d::dpn] = 1.0
             r_vectors.append(r_full[free_dofs])
 
-        # Rotational rigid-body vectors (rigid rotation about each axis)
         if dpn >= 6:
             coords = self.mesh_obj.coords_array
             for d in range(3):
-                r_full = np.zeros(self.domain.dofs_count)
-                if d == 0:  # Rotation about X: uy=z, uz=-y, θx=1
+                r_full = np.zeros(n_dof_total)
+                if d == 0:
                     r_full[1::dpn] = coords[:, 2]
                     r_full[2::dpn] = -coords[:, 1]
                     r_full[3::dpn] = 1.0
-                elif d == 1:  # Rotation about Y: ux=-z, uz=x, θy=1
+                elif d == 1:
                     r_full[0::dpn] = -coords[:, 2]
                     r_full[2::dpn] = coords[:, 0]
                     r_full[4::dpn] = 1.0
-                else:  # Rotation about Z: ux=-y, uy=x, θz=1
+                else:
                     r_full[0::dpn] = -coords[:, 1]
                     r_full[1::dpn] = coords[:, 0]
                     r_full[5::dpn] = 1.0
                 r_vectors.append(r_full[free_dofs])
 
         n_rb = len(r_vectors)
+        m_total = np.array([r @ M_red_sp @ r for r in r_vectors])
 
-        # Total mass/inertia per rigid-body direction via rᵀ M r
-        m_total = np.zeros(n_rb)
-        r_petsc = M_red.createVecRight()
-        Mr_petsc = M_red.createVecRight()
-        for d in range(n_rb):
-            r_petsc.array[:] = r_vectors[d]
-            M_red.mult(r_petsc, Mr_petsc)
-            m_total[d] = r_petsc.dot(Mr_petsc)
+        valid = eigvals > 1e-8
+        vecs = eigvecs_red[:, valid]
+        idx = np.argsort(eigvals[valid])
+        vecs = vecs[:, idx]
 
         n_modes = min(vecs.shape[1], self.num_modes)
         factors = np.zeros((n_modes, n_rb))
 
-        phi_petsc = M_red.createVecRight()
-        Mphi_petsc = M_red.createVecRight()
-
         for i in range(n_modes):
             phi = vecs[:, i]
-            phi_petsc.array[:] = phi
-            M_red.mult(phi_petsc, Mphi_petsc)
-            gen_mass = phi_petsc.dot(Mphi_petsc)
-
+            Mphi = M_red_sp @ phi
+            gen_mass = phi @ Mphi
             if gen_mass < 1e-30:
                 continue
-
             for d in range(n_rb):
-                # Γ_i,d = φᵢᵀ M r_d  =  (M φᵢ)ᵀ r_d
-                gamma = np.dot(Mphi_petsc.array, r_vectors[d])
+                gamma = np.dot(Mphi, r_vectors[d])
                 m_eff = gamma**2 / gen_mass
                 if m_total[d] > 1e-30:
                     factors[i, d] = m_eff / m_total[d] * 100.0
-
-        r_petsc.destroy()
-        Mr_petsc.destroy()
-        phi_petsc.destroy()
-        Mphi_petsc.destroy()
 
         return factors
 

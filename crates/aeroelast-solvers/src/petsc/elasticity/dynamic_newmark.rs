@@ -20,10 +20,10 @@
 ///
 /// # Boundary conditions
 /// The caller must pass a pre-reduced system (free DOFs only). No BC handling here.
-use super::assembler::{assemble_seq_aij, create_vec, ensure_initialized};
-use super::infra::ffi::{self, INSERT_VALUES, PETSC_INFINITY};
-use super::infra::mat::{check, PetscError, PetscMat};
-use super::infra::vec::PetscVec;
+use super::super::assembler::{assemble_seq_aij, create_vec, ensure_initialized};
+use super::super::infra::ffi::{self, INSERT_VALUES, PETSC_INFINITY};
+use super::super::infra::mat::{check, PetscError, PetscMat};
+use super::super::infra::vec::PetscVec;
 
 // ── C-string constants ────────────────────────────────────────────────────────
 

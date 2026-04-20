@@ -25,10 +25,10 @@ use std::ffi::c_void;
 
 use aeroelast_core::assembly::MeshAssembler;
 
-use super::assembler::{assemble_seq_aij, create_vec, ensure_initialized};
-use super::infra::ffi::{self, PETSC_DEFAULT, PETSC_INFINITY};
-use super::infra::mat::{check, PetscError, PetscMat};
-use super::linear::build_vec_from_slice;
+use super::super::assembler::{assemble_seq_aij, create_vec, ensure_initialized};
+use super::super::infra::ffi::{self, PETSC_DEFAULT, PETSC_INFINITY};
+use super::super::infra::mat::{check, PetscError, PetscMat};
+use super::static_linear::build_vec_from_slice;
 
 // ── C-string constants ────────────────────────────────────────────────────────
 

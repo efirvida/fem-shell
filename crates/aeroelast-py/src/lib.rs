@@ -739,11 +739,11 @@ fn linear_static_solve_coo<'py>(
         .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))?;
 
     // Build PETSc F_red vector
-    let f_vec = aeroelast_solvers::petsc::linear::build_vec_from_slice(&f_red)
+    let f_vec = aeroelast_solvers::petsc::elasticity::static_linear::build_vec_from_slice(&f_red)
         .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))?;
 
     // Solve K_red · u_red = F_red
-    let result = aeroelast_solvers::petsc::linear::linear_static_solve(&mat_k, &f_vec, n_free)
+    let result = aeroelast_solvers::petsc::elasticity::static_linear::linear_static_solve(&mat_k, &f_vec, n_free)
         .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))?;
 
     if result.converged_reason <= 0 {
@@ -864,7 +864,7 @@ fn newmark_beta_solve_coo<'py>(
         .collect();
 
     // ── Solve ────────────────────────────────────────────────────────────────
-    let result = aeroelast_solvers::petsc::linear_dynamic::newmark_beta_solve(
+    let result = aeroelast_solvers::petsc::elasticity::dynamic_newmark::newmark_beta_solve(
         &rk, &ck, &vk,
         &rm, &cm, &vm,
         eta_k, eta_m,
@@ -973,7 +973,7 @@ fn petsc_modal_solve<'py>(
             .as_ref()
     };
 
-    let result = aeroelast_solvers::petsc::modal::modal_solve(k, m, n_modes)
+    let result = aeroelast_solvers::petsc::elasticity::modal::modal_solve(k, m, n_modes)
         .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))?;
 
     let eigenvalues = Array1::from(result.eigenvalues).into_pyarray(py);
@@ -1057,7 +1057,7 @@ fn modal_solve_coo<'py>(
         .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))?;
 
     // Solve eigenvalue problem
-    let result = aeroelast_solvers::petsc::modal::modal_solve(&mat_k, &mat_m, n_modes)
+    let result = aeroelast_solvers::petsc::elasticity::modal::modal_solve(&mat_k, &mat_m, n_modes)
         .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))?;
 
     // Convert eigenvalues ω² → frequencies in Hz, filter positive, sort
@@ -3029,7 +3029,7 @@ fn nonlinear_static_solve_coo<'py>(
     let dofs_i64 = dirichlet_dofs.as_slice()?;
     let dofs_usize: Vec<usize> = dofs_i64.iter().map(|&d| d as usize).collect();
 
-    let config = aeroelast_solvers::petsc::nonlinear_static::NonlinearConfig {
+    let config = aeroelast_solvers::petsc::elasticity::static_nonlinear::NonlinearConfig {
         atol,
         rtol,
         stol,
@@ -3037,7 +3037,7 @@ fn nonlinear_static_solve_coo<'py>(
         max_funcs: -1,
     };
 
-    let result = aeroelast_solvers::petsc::nonlinear_static::nonlinear_static_solve(
+    let result = aeroelast_solvers::petsc::elasticity::static_nonlinear::nonlinear_static_solve(
         assembler.inner(),
         f_ext_slice,
         &dofs_usize,

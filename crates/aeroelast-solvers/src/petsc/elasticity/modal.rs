@@ -2,10 +2,10 @@
 ///
 /// Solves the generalized Hermitian eigenvalue problem: K·x = λ·M·x
 /// where K is stiffness and M is mass matrix (both assembled PETSc Mats).
-use super::assembler::create_vec;
-use super::infra::ffi::{EPS_GHEP, EPS_TARGET_MAGNITUDE, PETSC_DEFAULT};
-use super::infra::mat::{check, PetscError, PetscMat};
-use super::infra::ffi as ffi;
+use super::super::assembler::create_vec;
+use super::super::infra::ffi::{EPS_GHEP, EPS_TARGET_MAGNITUDE, PETSC_DEFAULT};
+use super::super::infra::mat::{check, PetscError, PetscMat};
+use super::super::infra::ffi as ffi;
 
 // C-string constants for KSP/PC/ST types
 const STSINVERT: &std::ffi::CStr =
