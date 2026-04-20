@@ -10,6 +10,8 @@ use aeroelast_core::elements::quad::{Quad4Precomputed, Quad8Precomputed, Quad9Pr
 use aeroelast_core::elements::solid;
 use aeroelast_core::materials::composite::composite_constitutive;
 use aeroelast_core::materials::isotropic::IsotropicMaterial;
+use aeroelast_core::materials::laminate::{Laminate, Ply};
+use aeroelast_core::materials::orthotropic::OrthotropicMaterial;
 use aeroelast_core::materials::Material;
 use aeroelast_core::assembly;
 use aeroelast_core::assembly::{ElemType, MaterialSpec, MeshAssembler, MeshTopology};
@@ -2041,6 +2043,171 @@ fn batch_me_quad9<'py>(
     Array1::from(out).into_pyarray(py)
 }
 
+// ============================================================================
+// Python-exposed material types: OrthotropicMaterial, Ply, Laminate
+// ============================================================================
+
+/// Python wrapper for `OrthotropicMaterial`.
+///
+/// Mirrors the Python `OrthotropicMaterial` dataclass from `material.py`.
+#[pyclass(name = "OrthotropicMaterial")]
+#[derive(Clone)]
+struct PyOrthotropicMaterial {
+    inner: OrthotropicMaterial,
+}
+
+#[pymethods]
+impl PyOrthotropicMaterial {
+    #[new]
+    #[pyo3(signature = (e1, e2, e3, g12, g23, g13, nu12, nu23, nu31, rho))]
+    fn new(
+        e1: f64, e2: f64, e3: f64,
+        g12: f64, g23: f64, g13: f64,
+        nu12: f64, nu23: f64, nu31: f64,
+        rho: f64,
+    ) -> Self {
+        Self {
+            inner: OrthotropicMaterial::new(e1, e2, e3, g12, g23, g13, nu12, nu23, nu31, rho),
+        }
+    }
+
+    #[getter] fn e1(&self) -> f64 { self.inner.e1 }
+    #[getter] fn e2(&self) -> f64 { self.inner.e2 }
+    #[getter] fn e3(&self) -> f64 { self.inner.e3 }
+    #[getter] fn g12(&self) -> f64 { self.inner.g12 }
+    #[getter] fn g23(&self) -> f64 { self.inner.g23 }
+    #[getter] fn g13(&self) -> f64 { self.inner.g13 }
+    #[getter] fn nu12(&self) -> f64 { self.inner.nu12 }
+    #[getter] fn nu23(&self) -> f64 { self.inner.nu23 }
+    #[getter] fn nu31(&self) -> f64 { self.inner.nu31 }
+    #[getter] fn rho(&self) -> f64 { self.inner.rho }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "OrthotropicMaterial(E1={:.3e}, E2={:.3e}, G12={:.3e}, nu12={:.3}, rho={:.1})",
+            self.inner.e1, self.inner.e2, self.inner.g12, self.inner.nu12, self.inner.rho
+        )
+    }
+}
+
+/// Python wrapper for a single `Ply`.
+#[pyclass(name = "Ply")]
+#[derive(Clone)]
+struct PyPly {
+    inner: Ply,
+}
+
+#[pymethods]
+impl PyPly {
+    #[new]
+    #[pyo3(signature = (material, thickness, angle))]
+    fn new(material: &PyOrthotropicMaterial, thickness: f64, angle: f64) -> Self {
+        Self { inner: Ply::new(material.inner, thickness, angle) }
+    }
+
+    #[getter] fn thickness(&self) -> f64 { self.inner.thickness }
+    #[getter] fn angle(&self) -> f64 { self.inner.angle }
+    #[getter] fn z_bottom(&self) -> f64 { self.inner.z_bottom }
+    #[getter] fn z_top(&self) -> f64 { self.inner.z_top }
+
+    fn __repr__(&self) -> String {
+        format!("Ply(angle={:.1}°, t={:.4e}m)", self.inner.angle, self.inner.thickness)
+    }
+}
+
+/// Python wrapper for `Laminate` (CLT — Classical Lamination Theory).
+///
+/// Computes A, B, D and Cs matrices from the ply stack.
+#[pyclass(name = "Laminate")]
+struct PyLaminate {
+    inner: Laminate,
+}
+
+#[pymethods]
+impl PyLaminate {
+    #[new]
+    #[pyo3(signature = (plies, shear_correction_factor=0.75))]
+    fn new(plies: Vec<PyPly>, shear_correction_factor: f64) -> PyResult<Self> {
+        let rust_plies: Vec<Ply> = plies.into_iter().map(|p| p.inner).collect();
+        let lam = Laminate::new(rust_plies, shear_correction_factor)
+            .map_err(|e| pyo3::exceptions::PyValueError::new_err(e))?;
+        Ok(Self { inner: lam })
+    }
+
+    /// 3×3 extensional stiffness matrix A [N/m] — row-major flat array (9 values).
+    fn a_matrix<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray2<f64>> {
+        let mut arr = Array2::<f64>::zeros((3, 3));
+        for i in 0..3 {
+            for j in 0..3 {
+                arr[[i, j]] = self.inner.a[(i, j)];
+            }
+        }
+        arr.into_pyarray(py)
+    }
+
+    /// 3×3 coupling stiffness matrix B [N] — row-major flat array (9 values).
+    fn b_matrix<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray2<f64>> {
+        let mut arr = Array2::<f64>::zeros((3, 3));
+        for i in 0..3 {
+            for j in 0..3 {
+                arr[[i, j]] = self.inner.b[(i, j)];
+            }
+        }
+        arr.into_pyarray(py)
+    }
+
+    /// 3×3 bending stiffness matrix D [N·m] — row-major flat array (9 values).
+    fn d_matrix<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray2<f64>> {
+        let mut arr = Array2::<f64>::zeros((3, 3));
+        for i in 0..3 {
+            for j in 0..3 {
+                arr[[i, j]] = self.inner.d[(i, j)];
+            }
+        }
+        arr.into_pyarray(py)
+    }
+
+    /// 2×2 transverse shear stiffness matrix Cs [N/m].
+    fn cs_matrix<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray2<f64>> {
+        let mut arr = Array2::<f64>::zeros((2, 2));
+        for i in 0..2 {
+            for j in 0..2 {
+                arr[[i, j]] = self.inner.cs[(i, j)];
+            }
+        }
+        arr.into_pyarray(py)
+    }
+
+    /// Full 6×6 ABD matrix [[A, B], [B, D]] as a numpy array.
+    fn abd_matrix<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray2<f64>> {
+        let flat = self.inner.abd_matrix_flat();
+        let mut arr = Array2::<f64>::zeros((6, 6));
+        for i in 0..6 {
+            for j in 0..6 {
+                arr[[i, j]] = flat[i * 6 + j];
+            }
+        }
+        arr.into_pyarray(py)
+    }
+
+    #[getter] fn total_thickness(&self) -> f64 { self.inner.total_thickness }
+    #[getter] fn n_plies(&self) -> usize { self.inner.plies.len() }
+    #[getter] fn shear_correction_factor(&self) -> f64 { self.inner.shear_correction_factor }
+    #[getter] fn is_symmetric(&self) -> bool { self.inner.is_symmetric() }
+    #[getter] fn is_balanced(&self) -> bool { self.inner.is_balanced() }
+
+    fn __repr__(&self) -> String {
+        let angles: Vec<String> = self.inner.plies.iter()
+            .map(|p| format!("{:.0}", p.angle))
+            .collect();
+        format!(
+            "Laminate([{}], h={:.4}mm)",
+            angles.join("/"),
+            self.inner.total_thickness * 1000.0
+        )
+    }
+}
+
 /// Register all aeroelast functions into a PyModule.
 pub fn register_module(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(batch_ke_mitc3, m)?)?;
@@ -2083,6 +2250,9 @@ pub fn register_module(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(petsc_modal_solve, m)?)?;
     m.add_function(wrap_pyfunction!(modal_solve_coo, m)?)?;
     m.add_class::<PyMeshAssembler>()?;
+    m.add_class::<PyOrthotropicMaterial>()?;
+    m.add_class::<PyPly>()?;
+    m.add_class::<PyLaminate>()?;
     Ok(())
 }
 

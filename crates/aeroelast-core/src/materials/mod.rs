@@ -1,5 +1,7 @@
 pub mod composite;
 pub mod isotropic;
+pub mod orthotropic;
+pub mod laminate;
 
 use nalgebra::{Matrix2, Matrix3};
 
