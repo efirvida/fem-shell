@@ -1127,15 +1127,6 @@ impl PyMeshAssembler {
         let flat_coords = mesh.inner.node_coords_flat().to_vec();
         let (connectivity, code_i32) = mesh.inner.build_connectivity_arrays();
 
-        // ── per-element property lookup: elem_id → (set_name, property) ──────
-        // We build this from element_sets in MeshModel (already in Rust)
-        let mut elem_to_set: HashMap<u64, String> = HashMap::new();
-        for (set_name, eset) in &mesh.inner.element_sets {
-            for &eid in &eset.element_ids {
-                elem_to_set.insert(eid, set_name.clone());
-            }
-        }
-
         // ── parse Python properties dict: set_name → MaterialSpec template ───
         // We pre-compute ABD for each (laminate, angle_bucket) pair (the cache)
         // Properties can be PyLaminate or dict
@@ -1143,6 +1134,22 @@ impl PyMeshAssembler {
         for (key, val) in properties.iter() {
             let set_name: String = key.extract()?;
             set_to_prop.insert(set_name, val.unbind());
+        }
+
+        // ── per-element property lookup: elem_id → (set_name, property) ──────
+        // We build this from element_sets in MeshModel (already in Rust).
+        // An element may appear in multiple sets (e.g. "allOuterShellEls" and
+        // "05_00_HP_LE"). Only sets that have a corresponding property matter;
+        // sets without a property are skipped so they don't overwrite a valid
+        // mapping with a last-write-wins collision.
+        let mut elem_to_set: HashMap<u64, String> = HashMap::new();
+        for (set_name, eset) in &mesh.inner.element_sets {
+            if !set_to_prop.contains_key(set_name) {
+                continue; // skip sets that have no property — avoids last-write-wins clobber
+            }
+            for &eid in &eset.element_ids {
+                elem_to_set.insert(eid, set_name.clone());
+            }
         }
 
         // ── Phase 1: batch angle offsets (Rayon parallel, pure Rust) ─────────
