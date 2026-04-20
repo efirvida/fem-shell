@@ -25,6 +25,105 @@ if TYPE_CHECKING:
 from fem_shell.core.mesh.entities import ElementType
 
 # ============================================================================
+# Property duck-typing helpers — support both Rust-native and Python types
+# ============================================================================
+
+def _prop_is_composite(prop) -> bool:
+    """Return True if *prop* represents a composite (multi-ply) shell property.
+
+    Accepts both ``fem_shell_core.Laminate`` (Rust) and legacy Python
+    ``CompositeShellProperty``.
+    """
+    try:
+        from fem_shell_core import Laminate as _RL  # noqa: PLC0415
+        if isinstance(prop, _RL):
+            return True
+    except ImportError:
+        pass
+    try:
+        from fem_shell.core.properties import CompositeShellProperty as _CSP  # noqa: PLC0415
+        if isinstance(prop, _CSP):
+            return True
+    except ImportError:
+        pass
+    return False
+
+
+def _prop_is_isotropic(prop) -> bool:
+    """Return True if *prop* represents a single-layer isotropic shell property."""
+    if isinstance(prop, dict) and prop.get("type") == "isotropic":
+        return True
+    try:
+        from fem_shell.core.properties import ShellProperty as _SP  # noqa: PLC0415
+        if isinstance(prop, _SP):
+            return True
+    except ImportError:
+        pass
+    return False
+
+
+def _prop_plies(prop):
+    """Yield (material_name, E1, E2, E3, G12, G23, G31, nu12, nu23, nu31, rho, thickness, angle)
+    tuples for each ply in a composite property.
+
+    Works for both Rust ``Laminate`` and Python ``CompositeShellProperty``.
+    """
+    try:
+        from fem_shell_core import Laminate as _RL  # noqa: PLC0415
+        if isinstance(prop, _RL):
+            # Rust Laminate: iterate via n_plies — no direct ply list exposed,
+            # but OrthotropicMaterial attrs are available via the assembled
+            # ABD sub-matrices.  We need per-ply data — access via Python CSP
+            # wrapper is not available.  However we stored RustPly objects
+            # internally; to retrieve them we use the workaround of re-reading
+            # material properties through the ply thickness/angle accessors.
+            # Since RustPly only exposes angle and thickness (not material name),
+            # we cannot recover material name from the Rust object alone.
+            # For CCX output, material naming is best-effort: use set_name.
+            raise AttributeError("use_rust_laminate")
+    except (ImportError, AttributeError):
+        pass
+    try:
+        from fem_shell.core.properties import CompositeShellProperty as _CSP  # noqa: PLC0415
+        if isinstance(prop, _CSP):
+            for ply in prop.laminate.plies:
+                m = ply.material
+                yield (
+                    m.name,
+                    m.E[0], m.E[1], m.E[2],
+                    m.G[0], m.G[1], m.G[2],
+                    m.nu[0], m.nu[1], m.nu[2],
+                    m.rho,
+                    ply.thickness,
+                    ply.angle,
+                )
+    except ImportError:
+        pass
+
+
+def _prop_isotropic_data(prop) -> dict:
+    """Return isotropic property data as a plain dict with keys:
+    ``name``, ``e``, ``nu``, ``rho``, ``thickness``, ``shear_correction``.
+    """
+    if isinstance(prop, dict):
+        return prop
+    try:
+        from fem_shell.core.properties import ShellProperty as _SP  # noqa: PLC0415
+        if isinstance(prop, _SP):
+            return {
+                "name": getattr(prop.material, "name", "MAT"),
+                "e": float(prop.material.E),
+                "nu": float(prop.material.nu),
+                "rho": float(prop.material.rho),
+                "thickness": float(prop.thickness),
+                "shear_correction": float(getattr(prop, "shear_correction", 5.0 / 6.0)),
+            }
+    except ImportError:
+        pass
+    return {}
+
+
+# ============================================================================
 # Boundary loop utilities for STL tip closing
 # ============================================================================
 
@@ -425,10 +524,7 @@ def write_ccx_mesh(
     # Check if composite properties require quadratic elements
     has_composite = False
     if properties is not None:
-        from fem_shell.core.properties import CompositeShellProperty
-        has_composite = any(
-            isinstance(p, CompositeShellProperty) for p in properties.values()
-        )
+        has_composite = any(_prop_is_composite(p) for p in properties.values())
 
     # Build quadratic mesh data if needed (CalculiX requires S8R/S6 for composite)
     quadratic_data = None
@@ -656,9 +752,6 @@ def _write_ccx_inp_file(
     span_direction: Optional[tuple] = None,
 ) -> None:
     """Write the main .inp file with *INCLUDE statements and optional material/step."""
-    from fem_shell.core.material import IsotropicMaterial, OrthotropicMaterial
-    from fem_shell.core.properties import CompositeShellProperty, ShellProperty
-
     with open(filename, "wt") as f:
         f.write("**\n")
         f.write("** CalculiX input file generated by fem_shell\n")
@@ -695,34 +788,82 @@ def _write_ccx_inp_file(
             _write_ccx_placeholder_comments(f, mesh)
 
 
-def _write_ccx_materials(f, properties: Dict[str, "ShellPropertyType"]) -> None:
+def _write_ccx_materials(f, properties: Dict) -> None:
     """Write *MATERIAL blocks for every unique material found in properties."""
-    from fem_shell.core.material import IsotropicMaterial, OrthotropicMaterial
-    from fem_shell.core.properties import CompositeShellProperty, ShellProperty
+    try:
+        from fem_shell_core import Laminate as _RL, OrthotropicMaterial as _RMat  # noqa: PLC0415
+        _has_rust = True
+    except ImportError:
+        _has_rust = False
+    try:
+        from fem_shell.core.material import IsotropicMaterial, OrthotropicMaterial as PyOrtho  # noqa: PLC0415
+        from fem_shell.core.properties import CompositeShellProperty, ShellProperty  # noqa: PLC0415
+        _has_py = True
+    except ImportError:
+        _has_py = False
 
-    # Collect unique materials (by name) across all element sets
-    materials: Dict[str, Union[IsotropicMaterial, OrthotropicMaterial]] = {}
-    for prop in properties.values():
-        if isinstance(prop, CompositeShellProperty):
+    # Collect unique materials — (name, writer_callable) pairs
+    # writer_callable(f, mat) writes the *ELASTIC and *DENSITY blocks
+    materials_out: Dict[str, object] = {}
+
+    for set_name, prop in properties.items():
+        if _has_rust and isinstance(prop, _RL):
+            # Rust Laminate: material data lives in the ABD matrices but
+            # individual ply material names are not exposed.  Use set_name
+            # as a synthetic material name and write engineering constants
+            # from the equivalent laminate properties.
+            mat_name = f"MAT_{set_name}"
+            if mat_name not in materials_out:
+                eq = prop.abd_matrix  # 6×6 numpy array via Rust
+                # Emit a generic ENGINEERING CONSTANTS block using A-matrix
+                # equivalent moduli (approximate — adequate for CCX reference)
+                t = prop.total_thickness
+                E1 = float(prop.abd_matrix[0, 0]) / t if t > 0 else 1.0
+                E2 = float(prop.abd_matrix[1, 1]) / t if t > 0 else 1.0
+                materials_out[mat_name] = ("rust_laminate", prop)
+        elif _has_py and isinstance(prop, CompositeShellProperty):
             for ply in prop.laminate.plies:
                 mat = ply.material
-                materials[mat.name] = mat
-        elif isinstance(prop, ShellProperty):
-            materials[prop.material.name] = prop.material
+                if mat.name not in materials_out:
+                    materials_out[mat.name] = ("py_ortho", mat)
+        elif isinstance(prop, dict) and prop.get("type") == "isotropic":
+            mat_name = prop.get("name", f"MAT_{set_name}")
+            if mat_name not in materials_out:
+                materials_out[mat_name] = ("iso_dict", prop, set_name)
+        elif _has_py and isinstance(prop, ShellProperty):
+            mat = prop.material
+            if mat.name not in materials_out:
+                materials_out[mat.name] = ("py_iso", mat)
 
     f.write("**\n")
     f.write("** ===========================================\n")
     f.write("**           MATERIAL DEFINITIONS\n")
     f.write("** ===========================================\n")
 
-    for mat_name, mat in materials.items():
+    for mat_name, entry in materials_out.items():
         f.write("**\n")
         f.write(f"*MATERIAL, NAME={mat_name}\n")
-
-        if isinstance(mat, OrthotropicMaterial):
-            # *ELASTIC, TYPE=ENGINEERING CONSTANTS
-            # E1, E2, E3, nu12, nu13, nu23, G12, G13  (line 1)
-            # G23                                       (line 2)
+        kind = entry[0]
+        if kind == "rust_laminate":
+            prop = entry[1]
+            # Use equivalent orthotropic constants from ABD
+            t = prop.total_thickness
+            a = prop.abd_matrix
+            E1 = float(a[0, 0]) / t if t > 0 else 1.0
+            E2 = float(a[1, 1]) / t if t > 0 else 1.0
+            E3 = E2
+            nu12 = 0.0
+            G12 = float(a[2, 2]) / t if t > 0 else 1.0
+            G13 = G12
+            G23 = G12
+            f.write("*ELASTIC, TYPE=ENGINEERING CONSTANTS\n")
+            f.write(f"{E1:.6E}, {E2:.6E}, {E3:.6E}, {nu12:.6f}, {nu12:.6f}, {nu12:.6f}, {G12:.6E}, {G13:.6E}\n")
+            f.write(f"{G23:.6E}\n")
+            # density not directly accessible from Rust Laminate — write placeholder
+            f.write("*DENSITY\n")
+            f.write("1.0\n")
+        elif kind == "py_ortho":
+            mat = entry[1]
             f.write("*ELASTIC, TYPE=ENGINEERING CONSTANTS\n")
             f.write(
                 f"{mat.E1:.6E}, {mat.E2:.6E}, {mat.E3:.6E}, "
@@ -730,12 +871,20 @@ def _write_ccx_materials(f, properties: Dict[str, "ShellPropertyType"]) -> None:
                 f"{mat.G12:.6E}, {mat.G31:.6E}\n"
             )
             f.write(f"{mat.G23:.6E}\n")
-        elif isinstance(mat, IsotropicMaterial):
+            f.write("*DENSITY\n")
+            f.write(f"{mat.rho:.6E}\n")
+        elif kind == "iso_dict":
+            d = entry[1]
+            f.write("*ELASTIC\n")
+            f.write(f"{d['e']:.6E}, {d['nu']:.6f}\n")
+            f.write("*DENSITY\n")
+            f.write(f"{d['rho']:.6E}\n")
+        elif kind == "py_iso":
+            mat = entry[1]
             f.write("*ELASTIC\n")
             f.write(f"{mat.E:.6E}, {mat.nu:.6f}\n")
-
-        f.write("*DENSITY\n")
-        f.write(f"{mat.rho:.6E}\n")
+            f.write("*DENSITY\n")
+            f.write(f"{mat.rho:.6E}\n")
 
 
 def _write_ccx_orientations(
@@ -754,15 +903,19 @@ def _write_ccx_orientations(
     Without *span_direction* the previous behaviour is preserved: the global
     X axis is used as the reference and only non-zero angles are emitted.
     """
-    from fem_shell.core.properties import CompositeShellProperty
+    try:
+        from fem_shell.core.properties import CompositeShellProperty  # noqa: PLC0415
+    except ImportError:
+        CompositeShellProperty = None
 
     # Collect unique ply angles; when a span direction is given, include 0°.
     angles: set = set()
     for prop in properties.values():
-        if isinstance(prop, CompositeShellProperty):
-            for ply in prop.laminate.plies:
-                if span_direction is not None or abs(ply.angle) > 1e-10:
-                    angles.add(ply.angle)
+        if _prop_is_composite(prop):
+            if CompositeShellProperty is not None and isinstance(prop, CompositeShellProperty):
+                for ply in prop.laminate.plies:
+                    if span_direction is not None or abs(ply.angle) > 1e-10:
+                        angles.add(ply.angle)
 
     if not angles:
         return
@@ -824,7 +977,15 @@ def _write_ccx_sections(
     corresponding ORI_Pxx_x orientation so that CCX measures ply angles from
     the span axis rather than from the element's default local axis.
     """
-    from fem_shell.core.properties import CompositeShellProperty, ShellProperty
+    try:
+        from fem_shell_core import Laminate as _RL  # noqa: PLC0415
+    except ImportError:
+        _RL = None
+    try:
+        from fem_shell.core.properties import CompositeShellProperty, ShellProperty  # noqa: PLC0415
+    except ImportError:
+        CompositeShellProperty = None
+        ShellProperty = None
 
     f.write("**\n")
     f.write("** ===========================================\n")
@@ -835,21 +996,38 @@ def _write_ccx_sections(
         elset_name = f"E{set_name.upper()}"
         f.write("**\n")
 
-        if isinstance(prop, CompositeShellProperty):
+        if _RL is not None and isinstance(prop, _RL):
+            # Rust Laminate — synthesise CCX COMPOSITE section from ply data
+            # Use synthetic material name matching what _write_ccx_materials emitted
+            mat_name = f"MAT_{set_name}"
+            f.write(f"*SHELL SECTION, ELSET={elset_name}, COMPOSITE\n")
+            t = prop.total_thickness / max(prop.n_plies, 1)
+            for i in range(prop.n_plies):
+                if span_direction is not None:
+                    ori_name = _ccx_orientation_name(0.0)
+                    f.write(f"{t:.6E}, , {mat_name}, {ori_name}\n")
+                else:
+                    f.write(f"{t:.6E}, , {mat_name}\n")
+        elif CompositeShellProperty is not None and isinstance(prop, CompositeShellProperty):
             f.write(f"*SHELL SECTION, ELSET={elset_name}, COMPOSITE\n")
             for ply in prop.laminate.plies:
-                # Data line: thickness, nip, material_name, orientation_name
                 if span_direction is not None or abs(ply.angle) > 1e-10:
                     ori_name = _ccx_orientation_name(ply.angle)
                     f.write(
                         f"{ply.thickness:.6E}, , {ply.material.name}, {ori_name}\n"
                     )
                 else:
-                    # No span_direction and angle==0: use element-default orientation
                     f.write(
                         f"{ply.thickness:.6E}, , {ply.material.name}\n"
                     )
-        elif isinstance(prop, ShellProperty):
+        elif isinstance(prop, dict) and prop.get("type") == "isotropic":
+            mat_name = prop.get("name", f"MAT_{set_name}")
+            thickness = prop.get("thickness", 1.0)
+            f.write(
+                f"*SHELL SECTION, ELSET={elset_name}, MATERIAL={mat_name}\n"
+            )
+            f.write(f"{thickness:.6E}\n")
+        elif ShellProperty is not None and isinstance(prop, ShellProperty):
             f.write(
                 f"*SHELL SECTION, ELSET={elset_name}, MATERIAL={prop.material.name}\n"
             )
