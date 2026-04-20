@@ -19,7 +19,7 @@ sys.path.insert(0, "/scratch/leahk/eduardo.donestevez/fem-shell/src")
 from aeroelast.core.material import IsotropicMaterial, Material
 from aeroelast.elements.MITC3 import MITC3
 from aeroelast.elements.MITC4 import MITC4
-import fem_shell_core
+import _aeroelast
 
 PASS_COUNT = 0
 FAIL_COUNT = 0
@@ -69,7 +69,7 @@ def test_mitc3_ke(name, nodes):
     K_py = elem.K
 
     coords = nodes.reshape(1, 9)
-    K_rs = fem_shell_core.batch_ke_mitc3(coords, E, nu, t).reshape(18, 18)
+    K_rs = _aeroelast.batch_ke_mitc3(coords, E, nu, t).reshape(18, 18)
 
     K_max = max(np.max(np.abs(K_py)), 1e-30)
     rel = np.max(np.abs(K_py - K_rs)) / K_max
@@ -83,7 +83,7 @@ def test_mitc3_me(name, nodes):
     M_py = elem.M
 
     coords = nodes.reshape(1, 9)
-    M_rs = fem_shell_core.batch_me_mitc3(coords, E, nu, rho, t).reshape(18, 18)
+    M_rs = _aeroelast.batch_me_mitc3(coords, E, nu, rho, t).reshape(18, 18)
 
     M_max = max(np.max(np.abs(M_py)), 1e-30)
     rel = np.max(np.abs(M_py - M_rs)) / M_max
@@ -97,7 +97,7 @@ def test_mitc3_kt(name, nodes, u_global):
 
     coords = nodes.reshape(1, 9)
     u_arr = u_global.reshape(1, 18)
-    KT_rs = fem_shell_core.batch_kt_mitc3(coords, u_arr, E, nu, t).reshape(18, 18)
+    KT_rs = _aeroelast.batch_kt_mitc3(coords, u_arr, E, nu, t).reshape(18, 18)
 
     KT_max = max(np.max(np.abs(KT_py)), 1e-30)
     rel = np.max(np.abs(KT_py - KT_rs)) / KT_max
@@ -112,7 +112,7 @@ def test_mitc3_fint(name, nodes, u_global, nonlinear=True):
 
     coords = nodes.reshape(1, 9)
     u_arr = u_global.reshape(1, 18)
-    f_rs = fem_shell_core.batch_fint_mitc3(coords, u_arr, E, nu, t, nonlinear=nonlinear).reshape(18)
+    f_rs = _aeroelast.batch_fint_mitc3(coords, u_arr, E, nu, t, nonlinear=nonlinear).reshape(18)
 
     f_max = max(np.max(np.abs(f_py)), 1e-30)
     if f_max < 1e-20:
@@ -196,7 +196,7 @@ def test_mitc4_ke(name, nodes):
     K_py = elem.K
 
     coords = nodes.reshape(1, 12)
-    K_rs = fem_shell_core.batch_ke_mitc4(coords, E, nu, t).reshape(24, 24)
+    K_rs = _aeroelast.batch_ke_mitc4(coords, E, nu, t).reshape(24, 24)
 
     K_max = max(np.max(np.abs(K_py)), 1e-30)
     rel = np.max(np.abs(K_py - K_rs)) / K_max
@@ -210,7 +210,7 @@ def test_mitc4_me(name, nodes):
     M_py = elem.M
 
     coords = nodes.reshape(1, 12)
-    M_rs = fem_shell_core.batch_me_mitc4(coords, E, nu, rho, t).reshape(24, 24)
+    M_rs = _aeroelast.batch_me_mitc4(coords, E, nu, rho, t).reshape(24, 24)
 
     M_max = max(np.max(np.abs(M_py)), 1e-30)
     rel = np.max(np.abs(M_py - M_rs)) / M_max
@@ -224,7 +224,7 @@ def test_mitc4_kt(name, nodes, u_global):
 
     coords = nodes.reshape(1, 12)
     u_arr = u_global.reshape(1, 24)
-    KT_rs = fem_shell_core.batch_kt_mitc4(coords, u_arr, E, nu, t).reshape(24, 24)
+    KT_rs = _aeroelast.batch_kt_mitc4(coords, u_arr, E, nu, t).reshape(24, 24)
 
     KT_max = max(np.max(np.abs(KT_py)), 1e-30)
     rel = np.max(np.abs(KT_py - KT_rs)) / KT_max
@@ -239,7 +239,7 @@ def test_mitc4_fint(name, nodes, u_global, nonlinear=True):
 
     coords = nodes.reshape(1, 12)
     u_arr = u_global.reshape(1, 24)
-    f_rs = fem_shell_core.batch_fint_mitc4(coords, u_arr, E, nu, t, nonlinear=nonlinear).reshape(24)
+    f_rs = _aeroelast.batch_fint_mitc4(coords, u_arr, E, nu, t, nonlinear=nonlinear).reshape(24)
 
     f_max = max(np.max(np.abs(f_py)), 1e-30)
     if f_max < 1e-20:
@@ -333,7 +333,7 @@ for i in range(n_tri):
     tri_coords[i, 3:6] = base + np.array([1 + 0.5*np.random.randn(), 0.3*np.random.randn(), 0.1*np.random.randn()])
     tri_coords[i, 6:9] = base + np.array([0.3*np.random.randn(), 1 + 0.5*np.random.randn(), 0.1*np.random.randn()])
 
-K_batch_tri = fem_shell_core.batch_ke_mitc3(tri_coords, E, nu, t)
+K_batch_tri = _aeroelast.batch_ke_mitc3(tri_coords, E, nu, t)
 K_batch_tri = K_batch_tri.reshape(n_tri, 18, 18)
 
 # Check a random sample
@@ -362,7 +362,7 @@ for i in range(n_quad):
     quad_coords[i, 6:9]  = base + np.array([1 + 0.3*np.random.randn(), 1 + 0.3*np.random.randn(), 0.1*np.random.randn()])
     quad_coords[i, 9:12] = base + np.array([0.2*np.random.randn(), 1 + 0.3*np.random.randn(), 0.05*np.random.randn()])
 
-K_batch_quad = fem_shell_core.batch_ke_mitc4(quad_coords, E, nu, t)
+K_batch_quad = _aeroelast.batch_ke_mitc4(quad_coords, E, nu, t)
 K_batch_quad = K_batch_quad.reshape(n_quad, 24, 24)
 
 for idx in np.random.choice(n_quad, n_sample, replace=False):

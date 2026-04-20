@@ -31,11 +31,11 @@ from aeroelast.core.mesh.entities import ElementType
 def _prop_is_composite(prop) -> bool:
     """Return True if *prop* represents a composite (multi-ply) shell property.
 
-    Accepts both ``fem_shell_core.Laminate`` (Rust) and legacy Python
+    Accepts both ``_aeroelast.Laminate`` (Rust) and legacy Python
     ``CompositeShellProperty``.
     """
     try:
-        from fem_shell_core import Laminate as _RL  # noqa: PLC0415
+        from _aeroelast import Laminate as _RL  # noqa: PLC0415
         if isinstance(prop, _RL):
             return True
     except ImportError:
@@ -69,7 +69,7 @@ def _prop_plies(prop):
     Works for both Rust ``Laminate`` and Python ``CompositeShellProperty``.
     """
     try:
-        from fem_shell_core import Laminate as _RL  # noqa: PLC0415
+        from _aeroelast import Laminate as _RL  # noqa: PLC0415
         if isinstance(prop, _RL):
             # Rust Laminate: iterate via n_plies — no direct ply list exposed,
             # but OrthotropicMaterial attrs are available via the assembled
@@ -791,7 +791,7 @@ def _write_ccx_inp_file(
 def _write_ccx_materials(f, properties: Dict) -> None:
     """Write *MATERIAL blocks for every unique material found in properties."""
     try:
-        from fem_shell_core import Laminate as _RL, OrthotropicMaterial as _RMat  # noqa: PLC0415
+        from _aeroelast import Laminate as _RL, OrthotropicMaterial as _RMat  # noqa: PLC0415
         _has_rust = True
     except ImportError:
         _has_rust = False
@@ -978,7 +978,7 @@ def _write_ccx_sections(
     the span axis rather than from the element's default local axis.
     """
     try:
-        from fem_shell_core import Laminate as _RL  # noqa: PLC0415
+        from _aeroelast import Laminate as _RL  # noqa: PLC0415
     except ImportError:
         _RL = None
     try:

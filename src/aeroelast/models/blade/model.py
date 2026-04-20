@@ -99,12 +99,12 @@ class Blade:
     def get_element_properties(self) -> dict:
         """Build shell property definitions per element set from section layup data.
 
-        Returns Rust-native types (``fem_shell_core.Laminate`` or isotropic
+        Returns Rust-native types (``_aeroelast.Laminate`` or isotropic
         dict) directly — no intermediate Python ``Laminate``/``Ply`` objects.
 
         Returns
         -------
-        dict[str, fem_shell_core.Laminate | dict]
+        dict[str, _aeroelast.Laminate | dict]
             Mapping of element-set name to the corresponding property.
             Suitable for passing directly to ``PyMeshAssembler.from_model()``.
 
@@ -691,7 +691,7 @@ def material_factory(
 def build_rust_properties(numad_data: dict) -> dict:
     """Build a Rust-native properties map from NuMAD mesh data.
 
-    Converts section layup data directly to ``fem_shell_core`` types
+    Converts section layup data directly to ``_aeroelast`` types
     (``Laminate`` / isotropic dict) — no Python ``Laminate``/``Ply``/
     ``CompositeShellProperty`` objects are created.
 
@@ -702,10 +702,10 @@ def build_rust_properties(numad_data: dict) -> dict:
 
     Returns
     -------
-    dict[str, fem_shell_core.Laminate | dict]
+    dict[str, _aeroelast.Laminate | dict]
         Suitable for passing directly to ``PyMeshAssembler.from_model()``.
     """
-    from fem_shell_core import Laminate as RustLaminate, Ply as RustPly, OrthotropicMaterial as RustMat  # noqa: PLC0415
+    from _aeroelast import Laminate as RustLaminate, Ply as RustPly, OrthotropicMaterial as RustMat  # noqa: PLC0415
 
     # ── material lookup: name → raw data dict ─────────────────────────────
     mat_raw: Dict[str, dict] = {m["name"]: m for m in numad_data["materials"]}

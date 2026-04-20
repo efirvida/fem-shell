@@ -13,9 +13,9 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-fem_shell_core = pytest.importorskip("fem_shell_core", reason="Rust backend not available")
+_aeroelast = pytest.importorskip("_aeroelast", reason="Rust backend not available")
 
-from fem_shell_core import PyMeshAssembler  # noqa: E402
+from _aeroelast import PyMeshAssembler  # noqa: E402
 
 
 # =============================================================================

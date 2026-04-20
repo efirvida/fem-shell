@@ -19,8 +19,8 @@ from petsc4py import PETSc  # noqa: E402
 slepc4py = pytest.importorskip("slepc4py", reason="SLEPc not available")
 from slepc4py import SLEPc  # noqa: E402
 
-fem_shell_core = pytest.importorskip(
-    "fem_shell_core", reason="Rust backend not available"
+_aeroelast = pytest.importorskip(
+    "_aeroelast", reason="Rust backend not available"
 )
 
 from aeroelast.core.assembler import MeshAssembler  # noqa: E402
@@ -217,11 +217,11 @@ def _rust_modal_solve(assembler, free_dofs_arr, num_modes):
     rm, cm, vm = _restrict_coo(rows_m, cols_m, vals_m)
 
     # Assemble PETSc Mats (reduced system)
-    k_cap = fem_shell_core.petsc_assemble_matrix(rk, ck, vk, n_free)
-    m_cap = fem_shell_core.petsc_assemble_matrix(rm, cm, vm, n_free)
+    k_cap = _aeroelast.petsc_assemble_matrix(rk, ck, vk, n_free)
+    m_cap = _aeroelast.petsc_assemble_matrix(rm, cm, vm, n_free)
 
     # Solve eigenvalue problem
-    eigvals_raw, modes_flat_raw = fem_shell_core.petsc_modal_solve(k_cap, m_cap, num_modes)
+    eigvals_raw, modes_flat_raw = _aeroelast.petsc_modal_solve(k_cap, m_cap, num_modes)
     eigvals = np.asarray(eigvals_raw)
     modes_flat = np.asarray(modes_flat_raw)
 
@@ -471,7 +471,7 @@ class TestCOOModalSolve:
         k_rows, k_cols, k_vals = asm._rust.assemble_k()
         m_rows, m_cols, m_vals = asm._rust.assemble_m()
 
-        freq_coo, _ = fem_shell_core.modal_solve_coo(
+        freq_coo, _ = _aeroelast.modal_solve_coo(
             np.ascontiguousarray(k_rows, dtype=np.int64),
             np.ascontiguousarray(k_cols, dtype=np.int64),
             np.ascontiguousarray(k_vals, dtype=np.float64),

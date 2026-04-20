@@ -2797,6 +2797,6 @@ pub fn register_module(m: &Bound<'_, PyModule>) -> PyResult<()> {
 // ============================================================================
 
 #[pymodule]
-fn aeroelast(m: &Bound<'_, PyModule>) -> PyResult<()> {
+fn _aeroelast(m: &Bound<'_, PyModule>) -> PyResult<()> {
     register_module(m)
 }

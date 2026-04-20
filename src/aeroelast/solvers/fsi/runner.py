@@ -913,12 +913,12 @@ class FSIRunner:
         """Extract per-element-set composite properties from blade YAML.
 
         Delegates to ``build_rust_properties()`` — returns Rust-native
-        ``fem_shell_core.Laminate`` / isotropic dict directly, with no
+        ``_aeroelast.Laminate`` / isotropic dict directly, with no
         intermediate Python ``Laminate``/``Ply``/``CompositeShellProperty``.
 
         Returns
         -------
-        dict[str, fem_shell_core.Laminate | dict]
+        dict[str, _aeroelast.Laminate | dict]
             Mapping of element-set name to Rust property, ready for
             ``PyMeshAssembler.from_model()``.
         """

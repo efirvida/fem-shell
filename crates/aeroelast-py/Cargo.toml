@@ -5,7 +5,7 @@ edition = "2021"
 description = "PyO3 bindings for aeroelast-core. Exposes Python API for FEM shell element kernels."
 
 [lib]
-name = "aeroelast_py"
+name = "_aeroelast"
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]

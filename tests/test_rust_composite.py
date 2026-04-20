@@ -18,14 +18,14 @@ from aeroelast.core.laminate import (
 
 # Try importing Rust backend
 try:
-    import fem_shell_core as fsc
-    from fem_shell_core import PyMeshAssembler
+    import _aeroelast as fsc
+    from _aeroelast import PyMeshAssembler
 
     HAS_RUST = True
 except ImportError:
     HAS_RUST = False
 
-pytestmark = pytest.mark.skipif(not HAS_RUST, reason="fem_shell_core not available")
+pytestmark = pytest.mark.skipif(not HAS_RUST, reason="_aeroelast not available")
 
 
 # =============================================================================

@@ -6,7 +6,7 @@ sys.path.insert(0, "/scratch/leahk/eduardo.donestevez/fem-shell/src")
 
 from aeroelast.elements.MITC4 import MITC4
 from aeroelast.core.material import IsotropicMaterial
-import fem_shell_core
+import _aeroelast
 
 # ============================================================================
 # Test 1: Single element stiffness (flat quad in XY-plane)
@@ -36,7 +36,7 @@ K_py = elem_py.K  # 24×24 global stiffness
 
 # Rust: batch with 1 element
 coords_flat = nodes.reshape(1, 12)
-K_rust_flat = fem_shell_core.batch_ke_mitc4(coords_flat, E, nu, t)
+K_rust_flat = _aeroelast.batch_ke_mitc4(coords_flat, E, nu, t)
 K_rust = K_rust_flat.reshape(24, 24)
 
 # Compare
@@ -81,7 +81,7 @@ elem_py2 = MITC4(
 K_py2 = elem_py2.K
 
 coords_flat2 = nodes2.reshape(1, 12)
-K_rust_flat2 = fem_shell_core.batch_ke_mitc4(coords_flat2, E, nu, t)
+K_rust_flat2 = _aeroelast.batch_ke_mitc4(coords_flat2, E, nu, t)
 K_rust2 = K_rust_flat2.reshape(24, 24)
 
 diff2 = np.abs(K_py2 - K_rust2)
@@ -104,7 +104,7 @@ print("=" * 60)
 
 M_py = elem_py.M
 
-M_rust_flat = fem_shell_core.batch_me_mitc4(coords_flat, E, nu, rho, t)
+M_rust_flat = _aeroelast.batch_me_mitc4(coords_flat, E, nu, rho, t)
 M_rust = M_rust_flat.reshape(24, 24)
 
 diff_m = np.abs(M_py - M_rust)
@@ -146,7 +146,7 @@ t_py = (time.perf_counter() - t0) / n_py
 
 # Rust timing (full batch)
 t0 = time.perf_counter()
-_ = fem_shell_core.batch_ke_mitc4(base_coords, E, nu, t)
+_ = _aeroelast.batch_ke_mitc4(base_coords, E, nu, t)
 t_rust = time.perf_counter() - t0
 
 py_estimated = t_py * n_elem

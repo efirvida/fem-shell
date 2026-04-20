@@ -17,7 +17,7 @@ import pytest
 petsc4py = pytest.importorskip("petsc4py", reason="PETSc not available")
 from petsc4py import PETSc  # noqa: E402
 
-fem_shell_core = pytest.importorskip("fem_shell_core", reason="Rust backend not available")
+_aeroelast = pytest.importorskip("_aeroelast", reason="Rust backend not available")
 
 from aeroelast.core.assembler import MeshAssembler  # noqa: E402
 from aeroelast.core.material import IsotropicMaterial  # noqa: E402
@@ -142,7 +142,7 @@ class TestRustCOOAssembly:
     def test_stiffness_rust_vs_petsc_loop(self, assembler):
         """K assembled via Rust COO must match the PETSc setValuesLocal loop."""
         asm = assembler
-        # Rust COO path (default when fem_shell_core is available)
+        # Rust COO path (default when _aeroelast is available)
         K_rust = asm.assemble_stiffness_matrix()
         K_rust_dense = _petsc_to_dense(K_rust)
 

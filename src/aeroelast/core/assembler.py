@@ -272,9 +272,9 @@ class MeshAssembler:
         The Python MeshModel `mesh` is consumed here; it is NOT stored on `self`.
         """
         try:
-            from fem_shell_core import PyMeshAssembler, MeshModel as RustMeshModel, Laminate as RustLaminate, Ply as RustPly, OrthotropicMaterial as RustMat  # noqa: PLC0415
+            from _aeroelast import PyMeshAssembler, MeshModel as RustMeshModel, Laminate as RustLaminate, Ply as RustPly, OrthotropicMaterial as RustMat  # noqa: PLC0415
         except ImportError:
-            logger.warning("[assembler] fem_shell_core not available — Rust assembler disabled")
+            logger.warning("[assembler] _aeroelast not available — Rust assembler disabled")
             return
 
         properties_map: Optional[Dict] = self.model.get("properties")
@@ -673,7 +673,7 @@ class MeshAssembler:
         raise NotImplementedError(
             "assemble_geometric_stiffness: the Python per-element fallback has been removed. "
             "A live Rust assembler (self._rust) is required. "
-            "Ensure fem_shell_core is built and PyMeshAssembler initialised."
+            "Ensure _aeroelast is built and PyMeshAssembler initialised."
         )
 
     # ------------------------------------------------------------------
@@ -683,7 +683,7 @@ class MeshAssembler:
     def assemble_tangent_stiffness(self, u: np.ndarray) -> PETSc.Mat:
         """Assemble the global tangent stiffness matrix K_T(u).
 
-        Uses Rust batch computation (``fem_shell_core``) for parallel element
+        Uses Rust batch computation (``_aeroelast``) for parallel element
         processing and COO sparse assembly.  This is the hot-path operation
         in Newton-Raphson iterations.
 
@@ -709,8 +709,8 @@ class MeshAssembler:
             return self._coo_to_petsc(rows, cols, vals)
 
         raise RuntimeError(
-            "Rust backend (fem_shell_core) required for tangent stiffness assembly. "
-            "Install with: cd crates/fem_shell_core && maturin develop --release"
+            "Rust backend (_aeroelast) required for tangent stiffness assembly. "
+            "Install with: cd crates/_aeroelast && maturin develop --release"
         )
 
     def assemble_internal_forces(
@@ -718,7 +718,7 @@ class MeshAssembler:
     ) -> PETSc.Vec:
         """Assemble the global internal force vector f_int(u).
 
-        Uses Rust batch computation (``fem_shell_core``) for parallel element
+        Uses Rust batch computation (``_aeroelast``) for parallel element
         processing.
 
         Parameters
@@ -751,6 +751,6 @@ class MeshAssembler:
             return vec
 
         raise RuntimeError(
-            "Rust backend (fem_shell_core) required for internal force assembly. "
-            "Install with: cd crates/fem_shell_core && maturin develop --release"
+            "Rust backend (_aeroelast) required for internal force assembly. "
+            "Install with: cd crates/_aeroelast && maturin develop --release"
         )
