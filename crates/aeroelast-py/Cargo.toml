@@ -10,6 +10,7 @@ crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 aeroelast-core = { path = "../aeroelast-core" }
+aeroelast-mesh = { path = "../aeroelast-mesh" }
 aeroelast-solvers = { path = "../aeroelast-solvers" }
 pyo3 = { version = "0.28.3", features = ["extension-module"] }
 numpy = "0.28.0"

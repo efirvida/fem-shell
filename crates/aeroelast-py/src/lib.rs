@@ -2047,6 +2047,104 @@ fn batch_me_quad9<'py>(
 // Python-exposed material types: OrthotropicMaterial, Ply, Laminate
 // ============================================================================
 
+// ============================================================================
+// PyMeshModel — wraps aeroelast_mesh::MeshModel
+// ============================================================================
+
+/// Python wrapper for `MeshModel` (aeroelast-mesh crate).
+///
+/// Holds the full mesh topology (nodes, elements, sets) loaded from HDF5.
+/// Use `PyMeshModel.from_hdf5(path)` to load, then pass to
+/// `PyMeshAssembler.from_mesh_model(mesh, properties)`.
+#[pyclass(name = "MeshModel")]
+struct PyMeshModel {
+    inner: aeroelast_mesh::model::MeshModel,
+}
+
+#[pymethods]
+impl PyMeshModel {
+    /// Load a MeshModel from an HDF5 file written by the Python writer.
+    #[staticmethod]
+    fn from_hdf5(path: &str) -> PyResult<Self> {
+        let inner = aeroelast_mesh::io::load_hdf5(path)
+            .map_err(|e| pyo3::exceptions::PyIOError::new_err(e.to_string()))?;
+        Ok(PyMeshModel { inner })
+    }
+
+    /// Number of nodes in the mesh.
+    #[getter]
+    fn node_count(&self) -> usize {
+        self.inner.node_count()
+    }
+
+    /// Number of elements in the mesh.
+    #[getter]
+    fn element_count(&self) -> usize {
+        self.inner.element_count()
+    }
+
+    /// Node names of sets as a list of strings.
+    fn node_set_names(&self) -> Vec<String> {
+        self.inner.node_sets.keys().cloned().collect()
+    }
+
+    /// Element set names as a list of strings.
+    fn element_set_names(&self) -> Vec<String> {
+        self.inner.element_sets.keys().cloned().collect()
+    }
+
+    /// Node coordinates as a flat (n_nodes × 3) numpy array (row-major).
+    fn node_coords_flat<'py>(&mut self, py: Python<'py>) -> Bound<'py, PyArray2<f64>> {
+        let n = self.inner.node_count();
+        let flat = self.inner.node_coords_flat().to_vec();
+        Array2::from_shape_vec((n, 3), flat)
+            .expect("node_coords_flat shape mismatch")
+            .into_pyarray(py)
+    }
+
+    /// Node IDs in index order (matches row order of node_coords_flat).
+    fn node_ids<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray1<u64>> {
+        let ids: Vec<u64> = self.inner.nodes.iter().map(|n| n.id).collect();
+        Array1::from(ids).into_pyarray(py)
+    }
+
+    /// Element IDs in index order.
+    fn element_ids<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray1<u64>> {
+        let ids: Vec<u64> = self.inner.elements.iter().map(|e| e.id).collect();
+        Array1::from(ids).into_pyarray(py)
+    }
+
+    /// Node IDs for elements in a named element set. Returns flat list.
+    fn element_set_node_ids(&self, set_name: &str) -> PyResult<Vec<u64>> {
+        let set = self.inner.element_sets.get(set_name).ok_or_else(|| {
+            pyo3::exceptions::PyKeyError::new_err(format!("element set '{set_name}' not found"))
+        })?;
+        Ok(set.element_ids.clone())
+    }
+
+    /// Node IDs for a named node set.
+    fn node_set_node_ids(&self, set_name: &str) -> PyResult<Vec<u64>> {
+        let set = self.inner.node_sets.get(set_name).ok_or_else(|| {
+            pyo3::exceptions::PyKeyError::new_err(format!("node set '{set_name}' not found"))
+        })?;
+        Ok(set.node_ids.clone())
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "MeshModel(nodes={}, elements={}, node_sets={}, element_sets={})",
+            self.inner.node_count(),
+            self.inner.element_count(),
+            self.inner.node_sets.len(),
+            self.inner.element_sets.len(),
+        )
+    }
+}
+
+// ============================================================================
+// PyOrthotropicMaterial, PyPly, PyLaminate
+// ============================================================================
+
 /// Python wrapper for `OrthotropicMaterial`.
 ///
 /// Mirrors the Python `OrthotropicMaterial` dataclass from `material.py`.
@@ -2249,6 +2347,7 @@ pub fn register_module(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(petsc_assemble_matrix, m)?)?;
     m.add_function(wrap_pyfunction!(petsc_modal_solve, m)?)?;
     m.add_function(wrap_pyfunction!(modal_solve_coo, m)?)?;
+    m.add_class::<PyMeshModel>()?;
     m.add_class::<PyMeshAssembler>()?;
     m.add_class::<PyOrthotropicMaterial>()?;
     m.add_class::<PyPly>()?;

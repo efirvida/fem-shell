@@ -27,6 +27,7 @@ name = "aeroelast-py"
 version = "0.1.0"
 dependencies = [
  "aeroelast-core",
+ "aeroelast-mesh",
  "aeroelast-solvers",
  "numpy",
  "pyo3",
