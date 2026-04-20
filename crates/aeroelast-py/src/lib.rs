@@ -1029,6 +1029,68 @@ impl PyMeshAssembler {
         Ok(PyMeshAssembler { inner })
     }
 
+    /// Construct a `PyMeshAssembler` from a `MeshModel` already loaded in Rust.
+    ///
+    /// This is the fast path: topology (node_coords, connectivity, elem_type codes)
+    /// is extracted from Rust-native `MeshModel` without any Python loop.
+    /// Only the `materials` list still comes from Python.
+    ///
+    /// Parameters
+    /// ----------
+    /// mesh : MeshModel
+    ///     A `MeshModel` loaded via `MeshModel.from_hdf5(...)`.
+    /// materials : list[dict]
+    ///     Per-element material dicts in the same element order as `mesh.element_ids()`.
+    ///     Same format as `PyMeshAssembler.__init__` (isotropic / composite / ...).
+    #[staticmethod]
+    pub fn from_mesh_model(
+        mesh: &mut PyMeshModel,
+        materials: Vec<Py<PyAny>>,
+        py: Python,
+    ) -> PyResult<Self> {
+        // Extract flat coords from Rust MeshModel — no Python loop needed
+        let flat_coords = mesh.inner.node_coords_flat().to_vec();
+
+        // Extract connectivity and elem_type codes — fully in Rust
+        let (connectivity_usize, code_i32) = mesh.inner.build_connectivity_arrays();
+
+        // Convert i32 codes to ElemType
+        let rust_elem_types: Vec<ElemType> = code_i32
+            .iter()
+            .map(|&t| match t as u16 {
+                3   => Ok(ElemType::Mitc3),
+                4   => Ok(ElemType::Mitc4),
+                33  => Ok(ElemType::Mitc3Composite),
+                44  => Ok(ElemType::Mitc4Composite),
+                104 => Ok(ElemType::Quad4),
+                108 => Ok(ElemType::Quad8),
+                109 => Ok(ElemType::Quad9),
+                208 => Ok(ElemType::Hexa8),
+                220 => Ok(ElemType::Hexa20),
+                304 => Ok(ElemType::Tetra4),
+                310 => Ok(ElemType::Tetra10),
+                306 => Ok(ElemType::Wedge6),
+                315 => Ok(ElemType::Wedge15),
+                305 => Ok(ElemType::Pyramid5),
+                313 => Ok(ElemType::Pyramid13),
+                other => Err(pyo3::exceptions::PyValueError::new_err(format!(
+                    "unknown elem_type code {other} from MeshModel::build_connectivity_arrays"
+                ))),
+            })
+            .collect::<PyResult<Vec<_>>>()?;
+
+        let topology = MeshTopology::new(flat_coords, connectivity_usize, rust_elem_types);
+
+        // Parse material specs (still from Python)
+        let rust_materials: Vec<MaterialSpec> = materials
+            .iter()
+            .map(|m| parse_material(py, m))
+            .collect::<PyResult<Vec<_>>>()?;
+
+        let inner = MeshAssembler::new(topology, rust_materials);
+        Ok(PyMeshAssembler { inner })
+    }
+
     /// Total number of DOFs in the system.
     #[getter]
     pub fn dofs_count(&self) -> usize {
