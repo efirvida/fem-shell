@@ -215,6 +215,7 @@ class SolverType(str, Enum):
     """Type of solver to use."""
 
     LINEAR_STATIC = "LinearStatic"
+    NONLINEAR_STATIC = "NonlinearStatic"
     LINEAR_DYNAMIC = "LinearDynamic"
     LINEAR_DYNAMIC_FSI = "LinearDynamicFSI"
     LINEAR_DYNAMIC_FSI_ROTOR = "LinearDynamicFSIRotor"
@@ -657,6 +658,11 @@ class SolverConfig:
     num_modes: int = 6
     # Debug interface mode (verbose preCICE data exchange logging)
     debug_interface: bool = False
+    # Nonlinear static solver (SNES) convergence settings
+    atol: Optional[float] = None  # Absolute residual tolerance  (default: 1e-10)
+    rtol: Optional[float] = None  # Relative residual tolerance  (default: 1e-8)
+    stol: Optional[float] = None  # Step-length tolerance        (default: 1e-8)
+    max_it: Optional[int] = None  # Maximum Newton iterations    (default: 50)
 
     def __post_init__(self):
         valid_types = [s.value for s in SolverType]
@@ -986,6 +992,10 @@ class FSISimulationConfig:
             rotor=rotor_config,
             num_modes=solver_data.get("num_modes", 6),
             debug_interface=solver_data.get("debug_interface", False),
+            atol=solver_data.get("atol"),
+            rtol=solver_data.get("rtol"),
+            stol=solver_data.get("stol"),
+            max_it=solver_data.get("max_it"),
         )
 
         # Parse boundary conditions

@@ -10,10 +10,23 @@ _linear_names = []
 try:
     # Import PETSc-backed structural solvers only when the dependency is
     # available, so importing the solvers package does not break CLI preview/view.
-    from .linear import LinearDynamicSolver, LinearStaticSolver
+    from .elasticity import DynamicNewmarkSolver, StaticLinearSolver, StaticNonlinearSolver
     from .modal import ModalSolver
 
-    _linear_names = ["LinearDynamicSolver", "LinearStaticSolver", "ModalSolver"]
+    # Legacy aliases kept for backward compatibility
+    LinearStaticSolver = StaticLinearSolver
+    LinearDynamicSolver = DynamicNewmarkSolver
+    NonlinearStaticSolver = StaticNonlinearSolver
+
+    _linear_names = [
+        "StaticLinearSolver",
+        "StaticNonlinearSolver",
+        "DynamicNewmarkSolver",
+        "LinearStaticSolver",
+        "LinearDynamicSolver",
+        "NonlinearStaticSolver",
+        "ModalSolver",
+    ]
 except ImportError:
     # PETSc not available
     pass

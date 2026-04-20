@@ -980,6 +980,11 @@ class FSIRunner:
                 "solver_type": self.config.solver.solver_type,
                 "debug_interface": self.config.solver.debug_interface,
                 "num_modes": self.config.solver.num_modes,
+                # NonlinearStatic (SNES) convergence — None values keep solver defaults
+                "atol": self.config.solver.atol,
+                "rtol": self.config.solver.rtol,
+                "stol": self.config.solver.stol,
+                "max_it": self.config.solver.max_it,
             },
             "elements": {
                 "element_family": elem_family,
@@ -1100,14 +1105,19 @@ class FSIRunner:
         solver_type = self.config.solver.type
 
         if solver_type == SolverType.LINEAR_STATIC.value:
-            from ..linear import LinearStaticSolver
+            from ..elasticity import StaticLinearSolver
 
-            solver = LinearStaticSolver(self.mesh, model_config)
+            solver = StaticLinearSolver(self.mesh, model_config)
+
+        elif solver_type == SolverType.NONLINEAR_STATIC.value:
+            from ..elasticity import StaticNonlinearSolver
+
+            solver = StaticNonlinearSolver(self.mesh, model_config)
 
         elif solver_type == SolverType.LINEAR_DYNAMIC.value:
-            from ..linear import LinearDynamicSolver
+            from ..elasticity import DynamicNewmarkSolver
 
-            solver = LinearDynamicSolver(self.mesh, model_config)
+            solver = DynamicNewmarkSolver(self.mesh, model_config)
 
         elif solver_type == SolverType.LINEAR_DYNAMIC_FSI.value:
             from . import LinearDynamicFSISolver
