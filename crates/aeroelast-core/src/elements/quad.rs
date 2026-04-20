@@ -323,6 +323,30 @@ impl Quad4Precomputed {
         me
     }
 
+    /// Compute stress and strain at the element centroid (xi=0, eta=0).
+    ///
+    /// Returns ([σ_xx, σ_yy, 0, τ_xy, 0, 0], [ε_xx, ε_yy, 0, γ_xy, 0, 0])
+    /// in Voigt notation.  The out-of-plane entries are zero (plane-strain).
+    pub fn compute_centroid_stress(&self, e: f64, nu: f64, u: &[f64]) -> ([f64; 6], [f64; 6]) {
+        let c = constitutive(e, nu);
+        let (dn_xi, dn_eta) = quad4_derivs(0.0, 0.0);
+        let (_, _, j_inv) = jacobian(&dn_xi, &dn_eta, &self.x, &self.y);
+        let (dx, dy) = phys_derivs(&dn_xi, &dn_eta, &j_inv);
+        // B·u  →  ε = [ε_xx, ε_yy, γ_xy]
+        let mut eps = [0.0f64; 3];
+        for i in 0..4 {
+            eps[0] += dx[i] * u[2 * i];
+            eps[1] += dy[i] * u[2 * i + 1];
+            eps[2] += dy[i] * u[2 * i] + dx[i] * u[2 * i + 1];
+        }
+        let sig = [
+            c[0][0] * eps[0] + c[0][1] * eps[1],
+            c[1][0] * eps[0] + c[1][1] * eps[1],
+            c[2][2] * eps[2],
+        ];
+        ([sig[0], sig[1], 0.0, sig[2], 0.0, 0.0], [eps[0], eps[1], 0.0, eps[2], 0.0, 0.0])
+    }
+
     /// 8-element body load vector (2×2 Gauss).
     pub fn compute_body_load_global(&self, b: [f64; 2]) -> [f64; 8] {
         let mut f = [0.0f64; 8];
@@ -410,6 +434,29 @@ impl Quad8Precomputed {
         me
     }
 
+    /// Compute stress and strain at the element centroid (xi=0, eta=0).
+    ///
+    /// Returns ([σ_xx, σ_yy, 0, τ_xy, 0, 0], [ε_xx, ε_yy, 0, γ_xy, 0, 0])
+    /// in Voigt notation.
+    pub fn compute_centroid_stress(&self, e: f64, nu: f64, u: &[f64]) -> ([f64; 6], [f64; 6]) {
+        let c = constitutive(e, nu);
+        let (dn_xi, dn_eta) = quad8_derivs(0.0, 0.0);
+        let (_, _, j_inv) = jacobian(&dn_xi, &dn_eta, &self.x, &self.y);
+        let (dx, dy) = phys_derivs(&dn_xi, &dn_eta, &j_inv);
+        let mut eps = [0.0f64; 3];
+        for i in 0..8 {
+            eps[0] += dx[i] * u[2 * i];
+            eps[1] += dy[i] * u[2 * i + 1];
+            eps[2] += dy[i] * u[2 * i] + dx[i] * u[2 * i + 1];
+        }
+        let sig = [
+            c[0][0] * eps[0] + c[0][1] * eps[1],
+            c[1][0] * eps[0] + c[1][1] * eps[1],
+            c[2][2] * eps[2],
+        ];
+        ([sig[0], sig[1], 0.0, sig[2], 0.0, 0.0], [eps[0], eps[1], 0.0, eps[2], 0.0, 0.0])
+    }
+
     /// 16-element body load vector (3×3 Gauss).
     pub fn compute_body_load_global(&self, b: [f64; 2]) -> [f64; 16] {
         let mut f = [0.0f64; 16];
@@ -495,6 +542,29 @@ impl Quad9Precomputed {
         }
         symmetrize_flat(&mut me, 18);
         me
+    }
+
+    /// Compute stress and strain at the element centroid (xi=0, eta=0).
+    ///
+    /// Returns ([σ_xx, σ_yy, 0, τ_xy, 0, 0], [ε_xx, ε_yy, 0, γ_xy, 0, 0])
+    /// in Voigt notation.
+    pub fn compute_centroid_stress(&self, e: f64, nu: f64, u: &[f64]) -> ([f64; 6], [f64; 6]) {
+        let c = constitutive(e, nu);
+        let (dn_xi, dn_eta) = quad9_derivs(0.0, 0.0);
+        let (_, _, j_inv) = jacobian(&dn_xi, &dn_eta, &self.x, &self.y);
+        let (dx, dy) = phys_derivs(&dn_xi, &dn_eta, &j_inv);
+        let mut eps = [0.0f64; 3];
+        for i in 0..9 {
+            eps[0] += dx[i] * u[2 * i];
+            eps[1] += dy[i] * u[2 * i + 1];
+            eps[2] += dy[i] * u[2 * i] + dx[i] * u[2 * i + 1];
+        }
+        let sig = [
+            c[0][0] * eps[0] + c[0][1] * eps[1],
+            c[1][0] * eps[0] + c[1][1] * eps[1],
+            c[2][2] * eps[2],
+        ];
+        ([sig[0], sig[1], 0.0, sig[2], 0.0, 0.0], [eps[0], eps[1], 0.0, eps[2], 0.0, 0.0])
     }
 
     /// 18-element body load vector (3×3 Gauss).

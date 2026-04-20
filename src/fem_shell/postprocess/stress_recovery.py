@@ -809,6 +809,35 @@ class StressRecovery:
         n_elem = self.n_elements
         r0, s0 = gauss_point
 
+        # ------------------------------------------------------------------
+        # Fast path: delegate to the Rust assembler when available and the
+        # caller requests the canonical centroid point (0, 0).  The Rust
+        # kernel evaluates exactly at the element centroid so it matches the
+        # default gauss_point.  Non-default gauss_point values fall through
+        # to the pure-Python path below.
+        # ------------------------------------------------------------------
+        _rust = getattr(self.domain, "_rust", None)
+        if _rust is not None and r0 == 0.0 and s0 == 0.0:
+            _Z_FACTOR = {
+                StressLocation.BOTTOM: -0.5,
+                StressLocation.MIDDLE:  0.0,
+                StressLocation.TOP:    +0.5,
+            }
+            _STRESS_TYPE = {
+                StressType.MEMBRANE: 0,
+                StressType.BENDING:  1,
+                StressType.TOTAL:    2,
+            }
+            z_factor   = _Z_FACTOR.get(location, 0.0)
+            stype_int  = _STRESS_TYPE.get(stress_type, 2)
+            sigma_all, _ = _rust.compute_stress_field(self.u, z_factor, stype_int)
+            # Detect whether any solid elements are present
+            has_solid = any(self._is_solid(el) for el in self.domain._element_map.values())
+            return self._build_stress_result(sigma_all, is_3d=has_solid)
+
+        # ------------------------------------------------------------------
+        # Pure-Python fallback (non-centroid gauss_point or no Rust assembler)
+        # ------------------------------------------------------------------
         # Pre-allocate for the maximum (6) components
         sigma_all = np.zeros((n_elem, 6))
         has_solid = False

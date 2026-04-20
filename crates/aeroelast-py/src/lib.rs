@@ -1,5 +1,5 @@
-use numpy::ndarray::Array1;
-use numpy::{IntoPyArray, PyArray1, PyReadonlyArray1, PyReadonlyArray2};
+use numpy::ndarray::{Array1, Array2};
+use numpy::{IntoPyArray, PyArray1, PyArray2, PyReadonlyArray1, PyReadonlyArray2};
 use pyo3::prelude::*;
 use pyo3::types::PyCapsule;
 use rayon::prelude::*;
@@ -1171,6 +1171,48 @@ impl PyMeshAssembler {
     /// Returns np.ndarray of length dofs_count (int64).
     pub fn nnz_per_row<'py>(&self, py: Python<'py>) -> pyo3::Bound<'py, PyArray1<i64>> {
         Array1::from(self.inner.nnz_per_row().to_vec()).into_pyarray(py)
+    }
+
+    /// Compute element-centroid stress and strain for every element.
+    ///
+    /// Parameters
+    /// ----------
+    /// u : np.ndarray shape (dofs_count,) — global displacement vector
+    /// z_factor : float — non-dimensional through-thickness location for shell
+    ///     elements: z = z_factor × h.  Typical values: -0.5 (bottom),
+    ///     0.0 (mid-surface, default), +0.5 (top).  Ignored for plane and
+    ///     solid elements.
+    /// stress_type : int — shell stress contribution (ignored for non-shell):
+    ///     0 = membrane only, 1 = bending only, 2 = total (default).
+    ///
+    /// Returns
+    /// -------
+    /// (sigma, epsilon) : tuple of np.ndarray, each shape (n_elems, 6)
+    ///     Voigt [σ_xx, σ_yy, σ_zz, τ_xy, τ_yz, τ_zx] per element.
+    ///     Out-of-plane entries are zero for shell / plane elements.
+    pub fn compute_stress_field<'py>(
+        &self,
+        py: Python<'py>,
+        u: PyReadonlyArray1<f64>,
+        z_factor: f64,
+        stress_type: u8,
+    ) -> PyResult<(
+        pyo3::Bound<'py, PyArray2<f64>>,
+        pyo3::Bound<'py, PyArray2<f64>>,
+    )> {
+        let u_slice = u.as_slice()?;
+        let (sigma, epsilon) = self.inner.compute_stress_field(u_slice, z_factor, stress_type);
+        let n = sigma.len();
+        // Flatten into (n_elems, 6) arrays
+        let sigma_flat: Vec<f64> = sigma.into_iter().flat_map(|s| s.into_iter()).collect();
+        let eps_flat: Vec<f64> = epsilon.into_iter().flat_map(|e| e.into_iter()).collect();
+        let sigma_arr = Array2::from_shape_vec((n, 6), sigma_flat)
+            .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))?
+            .into_pyarray(py);
+        let eps_arr = Array2::from_shape_vec((n, 6), eps_flat)
+            .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))?
+            .into_pyarray(py);
+        Ok((sigma_arr, eps_arr))
     }
 }
 

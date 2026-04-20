@@ -715,6 +715,127 @@ impl MeshAssembler {
 
         f
     }
+
+    // -----------------------------------------------------------------------
+    // compute_stress_field: element-centroid stress and strain recovery
+    // -----------------------------------------------------------------------
+
+    /// Compute the centroid stress and strain for every element in the mesh.
+    ///
+    /// This method is the Rust backbone of the post-processing pipeline.  For
+    /// each element it evaluates the constitutive relationship C·B·u at the
+    /// element centroid (natural coordinates (0,0) for quads / shells,
+    /// (1/3,1/3) for triangles, and the equivalent parametric centroid for
+    /// solid elements) and returns the Voigt 6-component stress and strain
+    /// vectors.
+    ///
+    /// # Arguments
+    /// * `u`           - Global displacement vector of length `dofs_count`.
+    /// * `z_factor`    - Non-dimensional through-thickness location for shell
+    ///                   elements: `z = z_factor × h`.  Typical values:
+    ///                   `−0.5` (bottom), `0.0` (mid-surface), `+0.5` (top).
+    ///                   Ignored for plane and solid elements.
+    /// * `stress_type` - Shell stress contribution flag (ignored for non-shell
+    ///                   elements):
+    ///                   `0` = membrane only, `1` = bending only,
+    ///                   `2` (or any other value) = total (membrane + bending).
+    ///
+    /// # Returns
+    /// A tuple `(sigma, epsilon)` where each is a `Vec` of length `n_elems`.
+    /// Every entry is a `[f64; 6]` Voigt vector:
+    /// `[σ_xx, σ_yy, σ_zz, τ_xy, τ_yz, τ_zx]` (stress)
+    /// `[ε_xx, ε_yy, ε_zz, γ_xy, γ_yz, γ_zx]` (engineering strain).
+    ///
+    /// For shell and plane elements the out-of-plane components (indices 2, 4,
+    /// 5) are zero (plane-stress assumption).
+    pub fn compute_stress_field(
+        &self,
+        u: &[f64],
+        z_factor: f64,
+        stress_type: u8,
+    ) -> (Vec<[f64; 6]>, Vec<[f64; 6]>) {
+        assert_eq!(u.len(), self.dofs_count, "displacement vector length mismatch");
+
+        let n = self.topology.n_elems;
+        let mut sigma_out = vec![[0.0f64; 6]; n];
+        let mut eps_out = vec![[0.0f64; 6]; n];
+
+        for e in 0..n {
+            let dofs = &self.dof_connectivity[e];
+            let (sig6, eps6): ([f64; 6], [f64; 6]) = match &self.precomputed[e] {
+                PrecomputedElem::Tri(pre) => {
+                    let ue = extract_elem_disp_18(u, dofs);
+                    mitc3::compute_element_stress(pre, &ue, z_factor, stress_type)
+                }
+                PrecomputedElem::Quad(pre) => {
+                    let ue = extract_elem_disp_24(u, dofs);
+                    mitc4::compute_element_stress(pre, &ue, z_factor, stress_type)
+                }
+                // Plane (2-D) elements: recover via K·u is not stress — use B·u directly.
+                // We delegate to the solid-style centroid stress for quad plane elements
+                // by extracting in-plane (x,y) DOFs only.
+                PrecomputedElem::Plane4(c) => {
+                    let (e_mod, nu) = plane_stress_en(&self.materials[e]);
+                    let ue: Vec<f64> = dofs.iter().map(|&d| u[d]).collect();
+                    Quad4Precomputed::new(c).compute_centroid_stress(e_mod, nu, &ue)
+                }
+                PrecomputedElem::Plane8(c) => {
+                    let (e_mod, nu) = plane_stress_en(&self.materials[e]);
+                    let ue: Vec<f64> = dofs.iter().map(|&d| u[d]).collect();
+                    Quad8Precomputed::new(c).compute_centroid_stress(e_mod, nu, &ue)
+                }
+                PrecomputedElem::Plane9(c) => {
+                    let (e_mod, nu) = plane_stress_en(&self.materials[e]);
+                    let ue: Vec<f64> = dofs.iter().map(|&d| u[d]).collect();
+                    Quad9Precomputed::new(c).compute_centroid_stress(e_mod, nu, &ue)
+                }
+                PrecomputedElem::Hexa8(c) => {
+                    let (e_mod, nu) = solid3d_en(&self.materials[e]);
+                    let ue: Vec<f64> = dofs.iter().map(|&d| u[d]).collect();
+                    solid::hexa8_centroid_stress(c, e_mod, nu, &ue)
+                }
+                PrecomputedElem::Hexa20(c) => {
+                    let (e_mod, nu) = solid3d_en(&self.materials[e]);
+                    let ue: Vec<f64> = dofs.iter().map(|&d| u[d]).collect();
+                    solid::hexa20_centroid_stress(c, e_mod, nu, &ue)
+                }
+                PrecomputedElem::Tetra4(c) => {
+                    let (e_mod, nu) = solid3d_en(&self.materials[e]);
+                    let ue: Vec<f64> = dofs.iter().map(|&d| u[d]).collect();
+                    solid::tetra4_centroid_stress(c, e_mod, nu, &ue)
+                }
+                PrecomputedElem::Tetra10(c) => {
+                    let (e_mod, nu) = solid3d_en(&self.materials[e]);
+                    let ue: Vec<f64> = dofs.iter().map(|&d| u[d]).collect();
+                    solid::tetra10_centroid_stress(c, e_mod, nu, &ue)
+                }
+                PrecomputedElem::Wedge6(c) => {
+                    let (e_mod, nu) = solid3d_en(&self.materials[e]);
+                    let ue: Vec<f64> = dofs.iter().map(|&d| u[d]).collect();
+                    solid::wedge6_centroid_stress(c, e_mod, nu, &ue)
+                }
+                PrecomputedElem::Wedge15(c) => {
+                    let (e_mod, nu) = solid3d_en(&self.materials[e]);
+                    let ue: Vec<f64> = dofs.iter().map(|&d| u[d]).collect();
+                    solid::wedge15_centroid_stress(c, e_mod, nu, &ue)
+                }
+                PrecomputedElem::Pyramid5(c) => {
+                    let (e_mod, nu) = solid3d_en(&self.materials[e]);
+                    let ue: Vec<f64> = dofs.iter().map(|&d| u[d]).collect();
+                    solid::pyramid5_centroid_stress(c, e_mod, nu, &ue)
+                }
+                PrecomputedElem::Pyramid13(c) => {
+                    let (e_mod, nu) = solid3d_en(&self.materials[e]);
+                    let ue: Vec<f64> = dofs.iter().map(|&d| u[d]).collect();
+                    solid::pyramid13_centroid_stress(c, e_mod, nu, &ue)
+                }
+            };
+            sigma_out[e] = sig6;
+            eps_out[e] = eps6;
+        }
+
+        (sigma_out, eps_out)
+    }
 }
 
 // ============================================================================
