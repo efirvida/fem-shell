@@ -293,6 +293,43 @@ class MeshAssembler:
         ElementFamily.SOLID: (3, 3),
     }
 
+    # Static vector_form per element family — no element instantiation needed.
+    _FAMILY_VECTOR_FORM: Dict = {
+        ElementFamily.SHELL: {"U": ("Ux", "Uy", "Uz"), "θ": ("θx", "θy", "θz")},
+        ElementFamily.SOLID: {"U": ("Ux", "Uy", "Uz")},
+        ElementFamily.PLANE: {"U": ("Ux", "Uy")},
+    }
+
+    @property
+    def vector_form(self) -> Dict:
+        """DOF vector layout for VTK output and solvers.
+
+        Derived from the element family declared in the model — never requires
+        instantiating a Python FemElement object.
+        """
+        family = self.model.get("element_family")
+        if family in self._FAMILY_VECTOR_FORM:
+            return self._FAMILY_VECTOR_FORM[family]
+        # Mixed / unknown: infer from dofs_per_node
+        if self.dofs_per_node == 6:
+            return self._FAMILY_VECTOR_FORM[ElementFamily.SHELL]
+        if self.dofs_per_node == 3:
+            return self._FAMILY_VECTOR_FORM[ElementFamily.SOLID]
+        return self._FAMILY_VECTOR_FORM[ElementFamily.PLANE]
+
+    @property
+    def element_family(self) -> Optional["ElementFamily"]:
+        """Primary element family of this mesh (SHELL / SOLID / PLANE)."""
+        family = self.model.get("element_family")
+        if family is not None:
+            return family
+        # Infer from dofs_per_node
+        if self.dofs_per_node == 6:
+            return ElementFamily.SHELL
+        if self.dofs_per_node == 3:
+            return ElementFamily.SOLID
+        return ElementFamily.PLANE
+
     def _precompute_elements(self):
         """Compute element DOF connectivity without instantiating FemElement objects.
 

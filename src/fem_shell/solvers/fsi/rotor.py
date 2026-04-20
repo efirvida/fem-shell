@@ -167,6 +167,7 @@ from petsc4py import PETSc
 
 from fem_shell.core.bc import BoundaryConditionManager
 from fem_shell.core.mesh import MeshModel
+from fem_shell.elements import ElementFamily
 from fem_shell.postprocess.stress_recovery import StressRecovery, StressType
 
 from .base import Adapter
@@ -3984,8 +3985,8 @@ class LinearDynamicFSIRotorSolver(LinearDynamicFSISolver):
         sr = StressRecovery(self.domain, u_full)
 
         # Detect whether we have shell elements
-        has_shell = any(sr._is_shell(e) for e in self.domain._element_map.values())
-        has_solid = any(sr._is_solid(e) for e in self.domain._element_map.values())
+        has_shell = self.domain.element_family == ElementFamily.SHELL
+        has_solid = self.domain.element_family == ElementFamily.SOLID
 
         out: Dict[str, np.ndarray] = {}
 

@@ -17,6 +17,7 @@ from rich.table import Table
 
 from fem_shell.core.bc import BoundaryConditionManager
 from fem_shell.core.mesh import MeshModel
+from fem_shell.elements import ElementFamily
 from fem_shell.postprocess.stress_recovery import StressRecovery, StressType
 from fem_shell.solvers.linear import LinearDynamicSolver
 
@@ -855,8 +856,8 @@ class LinearDynamicFSISolver(LinearDynamicSolver):
     def _compute_stress_fields(self, u_full: np.ndarray) -> Dict[str, np.ndarray]:
         """Compute stress and strain fields for checkpoint VTU export."""
         sr = StressRecovery(self.domain, u_full)
-        has_shell = any(sr._is_shell(e) for e in self.domain._element_map.values())
-        has_solid = any(sr._is_solid(e) for e in self.domain._element_map.values())
+        has_shell = self.domain.element_family == ElementFamily.SHELL
+        has_solid = self.domain.element_family == ElementFamily.SOLID
 
         out: Dict[str, np.ndarray] = {}
         if has_shell and not has_solid:

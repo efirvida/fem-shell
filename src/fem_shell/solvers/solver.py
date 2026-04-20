@@ -88,13 +88,10 @@ class Solver(ABC):
         self.domain = MeshAssembler(mesh=self.mesh_obj, model=self.model_properties)
         self.dirichlet_conditions: List[DirichletCondition] = []
         self.body_forces: List[BodyForce] = []
-        self._vector_form: Dict = {}
 
     @property
     def vector_form(self) -> Dict[str, Tuple]:
-        if not self._vector_form:
-            self._vector_form = self.domain._element_map[0].vector_form
-        return self._vector_form
+        return self.domain.vector_form
 
     def get_dofs_by_nodeset_name(self, name: str, only_geometric_dofs: bool = True) -> Set[int]:
         """
