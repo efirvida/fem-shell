@@ -52,6 +52,9 @@ pub const EPS_GHEP: i32 = 2;
 /// SLEPc EPSWhich enum: LARGEST_MAGNITUDE=1, SMALLEST_MAGNITUDE=2, ..., TARGET_MAGNITUDE=7.
 pub const EPS_TARGET_MAGNITUDE: i32 = 7;
 
+/// PETSC_INFINITY — used for dtol to disable divergence tolerance.
+pub const PETSC_INFINITY: PetscReal = 1.0e300;
+
 /// PETSC_DEFAULT = -2
 pub const PETSC_DEFAULT: PetscInt = -2;
 
@@ -207,9 +210,37 @@ pub type PC = *mut c_void;
 
 #[link(name = "petsc")]
 extern "C" {
+    pub fn KSPCreate(comm: MPI_Comm, ksp: *mut KSP) -> PetscErrorCode;
     pub fn KSPSetType(ksp: KSP, type_: *const i8) -> PetscErrorCode;
+    pub fn KSPSetOperators(ksp: KSP, Amat: Mat, Pmat: Mat) -> PetscErrorCode;
+    pub fn KSPSetTolerances(
+        ksp: KSP,
+        rtol: PetscReal,
+        atol: PetscReal,
+        dtol: PetscReal,
+        max_it: PetscInt,
+    ) -> PetscErrorCode;
+    pub fn KSPSetFromOptions(ksp: KSP) -> PetscErrorCode;
+    pub fn KSPSolve(ksp: KSP, b: Vec, x: Vec) -> PetscErrorCode;
+    pub fn KSPGetConvergedReason(ksp: KSP, reason: *mut i32) -> PetscErrorCode;
+    pub fn KSPGetIterationNumber(ksp: KSP, its: *mut PetscInt) -> PetscErrorCode;
+    pub fn KSPGetResidualNorm(ksp: KSP, rnorm: *mut PetscReal) -> PetscErrorCode;
+    pub fn KSPDestroy(ksp: *mut KSP) -> PetscErrorCode;
     pub fn KSPGetPC(ksp: KSP, pc: *mut PC) -> PetscErrorCode;
     pub fn PCSetType(pc: PC, type_: *const i8) -> PetscErrorCode;
     pub fn PCFactorSetMatSolverType(pc: PC, stype: *const i8) -> PetscErrorCode;
     pub fn MatGetSize(mat: Mat, m: *mut PetscInt, n: *mut PetscInt) -> PetscErrorCode;
+    pub fn MatMult(mat: Mat, x: Vec, y: Vec) -> PetscErrorCode;
+    pub fn VecDuplicate(v: Vec, newv: *mut Vec) -> PetscErrorCode;
+    pub fn VecSet(x: Vec, alpha: PetscScalar) -> PetscErrorCode;
+    pub fn VecAXPY(y: Vec, alpha: PetscScalar, x: Vec) -> PetscErrorCode;
+    pub fn VecSetValues(
+        x: Vec,
+        ni: PetscInt,
+        ix: *const PetscInt,
+        y: *const PetscScalar,
+        iora: i32,
+    ) -> PetscErrorCode;
+    pub fn VecAssemblyBegin(vec: Vec) -> PetscErrorCode;
+    pub fn VecAssemblyEnd(vec: Vec) -> PetscErrorCode;
 }

@@ -1,4 +1,11 @@
 fn main() {
+    // ── MPI (OpenMPI 4.1.4) ──────────────────────────────────────────────────
+    // libpetsc.so depends on libmpi.so.40 from the system OpenMPI install.
+    // pkg-config for PETSc does not emit -lmpi, so we add it explicitly here.
+    println!("cargo:rustc-link-search=native=/scratch/app/openmpi/4.1.4_gnu/lib");
+    println!("cargo:rustc-link-lib=mpi");
+    println!("cargo:rustc-link-arg=-Wl,-rpath,/scratch/app/openmpi/4.1.4_gnu/lib");
+
     // ── PETSc ────────────────────────────────────────────────────────────────
     let petsc_libs = std::process::Command::new("pkg-config")
         .args(["--libs-only-L", "PETSc"])
