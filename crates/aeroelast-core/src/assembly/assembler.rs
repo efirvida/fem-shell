@@ -717,6 +717,164 @@ impl MeshAssembler {
     }
 
     // -----------------------------------------------------------------------
+    // assemble_centrifugal_k: geometric stiffness from centrifugal prestress
+    // -----------------------------------------------------------------------
+
+    /// Assemble the geometric stiffness matrix K_σ from centrifugal loading.
+    ///
+    /// Computes the centrifugal prestress for every shell element from first
+    /// principles (centroid, radial distance, area, local axes), then calls
+    /// `assemble_geometric_k` with the resulting per-element σ array.
+    ///
+    /// Only MITC3/MITC4 shell elements contribute; plane and solid elements
+    /// are skipped (σ = 0).
+    ///
+    /// # Arguments
+    /// * `omega`         - Angular velocity magnitude (rad/s)
+    /// * `rotation_axis` - Unit vector of the rotation axis `[ax, ay, az]`
+    /// * `rotation_center` - A point on the rotation axis `[cx, cy, cz]` (m)
+    /// * `rho_per_elem`  - Density (or mass-per-area for composite) per element
+    ///
+    /// # Returns
+    /// `(rows, cols, vals)` COO triplets for K_σ.
+    pub fn assemble_centrifugal_k(
+        &self,
+        omega: f64,
+        rotation_axis: [f64; 3],
+        rotation_center: [f64; 3],
+        rho_per_elem: &[f64],
+    ) -> (Vec<i64>, Vec<i64>, Vec<f64>) {
+        assert_eq!(
+            rho_per_elem.len(),
+            self.topology.n_elems,
+            "rho_per_elem length must equal n_elems"
+        );
+
+        let axis = {
+            let a = Vector3::new(rotation_axis[0], rotation_axis[1], rotation_axis[2]);
+            let n = a.norm();
+            if n > 1e-30 { a / n } else { Vector3::new(0.0, 0.0, 1.0) }
+        };
+        let center = Vector3::new(rotation_center[0], rotation_center[1], rotation_center[2]);
+
+        let n_elems = self.topology.n_elems;
+        let mut sigma: Vec<[f64; 3]> = vec![[0.0; 3]; n_elems];
+
+        for e in 0..n_elems {
+            // Only shell elements get centrifugal prestress
+            let coords_flat = self.topology.elem_coords(e);
+            let n_nodes = coords_flat.len() / 3;
+
+            let is_shell = matches!(
+                self.precomputed[e],
+                PrecomputedElem::Tri(_) | PrecomputedElem::Quad(_)
+            );
+            if !is_shell {
+                continue;
+            }
+
+            // Centroid
+            let mut cx = 0.0f64;
+            let mut cy = 0.0f64;
+            let mut cz = 0.0f64;
+            for n in 0..n_nodes {
+                cx += coords_flat[3 * n];
+                cy += coords_flat[3 * n + 1];
+                cz += coords_flat[3 * n + 2];
+            }
+            let inv_n = 1.0 / n_nodes as f64;
+            let centroid = Vector3::new(cx * inv_n, cy * inv_n, cz * inv_n);
+
+            // Radial distance from rotation axis
+            let r_vec = centroid - center;
+            let r_parallel = r_vec.dot(&axis) * axis;
+            let r_radial_vec = r_vec - r_parallel;
+            let r_radial = r_radial_vec.norm();
+
+            if r_radial < 1e-10 {
+                continue; // on rotation axis — no centrifugal stress
+            }
+            let radial_dir = r_radial_vec / r_radial;
+
+            // Element area (via cross product of diagonals)
+            let area = if n_nodes >= 4 {
+                // Quad: diagonals p2-p0 and p3-p1
+                let p0 = Vector3::new(coords_flat[0], coords_flat[1], coords_flat[2]);
+                let p2 = Vector3::new(coords_flat[6], coords_flat[7], coords_flat[8]);
+                let p3 = Vector3::new(coords_flat[9], coords_flat[10], coords_flat[11]);
+                let p1 = Vector3::new(coords_flat[3], coords_flat[4], coords_flat[5]);
+                let v1 = p2 - p0;
+                let v2 = p3 - p1;
+                0.5 * v1.cross(&v2).norm()
+            } else {
+                // Tri: cross product of two edges
+                let p0 = Vector3::new(coords_flat[0], coords_flat[1], coords_flat[2]);
+                let p1 = Vector3::new(coords_flat[3], coords_flat[4], coords_flat[5]);
+                let p2 = Vector3::new(coords_flat[6], coords_flat[7], coords_flat[8]);
+                0.5 * (p1 - p0).cross(&(p2 - p0)).norm()
+            };
+            let l_char = area.max(1e-20).sqrt();
+
+            // Local axes (e1, e2, e3) — same logic as Python _shell_local_axes
+            let p0 = Vector3::new(coords_flat[0], coords_flat[1], coords_flat[2]);
+            let p1 = Vector3::new(coords_flat[3], coords_flat[4], coords_flat[5]);
+            let p2 = Vector3::new(coords_flat[6], coords_flat[7], coords_flat[8]);
+            let v1 = p1 - p0;
+            let v2 = p2 - p0;
+            let n1 = v1.cross(&v2);
+
+            let e3 = if n_nodes >= 4 {
+                let p3 = Vector3::new(coords_flat[9], coords_flat[10], coords_flat[11]);
+                let v1b = p2 - p0;
+                let v2b = p3 - p0;
+                let n2 = v1b.cross(&v2b);
+                let n1n = n1.norm();
+                let n2n = n2.norm();
+                let avg = match (n1n > 1e-12, n2n > 1e-12) {
+                    (true, true)  => n1 / n1n + n2 / n2n,
+                    (true, false) => n1 / n1n,
+                    (false, true) => n2 / n2n,
+                    _             => Vector3::new(0.0, 0.0, 1.0),
+                };
+                let an = avg.norm();
+                if an > 1e-12 { avg / an } else { Vector3::new(0.0, 0.0, 1.0) }
+            } else {
+                let n1n = n1.norm();
+                if n1n > 1e-12 { n1 / n1n } else { Vector3::new(0.0, 0.0, 1.0) }
+            };
+
+            let e1_raw = v1 - v1.dot(&e3) * e3;
+            let e1_raw = if e1_raw.norm() < 1e-12 {
+                let fb = v2 - v2.dot(&e3) * e3;
+                fb
+            } else {
+                e1_raw
+            };
+            let e1n = e1_raw.norm();
+            let e1 = if e1n > 1e-12 { e1_raw / e1n } else { Vector3::new(1.0, 0.0, 0.0) };
+            let e2_raw = e3.cross(&e1);
+            let e2 = {
+                let n = e2_raw.norm();
+                if n > 1e-12 { e2_raw / n } else { Vector3::new(0.0, 1.0, 0.0) }
+            };
+
+            // Centrifugal stress magnitude
+            let rho = rho_per_elem[e];
+            let sigma_cf = rho * omega * omega * r_radial * l_char;
+
+            // Project radial direction onto local x-y plane
+            let cos_theta = radial_dir.dot(&e1);
+            let sin_theta = radial_dir.dot(&e2);
+
+            sigma[e][0] = sigma_cf * cos_theta * cos_theta;       // σ_xx
+            sigma[e][1] = sigma_cf * sin_theta * sin_theta;       // σ_yy
+            sigma[e][2] = sigma_cf * cos_theta * sin_theta;       // σ_xy
+        }
+
+        self.assemble_geometric_k(&sigma)
+    }
+
+    // -----------------------------------------------------------------------
     // compute_stress_field: element-centroid stress and strain recovery
     // -----------------------------------------------------------------------
 

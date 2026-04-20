@@ -1183,6 +1183,58 @@ impl PyMeshAssembler {
         Array1::from(self.inner.nnz_per_row().to_vec()).into_pyarray(py)
     }
 
+    /// Assemble the geometric stiffness matrix K_σ from centrifugal loading.
+    ///
+    /// Computes centrifugal prestress per element from first principles and
+    /// assembles the geometric stiffness matrix in a single Rust pass.
+    ///
+    /// Parameters
+    /// ----------
+    /// omega : float
+    ///     Angular velocity magnitude (rad/s).
+    /// rotation_axis : list[float] of length 3
+    ///     Unit vector of the rotation axis [ax, ay, az].
+    /// rotation_center : list[float] of length 3
+    ///     A point on the rotation axis [cx, cy, cz] (m).
+    /// rho_per_elem : np.ndarray shape (n_elems,)
+    ///     Density (kg/m³) or mass-per-area (kg/m²) per element.
+    ///     For isotropic shell elements use ρ (kg/m³);
+    ///     for composite laminates use mass_per_area (kg/m²).
+    ///
+    /// Returns (rows, cols, vals) as numpy int64/float64 arrays.
+    pub fn assemble_centrifugal_k<'py>(
+        &self,
+        py: Python<'py>,
+        omega: f64,
+        rotation_axis: [f64; 3],
+        rotation_center: [f64; 3],
+        rho_per_elem: PyReadonlyArray1<f64>,
+    ) -> PyResult<(
+        pyo3::Bound<'py, PyArray1<i64>>,
+        pyo3::Bound<'py, PyArray1<i64>>,
+        pyo3::Bound<'py, PyArray1<f64>>,
+    )> {
+        let rho_slice = rho_per_elem.as_slice()?;
+        if rho_slice.len() != self.inner.topology.n_elems {
+            return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                "rho_per_elem must have length n_elems={}; got {}",
+                self.inner.topology.n_elems,
+                rho_slice.len()
+            )));
+        }
+        let (rows, cols, vals) = self.inner.assemble_centrifugal_k(
+            omega,
+            rotation_axis,
+            rotation_center,
+            rho_slice,
+        );
+        Ok((
+            Array1::from(rows).into_pyarray(py),
+            Array1::from(cols).into_pyarray(py),
+            Array1::from(vals).into_pyarray(py),
+        ))
+    }
+
     /// Compute element-centroid stress and strain for every element.
     ///
     /// Parameters

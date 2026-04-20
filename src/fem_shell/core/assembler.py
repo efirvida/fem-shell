@@ -17,55 +17,6 @@ logger = logging.getLogger(__name__)
 # Module-level helpers
 # ---------------------------------------------------------------------------
 
-def _shell_local_axes(node_coords: np.ndarray, conn: list) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """Compute local orthonormal axes (e1, e2, e3) for a shell element.
-
-    Replicates the logic in MITC4._compute_local_coordinates / MITC3 without
-    instantiating any Python element object.  Works for 3-node and 4-node elements.
-
-    Parameters
-    ----------
-    node_coords : (n_nodes_total, 3) float array — global node coordinates.
-    conn        : list of 0-based indices into node_coords for this element.
-
-    Returns
-    -------
-    e1, e2, e3 : unit vectors defining the local coordinate system.
-    """
-    pts = [node_coords[c] for c in conn]
-
-    normals = []
-    v1 = pts[1] - pts[0]
-    v2 = pts[2] - pts[0]
-    n1 = np.cross(v1, v2)
-    if np.linalg.norm(n1) > 1e-12:
-        normals.append(n1 / np.linalg.norm(n1))
-
-    if len(pts) >= 4:
-        v1b = pts[2] - pts[0]
-        v2b = pts[3] - pts[0]
-        n2 = np.cross(v1b, v2b)
-        if np.linalg.norm(n2) > 1e-12:
-            normals.append(n2 / np.linalg.norm(n2))
-
-    if normals:
-        e3 = np.mean(normals, axis=0)
-        e3 /= np.linalg.norm(e3)
-    else:
-        e3 = np.array([0.0, 0.0, 1.0])
-
-    e1 = pts[1] - pts[0]
-    e1 = e1 - np.dot(e1, e3) * e3
-    if np.linalg.norm(e1) < 1e-12:
-        e1 = pts[2] - pts[0]
-        e1 = e1 - np.dot(e1, e3) * e3
-    e1 /= np.linalg.norm(e1)
-
-    e2 = np.cross(e3, e1)
-    e2 /= np.linalg.norm(e2)
-    return e1, e2, e3
-
-
 def _batch_angle_offsets(
     node_coords: np.ndarray,
     conn_array: np.ndarray,
@@ -177,7 +128,33 @@ def _apply_span_direction(
     """
     from fem_shell.core.laminate import Laminate as Lam, Ply as Pl  # noqa: PLC0415
 
-    e1, e2, e3 = _shell_local_axes(node_coords, conn)
+    # Compute local orthonormal axes (e1, e2, e3) for this element
+    pts = [node_coords[c] for c in conn]
+    normals = []
+    v1 = pts[1] - pts[0]
+    v2 = pts[2] - pts[0]
+    n1 = np.cross(v1, v2)
+    if np.linalg.norm(n1) > 1e-12:
+        normals.append(n1 / np.linalg.norm(n1))
+    if len(pts) >= 4:
+        v1b = pts[2] - pts[0]
+        v2b = pts[3] - pts[0]
+        n2 = np.cross(v1b, v2b)
+        if np.linalg.norm(n2) > 1e-12:
+            normals.append(n2 / np.linalg.norm(n2))
+    if normals:
+        e3 = np.mean(normals, axis=0)
+        e3 /= np.linalg.norm(e3)
+    else:
+        e3 = np.array([0.0, 0.0, 1.0])
+    e1 = pts[1] - pts[0]
+    e1 = e1 - np.dot(e1, e3) * e3
+    if np.linalg.norm(e1) < 1e-12:
+        e1 = pts[2] - pts[0]
+        e1 = e1 - np.dot(e1, e3) * e3
+    e1 /= np.linalg.norm(e1)
+    e2 = np.cross(e3, e1)
+    e2 /= np.linalg.norm(e2)
 
     sd = span_dir - float(np.dot(span_dir, e3)) * e3
     sd_len = float(np.linalg.norm(sd))
@@ -258,9 +235,7 @@ class MeshAssembler:
         self.spatial_dim: int = 0
         self.dofs_count: int = 0
         self._row_nnz: Optional[np.ndarray] = None
-        self._node_coords: Optional[np.ndarray] = None  # (n_nodes, 3) — set in _build_py_mesh_assembler
         self._rho_per_elem: Optional[np.ndarray] = None  # (n_elems,) — set in _build_py_mesh_assembler
-        self._elem_node_conn: Optional[list] = None      # list of lists — set in _build_py_mesh_assembler
 
         t0 = time.perf_counter()
         logger.info("[assembler] START __init__ — nodes=%d", mesh.node_count)
@@ -269,17 +244,9 @@ class MeshAssembler:
         self._precompute_elements()
         logger.info("[assembler] _precompute_elements done in %.2fs — elements=%d", time.perf_counter() - t1, len(self.mesh.elements))
 
-        t2 = time.perf_counter()
-        self._compute_sparsity_pattern()
-        logger.info("[assembler] _compute_sparsity_pattern done in %.2fs", time.perf_counter() - t2)
-
         t3 = time.perf_counter()
-        self._prepare_rust_batch_data()
-        logger.info("[assembler] _prepare_rust_batch_data done in %.2fs", time.perf_counter() - t3)
-
-        t4 = time.perf_counter()
         self._build_py_mesh_assembler()
-        logger.info("[assembler] _build_py_mesh_assembler done in %.2fs — rust=%s", time.perf_counter() - t4, self._rust is not None)
+        logger.info("[assembler] _build_py_mesh_assembler done in %.2fs — rust=%s", time.perf_counter() - t3, self._rust is not None)
 
         logger.info("[assembler] TOTAL __init__ done in %.2fs — dofs=%d", time.perf_counter() - t0, self.dofs_count)
 
@@ -390,67 +357,6 @@ class MeshAssembler:
 
         self.dofs_count = self.mesh.node_count * self.dofs_per_node
 
-    def _compute_sparsity_pattern(self):
-        """Compute the sparse matrix non-zero pattern for efficient preallocation.
-
-        Uses a vectorized numpy/scipy approach instead of a Python loop over
-        sets — eliminates ~12s for the 85k-element blade case.
-
-        Strategy:
-        - For each element, generate all (row, col) pairs via broadcasting
-        - Stack all pairs into a single COO array
-        - Deduplicate with scipy.sparse (or np.unique) and count nnz per row
-        """
-        from scipy.sparse import csr_matrix  # noqa: PLC0415
-
-        n = self.dofs_count
-        dofs_data = self._dofs_list if self._is_mixed_mesh else self._dofs_array
-
-        if self._is_mixed_mesh:
-            # Mixed mesh: variable DOF count per element — build COO in Python loop
-            # (mixed meshes are rare and usually small; this path is not performance-critical)
-            row_list = []
-            col_list = []
-            for elem_dofs in dofs_data:
-                d = np.asarray(elem_dofs, dtype=np.int64)
-                # Cartesian product via broadcasting
-                rows = np.repeat(d, len(d))
-                cols = np.tile(d, len(d))
-                row_list.append(rows)
-                col_list.append(cols)
-            all_rows = np.concatenate(row_list)
-            all_cols = np.concatenate(col_list)
-        else:
-            # Uniform mesh: dofs_array shape (n_elem, dofs_per_elem)
-            # Vectorized cartesian product for all elements at once
-            n_elem, dpn = dofs_data.shape  # e.g. (84889, 24)
-            # For each element row e: repeat dofs_array[e] dpn times (rows)
-            #                          tile  dofs_array[e] dpn times (cols)
-            # all_rows[e*dpn*dpn : (e+1)*dpn*dpn] = np.repeat(dofs_array[e], dpn)
-            # Equivalent vectorized form:
-            all_rows = np.repeat(dofs_data, dpn, axis=1).ravel()   # (n_elem * dpn * dpn,)
-            all_cols = np.tile(dofs_data, (1, dpn)).ravel()         # (n_elem * dpn * dpn,)
-
-        # Build sparse boolean matrix — scipy deduplicates automatically
-        ones = np.ones(len(all_rows), dtype=np.int32)
-        sp = csr_matrix((ones, (all_rows, all_cols)), shape=(n, n))
-        # getnnz(axis=1) gives exact nnz per row after deduplication
-        self._row_nnz = sp.getnnz(axis=1).astype(PETSc.IntType)
-
-    def _prepare_rust_batch_data(self):
-        """Stub kept for backward compatibility. No-op since batch groups are
-        no longer used — all K/M assembly goes through ``self._rust`` directly."""
-        self._rust_groups = []
-        self._rust_composite_groups = []
-        self._has_rust = False
-        self._all_elements_rust = False
-        try:
-            import fem_shell_core  # noqa: F401
-            self._has_rust = True
-            self._all_elements_rust = True
-        except ImportError:
-            pass
-
     # ------------------------------------------------------------------
     # Lazy element map: only built when needed for body loads / stress stiffening
     # ------------------------------------------------------------------
@@ -489,7 +395,6 @@ class MeshAssembler:
         for node in self.mesh.nodes:
             idx = node_id_to_index[node.id]
             node_coords[idx, :] = node.coords[:3]
-        self._node_coords = node_coords  # cache for vectorized centrifugal prestress
 
         # Build per-element property lookup
         properties_map: Optional[Dict[str, ShellPropertyType]] = self.model.get("properties")
@@ -651,7 +556,6 @@ class MeshAssembler:
             [m.get("rho", m.get("mass_per_area", 0.0)) for m in materials_list],
             dtype=np.float64,
         )
-        self._elem_node_conn = connectivity  # list of lists (0-based node indices)
 
         try:
             _t_rust = time.perf_counter()
@@ -662,6 +566,8 @@ class MeshAssembler:
                 materials_list,
             )
             logger.info("[assembler._build_py_mesh_assembler] PyMeshAssembler() constructed in %.2fs", time.perf_counter() - _t_rust)
+            # Compute sparsity pattern from Rust (replaces scipy _compute_sparsity_pattern)
+            self._row_nnz = np.asarray(self._rust.nnz_per_row(), dtype=PETSc.IntType)
         except Exception as exc:  # noqa: BLE001
             logger.error("[assembler._build_py_mesh_assembler] PyMeshAssembler() FAILED: %s", exc)
             self._rust = None
@@ -688,32 +594,6 @@ class MeshAssembler:
             ),
         )
         mat.assemble()
-        return mat
-
-    def _create_petsc_matrix(self) -> PETSc.Mat:
-        """
-        Create a PETSc sparse matrix with optimized memory preallocation.
-
-        Returns
-        -------
-        PETSc.Mat
-            A sparse matrix configured for efficient assembly
-
-        Notes
-        -----
-        Uses AIJ format (Compressed Sparse Row) by default. For better
-        GPU performance consider setting type to 'seqaijcusparse'
-        """
-        mat = PETSc.Mat().create(self.comm)
-        mat.setType("aij")
-        mat.setSizes([self.dofs_count, self.dofs_count])
-
-        d_nnz = self._row_nnz.astype(PETSc.IntType)
-        o_nnz = np.zeros_like(d_nnz)  # Ajustar según particionado paralelo
-
-        mat.setPreallocationNNZ((d_nnz, o_nnz))
-        mat.setUp()
-        mat.setOption(PETSc.Mat.Option.NEW_NONZERO_ALLOCATION_ERR, False)
         return mat
 
     def assemble_stiffness_matrix(self) -> PETSc.Mat:
@@ -900,8 +780,6 @@ class MeshAssembler:
         # ------------------------------------------------------------------
         if (
             self._rust is not None
-            and self._node_coords is not None
-            and self._elem_node_conn is not None
             and self._rho_per_elem is not None
         ):
             elements = self.mesh.elements
@@ -915,52 +793,15 @@ class MeshAssembler:
                         sv = stress_field[element.id]
                         sv = np.asarray(sv, dtype=np.float64).ravel()
                         sigma_array[i, :3] = sv[:3]
+                rows, cols, vals = self._rust.assemble_geometric_k(sigma_array)
             else:
-                # Vectorized centrifugal prestress
-                axis = rotation_axis  # already normalized
-                center = rotation_center
-                node_coords = self._node_coords
-                rho_arr = self._rho_per_elem
-
-                for i, (element, conn) in enumerate(zip(elements, self._elem_node_conn)):
-                    coords = node_coords[conn]           # (n_nodes_e, 3)
-                    centroid = coords.mean(axis=0)       # (3,)
-
-                    # Radial distance from rotation axis
-                    r_vec = centroid - center
-                    r_parallel = np.dot(r_vec, axis) * axis
-                    r_radial_vec = r_vec - r_parallel
-                    r_radial = np.linalg.norm(r_radial_vec)
-
-                    if r_radial < 1e-10:
-                        continue  # on rotation axis — no centrifugal stress
-
-                    radial_dir = r_radial_vec / r_radial
-
-                    # Characteristic length: sqrt(element area projected on local plane)
-                    if len(conn) >= 4:
-                        v1 = coords[2] - coords[0]
-                        v2 = coords[3] - coords[1]
-                    else:
-                        v1 = coords[1] - coords[0]
-                        v2 = coords[2] - coords[0]
-                    area = 0.5 * np.linalg.norm(np.cross(v1, v2))
-                    L_char = np.sqrt(max(area, 1e-20))
-
-                    rho = rho_arr[i]
-                    sigma_cf = rho * omega**2 * r_radial * L_char
-
-                    # Local axes (T matrix 3×3) — reuse module-level helper
-                    e1, e2, _e3 = _shell_local_axes(node_coords, conn)
-                    # Project radial direction onto local x-y plane
-                    cos_theta = np.dot(radial_dir, e1)
-                    sin_theta = np.dot(radial_dir, e2)
-
-                    sigma_array[i, 0] = sigma_cf * cos_theta**2       # σ_xx
-                    sigma_array[i, 1] = sigma_cf * sin_theta**2       # σ_yy
-                    sigma_array[i, 2] = sigma_cf * cos_theta * sin_theta  # σ_xy
-
-            rows, cols, vals = self._rust.assemble_geometric_k(sigma_array)
+                # Rust-accelerated centrifugal prestress
+                rows, cols, vals = self._rust.assemble_centrifugal_k(
+                    float(omega),
+                    list(map(float, rotation_axis)),
+                    list(map(float, rotation_center)),
+                    self._rho_per_elem,
+                )
             return self._coo_to_petsc(rows, cols, vals)
 
         # ------------------------------------------------------------------

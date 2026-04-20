@@ -265,14 +265,6 @@ class TestNewtonRaphsonConsistency:
 class TestRustGroupCoverage:
     """Verify the Rust assembler is wired up correctly via PyMeshAssembler."""
 
-    def test_rust_flags(self, assembler):
-        assert assembler._has_rust
-        assert assembler._all_elements_rust
-
     def test_py_mesh_assembler_built(self, assembler):
         """_rust must be a PyMeshAssembler instance after __init__."""
         assert assembler._rust is not None
-
-    def test_rust_groups_stub_empty(self, assembler):
-        """_rust_groups is kept as an empty list (dead-code stub) for back-compat."""
-        assert assembler._rust_groups == []
