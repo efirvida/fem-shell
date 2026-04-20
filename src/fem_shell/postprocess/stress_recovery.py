@@ -97,7 +97,7 @@ References
 
 from dataclasses import dataclass
 from enum import Enum
-from typing import TYPE_CHECKING, Dict, List, Optional, Tuple
+from typing import TYPE_CHECKING, Dict, Optional, Tuple
 
 import numpy as np
 
@@ -351,112 +351,6 @@ class StressRecovery:
     of the number of elements of each type.
     """
 
-    # Parametric node coordinates for each supported element topology.
-    _SHELL_NODE_COORDS: Dict[str, List[Tuple[float, float]]] = {
-        "MITC3": [(0.0, 0.0), (1.0, 0.0), (0.0, 1.0)],
-        "MITC4": [(-1.0, -1.0), (1.0, -1.0), (1.0, 1.0), (-1.0, 1.0)],
-    }
-
-    _SOLID_NODE_COORDS: Dict[str, List[Tuple[float, float, float]]] = {
-        "TETRA4": [
-            (0.0, 0.0, 0.0),
-            (1.0, 0.0, 0.0),
-            (0.0, 1.0, 0.0),
-            (0.0, 0.0, 1.0),
-        ],
-        "TETRA10": [
-            (0.0, 0.0, 0.0),
-            (1.0, 0.0, 0.0),
-            (0.0, 1.0, 0.0),
-            (0.0, 0.0, 1.0),
-            (0.5, 0.0, 0.0),
-            (0.5, 0.5, 0.0),
-            (0.0, 0.5, 0.0),
-            (0.0, 0.0, 0.5),
-            (0.5, 0.0, 0.5),
-            (0.0, 0.5, 0.5),
-        ],
-        "HEXA8": [
-            (-1, -1, -1),
-            (1, -1, -1),
-            (1, 1, -1),
-            (-1, 1, -1),
-            (-1, -1, 1),
-            (1, -1, 1),
-            (1, 1, 1),
-            (-1, 1, 1),
-        ],
-        "HEXA20": [
-            (-1, -1, -1),
-            (1, -1, -1),
-            (1, 1, -1),
-            (-1, 1, -1),
-            (-1, -1, 1),
-            (1, -1, 1),
-            (1, 1, 1),
-            (-1, 1, 1),
-            (0, -1, -1),
-            (1, 0, -1),
-            (0, 1, -1),
-            (-1, 0, -1),
-            (0, -1, 1),
-            (1, 0, 1),
-            (0, 1, 1),
-            (-1, 0, 1),
-            (-1, -1, 0),
-            (1, -1, 0),
-            (1, 1, 0),
-            (-1, 1, 0),
-        ],
-        "WEDGE6": [
-            (0, 0, -1),
-            (1, 0, -1),
-            (0, 1, -1),
-            (0, 0, 1),
-            (1, 0, 1),
-            (0, 1, 1),
-        ],
-        "WEDGE15": [
-            (0, 0, -1),
-            (1, 0, -1),
-            (0, 1, -1),
-            (0, 0, 1),
-            (1, 0, 1),
-            (0, 1, 1),
-            (0.5, 0, -1),
-            (0.5, 0.5, -1),
-            (0, 0.5, -1),
-            (0.5, 0, 1),
-            (0.5, 0.5, 1),
-            (0, 0.5, 1),
-            (0, 0, 0),
-            (1, 0, 0),
-            (0, 1, 0),
-        ],
-        "PYRAMID5": [
-            (-1, -1, 0),
-            (1, -1, 0),
-            (1, 1, 0),
-            (-1, 1, 0),
-            (0, 0, 1),
-        ],
-        "PYRAMID13": [
-            (-1, -1, 0),
-            (1, -1, 0),
-            (1, 1, 0),
-            (-1, 1, 0),
-            (0, 0, 1),
-            (0, -1, 0),
-            (1, 0, 0),
-            (0, 1, 0),
-            (-1, 0, 0),
-            (-0.5, -0.5, 0.5),
-            (0.5, -0.5, 0.5),
-            (0.5, 0.5, 0.5),
-            (-0.5, 0.5, 0.5),
-        ],
-    }
-
     def __init__(self, domain: "MeshAssembler", u):
         self.domain = domain
         if hasattr(u, "array"):
@@ -470,306 +364,6 @@ class StressRecovery:
             raise RuntimeError("StressRecovery requires a live Rust assembler (domain._rust).")
         self.n_elements = _rust.n_elems
         self._node_id_to_index = domain.mesh.node_id_to_index
-
-        # Pre-compute and cache extrapolation matrices for solid elements
-        self._extrap_cache: Dict[str, np.ndarray] = {}
-
-    # ------------------------------------------------------------------
-    # Element family helpers
-    # ------------------------------------------------------------------
-    @staticmethod
-    def _is_shell(element) -> bool:
-        """Return *True* if *element* belongs to the shell family (MITC3/4)."""
-        return getattr(element, "element_family", None) == ElementFamily.SHELL
-
-    @staticmethod
-    def _is_solid(element) -> bool:
-        """Return *True* if *element* belongs to the 3-D solid family."""
-        return getattr(element, "element_family", None) == ElementFamily.SOLID
-
-    # ------------------------------------------------------------------
-    # Extrapolation matrix (Gauss → Node) for solid elements
-    # ------------------------------------------------------------------
-    def _get_extrapolation_matrix(self, element) -> np.ndarray:
-        """Build (or retrieve from cache) the Gauss-to-Node extrapolation matrix.
-
-        In isoparametric elements, a field *f* known at the Gauss points
-        can be expressed in terms of the nodal shape functions:
-
-            f(ξ_i) = Σ_j  N_j(ξ_i) · f_j^node   ⇒   f_gp = N_gp · f_nodes
-
-        Inverting this relation gives the **extrapolation matrix**:
-
-            f_nodes = E · f_gp ,   E = N_gp⁻¹  (or  pinv(N_gp))
-
-        where ``N_gp`` has shape ``(n_gp, n_nodes)`` with row *i* being
-        the shape functions evaluated at Gauss point *i*.
-
-        * When ``n_gp == n_nodes`` (e.g. HEXA8 with 2×2×2 quadrature)
-          the system is square and ``E`` is the exact inverse — the
-          extrapolated nodal values reproduce the GP values exactly.
-        * Otherwise the Moore–Penrose pseudo-inverse is used, yielding
-          the least-squares (over-determined) or minimum-norm
-          (under-determined) solution.
-
-        The matrix is **cached** by element name so it is computed at
-        most once per element topology in the mesh.
-
-        Parameters
-        ----------
-        element : SolidElement
-            Any concrete solid element instance (HEXA8, TETRA4, …).
-
-        Returns
-        -------
-        np.ndarray, shape (n_nodes, n_gp)
-            Extrapolation matrix such that
-            ``sigma_nodes = E @ sigma_gauss_pts``.
-        """
-        key = element.name
-        if key in self._extrap_cache:
-            return self._extrap_cache[key]
-
-        points, _weights = element.integration_points
-        n_gp = len(_weights)
-        n_nodes = element.node_count
-
-        # Build matrix N_gp (n_gp × n_nodes):  row i = N(ξ_i)
-        N_gp = np.zeros((n_gp, n_nodes))
-        for i, pt in enumerate(points):
-            N_gp[i, :] = element.shape_functions(*pt)
-
-        if n_gp == n_nodes:
-            E = np.linalg.inv(N_gp)
-        else:
-            E = np.linalg.pinv(N_gp)  # (n_nodes, n_gp)
-
-        self._extrap_cache[key] = E
-        return E
-
-    # ------------------------------------------------------------------
-    # Displacement extraction
-    # ------------------------------------------------------------------
-    def _extract_element_displacements(self, element) -> np.ndarray:
-        """Gather element DOFs from the global displacement vector.
-
-        For each node belonging to *element*, the corresponding DOFs
-        are extracted from the full solution vector ``self.u`` and
-        concatenated into a local element displacement vector ``u_e``.
-
-        The global DOF vector is laid out with a uniform stride of
-        ``domain.dofs_per_node`` per node (the maximum across all element
-        families in the domain).  In a mixed-element mesh the assembler
-        places each element's DOFs in the **first** *element.dofs_per_node*
-        slots of the node's block, leaving any remaining slots unused.
-        This method replicates that convention when slicing ``self.u``.
-
-        * Shell elements (6 DOF/node): u_e has length 6 × n_nodes
-          [u₁, v₁, w₁, θx₁, θy₁, θz₁, u₂, …].
-        * Solid elements (3 DOF/node): u_e has length 3 × n_nodes
-          [u₁, v₁, w₁, u₂, v₂, w₂, …].
-        * Mixed mesh (e.g. MITC4 + HEXA8 in one domain): each element
-          type uses its own DOF count; solid nodes do not read the
-          rotational slots even though the global vector is 6-wide.
-
-        Parameters
-        ----------
-        element : FemElement
-            Element whose connectivity supplies the node IDs.
-
-        Returns
-        -------
-        np.ndarray, shape (element.dofs_per_node × n_nodes,)
-            Local displacement vector for the element.
-        """
-        elem_dofs: List[int] = []
-        for node_id in element.node_ids:
-            node_idx = self._node_id_to_index[node_id]
-            # The assembler always uses the global stride (domain.dofs_per_node)
-            # to place each node's block in the global vector, but solid elements
-            # only occupy the first 3 slots of a 6-DOF block in mixed meshes.
-            # Use the global stride for the base index but limit the range to
-            # the element's own DOF count to avoid reading phantom rotational DOFs.
-            start = node_idx * self.dofs_per_node
-            elem_dofs.extend(range(start, start + element.dofs_per_node))
-        return self.u[elem_dofs]
-
-    # ------------------------------------------------------------------
-    # Shell: stress / strain at a single parametric point
-    # ------------------------------------------------------------------
-    def _compute_shell_stress(
-        self,
-        element,
-        u_elem: np.ndarray,
-        r: float,
-        s: float,
-        location: StressLocation,
-        stress_type: StressType,
-    ) -> np.ndarray:
-        """Evaluate the shell stress vector at a single parametric point.
-
-        Computes the plane-stress triplet [σ_xx, σ_yy, τ_xy] at
-        parametric coordinates *(r, s)* and through-thickness location *z*
-        determined by *location*.
-
-        The computation follows Reissner–Mindlin shell theory:
-
-            σ = (C / h) · [ B_m · u_e  +  z · B_κ · u_e ]
-
-        where C = ``element.Cm() / h`` is the plane-stress constitutive
-        matrix (in Pa), B_m the membrane strain–displacement matrix,
-        B_κ the bending (curvature) strain–displacement matrix, and *z*
-        the distance from the mid-surface.
-
-        .. note::
-
-           ``element.Cm()`` returns the *integrated* membrane stiffness
-           D = C·h (units N/m for force resultants).  Dividing by *h*
-           gives the true material matrix and produces stress in Pa.
-
-        Parameters
-        ----------
-        element : MITC3 | MITC4
-            Shell element instance.
-        u_elem : np.ndarray
-            Element displacement vector (length = dofs_per_node × n_nodes).
-        r, s : float
-            Parametric (natural) coordinates within the element.
-        location : StressLocation
-            Through-thickness location: TOP (+h/2), MIDDLE (0) or BOTTOM (−h/2).
-        stress_type : StressType
-            Which stress contribution to include: MEMBRANE, BENDING or TOTAL.
-
-        Returns
-        -------
-        np.ndarray, shape (3,)
-            Stress vector [σ_xx, σ_yy, τ_xy] in Pa.
-        """
-        h = element.thickness
-        z = {StressLocation.TOP: h / 2, StressLocation.BOTTOM: -h / 2}.get(location, 0.0)
-
-        # Material matrix WITHOUT thickness factor  →  actual stress (Pa)
-        C_mat = element.Cm() / h
-
-        sigma = np.zeros(3)
-
-        if stress_type in (StressType.MEMBRANE, StressType.TOTAL):
-            B_m = element.B_m(r, s)
-            epsilon_m = B_m @ u_elem
-            sigma += C_mat @ epsilon_m
-
-        if stress_type in (StressType.BENDING, StressType.TOTAL):
-            B_kappa = element.B_kappa(r, s)
-            kappa = B_kappa @ u_elem
-            sigma += C_mat @ (z * kappa)
-
-        return sigma
-
-    def _compute_shell_strain(
-        self,
-        element,
-        u_elem: np.ndarray,
-        r: float,
-        s: float,
-        location: StressLocation,
-    ) -> np.ndarray:
-        """Evaluate the shell strain vector at a single parametric point.
-
-        Computes the in-plane engineering strain triplet
-        [ε_xx, ε_yy, γ_xy] at parametric coordinates *(r, s)* and
-        through-thickness location *z* (*location*).
-
-        The strain is decomposed as:
-
-            ε(z) = ε_m + z · κ
-
-        where ε_m = B_m · u_e is the membrane strain (mid-surface
-        stretching) and κ = B_κ · u_e is the curvature (change in
-        slope).  The combined strain at depth *z* captures both
-        contributions.  Note that γ_xy is the *engineering* shear
-        strain (= 2 · ε_xy).
-
-        Parameters
-        ----------
-        element : MITC3 | MITC4
-            Shell element instance.
-        u_elem : np.ndarray
-            Element displacement vector.
-        r, s : float
-            Parametric (natural) coordinates.
-        location : StressLocation
-            Through-thickness location.
-
-        Returns
-        -------
-        np.ndarray, shape (3,)
-            Strain vector [ε_xx, ε_yy, γ_xy].
-        """
-        h = element.thickness
-        z = {StressLocation.TOP: h / 2, StressLocation.BOTTOM: -h / 2}.get(location, 0.0)
-
-        B_m = element.B_m(r, s)
-        epsilon_m = B_m @ u_elem
-
-        B_kappa = element.B_kappa(r, s)
-        kappa = B_kappa @ u_elem
-
-        return epsilon_m + z * kappa
-
-    # ------------------------------------------------------------------
-    # Solid: stress / strain at Gauss points → extrapolate to nodes
-    # ------------------------------------------------------------------
-    def _compute_solid_gauss_stresses(
-        self, element, u_elem: np.ndarray
-    ) -> Tuple[np.ndarray, np.ndarray]:
-        """Compute stress and strain at every Gauss integration point.
-
-        For each integration point (ξ_i, η_i, ζ_i) the 6-component
-        Voigt strain and stress are obtained as:
-
-            ε_i = B(ξ_i, η_i, ζ_i) · u_e
-            σ_i = C · ε_i
-
-        where B is the 6×(3·n_nodes) strain–displacement matrix and C
-        is the 6×6 constitutive (elasticity) matrix of the element.
-
-        These Gauss-point values are the most accurate representation
-        of the stress field within the element (superconvergent points
-        of the B matrix).  They serve as input to the Gauss-to-Node
-        extrapolation procedure in ``_get_extrapolation_matrix``.
-
-        Parameters
-        ----------
-        element : SolidElement
-            Solid element instance (HEXA8, TETRA4, …).
-        u_elem : np.ndarray
-            Element displacement vector (length = 3 × n_nodes).
-
-        Returns
-        -------
-        sigma_gp : np.ndarray, shape (n_gp, 6)
-            Voigt stress [σ_xx, σ_yy, σ_zz, τ_xy, τ_yz, τ_zx] at each
-            Gauss point, in Pa.
-        epsilon_gp : np.ndarray, shape (n_gp, 6)
-            Voigt strain [ε_xx, ε_yy, ε_zz, γ_xy, γ_yz, γ_zx] at each
-            Gauss point (dimensionless).
-        """
-        points, _weights = element.integration_points
-        n_gp = len(_weights)
-        sigma_gp = np.zeros((n_gp, 6))
-        epsilon_gp = np.zeros((n_gp, 6))
-
-        C = element.C
-
-        for i, pt in enumerate(points):
-            xi, eta, zeta = pt
-            B = element.compute_B_matrix(xi, eta, zeta)
-            eps = B @ u_elem
-            sig = C @ eps
-            epsilon_gp[i, :] = eps
-            sigma_gp[i, :] = sig
-
-        return sigma_gp, epsilon_gp
 
     # ------------------------------------------------------------------
     # Element-level stress  (centroid / single point)
@@ -832,7 +426,6 @@ class StressRecovery:
             z_factor   = _Z_FACTOR.get(location, 0.0)
             stype_int  = _STRESS_TYPE.get(stress_type, 2)
             sigma_all, _ = _rust.compute_stress_field(self.u, z_factor, stype_int)
-            from fem_shell.elements import ElementFamily  # noqa: PLC0415
             has_solid = self.domain.model.get("element_family") == ElementFamily.SOLID
             return self._build_stress_result(sigma_all, is_3d=has_solid)
 
@@ -927,7 +520,6 @@ class StressRecovery:
 
             sigma_sum = np.zeros((n_nodes, 6))
             weight_sum = np.zeros(n_nodes)
-            from fem_shell.elements import ElementFamily  # noqa: PLC0415
             has_solid = self.domain.model.get("element_family") == ElementFamily.SOLID
 
             for elem_idx, mesh_elem in enumerate(self.domain.mesh.elements):
@@ -1115,7 +707,6 @@ class StressRecovery:
             }
             z_factor = _Z_FACTOR.get(location, 0.0)
             _, eps_all = _rust.compute_stress_field(self.u, z_factor, 2)
-            from fem_shell.elements import ElementFamily  # noqa: PLC0415
             has_solid = self.domain.model.get("element_family") == ElementFamily.SOLID
             return self._build_strain_result(eps_all, is_3d=has_solid)
 
@@ -1175,7 +766,6 @@ class StressRecovery:
 
             eps_sum = np.zeros((n_nodes, 6))
             weight_sum = np.zeros(n_nodes)
-            from fem_shell.elements import ElementFamily  # noqa: PLC0415
             has_solid = self.domain.model.get("element_family") == ElementFamily.SOLID
 
             for elem_idx, mesh_elem in enumerate(self.domain.mesh.elements):
@@ -1447,66 +1037,7 @@ class StressRecovery:
             epsilon_3=None,  # Could compute 3-D principal strains similarly
         )
 
-    # ------------------------------------------------------------------
-    # Element area / volume (for area-weighted smoothing)
-    # ------------------------------------------------------------------
-    def _compute_element_weight(self, element) -> float:
-        """Compute the geometric weight (area or volume) for smoothing.
 
-        When ``smoothing="area_weighted"`` is requested, each element's
-        contribution to the nodal average is weighted by its area (shell)
-        or volume (solid).  Larger elements exert a proportionally
-        higher influence on the averaged nodal value.
-
-        Parameters
-        ----------
-        element : FemElement
-            Shell or solid element.
-
-        Returns
-        -------
-        float
-            Element area (shells, in m²) or volume (solids, in m³),
-            or 1.0 if the element family is unrecognised.
-        """
-        if self._is_shell(element):
-            return self._compute_shell_area(element)
-        elif self._is_solid(element):
-            return self._compute_solid_volume(element)
-        return 1.0
-
-    @staticmethod
-    def _compute_shell_area(element) -> float:
-        """Compute the physical area of a shell element via Gauss quadrature.
-
-        Integrates det(J) over the parametric domain using the same
-        quadrature rule employed for stiffness integration.
-
-        Returns 1.0 if quadrature data is unavailable.
-        """
-        gauss_pts = getattr(element, "_gauss_points", None)
-        gauss_wts = getattr(element, "_gauss_weights", None)
-        if gauss_pts is None or gauss_wts is None:
-            return 1.0
-        area = 0.0
-        for (r, s), w in zip(gauss_pts, gauss_wts):
-            _J, det_J = element.J(r, s)
-            area += det_J * w
-        return abs(area)
-
-    @staticmethod
-    def _compute_solid_volume(element) -> float:
-        """Compute the physical volume of a solid element via Gauss quadrature.
-
-        Integrates |det(J)| over the parametric domain using the
-        element’s own integration rule.
-        """
-        points, weights = element.integration_points
-        vol = 0.0
-        for pt, w in zip(points, weights):
-            _, det_J, _ = element._compute_jacobian(*pt)
-            vol += abs(det_J) * w
-        return vol
 
 
 def compute_von_mises(
