@@ -1,30 +1,29 @@
-/// Element type classification — mirrors Python `ElementType` / VTK cell codes.
+/// Element type classification — maps to PyMeshAssembler numeric codes.
 ///
-/// Values are the same numeric codes used by the Python assembler
-/// (`code` field in `materials_list`) so `PyMeshAssembler` can consume them directly.
+/// The `assembler_code()` values match the codes accepted by `PyMeshAssembler.__init__`
+/// and `PyMeshAssembler.from_mesh_model()`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-#[repr(u8)]
 pub enum ElementType {
     // Shell / surface
-    Triangle3  = 3,   // MITC3
-    Triangle6  = 6,   // quadratic triangle (future)
-    Quad4      = 4,   // MITC4
-    Quad8      = 8,   // serendipity quad
-    Quad9      = 9,   // Lagrange quad
+    Triangle3,    // MITC3          — assembler code 3
+    Triangle6,    // quadratic tri  — assembler code 108 (treated as Quad8 placeholder, future)
+    Quad4,        // MITC4          — assembler code 4
+    Quad8,        // serendipity    — assembler code 108
+    Quad9,        // Lagrange quad  — assembler code 109
 
-    // Shell composite variants (codes used by PyMeshAssembler)
-    CompTri3   = 33,  // MITC3 composite
-    CompQuad4  = 44,  // MITC4 composite
+    // Shell composite variants
+    CompTri3,     // MITC3 composite  — assembler code 33
+    CompQuad4,    // MITC4 composite  — assembler code 44
 
     // Solid 3D
-    Tetra4     = 14,
-    Tetra10    = 24,
-    Hexa8      = 18,
-    Hexa20     = 28,
-    Wedge6     = 16,
-    Wedge15    = 26,
-    Pyramid5   = 15,
-    Pyramid13  = 25,
+    Tetra4,       // assembler code 304
+    Tetra10,      // assembler code 310
+    Hexa8,        // assembler code 208
+    Hexa20,       // assembler code 220
+    Wedge6,       // assembler code 306
+    Wedge15,      // assembler code 315
+    Pyramid5,     // assembler code 305
+    Pyramid13,    // assembler code 313
 }
 
 impl ElementType {
@@ -46,8 +45,25 @@ impl ElementType {
         }
     }
 
+    /// Returns the numeric code expected by `PyMeshAssembler`.
     pub fn assembler_code(self) -> i32 {
-        self as i32
+        match self {
+            Self::Triangle3  => 3,
+            Self::CompTri3   => 33,
+            Self::Quad4      => 4,
+            Self::CompQuad4  => 44,
+            Self::Triangle6  => 108, // placeholder — not yet in assembler
+            Self::Quad8      => 108,
+            Self::Quad9      => 109,
+            Self::Hexa8      => 208,
+            Self::Hexa20     => 220,
+            Self::Tetra4     => 304,
+            Self::Tetra10    => 310,
+            Self::Wedge6     => 306,
+            Self::Wedge15    => 315,
+            Self::Pyramid5   => 305,
+            Self::Pyramid13  => 313,
+        }
     }
 
     pub fn is_composite(self) -> bool {
