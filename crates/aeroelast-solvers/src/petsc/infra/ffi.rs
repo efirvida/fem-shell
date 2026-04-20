@@ -243,4 +243,79 @@ extern "C" {
     ) -> PetscErrorCode;
     pub fn VecAssemblyBegin(vec: Vec) -> PetscErrorCode;
     pub fn VecAssemblyEnd(vec: Vec) -> PetscErrorCode;
+    /// Read-only array access — use in SNES residual/Jacobian callbacks.
+    pub fn VecGetArrayRead(vec: Vec, array: *mut *const PetscScalar) -> PetscErrorCode;
+    pub fn VecRestoreArrayRead(vec: Vec, array: *mut *const PetscScalar) -> PetscErrorCode;
+}
+
+// ── PETSc SNES ────────────────────────────────────────────────────────────────
+
+/// Opaque SNES (nonlinear solver) handle.
+pub type SNES = *mut c_void;
+
+/// Signature of the residual callback `FormResidual(snes, x, f, ctx)`.
+pub type SNESFunction = unsafe extern "C" fn(
+    snes: SNES,
+    x: Vec,
+    f: Vec,
+    ctx: *mut c_void,
+) -> PetscErrorCode;
+
+/// Signature of the Jacobian callback `FormJacobian(snes, x, J, P, ctx)`.
+pub type SNESJacobianFunction = unsafe extern "C" fn(
+    snes: SNES,
+    x: Vec,
+    jac: Mat,
+    jpre: Mat,
+    ctx: *mut c_void,
+) -> PetscErrorCode;
+
+#[link(name = "petsc")]
+extern "C" {
+    pub fn SNESCreate(comm: MPI_Comm, snes: *mut SNES) -> PetscErrorCode;
+    pub fn SNESSetFunction(
+        snes: SNES,
+        r: Vec,
+        f: SNESFunction,
+        ctx: *mut c_void,
+    ) -> PetscErrorCode;
+    pub fn SNESSetJacobian(
+        snes: SNES,
+        Amat: Mat,
+        Pmat: Mat,
+        j: SNESJacobianFunction,
+        ctx: *mut c_void,
+    ) -> PetscErrorCode;
+    pub fn SNESSetTolerances(
+        snes: SNES,
+        atol: PetscReal,
+        rtol: PetscReal,
+        stol: PetscReal,
+        maxit: PetscInt,
+        maxf: PetscInt,
+    ) -> PetscErrorCode;
+    pub fn SNESSetFromOptions(snes: SNES) -> PetscErrorCode;
+    pub fn SNESSolve(snes: SNES, b: Vec, x: Vec) -> PetscErrorCode;
+    pub fn SNESGetConvergedReason(snes: SNES, reason: *mut i32) -> PetscErrorCode;
+    pub fn SNESGetIterationNumber(snes: SNES, its: *mut PetscInt) -> PetscErrorCode;
+    pub fn SNESGetFunctionNorm(snes: SNES, fnorm: *mut PetscReal) -> PetscErrorCode;
+    pub fn SNESSetApplicationContext(snes: SNES, usrP: *mut c_void) -> PetscErrorCode;
+    pub fn SNESGetApplicationContext(snes: SNES, usrP: *mut *mut c_void) -> PetscErrorCode;
+    pub fn SNESDestroy(snes: *mut SNES) -> PetscErrorCode;
+    pub fn SNESGetKSP(snes: SNES, ksp: *mut KSP) -> PetscErrorCode;
+}
+
+#[link(name = "petsc")]
+extern "C" {
+    /// Zero rows AND columns of `mat` corresponding to `rows[]`, setting the
+    /// diagonal to `diag`. Optionally shifts RHS `b` and solution `x` (pass
+    /// null to skip).
+    pub fn MatZeroRowsColumns(
+        mat: Mat,
+        numRows: PetscInt,
+        rows: *const PetscInt,
+        diag: PetscScalar,
+        x: Vec,
+        b: Vec,
+    ) -> PetscErrorCode;
 }

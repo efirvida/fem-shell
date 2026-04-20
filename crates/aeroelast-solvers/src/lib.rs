@@ -32,6 +32,7 @@ pub mod petsc {
     pub mod linear;
     pub mod linear_dynamic;
     pub mod modal;
+    pub mod nonlinear_static;
 }
 
 // Re-export the most commonly used types at crate root for ergonomics
@@ -41,3 +42,6 @@ pub use petsc::infra::vec::PetscVec;
 pub use petsc::linear::{linear_static_solve, LinearStaticResult};
 pub use petsc::linear_dynamic::{newmark_beta_solve, DynamicResult};
 pub use petsc::modal::{modal_solve, ModalResult};
+pub use petsc::nonlinear_static::{
+    nonlinear_static_solve, NonlinearConfig, NonlinearStaticResult,
+};

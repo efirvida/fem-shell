@@ -1166,6 +1166,13 @@ fn parse_material(py: Python, obj: &Py<PyAny>) -> PyResult<MaterialSpec> {
     }
 }
 
+impl PyMeshAssembler {
+    /// Returns a reference to the inner `MeshAssembler` (Rust-only, not exposed to Python).
+    pub fn inner(&self) -> &MeshAssembler {
+        &self.inner
+    }
+}
+
 #[pymethods]
 impl PyMeshAssembler {
     /// Construct a `PyMeshAssembler` from Python mesh data.
@@ -2982,6 +2989,66 @@ impl PyLaminate {
     }
 }
 
+// ============================================================================
+// Nonlinear static solver via PETSc SNES
+// ============================================================================
+
+/// Solve the nonlinear static FEM system R(u) = F_int(u) - F_ext = 0
+/// using PETSc SNES (Newton-Raphson with line search by default).
+///
+/// The solver operates on the full DOF space — Dirichlet BCs are enforced
+/// internally via identity rows in the Jacobian and zeroing the residual.
+///
+/// To switch to arc-length continuation pass ``petsc_options="-snes_type newtonal"``.
+///
+/// Args:
+///   assembler:       PyMeshAssembler wrapping the assembled mesh
+///   f_ext:           External load vector (length = n_dof), dtype=float64
+///   dirichlet_dofs:  Indices of constrained DOFs, dtype=int64
+///   atol:            Absolute residual tolerance (default 1e-10)
+///   rtol:            Relative residual tolerance (default 1e-8)
+///   stol:            Step-length tolerance (default 1e-8)
+///   max_it:          Maximum Newton iterations (default 50)
+///
+/// Returns:
+///   Tuple ``(displacements, iterations, residual_norm, converged_reason)``
+#[pyfunction]
+#[pyo3(signature = (assembler, f_ext, dirichlet_dofs, atol=1e-10, rtol=1e-8, stol=1e-8, max_it=50))]
+#[allow(clippy::too_many_arguments)]
+fn nonlinear_static_solve_coo<'py>(
+    py: Python<'py>,
+    assembler: &PyMeshAssembler,
+    f_ext: PyReadonlyArray1<'py, f64>,
+    dirichlet_dofs: PyReadonlyArray1<'py, i64>,
+    atol: f64,
+    rtol: f64,
+    stol: f64,
+    max_it: i32,
+) -> PyResult<(Bound<'py, PyArray1<f64>>, i32, f64, i32)> {
+    let f_ext_slice = f_ext.as_slice()?;
+    let dofs_i64 = dirichlet_dofs.as_slice()?;
+    let dofs_usize: Vec<usize> = dofs_i64.iter().map(|&d| d as usize).collect();
+
+    let config = aeroelast_solvers::petsc::nonlinear_static::NonlinearConfig {
+        atol,
+        rtol,
+        stol,
+        max_it,
+        max_funcs: -1,
+    };
+
+    let result = aeroelast_solvers::petsc::nonlinear_static::nonlinear_static_solve(
+        assembler.inner(),
+        f_ext_slice,
+        &dofs_usize,
+        &config,
+    )
+    .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))?;
+
+    let u_arr = Array1::from(result.displacements).into_pyarray(py);
+    Ok((u_arr, result.iterations, result.residual_norm, result.converged_reason))
+}
+
 /// Register all aeroelast functions into a PyModule.
 pub fn register_module(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(batch_ke_mitc3, m)?)?;    m.add_function(wrap_pyfunction!(batch_me_mitc3, m)?)?;
@@ -3024,6 +3091,7 @@ pub fn register_module(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(modal_solve_coo, m)?)?;
     m.add_function(wrap_pyfunction!(linear_static_solve_coo, m)?)?;
     m.add_function(wrap_pyfunction!(newmark_beta_solve_coo, m)?)?;
+    m.add_function(wrap_pyfunction!(nonlinear_static_solve_coo, m)?)?;
     m.add_class::<PyMeshModel>()?;
 
     m.add_class::<PyMeshAssembler>()?;
