@@ -1,0 +1,18 @@
+[package]
+name = "aeroelast-mesh"
+version = "0.1.0"
+edition = "2021"
+description = "Mesh data types: Node, Element, ElementSet, MeshModel. No PyO3, no PETSc."
+
+[lib]
+name = "aeroelast_mesh"
+crate-type = ["rlib"]
+
+[dependencies]
+aeroelast-core = { path = "../aeroelast-core" }
+nalgebra = "0.34.2"
+rayon = "1.10"
+thiserror = "2"
+# HDF5 reader
+hdf5 = { version = "0.8" }
+ndarray = "0.15"

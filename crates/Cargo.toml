@@ -4,5 +4,6 @@ members = [
     "aeroelast-core",
     "aeroelast-solvers",
     "aeroelast-py",
+    "aeroelast-mesh",
 ]
 resolver = "2"
