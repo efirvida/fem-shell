@@ -21,6 +21,9 @@ SLEPC_VERSION      := 3.24.1
 PRECICE_VERSION    := 3.3.1
 PYTHON_VERSION     := 3.12.9
 READLINE_VERSION   := 8.2
+CALCULIX_VERSION   := 2.20
+SPOOLES_VERSION    := 2.2
+YAMLCPP_TAG        := yaml-cpp-0.9.0
 
 # Dependency file names
 BOOST_TAR          := boost_$(subst .,_,$(BOOST_VERSION)).tar.bz2
@@ -39,7 +42,8 @@ PRECICE_TAR        := v$(PRECICE_VERSION).tar.gz
 PYTHON_TAR         := Python-$(PYTHON_VERSION).tgz
 READLINE_TAR       := readline-$(READLINE_VERSION).tar.gz
 SLEPC_TAR          := slepc-$(SLEPC_VERSION).tar.gz
-
+CALCULIX_TAR       := ccx_$(CALCULIX_VERSION).src.tar.bz2
+CALCULIX_ADAPTER_TAR := calculix-adapter-master.tar.gz
 
 SHELL=/bin/bash
 # Directory configurations
@@ -122,6 +126,8 @@ python: $(VENV_DIR)/.python.done
 petsc: $(VENV_DIR)/.petsc.done
 
 slepc: $(VENV_DIR)/.slepc.done
+
+calculix: $(VENV_DIR)/.calculix.done
 
 
 #-------------------------------------------------------------------------------
@@ -240,7 +246,12 @@ $(VENV_DIR)/.python_env.done: $(VENV_DIR)/.python.done $(VENV_DIR)/.petsc.done $
 		PETSC_DIR=$(VENV_DIR) PETSC_ARCH="" SLEPC_DIR=$(VENV_DIR) $(VENV_DIR)/bin/python setup.py install
 
 	$(PIP_INSTALL) pyprecice==$(PRECICE_VERSION)
+	$(PIP_INSTALL) maturin
 	$(PIP_INSTALL) -e ".[bem,mesh]"
+	cd $(PWD)/crates/aeroelast-py && \
+		PYO3_PYTHON=$(VENV_DIR)/bin/python \
+		LD_LIBRARY_PATH=$(VENV_DIR)/lib:$(VENV_DIR)/lib64:/usr/lib64/psm2-compat \
+		$(VENV_DIR)/bin/python -m maturin develop --release
 
 	@touch $@
 
@@ -284,13 +295,8 @@ $(VENV_DIR)/.boost.done: $(SOURCES_DIR)/download.done
 $(VENV_DIR)/.petsc.done: $(VENV_DIR)/.boost.done
 	@echo "Installing PETSc..."
 	@mkdir -p $(BUILD_DIR)/petsc
-	@if [ -d $(BUILD_DIR)/petsc/.git ]; then \
-		git -C $(BUILD_DIR)/petsc fetch --all --tags && \
-		git -C $(BUILD_DIR)/petsc checkout release && \
-		git -C $(BUILD_DIR)/petsc reset --hard origin/release; \
-	else \
-		git clone -b release https://gitlab.com/petsc/petsc.git $(BUILD_DIR)/petsc; \
-	fi
+	rm -rf $(BUILD_DIR)/petsc
+	git clone -b release https://gitlab.com/petsc/petsc.git $(BUILD_DIR)/petsc
 	module purge
 	module load automake sqlite/3.32.3.sequana readline/8.2_sequana glu openssl/3.0.9_sequana gcc/14.2.0_sequana openfoam/v2506_openmpi-4.1.4_gnu cmake/3.30.3_sequana
 	@cd $(BUILD_DIR)/petsc && \
@@ -304,7 +310,7 @@ $(VENV_DIR)/.petsc.done: $(VENV_DIR)/.boost.done
 			--with-cmake-exec=/scratch/app_sequana/cmake/3.30.3/bin/cmake \
 			--download-fblaslapack \
 			--download-metis \
-			--download-fftw \
+			--download-fftw \-
 			--download-hdf5 \
 			--download-scalapack \
 			--download-mumps \
@@ -328,7 +334,6 @@ $(VENV_DIR)/.slepc.done: $(VENV_DIR)/.petsc.done
 		make  LD_LIBRARY_PATH=$(VENV_DIR)/lib:$(VENV_DIR)/lib64:/usr/lib64/psm2-compat -j$(NPROC) PETSC_DIR=$(VENV_DIR) SLEPC_DIR=$(BUILD_DIR)/slepc all && \
 		make  LD_LIBRARY_PATH=$(VENV_DIR)/lib:$(VENV_DIR)/lib64:/usr/lib64/psm2-compat -j$(NPROC) PETSC_DIR=$(VENV_DIR) SLEPC_DIR=$(BUILD_DIR)/slepc install
 	@touch $@
-
 #-------------------------------------------------------------------------------
 # preCICE Dependencies and Installation
 #-------------------------------------------------------------------------------
@@ -403,4 +408,138 @@ $(VENV_DIR)/.openfoam.done:
 		git clone --depth=1 https://github.com/efirvida/OF-FSI-Omega.git || true && \
 		cd OF-FSI-Omega && wmake \
 	)
+	@touch $@
+
+#-------------------------------------------------------------------------------
+# CalculiX with preCICE Installation
+#-------------------------------------------------------------------------------
+# CalculiX depends on SPOOLES and ARPACK libraries. The adapter is built
+# using a modified CalculiX source with preCICE coupling.
+#
+# Build sequence:
+#   1. Download CalculiX source from dhondt.de
+#   2. Build SPOOLES from source (requires netlib sources)
+#   3. Build ARPACK from source (Fortran linear algebra library)
+#   4. Download and build CalculiX adapter (GitHub precice/calculix-adapter)
+#   5. Compile to produce ccx_preCICE executable
+#-------------------------------------------------------------------------------
+
+$(VENV_DIR)/.spooles.done: $(SOURCES_DIR)/download.done
+	@echo "Building SPOOLES..."
+	@mkdir -p $(BUILD_DIR)/spooles/src
+	@if [ ! -f $(BUILD_DIR)/spooles/spooles.a ]; then \
+		cd $(BUILD_DIR)/spooles/src && \
+		wget -q http://www.netlib.org/linalg/spooles/spooles.2.2.tgz && \
+		tar -xzf spooles.2.2.tgz && \
+		sed -i 's|CC = /usr/lang-4.0/bin/cc|CC = gcc|' Make.inc && \
+		make lib && \
+		cp spooles.a $(VENV_DIR)/lib/ && \
+		mkdir -p $(VENV_DIR)/include/spooles && \
+		cp -r * $(VENV_DIR)/include/spooles 2>/dev/null || true; \
+	fi
+	@touch $@
+
+$(VENV_DIR)/.arpack.done: $(VENV_DIR)/.petsc.done
+	@echo "Building ARPACK..."
+	@mkdir -p $(BUILD_DIR)/arpack/build
+	@if [ ! -f $(BUILD_DIR)/arpack/build/lib/libarpack.a ]; then \
+		cd /tmp && \
+		rm -rf arpack-ng-tmp && \
+		git clone -q https://github.com/opencollab/arpack-ng.git arpack-ng-tmp && \
+		cd arpack-ng-tmp && \
+		./bootstrap && \
+		./configure --prefix=$(VENV_DIR) \
+			CC=gcc \
+			FC=gfortran \
+			CFLAGS="-O2 -fPIC" \
+			FFLAGS="-O2 -fPIC" \
+			LDFLAGS="-L$(VENV_DIR)/lib -L$(VENV_DIR)/lib64" \
+			CPPFLAGS="-I$(VENV_DIR)/include" \
+			--enable-shared=no \
+			--with-blas="-lfblas" \
+			--with-lapack="-lflapack" && \
+		make -j$(NPROC) && \
+		make install && \
+		cd /tmp && rm -rf arpack-ng-tmp; \
+	fi
+	@touch $@
+
+$(VENV_DIR)/.yamlcpp.done: $(SOURCES_DIR)/download.done
+	@echo "Building yaml-cpp..."
+	@mkdir -p $(BUILD_DIR)/yaml-cpp
+	@if [ ! -f $(VENV_DIR)/include/yaml-cpp/yaml.h ]; then \
+		cd $(BUILD_DIR) && rm -rf yaml-cpp-src && \
+		git clone -q --depth 1 --branch $(YAMLCPP_TAG) https://github.com/jbeder/yaml-cpp.git yaml-cpp-src && \
+		mkdir -p yaml-cpp-src/build && \
+		cd yaml-cpp-src/build && \
+		$(CMAKE_CMD) -DYAML_BUILD_SHARED_LIBS=ON -DYAML_CPP_BUILD_TESTS=OFF -DYAML_CPP_BUILD_TOOLS=OFF .. && \
+		make -j$(NPROC) && \
+		make install; \
+	fi
+	@touch $@
+
+$(VENV_DIR)/.calculix.done: $(VENV_DIR)/.spooles.done $(VENV_DIR)/.arpack.done $(VENV_DIR)/.yamlcpp.done $(VENV_DIR)/.precice.done
+	@echo "Building CalculiX with preCICE adapter..."
+
+	# Download CalculiX source if not present
+	@if [ ! -f $(SOURCES_DIR)/$(CALCULIX_TAR) ]; then \
+		echo "Downloading CalculiX $(CALCULIX_VERSION) source..."; \
+		cd $(SOURCES_DIR) && wget -q http://www.dhondt.de/$(CALCULIX_TAR); \
+	fi
+
+	# Download CalculiX adapter if not present
+	@if [ ! -f $(SOURCES_DIR)/$(CALCULIX_ADAPTER_TAR) ]; then \
+		echo "Downloading CalculiX adapter..."; \
+		cd $(SOURCES_DIR) && wget -q https://github.com/precice/calculix-adapter/archive/refs/heads/master.tar.gz -O $(CALCULIX_ADAPTER_TAR); \
+	fi
+
+	# Extract CalculiX source
+	@cd $(BUILD_DIR) && \
+		tar -xjf $(SOURCES_DIR)/$(CALCULIX_TAR) --strip-components=1 || true && \
+		cd CalculiX/ccx_2.20/src && \
+		if [ ! -f ccx_2.20step.c ]; then \
+			sed -i '/ccx_2\.20step\.c/,+7d' date.pl && \
+			sed -i '/ccx_2\.20step\.c\.old/d' date.pl; \
+		fi && \
+		sed -i "s|-I ../../../SPOOLES.2.2|-I$(VENV_DIR)/include/spooles|" Makefile && \
+		sed -i "s|DIR=../../../SPOOLES.2.2|DIR=$(VENV_DIR)/lib|" Makefile && \
+		sed -i "s|../../../ARPACK/libarpack_INTEL.a|$$\(DIR\)/libarpack.a $$\(DIR\)/libflapack.a $$\(DIR\)/libfblas.a|" Makefile && \
+		make -j$(NPROC) && \
+		if [ -f ccx ]; then \
+			install -m 755 ccx $(VENV_DIR)/bin/ccx.tmp && \
+			mv -f $(VENV_DIR)/bin/ccx.tmp $(VENV_DIR)/bin/ccx; \
+		elif [ -f ccx_$(CALCULIX_VERSION) ]; then \
+			install -m 755 ccx_$(CALCULIX_VERSION) $(VENV_DIR)/bin/ccx.tmp && \
+			mv -f $(VENV_DIR)/bin/ccx.tmp $(VENV_DIR)/bin/ccx; \
+		else \
+			echo "CalculiX executable not found after build"; \
+			exit 1; \
+		fi
+
+	# Extract and prepare adapter
+	@mkdir -p $(BUILD_DIR)/calculix-adapter
+	@tar -xzf $(SOURCES_DIR)/$(CALCULIX_ADAPTER_TAR) -C $(BUILD_DIR)/calculix-adapter --strip-components=1
+	# Set up adapter Makefile variables - replace existing values not comments
+	@cd $(BUILD_DIR)/calculix-adapter && \
+		sed -i "s|^CCX[[:space:]]*=.*|CCX = $(BUILD_DIR)/CalculiX/ccx_2.20/src|" Makefile && \
+		sed -i "s|^SPOOLES_INCLUDE.*=.*|SPOOLES_INCLUDE = -I$(VENV_DIR)/include/spooles|" Makefile && \
+		sed -i "s|^SPOOLES_LIBS.*=.*|SPOOLES_LIBS = $(VENV_DIR)/lib/spooles.a|" Makefile && \
+		sed -i "s|^ARPACK_INCLUDE.*=.*|ARPACK_INCLUDE = -I$(VENV_DIR)/include|" Makefile && \
+		sed -i "s|^ARPACK_LIBS.*=.*|ARPACK_LIBS = $(VENV_DIR)/lib/libarpack.a -lflapack -lfblas|" Makefile && \
+		sed -i "s|^YAML_INCLUDE.*=.*|YAML_INCLUDE = -I$(VENV_DIR)/include|" Makefile && \
+		sed -i "s|^YAML_LIBS.*=.*|YAML_LIBS = -L$(VENV_DIR)/lib -L$(VENV_DIR)/lib64 -lyaml-cpp|" Makefile && \
+		sed -i 's|^CFLAGS.*=.*|CFLAGS = -Wall -O3 -fopenmp -Wno-error=implicit-function-declaration -Wno-error=incompatible-pointer-types $$(INCLUDES) -DARCH="Linux" -DSPOOLES -DARPACK -DMATRIXSTORAGE|' Makefile && \
+		sed -i 's|^FFLAGS.*=.*|FFLAGS = -Wall -O3 -fopenmp -fallow-argument-mismatch -I$$(CCX) -I./ -I./adapter|' Makefile
+	# Compile adapter (which builds modified CalculiX with preCICE)
+	@cd $(BUILD_DIR)/calculix-adapter && \
+		make clean || true && \
+		LD_LIBRARY_PATH=$(VENV_DIR)/lib:$(VENV_DIR)/lib64:/usr/lib64/psm2-compat \
+		make CC=/scratch/app_sequana/gcc/14.2.0/bin/gcc FC=/scratch/app_sequana/gcc/14.2.0/bin/gfortran -j$(NPROC)
+	# Install executable to venv
+	@if [ -f $(BUILD_DIR)/calculix-adapter/bin/ccx_preCICE ]; then \
+		mkdir -p $(VENV_DIR)/bin && \
+		cp $(BUILD_DIR)/calculix-adapter/bin/ccx_preCICE $(VENV_DIR)/bin/; \
+		chmod +x $(VENV_DIR)/bin/ccx_preCICE && \
+		echo "CalculiX preCICE adapter installed at $(VENV_DIR)/bin/ccx_preCICE"; \
+	fi
 	@touch $@
