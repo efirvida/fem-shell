@@ -22,7 +22,12 @@ import numpy as np
 
 def _import_gmsh():
     """Lazy import of gmsh to avoid loading libGLU on headless systems."""
-    return importlib.import_module("gmsh")
+    import sys
+    mod = importlib.import_module("gmsh")
+    # Make the module accessible as a module-level name so that helper
+    # methods that reference the bare name ``gmsh`` can find it.
+    sys.modules[__name__].__dict__["gmsh"] = mod
+    return mod
 
 from aeroelast.core.mesh.entities import (
     ELEMENT_NODES_MAP,

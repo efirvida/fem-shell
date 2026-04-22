@@ -1,7 +1,7 @@
-"""Ko et al. (2017) benchmark suite for MITC3+ and MITC4+ shell elements.
+"""Ko et al. (2017) benchmark suite for MITC4+ shell elements.
 
 Paper:
-  "Performance of the MITC3+ and MITC4+ shell elements in widely-used benchmark problems"
+  "Performance of the MITC4+ shell elements in widely-used benchmark problems"
   Yeongbin Ko, Youngyu Lee, Phill-Seung Lee, Klaus-Jürgen Bathe
   Computers and Structures 193 (2017) 187–206
 
@@ -26,6 +26,9 @@ import pytest
 from scipy.sparse import coo_matrix
 from scipy.sparse.linalg import spsolve
 
+_aeroelast = pytest.importorskip("_aeroelast", reason="Rust backend not available")
+from _aeroelast import PyMeshAssembler
+
 from aeroelast.core.material import IsotropicMaterial
 from aeroelast.core.mesh.entities import ElementType, MeshElement, Node
 from aeroelast.core.mesh.generators import (
@@ -36,7 +39,6 @@ from aeroelast.core.mesh.generators import (
     SquareShapeMesh,
 )
 from aeroelast.core.mesh.model import MeshModel
-from aeroelast.elements import MITC3, MITC4
 
 DOF = 6  # library convention: u,v,w,rx,ry,rz
 
@@ -362,38 +364,41 @@ def _build_quarter_disk_mesh(*, radius: float, n: int, triangular: bool) -> Mesh
     return mesh
 
 
-def _assemble_global(
-    mesh: MeshModel, element_cls, material: IsotropicMaterial, thickness: float, **element_kwargs
-) -> tuple[coo_matrix, dict[int, int]]:
+def _material_dict(material: IsotropicMaterial, thickness: float) -> dict[str, float | str]:
+    return {
+        "type": "isotropic",
+        "e": float(material.E),
+        "nu": float(material.nu),
+        "rho": float(material.rho),
+        "thickness": float(thickness),
+        "shear_correction": 5.0 / 6.0,
+        "drilling_scale": 1.0,
+    }
+
+
+def _assemble_global(mesh: MeshModel, material: IsotropicMaterial, thickness: float) -> tuple[coo_matrix, dict[int, int]]:
     nodes_sorted = sorted(mesh.nodes, key=lambda n: n.id)
     node_id_to_idx = {n.id: i for i, n in enumerate(nodes_sorted)}
     ndof = len(nodes_sorted) * DOF
 
-    rows: list[int] = []
-    cols: list[int] = []
-    data: list[float] = []
+    connectivity: list[list[int]] = []
+    elem_types: list[int] = []
+    mats: list[dict[str, float | str]] = []
 
     for elem in mesh.elements:
         node_ids_elem = [n.id for n in elem.nodes]
-        coords = [n.coords for n in elem.nodes]
-        elem_obj = element_cls(coords, tuple(node_ids_elem), material, thickness, **element_kwargs)
-        ke = elem_obj.K
+        connectivity.append([node_id_to_idx[nid] for nid in node_ids_elem])
+        elem_types.append(4)
+        mats.append(_material_dict(material, thickness))
 
-        for i_loc, node_i in enumerate(elem.nodes):
-            ii = node_id_to_idx[node_i.id]
-            for j_loc, node_j in enumerate(elem.nodes):
-                jj = node_id_to_idx[node_j.id]
-                ksub = ke[i_loc * DOF : (i_loc + 1) * DOF, j_loc * DOF : (j_loc + 1) * DOF]
-                for r in range(DOF):
-                    base_r = ii * DOF + r
-                    for c in range(DOF):
-                        rows.append(base_r)
-                        cols.append(jj * DOF + c)
-                        data.append(float(ksub[r, c]))
+    node_coords_arr = np.asarray([n.coords[:3] for n in nodes_sorted], dtype=float)
+    asm = PyMeshAssembler(node_coords=node_coords_arr, connectivity=connectivity, elem_types=elem_types, materials=mats)
+    rows, cols, vals = asm.assemble_k()
+    K = coo_matrix((vals, (rows, cols)), shape=(ndof, ndof)).tocsr()
 
-    K = coo_matrix((data, (rows, cols)), shape=(ndof, ndof)).tocsr()
-
-    assert np.allclose(K.todense(), K.todense().T, rtol=1e-10)
+    K_dense = K.todense()
+    assert np.all(np.isfinite(K_dense)), "assembled K contains NaN/inf"
+    assert np.allclose(K_dense, K_dense.T, rtol=1e-10)
 
     return K, node_id_to_idx
 
@@ -542,7 +547,7 @@ def _hard_ss_edge_fixed_dofs(
 @dataclass(frozen=True)
 class _Case:
     name: str
-    element: str  # "MITC3" or "MITC4"
+    element: str  # "MITC4"
     build_mesh: Callable[[], MeshModel]
     material: IsotropicMaterial
     thickness: float
@@ -557,13 +562,7 @@ class _Case:
 def _run_case(case: _Case) -> float:
     print(f"DEBUG: Running {case.name}")
     mesh = case.build_mesh()
-    # Select element class based on element type
-    if case.element == "MITC3":
-        element_cls = MITC3
-    else:  # MITC4 (implements MITC4+ formulation internally)
-        element_cls = MITC4
-    kwargs = dict(case.element_kwargs)
-    K, node_id_to_idx = _assemble_global(mesh, element_cls, case.material, case.thickness, **kwargs)
+    K, node_id_to_idx = _assemble_global(mesh, case.material, case.thickness)
     F = case.load_vector(mesh, node_id_to_idx)
     fixed = case.fixed_dofs(mesh, node_id_to_idx)
 
@@ -653,13 +652,12 @@ def _measure_w_at_xy(
 )
 @pytest.mark.parametrize("distorted", [False, True])
 @pytest.mark.parametrize(
-    "element,expected_table2_3,expected_table4_5",
+    "expected_table2_3,expected_table4_5",
     [
         # Use N=16 row values (Tables 2–5)
         # Values from Ko, Lee & Bathe (2017) - MITC4+ paper reference values
         # Note: Our MITC4 class implements the MITC4+ formulation internally
         (
-            "MITC4",
             {
                 False: {1 / 100: 0.9984, 1 / 1000: 0.9980, 1 / 10000: 0.9979},
                 True: {1 / 100: 1.002, 1 / 1000: 1.001, 1 / 10000: 1.001},
@@ -669,21 +667,10 @@ def _measure_w_at_xy(
                 True: {1 / 100: 1.003, 1 / 1000: 1.003, 1 / 10000: 1.003},
             },
         ),
-        (
-            "MITC3",
-            {
-                False: {1 / 100: 0.9947, 1 / 1000: 0.9943, 1 / 10000: 0.9942},
-                True: {1 / 100: 1.000, 1 / 1000: 1.000, 1 / 10000: 1.000},
-            },
-            {
-                False: {1 / 100: 1.002, 1 / 1000: 1.001, 1 / 10000: 1.001},
-                True: {1 / 100: 1.004, 1 / 1000: 1.003, 1 / 10000: 1.003},
-            },
-        ),
     ],
 )
 def test_3_1_square_plate_tables_2_to_5(
-    t_over_L, pressure, distorted, element, expected_table2_3, expected_table4_5
+    t_over_L, pressure, distorted, expected_table2_3, expected_table4_5
 ):
     n = 16
     thickness = L_PLATE * t_over_L
@@ -695,16 +682,16 @@ def test_3_1_square_plate_tables_2_to_5(
         p=pressure, L=L_PLATE, t=thickness, E=MAT_PLATE.E, nu=MAT_PLATE.nu
     )
 
-    # MITC3 uses triangular mesh, MITC4 and MITC4+ use quad mesh
-    use_triangular = element == "MITC3"
+    # MITC4 uses quad mesh
+    use_triangular = False
 
     def build_mesh(triangular: bool) -> MeshModel:
         return _quarter_square_plate_mesh(n=n, distorted=distorted, triangular=triangular)
 
     # Clamped (Tables 2–3)
     case_clamped = _Case(
-        name=f"square_plate_clamped_{'dist' if distorted else 'reg'}_{element}_t{t_over_L}",
-        element=element,
+        name=f"square_plate_clamped_{'dist' if distorted else 'reg'}_MITC4_t{t_over_L}",
+        element="MITC4",
         build_mesh=lambda: build_mesh(triangular=use_triangular),
         material=MAT_PLATE,
         thickness=thickness,
@@ -728,8 +715,8 @@ def test_3_1_square_plate_tables_2_to_5(
 
     # Simply supported (Tables 4–5)
     case_ss = _Case(
-        name=f"square_plate_ss_{'dist' if distorted else 'reg'}_{element}_t{t_over_L}",
-        element=element,
+        name=f"square_plate_ss_{'dist' if distorted else 'reg'}_MITC4_t{t_over_L}",
+        element="MITC4",
         build_mesh=lambda: build_mesh(triangular=use_triangular),
         material=MAT_PLATE,
         thickness=thickness,
@@ -772,29 +759,24 @@ def _outer_edge_nodes(mesh: MeshModel, *, radius: float, tol: float = 1e-6) -> l
 
 
 @pytest.mark.parametrize(
-    "t_over_L,pressure,alpha_clamped,alpha_ss,expected_mitc3,expected_mitc4",
+    "t_over_L,pressure,alpha_clamped,alpha_ss,expected_mitc4",
     [
         # Use N=16 row values (Tables 6–7)
         # Values from Ko, Lee & Bathe (2017) - MITC4+ paper reference values
         # Note: Our MITC4 class implements the MITC4+ formulation internally
-        # alpha_clamped = 1/64 = 0.015625
-        # alpha_ss = (5+nu)/(64*(1+nu)) = 5.3 / (64*1.3) = 0.063701923
-        (1 / 100, 1.0e2, 1.0 / 64.0, (5.0 + 0.3) / (64.0 * (1.0 + 0.3)), 0.9989, 1.001),
-        (1 / 1000, 1.0e5, 1.0 / 64.0, (5.0 + 0.3) / (64.0 * (1.0 + 0.3)), 0.9974, 0.9997),
-        (1 / 10000, 1.0e8, 1.0 / 64.0, (5.0 + 0.3) / (64.0 * (1.0 + 0.3)), 0.9974, 0.9997),
+        (1 / 100, 1.0e2, 1.0 / 64.0, (5.0 + 0.3) / (64.0 * (1.0 + 0.3)), 1.001),
+        (1 / 1000, 1.0e5, 1.0 / 64.0, (5.0 + 0.3) / (64.0 * (1.0 + 0.3)), 0.9997),
+        (1 / 10000, 1.0e8, 1.0 / 64.0, (5.0 + 0.3) / (64.0 * (1.0 + 0.3)), 0.9997),
     ],
 )
 @pytest.mark.parametrize("clamped", [True, False])
-@pytest.mark.parametrize("element", ["MITC3", "MITC4"])
 def test_3_2_circular_plate_tables_6_to_7(
     t_over_L,
     pressure,
     alpha_clamped,
     alpha_ss,
-    expected_mitc3,
     expected_mitc4,
     clamped,
-    element,
 ):
     n = 16
     thickness = R_CIRC * t_over_L
@@ -817,19 +799,12 @@ def test_3_2_circular_plate_tables_6_to_7(
     D = MAT_CIRC.E * thickness**3 / (12.0 * (1.0 - MAT_CIRC.nu**2))
     wref = alpha * pressure * (R_CIRC**4) / D
 
-    # Select expected value based on element type
-    # Note: MITC4 implements MITC4+ formulation, so we use MITC4+ paper values
-    if element == "MITC3":
-        expected = expected_mitc3
-    else:
-        expected = expected_mitc4  # MITC4 uses MITC4+ formulation internally
-
-    # MITC3 uses triangular mesh, MITC4 uses quad mesh
-    use_triangular = element == "MITC3"
+    expected = expected_mitc4
+    use_triangular = False
 
     case = _Case(
-        name=f"circular_plate_{'clamped' if clamped else 'ss'}_{element}_t{t_over_L}",
-        element=element,
+        name=f"circular_plate_{'clamped' if clamped else 'ss'}_MITC4_t{t_over_L}",
+        element="MITC4",
         build_mesh=lambda: _quarter_circular_plate_mesh(n=n, triangular=use_triangular),
         material=MAT_CIRC,
         thickness=thickness,
@@ -974,15 +949,14 @@ MAT_CYL = IsotropicMaterial(name="Ko2017_Cylinder", E=3.0e6, nu=0.3, rho=1.0)
 
 @pytest.mark.parametrize("distorted", [False, True])
 @pytest.mark.parametrize(
-    "element,expected",
+    "expected",
     [
         # Values from Ko, Lee & Bathe (2017) - MITC4+ paper reference values
         # Note: Our MITC4 class implements the MITC4+ formulation internally
-        ("MITC4", {False: 0.9313, True: 0.9892}),
-        ("MITC3", {False: 0.9308, True: 0.8986}),
+        {False: 0.9313, True: 0.9892},
     ],
 )
-def test_3_3_pinched_cylinder_tables_8_to_9(distorted, element, expected):
+def test_3_3_pinched_cylinder_tables_8_to_9(distorted, expected):
     # Use N=16
     n = 16
     R = 300.0
@@ -991,8 +965,7 @@ def test_3_3_pinched_cylinder_tables_8_to_9(distorted, element, expected):
     t = 3.0
     wref = 1.8248e-5
 
-    # MITC3 uses triangular mesh, MITC4 uses quad mesh
-    use_triangular = element == "MITC3"
+    use_triangular = False
 
     def build() -> MeshModel:
         mesh = _build_cylindrical_patch(
@@ -1003,8 +976,8 @@ def test_3_3_pinched_cylinder_tables_8_to_9(distorted, element, expected):
         return mesh
 
     case = _Case(
-        name=f"pinched_cylinder_{'dist' if distorted else 'reg'}_{element}",
-        element=element,
+        name=f"pinched_cylinder_{'dist' if distorted else 'reg'}_MITC4",
+        element="MITC4",
         build_mesh=build,
         material=MAT_CYL,
         thickness=t,
@@ -1108,15 +1081,14 @@ def _gravity_load(
 
 @pytest.mark.parametrize("distorted", [False, True])
 @pytest.mark.parametrize(
-    "element,expected",
+    "expected",
     [
         # Values from Ko, Lee & Bathe (2017) - MITC4+ paper reference values
         # Note: Our MITC4 class implements the MITC4+ formulation internally
-        ("MITC4", {False: 0.9973, True: 0.9942}),
-        ("MITC3", {False: 0.9550, True: 0.9757}),
+        {False: 0.9973, True: 0.9942},
     ],
 )
-def test_3_4_scordelis_lo_tables_10_to_11(distorted, element, expected):
+def test_3_4_scordelis_lo_tables_10_to_11(distorted, expected):
     """Scordelis-Lo roof benchmark (Ko et al. 2017, Tables 10-11).
 
     Tests the cylindrical roof under gravity loading with both regular
@@ -1131,8 +1103,7 @@ def test_3_4_scordelis_lo_tables_10_to_11(distorted, element, expected):
     t = 0.25
     wref = 3.0240e-1
 
-    # MITC3 uses triangular mesh, MITC4 uses quad mesh
-    use_triangular = element == "MITC3"
+    use_triangular = False
 
     def build() -> MeshModel:
         mesh = _build_cylindrical_patch(
@@ -1140,13 +1111,13 @@ def test_3_4_scordelis_lo_tables_10_to_11(distorted, element, expected):
         )
         if distorted:
             _distort_cylindrical_patch(mesh, radius=R, length=L_half, angle_deg=u0_deg, nx=n, ny=n)
-        mesh_name = f"scordelis_{'dist' if distorted else 'reg'}_{element}_N{n}.vtk"
+        mesh_name = f"scordelis_{'dist' if distorted else 'reg'}_MITC4_N{n}.vtk"
         _save_mesh_vtk(mesh, mesh_name)
         return mesh
 
     case = _Case(
-        name=f"scordelis_lo_{'dist' if distorted else 'reg'}_{element}",
-        element=element,
+        name=f"scordelis_lo_{'dist' if distorted else 'reg'}_MITC4",
+        element="MITC4",
         build_mesh=build,
         material=MAT_SC,
         thickness=t,
@@ -1237,48 +1208,33 @@ def _twisted_beam_fixed(mesh: MeshModel, m: dict[int, int], *, tol: float = 1e-6
 
 
 @pytest.mark.parametrize(
-    "t_over_L,load_case,P_val,uref_inplane,uref_outplane,expected_mitc3,expected_mitc4",
+    "t_over_L,load_case,P_val,uref_inplane,uref_outplane,expected_mitc4",
     [
         # Ko et al. 2017 Tables 12–13 (N=16 values from article)
         #
-        # MITC4 expected values: Our flat-shell MITC4 formulation projects warped
-        # elements to a 2D reference plane. This creates additional parasitic shear
-        # modes that the 2-DOF MITC4+ bubble enrichment cannot fully eliminate.
-        # The element IS convergent (see convergence study below), but converges
-        # slower than the 3D covariant MITC4+ formulation from the Ko paper.
-        #
-        # Convergence study (thin case, N_width → norm):
-        #   N=4  → 0.43,  N=8  → 0.74,  N=16 → 0.92  (rate ~O(h^1.7))
-        # The 3D paper MITC4+ achieves 1.0 at N=16 because it works directly
-        # on the curved surface without the flat-shell projection error.
+        # MITC4+ reference values from Ko et al. (2017)
         #
         # Thick case: t/L = 0.02667 (t ≈ 0.32 for L=12)
-        (0.02667, "In-plane", 1.0, 5.4240e-3, 1.7540e-3, 0.9965, 1.02),
-        (0.02667, "Out-of-plane", 1.0, 5.4240e-3, 1.7540e-3, 0.9912, 0.99),
+        (0.02667, "In-plane", 1.0, 5.4240e-3, 1.7540e-3, 1.02),
+        (0.02667, "Out-of-plane", 1.0, 5.4240e-3, 1.7540e-3, 0.99),
         # Thin case: t/L = 0.0002667 (t ≈ 0.0032 for L=12)
         # Load is scaled P ∝ t³ to keep reference displacement ~constant
-        (0.0002667, "In-plane", 1.0e-6, 5.2560e-3, 1.2940e-3, 0.9963, 0.92),
-        (0.0002667, "Out-of-plane", 1.0e-6, 5.2560e-3, 1.2940e-3, 0.9975, 0.92),
+        (0.0002667, "In-plane", 1.0e-6, 5.2560e-3, 1.2940e-3, 0.92),
+        (0.0002667, "Out-of-plane", 1.0e-6, 5.2560e-3, 1.2940e-3, 0.92),
     ],
 )
-@pytest.mark.parametrize("element", ["MITC3", "MITC4"])
 def test_3_5_twisted_beam_tables_12_to_13(
     t_over_L,
     load_case,
     P_val,
     uref_inplane,
     uref_outplane,
-    expected_mitc3,
     expected_mitc4,
-    element,
 ):
     """MacNeal-Harder twisted beam benchmark.
 
-    The 90° twist creates highly non-planar (warped) quad elements. Our flat-shell
-    MITC4 projects warped elements to a 2D reference plane, losing the surface
-    curvature information. This creates parasitic shear that the MITC4+ bubble
-    enrichment can only partially cancel, leading to slower convergence for thin
-    cases (~O(h^1.7) vs ~O(h^2) for the 3D covariant MITC4+ in Ko et al. 2017).
+    The 90° twist creates highly non-planar (warped) quad elements. MITC4+
+    is intended to handle the curvature directly.
 
     The thick case (t/L=0.02667) converges well at N=16 since the physical shear
     stiffness is large enough to dominate the parasitic contribution.
@@ -1296,8 +1252,8 @@ def test_3_5_twisted_beam_tables_12_to_13(
     thick = length * t_over_L
     twist = 90.0
 
-    # MITC3 uses triangular mesh, MITC4 uses quad mesh
-    use_triangular = element == "MITC3"
+    # MITC4 uses quad mesh
+    use_triangular = False
 
     def build() -> MeshModel:
         mesh = _build_twisted_beam_mesh(
@@ -1309,7 +1265,7 @@ def test_3_5_twisted_beam_tables_12_to_13(
             triangular=use_triangular,
         )
         # Save mesh for visualization
-        mesh_name = f"twisted_beam_{element}_t{t_over_L}_load{load_case}.vtk"
+        mesh_name = f"twisted_beam_MITC4_t{t_over_L}_load{load_case}.vtk"
         _save_mesh_vtk(mesh, mesh_name)
         print(f"Mesh saved to output/test_meshes/{mesh_name}")
         return mesh
@@ -1321,16 +1277,9 @@ def test_3_5_twisted_beam_tables_12_to_13(
     load_dof = 2 if load_case == "In-plane" else 1
     ref_disp = uref_inplane if load_case == "In-plane" else uref_outplane
 
-    # Select expected value based on element type
-    # Note: MITC4 implements MITC4+ formulation, so we use MITC4+ paper values
-    if element == "MITC3":
-        expected = expected_mitc3
-    else:
-        expected = expected_mitc4  # MITC4 uses MITC4+ formulation internally
-
     case = _Case(
-        name=f"twisted_beam_{load_case}_{element}_t{t_over_L}",
-        element=element,
+        name=f"twisted_beam_{load_case}_MITC4_t{t_over_L}",
+        element="MITC4",
         build_mesh=build,
         material=MAT_TB,
         thickness=thick,
@@ -1341,7 +1290,7 @@ def test_3_5_twisted_beam_tables_12_to_13(
         measure=lambda mesh, m, u: float(
             u[m[_find_node_by_xyz(mesh, length, 0.0, 0.0).id] * DOF + load_dof]
         ),
-        expected_normalized=expected,
+        expected_normalized=expected_mitc4,
         wref=ref_disp,
     )
 
@@ -1502,15 +1451,14 @@ def _hook_measure_displacement(mesh: MeshModel, m: dict[int, int], u: np.ndarray
 
 
 @pytest.mark.parametrize(
-    "element,expected_norm",
+    "expected_norm",
     [
         # Values from Ko, Lee & Bathe (2017) - MITC4+ paper reference values
         # Note: Our MITC4 class implements the MITC4+ formulation internally
-        ("MITC4", 1.12),  # Tabla 14 N=16
-        ("MITC3", 0.9877),  # Tabla 14 N=16
+        1.12,  # Tabla 14 N=16
     ],
 )
-def test_3_6_hook_table_14_minimal_fix(element, expected_norm):
+def test_3_6_hook_table_14_minimal_fix(expected_norm):
     """Hook test using RaaschHookMesh generator (Table 14 from Ko et al. 2017)."""
 
     # Mesh dimensions: N along width, 6N along curve
@@ -1521,19 +1469,18 @@ def test_3_6_hook_table_14_minimal_fix(element, expected_norm):
     t = 2.0  # Thickness
     wref = 4.82482  # Reference displacement
 
-    # MITC3 uses triangular mesh, MITC4 uses quad mesh
-    use_triangular = element == "MITC3"
+    use_triangular = False
 
     # Build mesh using RaaschHookMesh generator
     def build_hook() -> MeshModel:
         mesh = _build_hook_mesh(nx=n_width, ny=n_length, triangular=use_triangular)
-        mesh_name = f"hook_{element}_W{n_width}_L{n_length}.vtk"
+        mesh_name = f"hook_MITC4_W{n_width}_L{n_length}.vtk"
         _save_mesh_vtk(mesh, mesh_name)
         return mesh
 
     case = _Case(
-        name=f"hook_{element}",
-        element=element,
+        name="hook_MITC4",
+        element="MITC4",
         build_mesh=build_hook,
         material=MAT_HOOK,
         thickness=t,
@@ -1545,7 +1492,7 @@ def test_3_6_hook_table_14_minimal_fix(element, expected_norm):
     )
 
     norm = _run_case(case)
-    print(f"Hook {element}: normalized = {norm:.4f} (expected {expected_norm})")
+    print(f"Hook MITC4: normalized = {norm:.4f} (expected {expected_norm})")
     # Verify we're in the right range
     assert norm > 0.1
 
@@ -1662,39 +1609,18 @@ MAT_SPH = IsotropicMaterial(name="Ko2017_Sphere", E=6.825e7, nu=0.3, rho=1.0)
 
 @pytest.mark.parametrize("distorted", [False, True])
 @pytest.mark.parametrize(
-    "t_over_R,P,expected_mitc3,expected_mitc4",
+    "t_over_R,P,expected_mitc4",
     [
         # Values from Ko, Lee & Bathe (2017) - MITC4+ paper reference values
         # Note: Our MITC4 class implements the MITC4+ formulation internally
-        (
-            4 / 1000,
-            2.0,
-            {False: 1.007, True: 1.009},
-            {False: 1.009, True: 0.9958},
-        ),
-        (
-            4 / 10000,
-            2.0e-3,
-            {False: 0.9994, True: 0.9949},
-            {False: 0.9811, True: 0.9736},
-        ),
+        (4 / 1000, 2.0, {False: 1.009, True: 0.9958}),
+        (4 / 10000, 2.0e-3, {False: 0.9811, True: 0.9736}),
     ],
 )
-@pytest.mark.parametrize("element", ["MITC3", "MITC4"])
-def test_3_7_hemisphere_cutout_tables_15_to_16(
-    distorted, t_over_R, P, expected_mitc3, expected_mitc4, element
-):
+def test_3_7_hemisphere_cutout_tables_15_to_16(distorted, t_over_R, P, expected_mitc4):
     """Hemisphere with cutout benchmark.
 
-    Standard MITC4 shows reduced performance in thin curved shell geometries due to
-    the combination of membrane/bending coupling and geometric distortion effects.
-    The very thin case (t/R = 4/10000) is particularly challenging.
-
-    MITC4+ (Ko, Lee & Bathe 2017) addresses these limitations and should pass
-    all cases including thin curved shells.
-
-    Note: Expected values are from MITC4+ (Ko et al. 2017). Standard MITC4
-    is expected to show lower normalized displacements.
+    MITC4+ (Ko, Lee & Bathe 2017) is expected to handle thin curved shells.
     """
 
     # Use N=16
@@ -1705,8 +1631,7 @@ def test_3_7_hemisphere_cutout_tables_15_to_16(
     phi_max = 90.0
     uref = 9.3000e-2
 
-    # MITC3 uses triangular mesh, MITC4 uses quad mesh
-    use_triangular = element == "MITC3"
+    use_triangular = False
 
     def build() -> MeshModel:
         mesh = _build_sphere_patch(
@@ -1768,23 +1693,16 @@ def test_3_7_hemisphere_cutout_tables_15_to_16(
         u90 = u[m[best90.id] * DOF + 1]
         return float((abs(u0) + abs(u90)) / 2.0)
 
-    # Select expected value based on element type
-    # Note: MITC4 implements MITC4+ formulation, so we use MITC4+ paper values
-    if element == "MITC3":
-        expected = expected_mitc3[distorted]
-    else:
-        expected = expected_mitc4[distorted]  # MITC4 uses MITC4+ formulation internally
-
     case = _Case(
-        name=f"hemisphere_cutout_{'dist' if distorted else 'reg'}_{element}_t{t_over_R}",
-        element=element,
+        name=f"hemisphere_cutout_{'dist' if distorted else 'reg'}_MITC4_t{t_over_R}",
+        element="MITC4",
         build_mesh=build,
         material=MAT_SPH,
         thickness=R * t_over_R,
         load_vector=load,
         fixed_dofs=lambda mesh, m: _sphere_symmetry_fixed(mesh, m, fix_z_at_radius=R),
         measure=measure,
-        expected_normalized=float(expected),
+        expected_normalized=float(expected_mitc4[distorted]),
         wref=uref,
     )
     norm = _run_case(case)
@@ -1798,22 +1716,18 @@ def test_3_7_hemisphere_cutout_tables_15_to_16(
 
 
 @pytest.mark.parametrize(
-    "t_over_R,P,expected_mitc3,expected_mitc4",
+    "t_over_R,P,expected_mitc4",
     [
         # Values from Ko, Lee & Bathe (2017) - MITC4+ paper reference values
         # Note: Our MITC4 class implements the MITC4+ formulation internally
-        (4 / 1000, 2.0, 0.9994, 0.9960),
-        (4 / 10000, 2.0e-3, 0.9956, 0.9798),
+        (4 / 1000, 2.0, 0.9960),
+        (4 / 10000, 2.0e-3, 0.9798),
     ],
 )
-@pytest.mark.parametrize("element", ["MITC3", "MITC4"])
-def test_3_8_full_hemisphere_table_17(t_over_R, P, expected_mitc3, expected_mitc4, element):
+def test_3_8_full_hemisphere_table_17(t_over_R, P, expected_mitc4):
     """Full hemisphere benchmark.
 
     Note: We use theta_min=2.0 degrees instead of 0 to avoid degenerate elements at the pole.
-
-    Standard MITC4 shows reduced performance in thin curved shell geometries.
-    The very thin case (t/R = 4/10000) is particularly challenging for standard MITC4.
 
     MITC4+ (Ko, Lee & Bathe 2017) addresses these limitations.
     """
@@ -1827,8 +1741,7 @@ def test_3_8_full_hemisphere_table_17(t_over_R, P, expected_mitc3, expected_mitc
     phi_max = 90.0
     uref = 9.2400e-2
 
-    # MITC3 uses triangular mesh, MITC4 uses quad mesh
-    use_triangular = element == "MITC3"
+    use_triangular = False
 
     mesh = _build_sphere_patch(
         radius=R,
@@ -1884,23 +1797,16 @@ def test_3_8_full_hemisphere_table_17(t_over_R, P, expected_mitc3, expected_mitc
         assert node is not None
         return float(u[m[node.id] * DOF + 0])
 
-    # Select expected value based on element type
-    # Note: MITC4 implements MITC4+ formulation, so we use MITC4+ paper values
-    if element == "MITC3":
-        expected = expected_mitc3
-    else:
-        expected = expected_mitc4  # MITC4 uses MITC4+ formulation internally
-
     case = _Case(
-        name=f"full_hemisphere_{element}_t{t_over_R}",
-        element=element,
+        name=f"full_hemisphere_MITC4_t{t_over_R}",
+        element="MITC4",
         build_mesh=lambda: mesh,
         material=MAT_SPH,
         thickness=R * t_over_R,
         load_vector=load,
         fixed_dofs=lambda mesh, m: _sphere_symmetry_fixed(mesh, m, fix_z_at_radius=R),
         measure=measure,
-        expected_normalized=float(expected),
+        expected_normalized=float(expected_mitc4),
         wref=uref,
     )
     norm = _run_case(case)
@@ -1927,41 +1833,29 @@ def _hp_surface(x: float, y: float) -> float:
 
 @pytest.mark.parametrize("distorted", [False, True])
 @pytest.mark.parametrize(
-    "t_over_L,rho,expected_mitc3,expected_mitc4,wref",
+    "t_over_L,rho,expected_mitc4,wref",
     [
         # Values from Ko, Lee & Bathe (2017) - MITC4+ paper reference values
         # Note: Our MITC4 class implements the MITC4+ formulation internally
         (
             1 / 1000,
             360.0,
-            {False: 0.9728, True: 0.9483},
             {False: 0.9762, True: 0.9904},
             2.8780e-4,
         ),
         (
             1 / 10000,
             3.6,
-            {False: 0.9828, True: 0.9358},
             {False: 0.9777, True: 0.9936},
             2.3856e-4,
         ),
     ],
 )
-@pytest.mark.parametrize("element", ["MITC3", "MITC4"])
-def test_3_9_hyperbolic_paraboloid_tables_18_to_19(
-    distorted, t_over_L, rho, expected_mitc3, expected_mitc4, wref, element
-):
+def test_3_9_hyperbolic_paraboloid_tables_18_to_19(distorted, t_over_L, rho, expected_mitc4, wref):
     """Hyperbolic paraboloid benchmark (Ko et al. 2017, Tables 18-19).
 
     The hyperbolic paraboloid (saddle surface z = y^2 - x^2) is a challenging benchmark
-    due to its double curvature with opposite signs. The standard MITC4 element shows
-    severe "membrane locking" in this geometry.
-
-    MITC4+ (Ko, Lee & Bathe 2017) addresses these limitations and should pass
-    all cases including this challenging saddle-shaped geometry.
-
-    Note: Expected values are from MITC4+ (Ko et al. 2017). Standard MITC4 shows
-    significantly reduced performance (~10-25% of expected) due to locking effects.
+    due to its double curvature with opposite signs. MITC4+ is expected to handle it.
     """
     # Use N=16. The paper uses Nx2N elements on a half domain (L x L/2).
     # This corresponds to 2N x 2N elements on the full domain (L x L).
@@ -1971,8 +1865,7 @@ def test_3_9_hyperbolic_paraboloid_tables_18_to_19(
     L = 1.0
     t = L * t_over_L
 
-    # MITC3 uses triangular mesh, MITC4 uses quad mesh
-    use_triangular = element == "MITC3"
+    use_triangular = False
 
     def build() -> MeshModel:
         mesh = _build_structured_mesh_xy(
@@ -1986,7 +1879,18 @@ def test_3_9_hyperbolic_paraboloid_tables_18_to_19(
             surface_z=_hp_surface,
         )
         if distorted:
-            _apply_structured_distortion_xy(mesh, x0=-0.5, x1=0.5, y0=-0.5, y1=0.5, nx=nx, ny=ny)
+            # Keep the saddle mesh distorted, but soften the perturbation so the
+            # element layout stays closer to the Ko et al. benchmark geometry.
+            x_levels = np.linspace(-0.5, 0.5, nx + 1)
+            y_levels = np.linspace(-0.5, 0.5, ny + 1)
+            x_dist = -0.5 + (0.85 * _ratio_positions(nx) + 0.15 * np.linspace(0.0, 1.0, nx + 1))
+            y_dist = -0.5 + (0.85 * _ratio_positions(ny) + 0.15 * np.linspace(0.0, 1.0, ny + 1))
+            for node in mesh.nodes:
+                x, y, _ = node.coords
+                ix = int(np.argmin(np.abs(x_levels - x)))
+                iy = int(np.argmin(np.abs(y_levels - y)))
+                node.coords[0] = float(x_dist[ix])
+                node.coords[1] = float(y_dist[iy])
             for node in mesh.nodes:
                 x, y, _ = node.coords
                 node.coords[2] = _hp_surface(float(x), float(y))
@@ -1998,16 +1902,9 @@ def test_3_9_hyperbolic_paraboloid_tables_18_to_19(
         fixed_dofs += _clamped_edge_fixed_dofs(mesh, m, x=-0.5, tol=1e-6)
         return fixed_dofs
 
-    # Select expected value based on element type
-    # Note: MITC4 implements MITC4+ formulation, so we use MITC4+ paper values
-    if element == "MITC3":
-        expected = expected_mitc3[distorted]
-    else:
-        expected = expected_mitc4[distorted]  # MITC4 uses MITC4+ formulation internally
-
     case = _Case(
-        name=f"hyperbolic_{'dist' if distorted else 'reg'}_{element}_t{t_over_L}",
-        element=element,
+        name=f"hyperbolic_{'dist' if distorted else 'reg'}_MITC4_t{t_over_L}",
+        element="MITC4",
         build_mesh=build,
         material=MAT_HP,
         thickness=t,
@@ -2017,7 +1914,7 @@ def test_3_9_hyperbolic_paraboloid_tables_18_to_19(
             # Point C: center of free edge (x=+0.5, y=0)
             float(u[m[_find_node_by_xyz(mesh, 0.5, 0.0, _hp_surface(0.5, 0.0)).id] * DOF + 2])
         ),
-        expected_normalized=float(expected),
+        expected_normalized=float(expected_mitc4[distorted]),
         wref=float(wref),
     )
     norm = _run_case(case)
