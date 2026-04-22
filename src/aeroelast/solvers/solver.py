@@ -5,7 +5,7 @@ import meshio
 import numpy as np
 
 from aeroelast.core.assembler import MeshAssembler
-from aeroelast.core.bc import BodyForce, DirichletCondition
+from aeroelast.core.bc import BodyForce, DirichletCondition, NodalLoad
 from aeroelast.core.mesh import MeshModel
 from aeroelast.core.viewer import plot_results
 from aeroelast.elements import ElementFamily
@@ -88,6 +88,7 @@ class Solver(ABC):
         self.domain = MeshAssembler(mesh=self.mesh_obj, model=self.model_properties)
         self.dirichlet_conditions: List[DirichletCondition] = []
         self.body_forces: List[BodyForce] = []
+        self.nodal_loads: List[NodalLoad] = []
 
     @property
     def vector_form(self) -> Dict[str, Tuple]:
@@ -163,6 +164,19 @@ class Solver(ABC):
             List of Neumann boundary conditions.
         """
         self.body_forces = bcs
+
+    def add_nodal_loads(self, loads: List[NodalLoad]) -> None:
+        """
+        Add concentrated nodal loads to the solver.
+
+        Parameters
+        ----------
+        loads : List[NodalLoad]
+            Each entry carries the DOF indices and force vector for one node.
+            When originating from a nodeset the caller is responsible for
+            dividing the total force by the number of nodes beforehand.
+        """
+        self.nodal_loads.extend(loads)
 
     # =========================================================================
     # Stress Recovery / Post-processing

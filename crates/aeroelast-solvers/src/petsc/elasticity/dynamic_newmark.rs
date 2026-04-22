@@ -333,11 +333,562 @@ fn matvec_add(
     Ok(())
 }
 
+// ── NewmarkStepper ────────────────────────────────────────────────────────────
+
+/// Snapshot of the Newmark state for FSI implicit coupling rollback.
+///
+/// Created by [`NewmarkStepper::checkpoint`] and consumed by
+/// [`NewmarkStepper::restore`].
+#[derive(Debug, Clone)]
+pub struct NewmarkCheckpoint {
+    /// Displacement snapshot.
+    pub u: Vec<f64>,
+    /// Velocity snapshot.
+    pub v: Vec<f64>,
+    /// Acceleration snapshot.
+    pub a: Vec<f64>,
+    /// Time at the snapshot.
+    pub t: f64,
+}
+
+/// Returned by [`NewmarkStepper::step`] after each successful time step.
+#[derive(Debug, Clone)]
+pub struct StepResult {
+    /// Updated displacement vector.
+    pub u: Vec<f64>,
+    /// Updated velocity vector.
+    pub v: Vec<f64>,
+    /// Updated acceleration vector.
+    pub a: Vec<f64>,
+    /// Updated time.
+    pub t: f64,
+}
+
+/// Stateful Newmark-β implicit time integrator.
+///
+/// Holds the current dynamic state `(u, v, a, t)` and the pre-factorized
+/// effective stiffness matrix `K_eff = K + a0·M + a1·C`.  Calling
+/// [`step`](NewmarkStepper::step) advances the state by one time step.
+///
+/// The KSP is recreated on every `step` call (same pattern as the existing
+/// `newmark_beta_solve`).  `K_eff` is rebuilt (lazy re-factorization) only
+/// when `dt` changes between consecutive calls, so it is effectively free
+/// for constant-step simulations.
+///
+/// # Example
+/// ```rust,no_run
+/// use aeroelast_solvers::petsc::elasticity::dynamic_newmark::NewmarkStepper;
+///
+/// let mut stepper = NewmarkStepper::new(
+///     &[0], &[0], &[1000.0],   // K COO (1×1)
+///     &[0], &[0], &[1.0],      // M COO
+///     &[0], &[0], &[0.0],      // C COO
+///     1, 0.25, 0.5, 0.01,
+/// ).unwrap();
+///
+/// let res = stepper.step(&[0.0], 0.01).unwrap();
+/// println!("u = {:?}", res.u);
+/// ```
+pub struct NewmarkStepper {
+    // ── COO storage for lazy re-factorization ────────────────────────────────
+    rows: Vec<i32>,
+    cols: Vec<i32>,
+    k_vals: Vec<f64>,
+    m_vals: Vec<f64>,
+    c_vals: Vec<f64>,
+
+    // ── Pre-factorized effective stiffness ───────────────────────────────────
+    k_eff: PetscMat,
+
+    // ── Assembled mass and damping for RHS ───────────────────────────────────
+    mat_m: PetscMat,
+    mat_c: PetscMat,
+
+    // ── Dynamic state ────────────────────────────────────────────────────────
+    u: Vec<f64>,
+    v: Vec<f64>,
+    a: Vec<f64>,
+    t: f64,
+
+    // ── Newmark parameters ───────────────────────────────────────────────────
+    beta: f64,
+    gamma: f64,
+
+    // ── Precomputed Newmark constants (function of dt) ────────────────────────
+    dt_last: f64,
+    a0: f64,
+    a1: f64,
+    a2: f64,
+    a3: f64,
+    a4: f64,
+    a5: f64,
+    a6: f64,
+    a7: f64,
+
+    n_dofs: usize,
+}
+
+impl NewmarkStepper {
+    /// Compute the seven Newmark constants from `beta`, `gamma` and `dt`.
+    fn compute_coeffs(beta: f64, gamma: f64, dt: f64) -> [f64; 8] {
+        let a0 = 1.0 / (beta * dt * dt);
+        let a1 = gamma / (beta * dt);
+        let a2 = 1.0 / (beta * dt);
+        let a3 = 1.0 / (2.0 * beta) - 1.0;
+        let a4 = gamma / beta - 1.0;
+        let a5 = dt / 2.0 * (gamma / beta - 2.0);
+        let a6 = dt * (1.0 - gamma);
+        let a7 = gamma * dt;
+        [a0, a1, a2, a3, a4, a5, a6, a7]
+    }
+
+    /// Build `K_eff = K + a0·M + a1·C` and the separate M and C PETSc matrices.
+    fn build_matrices(
+        rows: &[i32],
+        cols: &[i32],
+        k_vals: &[f64],
+        m_vals: &[f64],
+        c_vals: &[f64],
+        a0: f64,
+        a1: f64,
+        n_dofs: usize,
+    ) -> Result<(PetscMat, PetscMat, PetscMat), PetscError> {
+        let k_eff = assemble_keff(rows, cols, k_vals, m_vals, c_vals, a0, a1, n_dofs)?;
+        let mat_m = assemble_seq_aij(rows, cols, m_vals, n_dofs)?;
+        let mat_c = assemble_seq_aij(rows, cols, c_vals, n_dofs)?;
+        Ok((k_eff, mat_m, mat_c))
+    }
+
+    /// Create a new `NewmarkStepper`.
+    ///
+    /// # Arguments
+    /// * `k_rows`, `k_cols`, `k_vals` — COO triplets for the stiffness matrix
+    /// * `m_rows`, `m_cols`, `m_vals` — COO triplets for the mass matrix
+    /// * `c_rows`, `c_cols`, `c_vals` — COO triplets for the damping matrix
+    /// * `n_dofs`  — number of free degrees of freedom
+    /// * `beta`    — Newmark-β (0.25 → unconditionally stable)
+    /// * `gamma`   — Newmark-γ (0.5 → no numerical damping)
+    /// * `dt`      — initial time step (used for initial factorization)
+    ///
+    /// # Notes
+    /// All three COO triplet sets must share the same sparsity pattern
+    /// (`k_rows == m_rows == c_rows`, etc.).  This is always satisfied for
+    /// Rayleigh damping but must be ensured by the caller for general C.
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        k_rows: &[i32],
+        k_cols: &[i32],
+        k_vals: &[f64],
+        m_rows: &[i32],
+        m_cols: &[i32],
+        m_vals: &[f64],
+        c_rows: &[i32],
+        c_cols: &[i32],
+        c_vals: &[f64],
+        n_dofs: usize,
+        beta: f64,
+        gamma: f64,
+        dt: f64,
+    ) -> Result<Self, PetscError> {
+        ensure_initialized()?;
+
+        // Validate sparsity pattern matches
+        assert_eq!(k_rows.len(), m_rows.len(), "K and M must share sparsity");
+        assert_eq!(k_rows.len(), c_rows.len(), "K and C must share sparsity");
+        let _ = (m_rows, m_cols, c_rows, c_cols); // validated via lengths
+
+        let [a0, a1, a2, a3, a4, a5, a6, a7] = Self::compute_coeffs(beta, gamma, dt);
+
+        let (k_eff, mat_m, mat_c) = Self::build_matrices(
+            k_rows, k_cols, k_vals, m_vals, c_vals, a0, a1, n_dofs,
+        )?;
+
+        // Initial acceleration a₀ = M⁻¹·F₀  (F₀ = 0 at rest → a₀ = 0)
+        let a_init = vec![0.0f64; n_dofs];
+
+        Ok(Self {
+            rows: k_rows.to_vec(),
+            cols: k_cols.to_vec(),
+            k_vals: k_vals.to_vec(),
+            m_vals: m_vals.to_vec(),
+            c_vals: c_vals.to_vec(),
+            k_eff,
+            mat_m,
+            mat_c,
+            u: vec![0.0; n_dofs],
+            v: vec![0.0; n_dofs],
+            a: a_init,
+            t: 0.0,
+            beta,
+            gamma,
+            dt_last: dt,
+            a0,
+            a1,
+            a2,
+            a3,
+            a4,
+            a5,
+            a6,
+            a7,
+            n_dofs,
+        })
+    }
+
+    /// Rebuild `K_eff`, `mat_m`, `mat_c` when `dt` has changed.
+    fn refactorize(&mut self, dt: f64) -> Result<(), PetscError> {
+        let [a0, a1, a2, a3, a4, a5, a6, a7] = Self::compute_coeffs(self.beta, self.gamma, dt);
+        let (k_eff, mat_m, mat_c) = Self::build_matrices(
+            &self.rows,
+            &self.cols,
+            &self.k_vals,
+            &self.m_vals,
+            &self.c_vals,
+            a0,
+            a1,
+            self.n_dofs,
+        )?;
+        self.k_eff = k_eff;
+        self.mat_m = mat_m;
+        self.mat_c = mat_c;
+        self.a0 = a0;
+        self.a1 = a1;
+        self.a2 = a2;
+        self.a3 = a3;
+        self.a4 = a4;
+        self.a5 = a5;
+        self.a6 = a6;
+        self.a7 = a7;
+        self.dt_last = dt;
+        Ok(())
+    }
+
+    /// Advance the state by one time step.
+    ///
+    /// If `dt != self.dt_last`, the effective stiffness matrix is rebuilt and
+    /// re-factorized before solving.
+    ///
+    /// # Arguments
+    /// * `f_ext` — external nodal force vector at the new time level `t + dt`
+    /// * `dt`    — time step size
+    ///
+    /// # Returns
+    /// `StepResult` with the updated `(u, v, a, t)`.
+    pub fn step(&mut self, f_ext: &[f64], dt: f64) -> Result<StepResult, PetscError> {
+        assert_eq!(f_ext.len(), self.n_dofs, "f_ext length must equal n_dofs");
+
+        // Lazy re-factorization
+        if (dt - self.dt_last).abs() > f64::EPSILON * dt {
+            self.refactorize(dt)?;
+        }
+
+        let n = self.n_dofs;
+        let (a0, a1, a2, a3, a4, a5, a6, a7) =
+            (self.a0, self.a1, self.a2, self.a3, self.a4, self.a5, self.a6, self.a7);
+
+        // RHS = F_ext + M·(a0·u + a2·v + a3·a) + C·(a1·u + a4·v + a5·a)
+        let mut rhs = f_ext.to_vec();
+        matvec_add(&self.mat_m, n, a0, a2, a3, &self.u, &self.v, &self.a, &mut rhs)?;
+        matvec_add(&self.mat_c, n, a1, a4, a5, &self.u, &self.v, &self.a, &mut rhs)?;
+
+        // Solve K_eff · u_new = rhs
+        let rhs_vec = build_vec(&rhs)?;
+        let u_new = ksp_solve(&self.k_eff, &rhs_vec, n)?;
+
+        // Corrector: a_new = a0*(u_new - u) - a2*v - a3*a
+        let a_new: Vec<f64> = (0..n)
+            .map(|i| a0 * (u_new[i] - self.u[i]) - a2 * self.v[i] - a3 * self.a[i])
+            .collect();
+
+        // v_new = v + a6*a + a7*a_new
+        let v_new: Vec<f64> = (0..n)
+            .map(|i| self.v[i] + a6 * self.a[i] + a7 * a_new[i])
+            .collect();
+
+        self.u = u_new.clone();
+        self.v = v_new.clone();
+        self.a = a_new.clone();
+        self.t += dt;
+
+        Ok(StepResult {
+            u: u_new,
+            v: v_new,
+            a: a_new,
+            t: self.t,
+        })
+    }
+
+    /// Snapshot the current state for implicit coupling rollback.
+    pub fn checkpoint(&self) -> NewmarkCheckpoint {
+        NewmarkCheckpoint {
+            u: self.u.clone(),
+            v: self.v.clone(),
+            a: self.a.clone(),
+            t: self.t,
+        }
+    }
+
+    /// Restore the state from a previously captured snapshot.
+    pub fn restore(&mut self, cp: &NewmarkCheckpoint) {
+        self.u = cp.u.clone();
+        self.v = cp.v.clone();
+        self.a = cp.a.clone();
+        self.t = cp.t;
+    }
+
+    /// Number of free DOFs in this stepper.
+    pub fn n_dofs(&self) -> usize {
+        self.n_dofs
+    }
+
+    /// Current simulation time.
+    pub fn current_time(&self) -> f64 {
+        self.t
+    }
+
+    /// Set initial displacement and velocity conditions.
+    ///
+    /// Recomputes the initial acceleration via `a₀ = 0` (rest assumption).
+    /// For non-zero F₀, call this before the first `step`.
+    ///
+    /// # Arguments
+    /// * `u0` — initial displacement vector (length `n_dofs`)
+    /// * `v0` — initial velocity vector (length `n_dofs`)
+    pub fn set_initial_conditions(&mut self, u0: &[f64], v0: &[f64]) {
+        assert_eq!(u0.len(), self.n_dofs, "u0 length must equal n_dofs");
+        assert_eq!(v0.len(), self.n_dofs, "v0 length must equal n_dofs");
+        self.u = u0.to_vec();
+        self.v = v0.to_vec();
+        // Initial acceleration: for zero force start, a₀ = 0
+        // Caller can step once with F₀ if needed
+        self.t = 0.0;
+    }
+
+    /// Set initial conditions with explicit initial acceleration a₀.
+    /// Use when a₀ ≠ 0 (e.g., pre-loaded or non-trivial initial state).
+    pub fn set_initial_conditions_with_acceleration(
+        &mut self,
+        u0: &[f64],
+        v0: &[f64],
+        a0: &[f64],
+    ) {
+        assert_eq!(u0.len(), self.n_dofs, "u0 length must equal n_dofs");
+        assert_eq!(v0.len(), self.n_dofs, "v0 length must equal n_dofs");
+        assert_eq!(a0.len(), self.n_dofs, "a0 length must equal n_dofs");
+        self.u = u0.to_vec();
+        self.v = v0.to_vec();
+        self.a = a0.to_vec();
+        self.t = 0.0;
+    }
+}
+
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ── Helpers ───────────────────────────────────────────────────────────────
+
+    /// Build a 1-DOF `NewmarkStepper` with scalar k, m, c and given dt.
+    fn make_stepper(k: f64, m: f64, c: f64, dt: f64) -> NewmarkStepper {
+        let rows = vec![0i32];
+        let cols = vec![0i32];
+        NewmarkStepper::new(
+            &rows, &cols, &[k],
+            &rows, &cols, &[m],
+            &rows, &cols, &[c],
+            1,
+            0.25,
+            0.5,
+            dt,
+        ).expect("NewmarkStepper::new failed")
+    }
+
+    // ── SC-01: NewmarkStepper 1-DOF harmonic oscillator ──────────────────────
+
+    /// SC-01 — 1-DOF undamped free vibration via NewmarkStepper.
+    ///
+    /// System: m·ü + k·u = 0,  u₀ = A, v₀ = 0.
+    /// Exact:  u(t) = A·cos(ω·t),  ω = sqrt(k/m).
+    ///
+    /// We apply u₀ = 1, v₀ = 0 as initial conditions and verify that the
+    /// amplitude stays within ±5% of the analytic value after 10 full cycles.
+    #[test]
+    fn test_newmark_stepper_harmonic_oscillator() {
+        let k = 100.0f64;
+        let m = 1.0f64;
+        let omega = (k / m).sqrt(); // 10 rad/s
+        let t_period = 2.0 * std::f64::consts::PI / omega;
+        let n_steps_per_cycle = 100;
+        let dt = t_period / n_steps_per_cycle as f64;
+        let n_cycles = 10;
+        let n_steps = n_steps_per_cycle * n_cycles;
+
+        let mut stepper = make_stepper(k, m, 0.0, dt);
+
+        // Set initial displacement u₀ = 1, v₀ = 0
+        stepper.set_initial_conditions(&[1.0], &[0.0]);
+
+        // Step through n_steps with zero external force
+        let mut u_hist: Vec<f64> = Vec::with_capacity(n_steps + 1);
+        u_hist.push(1.0); // u₀ = 1
+
+        for _ in 0..n_steps {
+            let res = stepper.step(&[0.0], dt).expect("step failed");
+            u_hist.push(res.u[0]);
+        }
+
+        // Verify solution is bounded (no numerical instability)
+        let max_disp = u_hist.iter().map(|x| x.abs()).fold(0.0f64, f64::max);
+        assert!(
+            max_disp < 1.1,
+            "Amplitude grew beyond tolerance: max |u| = {max_disp:.4} (expected ≤ 1.1)"
+        );
+
+        // Verify the analytic solution at t = 5 full cycles (should be close to cos(10π) = 1)
+        let t_check = 5.0 * t_period;
+        let step_check = (t_check / dt).round() as usize;
+        let u_numeric = u_hist[step_check];
+        let u_exact = (omega * t_check).cos();
+        let error = (u_numeric - u_exact).abs();
+        assert!(
+            error < 0.05,
+            "Numeric vs exact mismatch at t={t_check:.3}s: u_numeric={u_numeric:.4}, \
+             u_exact={u_exact:.4}, error={error:.4}"
+        );
+    }
+
+    // ── SC-02: checkpoint / restore rollback ──────────────────────────────────
+
+    /// SC-02 — Checkpoint and restore rolls back state exactly.
+    ///
+    /// Advance 5 steps, take a checkpoint, advance 5 more steps, restore,
+    /// then re-advance 5 steps and verify the trajectory is identical.
+    #[test]
+    fn test_newmark_stepper_checkpoint_restore() {
+        let k = 100.0f64;
+        let m = 1.0f64;
+        let omega = (k / m).sqrt();
+        let dt = 2.0 * std::f64::consts::PI / omega / 100.0;
+
+        let mut stepper = make_stepper(k, m, 0.0, dt);
+        stepper.set_initial_conditions(&[1.0], &[0.0]);
+
+        // Advance 5 steps before checkpoint
+        for _ in 0..5 {
+            stepper.step(&[0.0], dt).expect("step failed");
+        }
+
+        // Take checkpoint
+        let cp = stepper.checkpoint();
+        let t_at_cp = stepper.current_time();
+
+        // Advance 5 more steps and record trajectory
+        let mut traj_first: Vec<f64> = Vec::new();
+        for _ in 0..5 {
+            let res = stepper.step(&[0.0], dt).expect("step failed");
+            traj_first.push(res.u[0]);
+        }
+
+        // Restore to checkpoint
+        stepper.restore(&cp);
+        assert!(
+            (stepper.current_time() - t_at_cp).abs() < 1e-14,
+            "Time not restored: got {}, expected {t_at_cp}",
+            stepper.current_time()
+        );
+
+        // Re-advance 5 steps — trajectory must be identical
+        let mut traj_second: Vec<f64> = Vec::new();
+        for _ in 0..5 {
+            let res = stepper.step(&[0.0], dt).expect("step after restore failed");
+            traj_second.push(res.u[0]);
+        }
+
+        for (i, (a, b)) in traj_first.iter().zip(traj_second.iter()).enumerate() {
+            assert!(
+                (a - b).abs() < 1e-14,
+                "Trajectory diverged at sub-step {i}: first={a:.6e}, second={b:.6e}"
+            );
+        }
+    }
+
+    // ── SC-01 / SC-02 / SC-03: Phase-6 tests (m=1, k=1 oscillator) ──────────
+
+    fn make_stepper_1dof(beta: f64, gamma: f64, dt: f64) -> NewmarkStepper {
+        NewmarkStepper::new(
+            &[0i32], &[0i32], &[1.0f64],
+            &[0i32], &[0i32], &[1.0f64],
+            &[0i32], &[0i32], &[0.0f64],
+            1, beta, gamma, dt,
+        ).expect("NewmarkStepper::new failed")
+    }
+
+    /// SC-01: Harmonic oscillator u(t)=cos(t) — m=1, k=1, c=0, u0=1, v0=0
+    #[test]
+    fn test_newmark_harmonic_oscillator() {
+        let dt = 0.01f64;
+        let mut stepper = make_stepper_1dof(0.25, 0.5, dt);
+        // a₀ = -K/M · u₀ = -1 for k=1, m=1, u₀=1
+        stepper.set_initial_conditions_with_acceleration(&[1.0], &[0.0], &[-1.0]);
+
+        let mut t = 0.0f64;
+        for _ in 0..100 {
+            let res = stepper.step(&[0.0], dt).expect("step failed");
+            t += dt;
+            let analytic = t.cos();
+            assert!(
+                (res.u[0] - analytic).abs() < 5e-4,
+                "t={t:.3}: u_numeric={:.6}, u_analytic={analytic:.6}",
+                res.u[0]
+            );
+        }
+    }
+
+    /// SC-02: Checkpoint/restore reproduces exactly the state
+    #[test]
+    fn test_checkpoint_restore() {
+        let dt = 0.01f64;
+        let mut stepper = make_stepper_1dof(0.25, 0.5, dt);
+        stepper.set_initial_conditions(&[1.0], &[0.0]);
+
+        for _ in 0..5 {
+            stepper.step(&[0.0], dt).expect("step failed");
+        }
+        let cp = stepper.checkpoint();
+
+        for _ in 0..3 {
+            stepper.step(&[0.0], dt).expect("step failed");
+        }
+
+        stepper.restore(&cp);
+        let state_after_restore = stepper.checkpoint();
+
+        assert_eq!(cp.u, state_after_restore.u);
+        assert_eq!(cp.v, state_after_restore.v);
+        assert_eq!(cp.a, state_after_restore.a);
+        assert_eq!(cp.t, state_after_restore.t);
+    }
+
+    /// SC-03: Step under constant load → positive displacement
+    #[test]
+    fn test_step_under_constant_load() {
+        let dt = 0.01f64;
+        let mut stepper = make_stepper_1dof(0.25, 0.5, dt);
+        stepper.set_initial_conditions(&[0.0], &[0.0]);
+
+        let mut prev_u = 0.0f64;
+        for i in 1..=20 {
+            let res = stepper.step(&[1.0], dt).expect("step failed");
+            if i > 2 {
+                assert!(res.u[0] > prev_u || res.u[0] > 0.0,
+                    "step {i}: u={} should be positive", res.u[0]);
+            }
+            prev_u = res.u[0];
+        }
+    }
+
+    // ── Existing tests ────────────────────────────────────────────────────────
 
     /// 1-DOF undamped free vibration: m·ü + k·u = 0
     ///

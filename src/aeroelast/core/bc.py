@@ -2,7 +2,7 @@
 Finite Element Method Boundary Condition Manager for 2D/3D Elasticity Problems.
 """
 
-from typing import Dict, Iterable, Optional, Tuple
+from typing import Dict, Iterable, List, Optional, Tuple
 
 import numpy as np
 from petsc4py import PETSc
@@ -25,6 +25,40 @@ class BodyForce:
 
     def __init__(self, value: Iterable[float]):
         self.value = np.asarray(value)
+
+
+class NodalLoad:
+    """Concentrated force applied to a set of DOFs.
+
+    The ``force_per_node`` vector is applied **once per node** to the global
+    load vector.  When the load comes from a nodeset the runner is responsible
+    for dividing the total force by the number of nodes **before** constructing
+    this object, so this class is intentionally simple.
+
+    Parameters
+    ----------
+    dofs : Iterable[int]
+        Global DOF indices of the **first** node in the set.  The runner
+        builds one ``NodalLoad`` per node, each with its own DOF indices.
+    force : Iterable[float]
+        Force vector for this node (already divided if distributed).
+
+    Attributes
+    ----------
+    dofs : tuple[int]
+        Global DOF indices where the force is applied.
+    force : ndarray
+        Force values corresponding to each DOF.
+    """
+
+    def __init__(self, dofs: Iterable[int], force: Iterable[float]):
+        self.dofs = tuple(dofs)
+        self.force = np.asarray(force, dtype=float)
+        if len(self.dofs) != len(self.force):
+            raise ValueError(
+                f"NodalLoad: dofs length ({len(self.dofs)}) must match "
+                f"force length ({len(self.force)})"
+            )
 
 
 class DirichletCondition:

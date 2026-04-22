@@ -84,22 +84,22 @@ class StaticLinearSolver(Solver):
         self.F.zeroEntries()
 
     def _setup_solver(self):
-        """Configure PETSc KSP with CG + BoomerAMG."""
+        """Configure PETSc KSP with CG + GAMG (algebraic multigrid)."""
         self._solver = PETSc.KSP().create(self.comm)
         self._residual_history = []
         self._solver.setType("cg")
 
         pc = self._solver.getPC()
-        pc.setType("hypre")
+        pc.setType("gamg")
 
         opts = PETSc.Options()
-        opts["pc_hypre_type"] = "boomeramg"
-        opts["pc_hypre_boomeramg_coarsen_type"] = "HMIS"
-        opts["pc_hypre_boomeramg_interp_type"] = "classical"
-        opts["pc_hypre_boomeramg_relax_type_all"] = "symmetric-sor/jacobi"
-        opts["pc_hypre_boomeramg_strong_threshold"] = 0.5
-        opts["pc_hypre_boomeramg_max_levels"] = 5
-        opts["pc_hypre_boomeramg_print_statistics"] = 0
+        opts["pc_gamg_type"] = "agg"
+        opts["pc_gamg_agg_nsmooths"] = 1
+        opts["pc_gamg_threshold"] = 0.05
+        opts["pc_gamg_coarse_eq_limit"] = 1000
+        opts["mg_levels_ksp_type"] = "chebyshev"
+        opts["mg_levels_pc_type"] = "sor"
+        opts["mg_levels_ksp_max_it"] = 2
 
         self._solver.setMonitor(self._residual_monitor)
         self._solver.setTolerances(rtol=1e-8, atol=1e-12, max_it=1000)
@@ -121,6 +121,15 @@ class StaticLinearSolver(Solver):
             for force in self.body_forces:
                 fe_vector = self.domain.assemble_load_vector(force)
                 self.F.axpy(1.0, fe_vector)
+            # Apply concentrated nodal loads in a single batched PETSc call
+            if self.nodal_loads:
+                all_dofs = np.concatenate([np.asarray(load.dofs, dtype=PETSc.IntType)
+                                           for load in self.nodal_loads])
+                all_vals = np.concatenate([np.asarray(load.force, dtype=PETSc.ScalarType)
+                                           for load in self.nodal_loads])
+                self.F.setValues(all_dofs, all_vals, addv=PETSc.InsertMode.ADD_VALUES)
+                self.F.assemble()
+                self._applyed_forces = True
 
         bc_manager = BoundaryConditionManager(
             self.K, self.F, dof_per_node=self.domain.dofs_per_node

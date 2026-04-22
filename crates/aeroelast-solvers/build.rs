@@ -59,6 +59,17 @@ fn main() {
         println!("cargo:rustc-link-arg=-Wl,-rpath,{rpath}");
     }
 
+    // ── preCICE (feature = fsi) ───────────────────────────────────────────────
+    // Only link if the `fsi` feature is active.
+    if std::env::var("CARGO_FEATURE_FSI").is_ok() {
+        let precice_lib_dir = std::env::var("PRECICE_LIB_DIR")
+            .unwrap_or_else(|_| "/scratch/leahk/eduardo.donestevez/fem-shell/.sources/build/precice/build".to_string());
+        println!("cargo:rustc-link-search=native={precice_lib_dir}");
+        println!("cargo:rustc-link-lib=dylib=precice");
+        println!("cargo:rustc-link-arg=-Wl,-rpath,{precice_lib_dir}");
+        println!("cargo:rerun-if-env-changed=PRECICE_LIB_DIR");
+    }
+
     // Re-run build.rs if pkg-config output changes
     println!("cargo:rerun-if-env-changed=PKG_CONFIG_PATH");
 }

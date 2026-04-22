@@ -64,12 +64,12 @@ class StaticNonlinearSolver(Solver):
         RuntimeError
             If the Rust assembler is not available or SNES diverges.
         """
-        import aeroelast_rs  # noqa: PLC0415 — optional Rust extension
+        import _aeroelast  # noqa: PLC0415 — optional Rust extension
 
         if self.domain._rust is None:
             raise RuntimeError(
                 "StaticNonlinearSolver requires the Rust assembler. "
-                "Make sure aeroelast_rs is built and the mesh is assembled."
+                "Make sure _aeroelast is built and the mesh is assembled."
             )
 
         f_ext = self._build_f_ext()
@@ -81,7 +81,7 @@ class StaticNonlinearSolver(Solver):
         stol = float(params.get("stol", self._DEFAULT_STOL))
         max_it = int(params.get("max_it", self._DEFAULT_MAX_IT))
 
-        u_arr, iters, res_norm, conv_reason = aeroelast_rs.nonlinear_static_solve_coo(
+        u_arr, iters, res_norm, conv_reason = _aeroelast.nonlinear_static_solve_coo(
             self.domain._rust,
             f_ext,
             dirichlet_dofs,
@@ -117,12 +117,26 @@ class StaticNonlinearSolver(Solver):
     # ------------------------------------------------------------------
 
     def _build_f_ext(self) -> np.ndarray:
-        """Assemble the external force vector from body forces."""
+        """Assemble the external force vector from body + nodal loads."""
         n = self.domain.dofs_count
         f = np.zeros(n, dtype=np.float64)
+
+        # Distributed/body loads
         for force in self.body_forces:
             fe = self.domain.assemble_load_vector(force)
             f += np.asarray(fe.getArray(), dtype=np.float64)
+
+        # Concentrated nodal loads
+        for load in self.nodal_loads:
+            dofs = np.asarray(load.dofs, dtype=np.int64)
+            vals = np.asarray(load.force, dtype=np.float64)
+            if len(dofs) != len(vals):
+                raise ValueError(
+                    "Nodal load dof/value length mismatch in nonlinear solver: "
+                    f"{len(dofs)} != {len(vals)}"
+                )
+            f[dofs] += vals
+
         return f
 
     def _collect_dirichlet_dofs(self) -> np.ndarray:

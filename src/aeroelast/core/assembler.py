@@ -367,6 +367,7 @@ class MeshAssembler:
                         "e": float(m.E), "nu": float(m.nu), "rho": float(m.rho),
                         "thickness": float(prop.thickness),
                         "shear_correction": float(getattr(prop, 'shear_correction', 5.0 / 6.0)),
+                        "drilling_scale": float(getattr(prop, 'drilling_scale', 1.0)),
                     }
                 else:
                     rust_properties[set_name] = prop
@@ -393,6 +394,7 @@ class MeshAssembler:
         fallback_material = self.model.get("material")
         fallback_thickness = self.model.get("thickness", 1.0)
         fallback_sc = self.model.get("shear_correction", 5.0 / 6.0)
+        fallback_drill = self.model.get("drilling_scale", 1.0)
         fallback_family = self.model.get("element_family")
 
         elements = mesh.elements
@@ -413,6 +415,7 @@ class MeshAssembler:
                     "e": float(mat.E), "nu": float(mat.nu), "rho": float(mat.rho),
                     "thickness": float(fallback_thickness),
                     "shear_correction": float(fallback_sc),
+                    "drilling_scale": float(fallback_drill),
                 }
             else:
                 logger.error("[assembler] no property for element %d (index %d) — aborting", element.id, i)

@@ -16,6 +16,7 @@ Or from command line:
 
 import logging
 import time
+import os
 from pathlib import Path
 from typing import Any, Dict, Optional, Union
 
@@ -196,6 +197,9 @@ class FSIRunner:
             self._print_modal_results(result)
         elif self._is_bem:
             self._print_bem_results(result)
+        elif self.config.solver.type == "LinearStatic":
+            self._print_static_tip_results(result)
+            self._run_postprocessing()
         else:
             self._run_postprocessing()
 
@@ -207,6 +211,7 @@ class FSIRunner:
         output_path: str,
         num_modes: int = 10,
         span_direction: Optional[tuple] = None,
+        quadratic: bool = False,
     ) -> None:
         """Export mesh with composite materials to CalculiX .inp format.
 
@@ -224,13 +229,18 @@ class FSIRunner:
             along Z pass ``(0., 0., 1.)``.  When given, all ply angles are
             referenced to this axis so that 0-degree plies align with the
             span rather than the (chordwise) first element edge.
+        quadratic : bool, optional
+            When True, upgrade to S8R/S6 second-order elements and use
+            ``*SHELL SECTION, COMPOSITE``.  Default False (S4/S3 with
+            orthotropic equivalent material).
         """
         from aeroelast.core.mesh.io.writers import write_ccx_mesh
 
         if self.mesh is None:
             self.mesh = self._setup_mesh()
-        if self._blade_properties is None:
-            self._material = self._create_material()
+        # Always refresh material/properties from the current config to avoid
+        # stale state when exporting multiple variants in one process.
+        self._material = self._create_material()
 
         # Determine boundary node set for clamping
         boundary_nodeset = None
@@ -240,46 +250,77 @@ class FSIRunner:
         # Determine solver type for CalculiX step generation
         solver_type = self.config.solver.type  # e.g. "Modal", "LinearStatic", "LinearDynamic"
 
-        # Load parameters: read from raw YAML loads section if available
-        load_nodeset = None
-        load_dof = 2
-        load_magnitude = 1000.0
-        if self.config_path is not None:
-            try:
-                import yaml as _yaml  # noqa: PLC0415
-                with open(self.config_path, "rt") as _f:
-                    _raw = _yaml.safe_load(_f)
-                _loads = _raw.get("loads", {})
-                _nodal = _loads.get("nodal", [])
-                if _nodal:
-                    load_nodeset = _nodal[0].get("nodeset", None)
-                    load_dof = int(_nodal[0].get("dof", 2))
-                    load_magnitude = float(_nodal[0].get("value", 1000.0))
-            except Exception:
-                pass  # Fall back to defaults
+        # Build nodal load parameters for CCX export from parsed config
+        # Only the first nodal load entry is forwarded to the CCX writer (scalar CCX CLOAD)
+        ccx_load_nodeset: str | None = None
+        ccx_load_vector: list[float] | None = None
+        _nodal_cfg = self.config.loads.nodal
+        if _nodal_cfg:
+            first = _nodal_cfg[0]
+            ccx_load_nodeset = first.nodeset
+            ccx_load_vector = first.value  # e.g. [0.0, 0.0, 100000.0]
 
         # Time parameters for dynamic analysis
         dt = self.config.solver.time_step if self.config.solver.time_step is not None else 0.01
         t_end = self.config.solver.total_time if self.config.solver.total_time is not None else 1.0
 
+        # Choose properties passed to CCX writer.
+        # Composite path: blade-derived per-set properties.
+        # Isotropic path: synthesize uniform per-set shell properties from
+        # explicit material + shell thickness.
+        export_properties = self._blade_properties
+        if export_properties is None and self._material is not None:
+            if self.config.elements.family == ElementFamily.SHELL.value:
+                t = self.config.elements.thickness
+                if t is not None:
+                    shear_correction = (
+                        float(self.config.elements.shear_correction)
+                        if self.config.elements.shear_correction is not None
+                        else 5.0 / 6.0
+                    )
+                    drilling_scale = (
+                        float(self.config.elements.drilling_scale)
+                        if self.config.elements.drilling_scale is not None
+                        else 1.0
+                    )
+                    export_properties = {
+                        set_name: {
+                            "type": "isotropic",
+                            "name": self._material.name,
+                            "e": float(self._material.E),
+                            "nu": float(self._material.nu),
+                            "rho": float(self._material.rho),
+                            "thickness": float(t),
+                            "shear_correction": shear_correction,
+                            "drilling_scale": drilling_scale,
+                        }
+                        for set_name in self.mesh.element_sets.keys()
+                    }
+
         write_ccx_mesh(
             self.mesh,
             output_path,
-            properties=self._blade_properties,
+            properties=export_properties,
             boundary_nodeset=boundary_nodeset,
             num_modes=num_modes,
             span_direction=span_direction,
             solver_type=solver_type,
-            load_nodeset=load_nodeset,
-            load_dof=load_dof,
-            load_magnitude=load_magnitude,
+            load_nodeset=ccx_load_nodeset,
+            load_vector=ccx_load_vector,
             dt=dt,
             t_end=t_end,
+            quadratic=quadratic,
+            nl_initial_increment=self.config.solver.nl_initial_increment,
+            nl_min_increment=self.config.solver.nl_min_increment,
+            nl_max_increment=self.config.solver.nl_max_increment,
+            nl_max_increments=self.config.solver.nl_max_increments,
         )
 
     def _print_header(self) -> None:
         """Print simulation header."""
         content = Text()
+        content.append("Working Directory: ", style="bold")
+        content.append(f"{os.getcwd()}\n", style="bold")
         content.append("Configuration: ", style="bold")
         content.append(f"{self.config_path or 'Provided object'}\n")
         content.append("Solver:        ", style="bold")
@@ -289,7 +330,7 @@ class FSIRunner:
         self._console.print()
         self._console.print(
             Panel(
-                content, title="FEM-SHELL FSI SIMULATION RUNNER", border_style="cyan", expand=False
+                content, title="AeroElast", border_style="cyan", expand=False
             )
         )
 
@@ -881,6 +922,11 @@ class FSIRunner:
         """
         self._console.print("\n[bold cyan]\\[2/6] Creating material...[/bold cyan]")
 
+        # Reset cached blade properties before resolving current material mode.
+        # This prevents stale composite properties from a previous run/export
+        # from overriding an explicit material section in the current YAML.
+        self._blade_properties = None
+
         # Check if blade/rotor generator provides composite properties
         if self._mesh_generator is not None and self.config.material is None:
             self._blade_properties = self._extract_blade_properties()
@@ -1152,7 +1198,7 @@ class FSIRunner:
 
     def _apply_boundary_conditions(self) -> None:
         """Apply boundary conditions to the solver."""
-        from ...core.bc import BodyForce, DirichletCondition
+        from ...core.bc import BodyForce, DirichletCondition, NodalLoad
 
         self._console.print("\n[bold cyan]\\[5/6] Applying boundary conditions...[/bold cyan]")
 
@@ -1186,8 +1232,52 @@ class FSIRunner:
         if body_forces:
             self.solver.add_body_forces(body_forces)
 
+        # Apply nodal loads (concentrated forces)
+        nodal_loads: list[NodalLoad] = []
+        dofs_per_node = self.solver.domain.dofs_per_node
+        for nl_config in self.config.loads.nodal:
+            force_vec = nl_config.value  # full force vector [Fx, Fy, Fz, ...]
+
+            if nl_config.nodeset is not None:
+                # Distribute evenly across all nodes in the nodeset
+                try:
+                    node_ids = self.solver.get_nodeids_by_nodeset_name(nl_config.nodeset)
+                except KeyError:
+                    raise ValueError(
+                        f"Node set '{nl_config.nodeset}' not found in mesh. "
+                        f"Available: {list(self.mesh.node_sets.keys())}"
+                    )
+                n_nodes = len(node_ids)
+                force_per_node = [f / n_nodes for f in force_vec]
+                node_id_to_index = self.mesh.node_id_to_index
+                for node_id in node_ids:
+                    idx = node_id_to_index[node_id]
+                    dofs = list(range(idx * dofs_per_node, idx * dofs_per_node + len(force_vec)))
+                    nodal_loads.append(NodalLoad(dofs, force_per_node))
+                self._console.print(
+                    f"      Nodal load (nodeset [bold]'{nl_config.nodeset}'[/bold], "
+                    f"{n_nodes} nodes): total={force_vec}, per_node={force_per_node}"
+                )
+
+            else:
+                # Single node — full force applied
+                node_id = nl_config.node
+                node_id_to_index = self.mesh.node_id_to_index
+                if node_id not in node_id_to_index:
+                    raise ValueError(f"Node ID {node_id} not found in mesh.")
+                idx = node_id_to_index[node_id]
+                dofs = list(range(idx * dofs_per_node, idx * dofs_per_node + len(force_vec)))
+                nodal_loads.append(NodalLoad(dofs, force_vec))
+                self._console.print(
+                    f"      Nodal load (node [bold]{node_id}[/bold]): force={force_vec}"
+                )
+
+        if nodal_loads:
+            self.solver.add_nodal_loads(nodal_loads)
+
         self._console.print(f"      Total Dirichlet BCs: {len(dirichlet_conditions)}")
         self._console.print(f"      Total body forces: {len(body_forces)}")
+        self._console.print(f"      Total nodal loads: {len(nodal_loads)}")
 
     def _print_modal_results(self, result) -> None:
         """Print modal analysis results (frequencies and mode shapes)."""
@@ -1313,6 +1403,57 @@ class FSIRunner:
         self._console.print()
         self._console.print(table)
         self._console.print()
+
+    def _print_static_tip_results(self, result) -> None:
+        """Extract tip-node displacements from the static solution and print + save to CSV."""
+        import csv
+        import numpy as np
+        from rich.table import Table
+
+        # --- find tip node (max Z coordinate) ---
+        # mesh.nodes is a list of Node objects with .id, .x, .y, .z
+        nodes = self.mesh.nodes
+        tip_node = max(nodes, key=lambda n: n.z)
+        tip_index = nodes.index(tip_node)  # sequential index in the list
+        dof_per_node = 6  # MITC shell: 6 DOFs per node
+
+        # --- extract u_full from solver ---
+        # result is a PETSc.Vec; convert to numpy
+        try:
+            u_array = result.getArray()
+        except AttributeError:
+            # Already a numpy array (non-linear solver returns np.ndarray)
+            u_array = np.asarray(result)
+
+        base = tip_index * dof_per_node
+        ux = float(u_array[base])
+        uy = float(u_array[base + 1])
+        uz = float(u_array[base + 2])
+
+        # --- print table ---
+        table = Table(title="Tip Node Displacements", show_header=True, header_style="bold cyan")
+        table.add_column("Node ID", justify="right")
+        table.add_column("X [m]", justify="right")
+        table.add_column("Y [m]", justify="right")
+        table.add_column("Z [m]", justify="right")
+        table.add_column("Ux [m]", justify="right")
+        table.add_column("Uy [m]", justify="right")
+        table.add_column("Uz [m]", justify="right")
+        table.add_row(
+            str(tip_node.id),
+            f"{tip_node.x:.4f}", f"{tip_node.y:.4f}", f"{tip_node.z:.4f}",
+            f"{ux:.6f}", f"{uy:.6f}", f"{uz:.6f}",
+        )
+        self._console.print()
+        self._console.print(table)
+
+        # --- save CSV ---
+        csv_path = "static_tip_displacement.csv"
+        with open(csv_path, "w", newline="") as f:
+            writer = csv.writer(f)
+            writer.writerow(["node_id", "x", "y", "z", "ux", "uy", "uz"])
+            writer.writerow([tip_node.id, tip_node.x, tip_node.y, tip_node.z, ux, uy, uz])
+        self._console.print(f"      Saved: {csv_path}")
 
     def _run_postprocessing(self) -> None:
         """Run post-processing if configured."""

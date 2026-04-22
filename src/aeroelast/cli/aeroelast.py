@@ -7,9 +7,9 @@ Assembly and element kernels execute in Rust; mesh generation and
 post-processing remain in Python.
 
 Usage:
-    aeroelast modal.yaml
-    aeroelast modal.yaml --workdir /path/to/case
-    aeroelast modal.yaml --preview
+    aeroelast model_config.yaml
+    aeroelast model_config.yaml --workdir /path/to/case
+    aeroelast model_config.yaml --preview
     aeroelast --template > config.yaml
 
 Supported solver types (solver.type in YAML):
@@ -82,6 +82,16 @@ Examples:
         metavar="FILE",
         help="Export model to CalculiX .inp format and exit",
     )
+    parser.add_argument(
+        "--ccx-quadratic",
+        action="store_true",
+        default=False,
+        help=(
+            "Upgrade mesh to second-order elements (S8R/S6) for CalculiX export "
+            "and use *SHELL SECTION, COMPOSITE with per-ply detail. "
+            "Default: first-order S4/S3 with orthotropic equivalent material."
+        ),
+    )
 
     args = parser.parse_args()
 
@@ -128,7 +138,8 @@ Examples:
             if elem_cfg is not None and getattr(elem_cfg, "span_direction", None) is not None:
                 span_direction = tuple(float(v) for v in elem_cfg.span_direction)
             runner.export_calculix(args.export_ccx, num_modes=num_modes,
-                                   span_direction=span_direction)
+                                   span_direction=span_direction,
+                                   quadratic=args.ccx_quadratic)
             return 0
         except Exception as e:
             logging.exception("CalculiX export failed")
