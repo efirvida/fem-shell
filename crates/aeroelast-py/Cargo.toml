@@ -15,3 +15,7 @@ aeroelast-solvers = { path = "../aeroelast-solvers" }
 pyo3 = { version = "0.28.3", features = ["extension-module"] }
 numpy = "0.28.0"
 rayon = "1.10"
+
+[features]
+fsi = ["aeroelast-solvers/fsi"]
+
