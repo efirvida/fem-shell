@@ -1,0 +1,4190 @@
+Contents lists available at ScienceDirect
+
+Computers  and  Structures
+
+journal homepage: www.elsevier.com/locate/compstruc
+
+Derivation and implementation of one-point quadrature quadrilateral shell 
+element with MITC4+ method (MITC4+R) ✩
+Xiangyang Cui a,b, Gongcheng Peng a,b, Qi Ran a,b, Huan Zhang a,b, She Li a,b,c,∗
+a State Key Laboratory of Advanced Design and Manufacturing for Vehicle Body, Hunan University, Changsha 410082, PR China
+b College of Mechanical and Vehicle Engineering, Hunan University, Changsha 410082, PR China
+c Hunan Maixi Software Co., Ltd., Changsha 410082, PR China
+
+A  R  T  I  C  L  E 
+
+I  N  F  O
+
+A  B  S  T  R  A  C  T
+
+Keywords:
+Degenerated shell
+Quadrature element
+The MITC4+ method
+Shell structures
+One point quadrature
+
+In this work, a novel degenerated shell element called MITC4+R is developed, which is based on the MITC4+ (an 
+improved MITC quadrilateral shell element) and reduced integration with one point quadrature. The assumed 
+natural  strain  method  is  employed  to  construct  the  membrane  and  shear  strains.  A  physical  stabilization 
+term is derivated after the assumed natural strains are decomposed into the linear and a constant term with 
+respect to the natural coordinates. The hourglass modes owing to one point quadrature is controlled in the 
+computation of deformation by introducing this physical stabilization term. The developed degenerated shell 
+element is successfully implemented into the implicit static and explicit dynamic analyses. In order to verify 
+its computational accuracy and eﬃciency, several standard benchmarks and practical problems are performed. 
+These results show that the MITC4+R element eliminates various locking problems common to shell elements, 
+and it signiﬁcantly improves the computational eﬃciency of the original MITC4+ element. Meanwhile, the 
+MITC4+R owns the same accuracy and highly consistent convergence as the original MITC4+ element, making 
+it more promising for practical applications.
+
+1.  Introduction
+
+Nowadays, the simulation of shell elements has been a critical factor 
+in the structural analysis of bodywork or airframe. In general, a mesh 
+model  of  the  body-in-white  is  established  mainly  from  quadrilateral 
+shell elements. The emergence of the shell element was made possi-
+ble by the continuous development of plate elements. The ﬁrst plate 
+element was the Kirchoﬀ plate introduced by Adini and Clough [1]. 
+In  the  following  period,  scholars  continued  reﬁning  Kirchhoﬀ  plate 
+elements until 1969, when the Discrete Kirchhoﬀ plate and shell ele-
+ments appeared [2]. Unfortunately, Kirchoﬀ plates fail to accommodate 
+transverse shear in the bending deformation. Thus, Raymond Mindlin’s 
+modiﬁcation of the Kirchhoﬀ plate so that it is middle normal remains 
+straight after bending and deforming but is not necessarily perpendic-
+ular to the middle surface is called Mindlin plate element. Hughes and 
+Tezduyar [3] ﬁrst proposed a bilinear four-node quadrilateral shell el-
+ement based on Mindlin’s theory in 1977. Ahmad [4] applies the ﬁnite 
+element formulation to propose a three-dimensional degenerate curved 
+shell  element;  when  the  curvature  of  the  shell  element  is  zero,  the 
+
+formula  is  the  same  as  the  Mindlin  shell  element  formula.  Scholars 
+have developed some high-precision high-order quadrilateral degener-
+ate shell elements on this basis [5–7]. Although higher-order elements 
+usually perform better than lower-order elements in most situations, 
+the  calculation  scale  is  much  larger  for  the  same  number  of  meshes 
+due to the higher number of nodes. It is a consistent goal of many re-
+searchers to build an eﬃcient low-order four-node quadrilateral shell 
+element without adding any nodes or degrees of freedom.
+
+The main problems of low-order shell elements exist in various lock-
+ing  phenomenon,  including  shear  locking,  membrane  locking,  trans-
+verse shear locking, and volume locking. The shear locking is caused by 
+the introduction of isoparametric elements, which can not accurately 
+describe the in-plane bending deformation 𝑊 = 𝑥2 due to the linear in-
+terpolation of the low-order elements [8]. Membrane locking is caused 
+by failure to satisfy the inextensibility constraint when the shell ele-
+ment bending deformation [9]. Transverse shear locking refers to the 
+pseudo-shear phenomenon in the shell element during bending, mak-
+ing the deﬂection and bending strain much smaller than the expected 
+results. Volume locking is spurious pressure stress occurring when the 
+
+✩ This is the manuscript to be submitted to Computers & Structures.
+* Corresponding author at: State Key Laboratory of Advanced Design and Manufacturing for Vehicle Body, Hunan University, Changsha 410082, PR China.
+
+E-mail address: s_li0509@hnu.edu.cn (S. Li).
+
+https://doi.org/10.1016/j.compstruc.2023.107207
+Received 29 January 2023; Accepted 24 October 2023
+
+ComputersandStructures291(2024)107207Availableonline9November20230045-7949/©2023ElsevierLtd.Allrightsreserved.X. Cui, G. Peng, Q. Ran et al.
+
+Fig. 1. A standard 4-node degenerated shell element.
+
+Poisson’s ratio is close to 0.5. Many methods have been introduced to 
+avoid various locking. For example, the reduced/selective integration 
+method [10,11] introduced between 1977 and 1978, the assumed nat-
+ural strain method [12] introduced between 1981 and 1982; and the 
+subsequent discrete shear gap method [13,14] and the enhanced strain 
+method [15,16], etc. Many scholars have developed elements that have 
+eliminated various locking phenomena, Katili et al. [17] developed a 
+24 dof quadrilateral shell element called DKMQ24 based on the DKMQ 
+plate element without shear locking and membrane locking phenom-
+ena. Selective reduction of the integral of the shear term was employed 
+in  the  DKMQ24  called  DKMQ24+  was  introduced  by  Štembera  and 
+Füssl [18].  The  mixed  interpolation  of  tensorial  components  (MITC) 
+method [19–21] is  similar  to  a  particular  assumed  strain  method.  It 
+eﬀectively eliminates membrane locking and shear locking in apply-
+ing  shell  elements,  especially  in  high-order  shell  elements [22–25]. 
+However, membrane locking still exists when the 4-node quadrilateral 
+MITC4 shell element is calculated for some cured models. Although re-
+searchers have made many attempts to modify the strain components 
+of the membrane [26,27], these attempts have not shown better results 
+and have even demonstrated worse results. Then, the MITC4+ method 
+is introduced by Yeongbin et al. [28], which constructs a new assumed 
+strain by four non-overlapping triangular strain ﬁelds in the mid-surface 
+of the quadrilateral shell element. This method provides an excellent 
+solution  to  the  membrane-locking  problem  of  MITC4  elements,  and 
+the convergence of MITC4+ elements was veriﬁed by Ko et al. [29],
+through a set of widely-used benchmark problems. It shows well the 
+performance of MITC4+ elements even under distorted meshes. How-
+ever, the MITC4+ element computational scale and the computational 
+eﬃciency are still not up to the ideal conditions.
+
+In  the  past  few  decades,  researchers  have  been  keen  to  develop 
+reduced integration methods to improve the computational eﬃciency 
+of ﬁnite elements. Currently, the most dominant reduced integration 
+method for shell element is the one-point integration (at the centre of 
+a mid-surface). It is widely used in commercial software for the simula-
+tion of collisions and ramming, such as LS-DYNA and RADIOSS, because 
+of its superior computational eﬃciency for static and explicit dynamics 
+problems. However, zero energy and hourglass models will be induced 
+in the centre point of the integral sometimes. For restraining the hour-
+glass model, various hourglass control methods were published. Kosloﬀ 
+and Frazier [30] ﬁrst attempted hourglass control in a two-dimensional 
+quadrilateral,  this  method  was  applied  to  the  shell  element  by  Tay-
+lor [31], Hughes and Liu [32]. The introduction of the BT shell [33] was 
+a milestone in developing the one-point integral shell element, which 
+was popular because of the better stability obtained by adding artiﬁcial 
+strain. However, the BT shell had poor results in warping behaviour
+and required manual adjustment of the hourglass control factor. Subse-
+quently, Belytschko and Leviathan [34] proposed a one-point integral 
+four-node  shell  element  based  on  physical  stabilization,  sacriﬁcing  a 
+smaller  computational  eﬃciency  to  obtain  better  stability.  Many  re-
+searchers [35–37] have  used  this  method  to  derive  a  series  of  shell 
+elements.
+
+In this work, a novel one point quadrature quadrilateral shell ele-
+ment with the MITC4+ method is developed to improve the compu-
+
+tational eﬃciency of the MITC4+ shell element. The key idea of this 
+work is to construct a stabilization part in quadrilateral shell element 
+with one point quadrature. The strain in the shell element is divided 
+into two components, the membrane strain ﬁeld and the bending strain 
+ﬁeld, in the natural coordinate system. A physical stabilization scheme 
+is  used  to  decompose  these  two  components  of  the  strain  ﬁeld  into 
+the sum of a constant and a sum of linear terms, respectively. In this 
+way, the developed MITC4+R element can alleviate the hourglass phe-
+nomenon,  which  makes  the  MITC4+R  to  be  more  eﬃcient  than  the 
+original MITC4+ without any loss of accuracy. Standard benchmarks 
+and practical examples are performed. The results are compared with 
+analytical or previously reported results. The performance of the devel-
+oped element has great potential for practical applications.
+
+2.  Theoretical basics
+
+2.1.  Uniﬁed derivation of degenerated shell element
+
+In this section, we brieﬂy review the formulation of the continuum-
+based degenerated shell formulation. The current position of each point 
+on the shell can be deﬁned by
+𝑎
+
+(1)
+
+𝐱(𝜉, 𝜂, 𝜁 ) = 𝐱 +
+
+𝜁 𝐕
+
+,
+
+3
+
+2
+
+where 𝐱 is the position vector of mid-surface.
+
+𝐱(𝜉, 𝜂, 𝜁 ) =
+
+𝑛∑
+
+𝑖=1
+
+𝑁𝑖(𝜉, 𝜂)𝐱𝑖 +
+
+𝜁
+
+2
+
+𝑛∑
+
+𝑖=1
+
+𝑎𝑖𝑁𝑖(𝜉, 𝜂)𝐕𝑖
+𝑛,
+
+(2)
+
+where 𝑛 is the number of the nodes within one shell element; 𝑁𝑖(𝜉, 𝜂) is 
+the two-dimensional interpolation function of the standard isoparamet-
+ric procedure corresponding to node 𝑖; 𝐱𝑖 is the position vector of node 
+𝑖 in the global Cartesian coordinate system, and 𝑎𝑖 and 𝐕𝑖
+𝑛 is the shell 
+thickness and director vector at node 𝑖, see Fig. 1.
+
+The corresponding displacement interpolation of the element is,
+
+𝐮(𝜉, 𝜂, 𝜁 ) =
+
+𝑛∑
+
+𝑖=1
+
+𝑁𝑖(𝜉, 𝜂)𝐮𝑖 +
+
+𝜁
+
+2
+
+𝑛∑
+
+𝑖=1
+
+𝑎𝑖𝑁𝑖(𝜉, 𝜂)(−𝐕𝑖
+2
+
+𝜃𝑥𝑖 + 𝐕𝑖
+1
+
+𝜃𝑦𝑖),
+
+(3)
+
+in which 𝐮𝑖 is the nodal displacement vector in global Cartesian coor-
+dinate system; 𝐕𝑖
+2 are unit vector orthogonal to 𝐕𝑖
+𝑛 and to each 
+other; 𝜃𝑥𝑖 and 𝜃𝑦𝑖 are the rotations of the director vector 𝐕𝑖
+𝑛 about unit 
+vector 𝐕𝑖
+
+1 and 𝐕𝑖
+
+1 and 𝐕𝑖
+
+2 at node 𝑖.
+
+The linear terms of the covariant strain components 𝜖𝑖𝑗 in the con-
+
+vective coordinate system are given by
+
+𝐠𝑖 =
+
+𝜖𝑖𝑗 =
+
+(𝑖, 𝑗 = 1, 2, 3)
+
+(𝐠𝑖 ⋅ 𝐮,𝑗 + 𝐠𝑗 ⋅ 𝐮,𝑖)
+
+1
+2
+in which,
+𝜕𝐱
+𝜕𝑟𝑖
+The covariant strains can be obtained directly using Eq. (4), and the 
+covariant strain components can be easily transformed into the global 
+Cartesian coordinate system by
+
+2 = 𝜂, 𝑟
+
+1 = 𝜉, 𝑟
+
+3 = 𝜁 )
+
+𝜕𝐮
+𝜕𝑟𝑖
+
+𝐮,𝑖 =
+
+(4)
+
+(5)
+
+(𝑟
+
+,
+
+𝜖 = 𝜖𝑖𝑗 (𝐠𝑖 ⊗ 𝐠𝑗 )
+where 𝐠𝑖 = 𝜕𝑟𝑖∕𝜕𝐱
+(𝑟𝑖 = 𝜉, 𝜂, 𝜁 ). For convenience, all strain components 
+in  the  following  sections  are  the  covariant  strain  components  unless 
+otherwise stated. In this work, we divided the strain of the shell into 
+two components
+
+(6)
+
+𝜖𝑖𝑗 = 𝜖𝑚
+
+𝑖𝑗 + 𝜖𝑏𝑠
+
+𝑖𝑗
+
+(7)
+
+𝑖𝑗 is the membrane strain, and he remaining component 𝜖𝑏𝑠
+
+where 𝜖𝑚
+𝑖𝑗 is 
+transverse shear and bending strain, separately. The membrane strain 
+is given
+
+𝜖𝑚
+𝑖𝑗 =
+
+1
+2
+
+(
+
+𝜕𝐱𝑚
+𝜕𝑟𝑖
+
+⋅
+
+𝜕𝐮𝑚
+𝜕𝑟𝑗
+
++
+
+𝜕𝐱𝑚
+𝜕𝑟𝑗
+
+⋅
+
+𝜕𝐮𝑚
+𝜕𝑟𝑖
+
+)
+
+(𝑖, 𝑗 = 1, 2)
+
+(8)
+
+ComputersandStructures291(2024)1072072X. Cui, G. Peng, Q. Ran et al.
+
+Fig. 2. The MITC4+ membrane strain ﬁeld.
+
+𝑖𝑗 is composed of in-plane due to bending 𝜖𝑏
+𝜖𝑏𝑠
+
+𝑖𝑗 , thickness strain 𝜖
+
+33
+
+and the transverse shear strain 𝜖𝑠
+𝑖𝑗 .
+
+𝑖𝑗 = 𝜖𝑏
+𝜖𝑏𝑠
+
+𝑖𝑗 + 𝜖
+
+33 + 𝜖𝑠
+𝑖𝑗 .
+
+In-plane strain due to bending is given
+
+𝑖𝑗 = 𝜁 𝜖𝑏1
+𝜖𝑏
+
+𝑖𝑗 + 𝜁 2𝜖𝑏2
+
+𝑖𝑗
+
+(𝑖, 𝑗 = 1, 2)
+
+with
+
+𝜖𝑏1
+𝑖𝑗 =
+
+𝜖𝑏2
+𝑖𝑗 =
+
+1
+2
+
+1
+2
+
+(
+
+(
+
+𝜕𝐱𝑚
+𝜕𝑟𝑖
+𝜕𝐱𝑏
+𝜕𝑟𝑖
+
+⋅
+
+⋅
+
+𝜕𝐮𝑏
+𝜕𝑟𝑗
+𝜕𝐮𝑏
+𝜕𝑟𝑗
+
++
+
++
+
+𝜕𝐱𝑚
+𝜕𝑟𝑗
+𝜕𝐱𝑏
+𝜕𝑟𝑗
+
+⋅
+
+⋅
+
+𝜕𝐮𝑏
+𝜕𝑟𝑖
+𝜕𝐮𝑏
+𝜕𝑟𝑖
+
+)
+
++
+
+𝜕𝐱𝑏
+𝜕𝑟𝑖
+
+⋅
+
+𝜕𝐮𝑚
+𝜕𝑟𝑗
+
++
+
+𝜕𝐱𝑏
+𝜕𝑟𝑗
+
+⋅
+
+𝜕𝐮𝑚
+𝜕𝑟𝑖
+
+)
+
+(9)
+
+(10)
+
+(11)
+
+The corresponding geometry and displacement interpolation func-
+
+tions are as follows
+
+𝐱𝑚 =
+
+𝐮𝑚 =
+
+4∑
+
+𝑖=1
+4∑
+
+𝑖=1
+
+𝑁𝑖(𝜉, 𝜂)𝐱𝑖,
+
+𝐱𝑏 =
+
+ℎ𝑖(𝜉, 𝜂)𝐮𝑖,
+
+𝐮𝑏 =
+
+∑
+
+∑
+
+1
+2
+
+1
+2
+
+𝑎𝑖𝑁𝑖(𝜉, 𝜂)𝐕𝑖
+𝑛,
+
+𝑎𝑖𝑁𝑖(𝜉, 𝜂)(−𝐕𝑖
+2
+
+𝛼𝑖 + 𝐕𝑖
+1
+
+𝛽𝑖)
+
+To satisfy the shell statics assumption (𝜎
+33 = 0), the thickness strain 
+33)  is  calculated  independently  using  the  plane  stress  constitutive 
+
+(𝜖
+equation.
+
+𝜖
+
+33 =
+
+⋅
+
+(
+
+1
+2
+
+𝜕𝐱
+𝜕𝜁
+
+𝜕𝐮
+𝜕𝜁 +
+
+𝜕𝐱
+𝜕𝜁
+The shear strain 𝜖𝑠
+
+⋅
+
+𝜕𝐮
+𝜕𝜁 )
+
+(13)
+
+𝑖𝑗 should be a separate interpolation in this work, 
+
+which is discussed in Section 2.3.
+
+2.2.  The MITC4+ method
+
+The key idea of the MITC4 method is to construct a new assumed 
+strain ﬁeld in the mid-surface to eliminate various locking phenomenon 
+of the shell element. The new assumed strain ﬁeld is interpolated by 
+sampling points (A, B, C, D) located at the centre of each edge of the 
+quadrilateral shell with natural coordinates (0, 1, 0), (0, −1, 0), (1, 0, 
+0) and (−1, 0, 0), respectively.
+
+The MITC4+ method was developed by extending the MITC method 
+to overcome membrane locking by constructing an assumed membrane 
+strain ﬁeld. The assumed membrane strain ﬁeld was derived from four 
+non-overlapping 3-node triangular domains divided by point O and four 
+nodes of quadrilateral shell as shown in Fig. 2. Point O is deﬁned as the 
+centroid of the mid-surface in the shell element, which is calculated 
+from the four nodes of the quadrilateral shell, and the detailed deriva-
+tion is shown in [28]. The strain in each triangular domain is given 
+by
+
+̂𝜖𝑚
+𝑖𝑗 =
+
+1
+2
+
+(
+
+𝜕 ̂𝐱
+𝜕𝑟𝑖
+
+⋅
+
+𝜕 ̂𝐮
+𝜕𝑟𝑗
+
++
+
+𝜕 ̂𝐱
+𝜕𝑟𝑗
+
+⋅
+
+𝜕 ̂𝐮
+𝜕𝑟𝑖
+
+),
+
+(𝑖, 𝑗 = 1, 2)
+
+(14)
+
+While  ̂𝜖𝑚
+
+𝑖𝑗 is the strain in the natural coordinate system of each tri-
+angular domain and the strains are constant in each triangular domain, 
+the strain ﬁeld at each sampling point can be treated as ̃𝜖𝑚
+𝑖𝑗 correspond-
+ing to the triangular domain, as follows:
+𝑖𝑗 (0, −1, 0) = ̂𝜖𝑚(𝐵)
+𝑖𝑗 (0, 1, 0) = ̂𝜖𝑚(𝐴)
+̃𝜖𝑚
+̃𝜖𝑚
+𝑖𝑗 (−1, 0, 0) = ̂𝜖𝑚(𝐷)
+𝑖𝑗 (1, 0, 0) = ̂𝜖𝑚(𝐶)
+̃𝜖𝑚
+̃𝜖𝑚
+𝑖𝑗
+Where,  ̃𝜖𝑚
+𝑖𝑗 is the constant strain in natural coordinates, ̂𝐠 is the co-
+
+(𝐠𝑖 ⋅ ̂𝐠𝑘)(𝐠𝑗 ⋅ ̂𝐠𝑙),
+(𝐠𝑖 ⋅ ̂𝐠𝑘)(𝐠𝑗 ⋅ ̂𝐠𝑙),
+
+(𝐠𝑖 ⋅ ̂𝐠𝑘)(𝐠𝑗 ⋅ ̂𝐠𝑙)
+(𝐠𝑖 ⋅ ̃𝐠𝑘)(𝐠𝑗 ⋅ ̂𝐠𝑙)
+
+(15)
+
+𝑖𝑗
+
+𝑖𝑗
+
+𝑖𝑗
+
+variant base vectors.
+
+(𝑖 = 1, 2)
+
+𝜕 ̂𝐱
+𝜕𝑟𝑖
+
+,
+
+̂𝐠𝑖 =
+
+and
+
+(16)
+
+̂𝐠
+3 = 𝐠
+3
+The new assumed membrane strain ﬁeld of the shell element can be 
+interpolated by
+
+(17)
+
+(12)
+
+𝜖𝑚
+𝑖𝑗 = 𝑎 + 𝑏𝜉 + 𝑐𝜂 + 𝑑𝜉𝜂,
+
+(𝑖, 𝑗 = 1, 2)
+
+The 𝑎, 𝑏, 𝑐 and 𝑑 of Eq. (18) are given as
+
+𝑖𝑗 + ̃𝜖𝑚(𝐵)
+( ̃𝜖𝑚(𝐴)
+
+𝑖𝑗 + ̃𝜖𝑚(𝐶)
+
+𝑖𝑗 + ̃𝜖𝑚(𝐷)
+
+𝑖𝑗
+
+),
+
+(− ̃𝜖𝑚(𝐷)
+𝑖𝑗
+
++ ̃𝜖𝑚(𝐶)
+𝑖𝑗
+
+),
+
+(− ̃𝜖𝑚(𝐵)
+
+𝑖𝑗 + ̃𝜖𝑚(𝐴)
+
+𝑖𝑗
+
+),
+
+𝑏 =
+
+𝑎 =
+
+1
+4
+1
+2
+1
+2
+𝑑 = 0
+
+𝑐 =
+
+(18)
+
+(19)
+
+Therefore, the MITC4+ shell element membrane strain can be ob-
+
+tained
+
+𝜖𝑚
+𝑖𝑗 =
+
+1
+4
+
++
+
+𝑖𝑗 + ̃𝜖𝑚(𝐵)
+( ̃𝜖𝑚(𝐴)
+
+𝑖𝑗 + ̃𝜖𝑚(𝐶)
+
+𝑖𝑗 + ̃𝜖𝑚(𝐷)
+
+𝑖𝑗
+
+) +
+
+1
+2
+
+(− ̃𝜖𝑚(𝐷)
+𝑖𝑗
+
++ ̃𝜖𝑚(𝐶)
+𝑖𝑗
+
+)𝜉
+
+(− ̃𝜖𝑚(𝐵)
+
+𝑖𝑗 + ̃𝜖𝑚(𝐴)
+
+𝑖𝑗
+
+1
+2
+
+)𝜂
+
+(20)
+
+2.3.  Derivation of strain tensor
+
+The quadrilateral displacement ﬁeld can be considered as composed 
+of the following basic displacement modes: rigid body term, linear term 
+and bilinear term with 𝜉𝜂, where the deformation reﬂected by the bilin-
+ear term displacement contains the hourglass mode of the quadrilateral 
+such as Fig. 3, and these bilinear term displacement ﬁelds correspond to 
+the linear term part of the strain. To restrain the hourglass phenomenon, 
+the linear term strain requires particular treatment.
+
+The degenerated shell strain ﬁeld can be expressed as a displacement 
+
+and rotation-related term.
+
+𝜖
+
+11
+
+𝜖
+
+22
+
+𝜖
+
+33
+
+𝜖
+
+12
+
+𝜖
+
+13
+
+𝜖
+
+23
+
+}𝑇
+
+= 𝐁𝑖𝐝𝑖
+
+(𝑖 = 1, 2, 3, 4)
+
+(21)
+
+{
+
+𝜖 =
+
+with
+
+ComputersandStructures291(2024)1072073X. Cui, G. Peng, Q. Ran et al.
+
+𝜖𝑏1
+𝑖𝑗 =
+
+𝜖𝑏2
+𝑖𝑗 =
+
+(𝐉𝑚
+𝑗 ⋅
+
+(𝐉𝑏
+𝑗 ⋅
+
+1
+2
+
+1
+2
+
+𝜕𝐮𝑏
+𝜕𝑟𝑗
+𝜕𝐮𝑏
+𝜕𝑟𝑗
+
++ 𝐉𝑚
+𝑖 ⋅
+
++ 𝐉𝑏
+𝑖 ⋅
+
+𝜕𝐮𝑏
+𝜕𝑟𝑖
+𝜕𝐮𝑏
+𝜕𝑟𝑖
+
+)
+
++ 𝐉𝑏
+𝑗 ⋅
+
+𝜕𝐮𝑚
+𝜕𝑟𝑗
+
++ 𝐉𝑏
+𝑖 ⋅
+
+𝜕𝐮𝑚
+𝜕𝑟𝑖
+
+)
+
+(𝑖, 𝑗 = 1, 2)
+
+(33)
+
+Fig. 3. The hourglass mode of the quadrilateral.
+
+{
+
+𝐝𝑖 =
+
+𝑢𝑖
+
+𝑣𝑖 𝑤𝑖
+
+𝜃𝑥𝑖
+
+𝜃𝑦𝑖
+
+}𝑇
+
+According to Eq. (7) and Eq. (9), Eq. (21) can be written as
+{
+
+}𝑇
+
+𝜖
+
+33
+
+12 + 𝜖𝑏
+𝜖𝑚
+
+12
+
+𝜖𝑠
+13
+
+𝜖𝑠
+23
+
+𝜖 =
+
+11 + 𝜖𝑏
+𝜖𝑚
+
+11
+
+22 + 𝜖𝑏
+𝜖𝑚
+(𝑖 = 1, 2, 3, 4)
+
+22
+
+= 𝐁𝑖𝐝𝑖
+
+where membrane strain is obtained as
+
+𝜖𝑚
+
+=
+
+{
+
+𝜖𝑚
+11
+
+𝜖𝑚
+22
+
+0
+
+𝜖𝑚
+12
+
+}𝑇
+
+𝑚
+𝑖 𝐝𝑖
+= 𝐁
+
+0
+
+0
+
+(𝑖 = 1, 2, 3, 4)
+
+(22)
+
+(23)
+
+(24)
+
+and the remaining strain caused by transverse shear and bending can 
+be expressed as
+
+{
+
+𝜖𝑏𝑠
+
+=
+
+𝜖𝑏
+11
+
+𝜖𝑏
+22
+
+𝜖
+
+33
+
+𝜖𝑏
+12
+
+𝜖𝑠
+13
+
+𝜖𝑠
+23
+
+}𝑇
+
+= 𝐁
+
+𝑏𝑠
+𝑖 𝐝𝑖
+
+(25)
+
+The membrane strain of MITC4+R elements is replaced by Eq. (20)
+for the conventional shell element membrane strain. The ﬁnal form of 
+membrane strain ﬁeld is divided into constant ﬁeld 𝜖𝑚0 and linear ﬁeld 
+𝜖𝑚𝐻
+
+in 𝜉 and 𝜂.
+
+𝜖𝑚
+
+= 𝜖𝑚0 + 𝜖𝑚𝐻
+
+the MITC4+R element membrane strain can be rewritten
+
+𝜖𝑚0
+𝑖𝑗 =
+
+𝜖𝑚𝐻
+𝑖𝑗 =
+
+1
+4
+1
+2
+
+𝑖𝑗 + ̃𝜖𝑚(𝐵)
+( ̃𝜖𝑚(𝐴)
+
+𝑖𝑗 + ̃𝜖𝑚(𝐶)
+
+),
+
+𝑖𝑗
+
+𝑖𝑗 + ̃𝜖𝑚(𝐷)
+1
+2
+
+(− ̃𝜖𝑚(𝐵)
+
+)𝜉 +
+
+(− ̃𝜖𝑚(𝐷)
+𝑖𝑗
+
++ ̃𝜖𝑚(𝐶)
+𝑖𝑗
+
+𝑖𝑗 + ̃𝜖𝑚(𝐴)
+
+𝑖𝑗
+
+)𝜂
+
+(26)
+
+(27)
+
+Then, Eq. (21) is substituted into Eq. (15). The strain in each trian-
+
+gular domain can be obtained as
+
+̃𝜖𝑚(𝐴)
+𝑖𝑗 = ̃𝐁𝑚
+̃𝜖𝑚(𝐶)
+= ̃𝐁𝑚
+𝑖𝑗
+
+𝐴𝐝𝑖,
+𝐶 𝐝𝑖,
+
+̃𝜖𝑚(𝐵)
+𝑖𝑗
+̃𝜖𝑚(𝐷)
+𝑖𝑗
+
+= ̃𝐁𝑚
+= ̃𝐁𝑚
+
+𝐵𝐝𝑖,
+𝐷𝐝𝑖.
+
+(28)
+
+Combined with Eq. (27) - Eq. (28). The B matrix of the constant and 
+
+linear term can be constructed, respectively.
+
+𝜖𝑚0 = 𝐁
+
+𝑚0
+1𝑖 𝐝𝑖,
+
+𝜖𝑚𝐻
+
+= (𝜉𝐁
+
+𝑚𝐻
+
+𝑚𝐻
+1𝑖 + 𝜂𝐁
+2𝑖
+
+and
+
+𝐁
+
+𝑚0
+1𝑖 =
+
+1
+4
+
+with
+
+( ̃𝐁𝑚
+
+𝐴 + ̃𝐁𝑚
+
+𝐵 + ̃𝐁𝑚
+
+𝐶 + ̃𝐁𝑚
+𝐷)
+
+𝐁
+
+𝐁
+
+𝑚𝐻
+1𝑖 =
+𝑚𝐻
+2𝑖 =
+
+(− ̃𝐁𝑚
+
+𝐷 + ̃𝐁𝑚
+𝐶 )
+
+(− ̃𝐁𝑚
+
+𝐵 + ̃𝐁𝑚
+𝐴)
+
+1
+2
+1
+2
+
+)𝐝𝑖
+
+(29)
+
+(30)
+
+(31)
+
+Similarly, the transverse shear and bending strain can be decom-
+𝑖𝑗 and linear terms 𝜖𝑏𝑠𝐻
+
+posed into constant term 𝜖𝑏𝑠0
+
+𝑖𝑗
+
+𝑖𝑗 = 𝜖𝑏𝑠0
+𝜖𝑏𝑠
+
+𝑖𝑗 + 𝜖𝑏𝑠𝐻
+
+𝑖𝑗
+
+.
+
+(32)
+
+In  particular,  the  in-plane  due  to  bending  strain  expressions  are 
+
+shown in Eq. (11), expressed in terms of the Jacobian as:
+
+𝐽 𝑚 is the coordinate conversion relationship of the Jacobian of the 
+membrane component, and 𝐽 𝑏 is the bending component. Similar to the 
+strain ﬁeld, the Jacobian matrix can be decomposed into
+
+𝐉𝑚 =
+
+and
+
+𝐉𝑏 =
+
+⎡
+⎢
+⎢
+⎣
+
+𝜉𝑖𝑥𝑖
+𝜂𝑖𝑥𝑖
+0
+
+1
+4
+
+𝜉𝑖𝑦𝑖
+𝜂𝑖𝑦𝑖
+0
+
+𝜉𝑖𝑧𝑖
+𝜂𝑖𝑧𝑖
+0
+
+⎤
+⎥
+⎥
+⎦
+
++
+
+⎡
+⎢
+⎢
+⎣
+
+1
+4
+
+ℎ𝑖𝜂𝑥𝑖 ℎ𝑖𝜂𝑦𝑖 ℎ𝑖𝜂𝑧𝑖
+ℎ𝑖𝜉𝑥𝑖 ℎ𝑖𝜉𝑦𝑖 ℎ𝑖𝜉𝑧𝑖
+0
+
+0
+
+0
+
+⎤
+⎥
+⎥
+⎦
+
+𝑎
+
+8
+
+⎡
+⎢
+⎢
+⎢
+⎣
+
+𝜉𝑖𝑉 𝑖
+𝑛𝑥
+𝜂𝑖𝑉 𝑖
+𝑛𝑥
+0
+
+𝜉𝑖𝑉 𝑖
+𝑛𝑦
+𝜂𝑖𝑉 𝑖
+𝑛𝑦
+0
+
+𝜉𝑖𝑉 𝑖
+𝑛𝑧
+𝜂𝑖𝑉 𝑖
+𝑛𝑧
+0
+
+⎤
+⎥
+⎥
+⎥
+⎦
+
++
+
+𝑎
+
+8
+
+⎡
+⎢
+⎢
+⎢
+⎣
+
+ℎ𝑖𝜂𝑉 𝑖
+𝑛𝑥
+ℎ𝑖𝜉𝑉 𝑖
+𝑛𝑥
+0
+
+ℎ𝑖𝜂𝑉 𝑖
+𝑛𝑦
+ℎ𝑖𝜉𝑉 𝑖
+𝑛𝑦
+0
+
+ℎ𝑖𝜂𝑉 𝑖
+𝑛𝑧
+ℎ𝑖𝜉𝑉 𝑖
+𝑛𝑧
+0
+
+⎤
+⎥
+⎥
+⎥
+⎦
+
+Then, the thickness strain can be given as
+
+𝜖
+
+33 =
+
+1
+2
+
+(𝐉
+3
+
+⋅
+
+𝜕𝐮
+𝜕𝜁 + 𝐉
+
+3
+
+⋅
+
+𝜕𝐮
+𝜕𝜁 )
+
+with the Jacbian at the centroid point of the mid-surface
+
+𝐉 =
+
+1
+4
+
+⎡
+⎢
+⎢
+⎢
+⎣
+
+𝜉𝑖𝑥𝑖
+𝜂𝑖𝑥𝑖
+0.5𝑎𝑉 𝑖
+𝑛𝑥
+
+𝜉𝑖𝑦𝑖
+𝜂𝑖𝑦𝑖
+0.5𝑎𝑉 𝑖
+𝑛𝑦
+
+𝜉𝑖𝑧𝑖
+𝜂𝑖𝑧𝑖
+0.5𝑎𝑉 𝑖
+𝑛𝑧
+
+⎤
+⎥
+⎥
+⎥
+⎦
+
++
+
+⎡
+⎢
+⎢
+⎣
+
+1
+4
+
+ℎ𝑖𝜂𝑥𝑖 ℎ𝑖𝜂𝑦𝑖 ℎ𝑖𝜂𝑧𝑖
+ℎ𝑖𝜉𝑥𝑖 ℎ𝑖𝜉𝑦𝑖 ℎ𝑖𝜉𝑧𝑖
+0
+
+0
+
+0
+
+(34)
+
+(35)
+
+(36)
+
+(37)
+
+⎤
+⎥
+⎥
+⎦
+
+Many shell elements suﬀer from transversal shear locking; indepen-
+dent correction is necessary for transverse shear strain. The MITC4+ 
+follows the MITC4 method of directly interpolating the assumed trans-
+verse shear strain.
+1
+2
+1
+2
+
+(1 − 𝜂)Δ ̄𝜖C
+13
+
+(1 − 𝜉)Δ ̄𝜖B
+23
+
+(1 + 𝜂)Δ ̄𝜖A
+
+(1 + 𝜉)Δ ̄𝜖D
+
+1
+2
+1
+2
+
+13 =
+
+23 =
+
+13 +
+
+23 +
+
+Δ ̄𝜖𝑠
+
+Δ ̄𝜖𝑠
+
+(38)
+
+The same sampling node were used as the MITC4+ method to inter-
+
+polate the assumed strain in the transverse shear direction.
+(
+1 + 𝜂𝑖
+
+𝜉𝑖 + ℎ𝑖
+
+⋅ 𝐝𝑖 −
+
+Δ ̄𝜖𝐀
+
+𝜽𝑖,
+
+) {
+
+}
+
+)
+
+(
+
+𝐵𝐴
+11𝑖
+
+𝐵𝐴
+21𝑖
+
+13 =
+
+𝐉𝐀
+3
+
+Δ ̄𝜖B
+
+23 =
+
+Δ⃗𝜖C
+
+13 =
+
+Δ ̄𝜖D
+
+23 =
+
+)
+
+)
+
+)
+
+(
+
+(
+
+(
+
+𝜂𝑖 − ℎ𝑖
+
+𝜉𝑖 − ℎ𝑖
+
+𝜂𝑖 + ℎ𝑖
+
+𝐉B
+3
+
+𝐉C
+3
+
+⋅ 𝐝𝑖 −
+
+⋅ 𝐝𝑖 −
+
+𝐉D
+3
+
+⋅ 𝐝𝑖 −
+
+) {
+
+(
+
+1 − 𝜉𝑖
+
+) {
+
+(
+1 − 𝜂𝑖
+(
+1 + 𝜂𝑖
+
+𝐵B
+12𝑖
+
+𝐵C
+11𝑖
+
+}
+
+}
+
+𝐵B
+22𝑖
+
+𝐵C
+21𝑖
+
+) {
+
+}
+
+𝐵D
+12𝑖
+
+𝐵D
+22𝑖
+
+𝜽𝑖,
+
+𝜃𝑖,
+
+𝜃𝑖.
+
+(39)
+
+According to Eq. (25) and Eq. (33) - Eq. (39), the constants without 
+𝑏𝑠𝐻
+𝑏𝑠0
+3𝑖 and linear terms without 𝜉𝜂𝐁
+3𝑖
+
+are expressed as follows:
+
+𝜁 2𝐁
+
+𝜖𝑏𝑠0 = (𝐁
+𝜖𝑏𝑠𝐻
+
+𝑏𝑠0
+1𝑖 + 𝜁 𝐁
+
+𝑏𝑠0
+2𝑖 )𝐝𝑖,
+
+𝑏𝑠𝐻
+
+𝑏𝑠𝐻
+
+= (𝜉𝐁
+
+1𝑖 + 𝜂𝐁
+
+2𝑖 + 𝜉𝜁 𝐁
+
+𝑏𝑠𝐻
+
+𝑏𝑠𝐻
+4𝑖 + 𝜂𝜁 𝐁
+5𝑖
+
+)𝐝𝑖
+
+(40)
+
+The detailed expression of Eq. (40) is shown in Appendix A
+
+3.  Implementation of ﬁnite element formulation
+
+3.1.  Formulation of the linear stiﬀness matrix
+
+To  satisfy  the  stress-strain  law,  all  simulations  need  to  be  trans-
+formed to co-rotating coordinate system by transformation matrix 𝐓, 
+which is given in Ref [38].
+
+̃𝜖 = 𝐓𝜖
+
+(41)
+
+According  to  the  previous  derivation,  the  total  stiﬀness  matrix  is 
+
+decomposed into a constant term and a linear term in 𝜉 and 𝜂
+
+𝐊𝑖𝑗 = 𝐊0
+
+𝑖𝑗 + 𝐊𝑠𝑡𝑎𝑏
+
+𝑖𝑗
+
+.
+
+(42)
+
+𝑎𝑖
+8
+𝑎𝑖
+8
+𝑎𝑖
+8
+𝑎𝑖
+8
+
+1
+4
+1
+4
+1
+4
+1
+4
+
+ComputersandStructures291(2024)1072074X. Cui, G. Peng, Q. Ran et al.
+
+Fig. 4. Integration point in the direction of shell thickness.
+
+𝐊0
+
+𝑖𝑗 is evaluated directly at the centre of the mid-surface (𝜉, 𝜂, 𝜁 = 0). 
+When the shell is thick, numerical integration of 𝜁 can be performed in 
+the thickness direction, such as an odd number of integration points in 
+the thickness direction of the shell for Gaussian integration shown in 
+Fig. 4
+
+(̃𝐁0)𝑇 𝐃(̃𝐁0) d𝜉d𝜂d𝜁
+
+1
+
+1
+
+1
+
+𝐊0
+
+𝑖𝑗 =
+
+∫
+−1
+
+∫
+−1
+
+∫
+−1
+
+and
+
+̃𝐁0 = ̃𝐁𝑚0
+
+1𝑖 + ̃𝐁𝑏𝑠0
+
+1𝑖 + 𝜁 ̃𝐁𝑏𝑠0
+2𝑖
+
+The physical stabilization part uses simple integration:
+
+1
+
+1
+
+1
+
+∫
+−1
+
+∫
+−1
+
+∫
+−1
+
+𝐊𝑠𝑡𝑎𝑏
+
+𝑖𝑗 =
+
+with
+
+(̃𝐁𝐻 )𝑇 𝐃(̃𝐁𝐻 ) d𝜉d𝜂d𝜁
+
+̃𝐁𝐻 = 𝜉(̃𝐁𝑚𝐻
+
+1𝑖 ) + 𝜂(̃𝐁𝑚𝐻
+1𝑖 + ̃𝐁𝑏𝐻
+Eq. (45) can be rewritten as:
+
+2𝑖 + ̃𝐁𝑏𝐻
+
+2𝑖 ) + 𝜉𝜁 ̃𝐁𝑏𝐻
+
+4𝑖 + 𝜂𝜁 ̃𝐁𝑏𝐻
+5𝑖
+
+1
+
+1
+
+1
+
+(43)
+
+(44)
+
+(45)
+
+(46)
+
+𝐊stab
+
+𝑖𝑗 =
+
+∫
+−1
+
+∫
+−1
+
+∫
+−1
+
+(̃𝐁H
+
+1𝑖)T𝐃(̃𝐁H
+
+1𝑗 )𝜉2 det J0 d𝜉d𝜂d𝜁
+
+3.2.  Internal force vector
+
+The critical of the explicit algorithm is the solution to the internal 
+forces. It is for dynamic large deformation problems, the energy func-
+tion in the updated Lagrangian formulation can be written as
+
+𝛿𝑊 𝑒𝑥𝑡 + 𝛿𝑊 𝑘𝑖𝑛 + 𝛿𝑊 𝑐𝑜𝑛 = 𝛿𝑊 int
+(49)
+where 𝛿𝑊 𝑒𝑥𝑡, 𝛿𝑊 𝑘𝑖𝑛, 𝛿𝑊 𝑐𝑜𝑛 and 𝛿𝑊 𝑖𝑛𝑡 are the external energy, the ki-
+netic energy, the contact friction energy and the strain energy. Their 
+expression can be written as
+
+𝛿𝐮 ⋅ 𝐭dΓ
+
+𝛿𝑊 𝑒𝑥𝑡 = ∫
+Ω
+𝛿𝑊 𝑘𝑖𝑛 = ∫
+Ω
+𝛿𝑊 con = ∫
+𝛿𝑊 int = ∫
+Ω
+
+𝛿𝐮 ⋅ 𝐛dΩ + ∫
+𝜌𝛿𝐮 ∶ ̈𝐮𝑑Ω
+(
+
+Γt
+
+𝑞𝑁 𝛿𝛾𝑁 + 𝑞𝑇 𝛿𝛾𝑇
+
+Γ𝑐
+𝛿𝜺 ∶ 𝜏dΩ
+
+)
+
+dΓ
+
+(50)
+
+where 𝑞𝑁 and 𝑞𝑇 represent the contact force and friction force, 𝛾𝑁 and 
+𝛾𝑇 represent the relative displacements of the tangential and normal 
+directions at the contact interface Γ𝑐 . The discrete motion equation can 
+be written as follows
+
+𝐦𝑖 ̈𝐮𝑖 = 𝐅con
+
+𝑖 + 𝐅ext
+
+𝑖 − 𝐅int
+𝑖
+
+(51)
+
+Where 𝐦𝑖 is lump mass matrix, ̈𝐮𝑖 is acceleration and 𝐅con
+
+, 𝐹 int
+𝑖
+represent external, contact and internal forces at node i. The internal 
+force vector is deﬁned by
+
+, 𝐅ext
+𝑖
+
+𝑖
+
+̃𝐁T
+𝑖 ̃𝝈dΩ
+
+𝐅int
+𝑖 = ∫
+Ω
+
+(52)
+
+Similar  to  strain,  the  internal  force  vector  be  decomposed  into  a 
+
+constant term and a linear term
+
+𝑖 = 𝐅0
+𝐅int
+
+𝑖 + 𝐅𝑠𝑡𝑒𝑏
+𝑖
+
+.
+
+where
+
+𝐅0
+𝑖 = ∫
+Ω
+
+𝐅𝑠𝑡𝑎𝑏
+
+𝑖 =
+
+(̃𝐁0
+
+𝑖 )T̃𝜎0
+
+𝑛+1dΩ,
+
+1
+
+1
+
+1
+
+∫
+−1
+
+∫
+−1
+
+∫
+−1
+
+(̃𝐁𝐻
+
+𝑖 )T̃𝜎𝐻
+
+𝑛+1 d𝜉d𝜂d𝜁
+
+(53)
+
+(54)
+
+(55)
+
+1
+
+1
+
+1
+
+∫
+−1
+
+∫
+−1
+
+∫
+−1
+
+1
+
+1
+
+1
+
+∫
+−1
+
+∫
+−1
+
+∫
+−1
+
++
+
++
+
++
+
+(̃𝐁H
+
+2𝑖)T𝐃(̃𝐁H
+
+2𝑗 )𝜂2 det J0 d𝜉d𝜂d𝜁
+
+In particular, the hourglass force needs to be decomposed into dif-
+
+ferent linear term integral forms as:
+
+(̃𝐁H
+
+4𝑖)T𝐃
+
+)
+
+(
+
+̃𝐁H
+4𝑗
+
+𝜉2𝜁 2 det J0 d𝜉d𝜂d𝜁
+
+(47)
+
+𝐅𝑠𝑡𝑎𝑏
+
+𝑖 =
+
+1
+
+1
+
+1
+
+∫
+−1
+
+∫
+−1
+
+∫
+−1
+
+(̃𝐁𝐻
+
+1𝑖 )T(𝑛+1)̃𝜎𝐻
+
+1 d𝜉d𝜂d𝜁
+
+1
+
+1
+
+1
+
+(
+
+∫
+−1
+
+∫
+−1
+
+∫
+−1
+
+)
+
+(
+
+T𝐃
+
+)
+
+̃𝐁H
+5𝑗
+
+̃𝐁H
+5𝑖
+
+𝜂2𝜁 2 det J0 d𝜉d𝜂d𝜁 .
+
+The simply integration method in the above equation is as follows:
+
+1
+
+1
+
+1
+
+∫
+−1
+
+∫
+−1
+
+∫
+−1
+
+1
+
+1
+
+1
+
+∫
+−1
+
+∫
+−1
+
+∫
+−1
+
+1
+
+1
+
+1
+
+∫
+−1
+
+∫
+−1
+
+∫
+−1
+
+1
+
+1
+
+1
+
+∫
+−1
+
+∫
+−1
+
+∫
+−1
+
+𝜉2 d𝜉d𝜂d𝜁 =
+
+𝜂2 d𝜉d𝜂d𝜁 =
+
+,
+
+8
+3
+
+,
+
+8
+3
+
+𝜉2𝜁 2 d𝜉d𝜂d𝜁 =
+
+𝜂2𝜁 2 d𝜉d𝜂d𝜁 =
+
+,
+
+8
+9
+
+.
+
+8
+9
+
++
+
++
+
++
+
+1
+
+1
+
+1
+
+∫
+−1
+
+∫
+−1
+
+∫
+−1
+
+1
+
+1
+
+1
+
+∫
+−1
+
+∫
+−1
+
+∫
+−1
+
+1
+
+1
+
+1
+
+∫
+−1
+
+∫
+−1
+
+∫
+−1
+
+(̃𝐁𝐻
+
+2𝑖 )T(𝑛+1)̃𝜎𝐻
+
+2 d𝜉d𝜂d𝜁
+
+(̃𝐁𝐻
+
+4𝑖 )T(𝑛+1)̃𝜎𝐻
+
+4 d𝜉d𝜂d𝜁
+
+(56)
+
+(̃𝐁𝐻
+
+5𝑖 )T(𝑛+1)̃𝜎𝐻
+
+5 d𝜉d𝜂d𝜁
+
+4.  Numerical tests
+
+(48)
+
+In this section, the ability of the element to eliminate the locking 
+phenomenon  and  the  computational  eﬃciency  are  veriﬁed,  respec-
+tively.  The  performance  of  the  above  element  can  be  demonstrated 
+through  a  series  of  veriﬁcation  examples.  Cookmembrane  and  roof 
+shells were tested for shear locking, and membrane locking, the hemi-
+spherical shell as a complex condition test should be coupled to the 
+
+ComputersandStructures291(2024)1072075X. Cui, G. Peng, Q. Ran et al.
+
+Fig. 5. The plate bending patch test.
+
+Table 1
+Nodal coordinates and exact displacements and rota-
+tions for the bending patch test.
+
+Node
+
+dof
+
+x
+
+y
+
+w
+
+𝜃𝑥
+
+𝜃𝑦
+
+0.0
+0.0
+10.0
+10.0
+2.0
+8.0
+8.0
+4.0
+
+10.0
+0.0
+0.0
+10.0
+2.0
+3.0
+7.0
+7.0
+
+0.54
+0.09
+0.44
+1.09
+0.2180
+0.5055
+0.7495
+0.5455
+
+0.06
+0.03
+0.05
+0.08
+0.04
+0.055
+0.067
+0.058
+
+-0.045
+-0.025
+-0.045
+-0.065
+-0.033
+0-0.047
+-0.055
+-0.047
+
+1
+2
+3
+4
+5
+6
+7
+8
+
+strain of both the membrane and the bending component, and the con-
+vergence is evaluated using a ﬂat plate. Finally, A series of arithmetic 
+examples were then used to test the computational eﬃciency in explicit
+dynamic scheme. The MITC4+ element was chosen as the reference for 
+comparison.
+
+4.1.  Static problems
+
+4.1.1.  The plate bending patch test
+
+The interesting plate bending patch test is introduced in this work. 
+The mesh for the plate is given in Fig. 5. The nodal coordinates are 
+shown in the table, where the w ﬁeld can be calculated by the following
+
+𝑤(𝑥, 𝑦) = 0.001𝑥2 + 0.002𝑥𝑦 + 0.0015𝑦2 + 0.025𝑥 + 0.03𝑦 + 0.09
+
+(57)
+
+The coeﬃcients of the above polynomial are arbitrarily chosen. Un-
+der the Kirchhoﬀ-Love assumption, the rotation can be calculated as 
+follows:
+
+Fig. 6. Zero-energy mode test.
+
+Table 2
+Results for Cookmembrane.
+
+Element
+
+Mesh
+
+4x4
+
+8x8
+
+16x16
+
+MITC4+R
+MITC4+
+
+1.8836e+01
+1.8580e+01
+
+2.2732e+01
+2.2665e+01
+
+2.4403e+01
+2.4403e+01
+
+𝜃𝑥(𝑥, 𝑦) =
+
+𝜃𝑦(𝑥, 𝑦) = −
+
+𝜕𝑤
+𝜕𝑦 = 0.002𝑥 + 0.003𝑦 + 0.003
+𝜕𝑤
+𝜕𝑥 = −(0.002𝑥 + 0.002𝑦 + 0.025)
+
+(58)
+
+Fig. 7. Cookmembrane.
+
+The exterior nodes 1-4 are loaded with exact transverse displace-
+ment and rotations, and the interior nodes are observed to match the 
+analytic solution has been showed in Table 1. The plate bending patch 
+test veriﬁes the ability of the element to detect the convergence of the 
+shell. The results of MITC4+ and MITC4+R calculations keep the per-
+fect agreement with the analytical solution.
+
+4.1.2.  Zero-energy mode test
+
+Table 3
+Results for Scordelis-Lo roof.
+
+Element
+
+Mesh
+
+4x4
+
+8x8
+
+16x16
+
+MITC4+R
+MITC4+
+
+2.8316e-01
+2.8316e-01
+
+2.9616e-01
+2.9616e-01
+
+3.0672e-01
+3.0671e-01
+
+Zero-energy mode test is widely used to test whether an element 
+can  correctly  represent  a  rigid  body  mode.  The  number  of  non-zero 
+eigenvalues for diﬀerent mesh cells is considered as shown in Fig. 6. 
+Young’s  modulus  𝐸 = 1.5 × 103,  Poisson’s  ratio  𝑣 = 0.3 and  thickness 
+𝑡 = 1.0.
+
+The MITC4+R contains only six zero eigenvalues and produces six 
+rigid body modes (three translational and three rotational modes) cor-
+rectly in all geometric, without any spurious energy modes, arbitrary 
+to the deformation of the elements. Hence this element passed the zero 
+energy mode test.
+
+ComputersandStructures291(2024)1072076X. Cui, G. Peng, Q. Ran et al.
+
+Table 4
+Results for spherical shell.
+
+Element
+
+Mesh
+
+4x4
+
+8x8
+
+16x16
+
+MITC4+R
+MITC4+
+
+5.8139e-02
+5.9359e-02
+
+9.0627e-02
+9.0197e-02
+
+9.2000e-02
+8.8032e-02
+
+Fig. 8. The Scordelis-Lo roof.
+
+Fig. 10. The clamped square plate problem.
+
+Fig. 9. The Spherical shell.
+
+4.1.3.  Cookmembrane
+
+The  Cookmembrane  problem  is  considered.  The  famous  standard 
+example for in-plane strain analysis is shown in Fig. 7. Young’s modu-
+lus 𝐸 = 1.0, Poisson’s ratio 𝑣 = 0.33 and thickness 𝑡 = 1.0. One edge is 
+clamped, and a unit shear force is applied to the other. The reference 
+solution for the vertical displacement at the midpoint of the force edge 
+is 23.91. The results of the MITC4+ and MITC4+R are listed in Table 2. 
+Both of them show better in-plane behaviour.
+
+4.1.4.  Scordelis-Lo roof
+
+The Scordelis-Lo roof is a classic example involving both membrane 
+and bending deformation. It is used as a standard in many commercial 
+applications such as Altair and COMSOL. The Scordelis-Lo roof is the 
+singly-curved  shell  problem,  and  the  quarter  model  is  considered  to 
+gravity load shown in Fig. 8, where Young’s modulus 𝐸 = 4.32 × 108, 
+Poisson’s ratio 𝑣 = 0.0 and thickness 𝑡 = 0.25, the vertical displacement 
+of  the  midpoint  of  the  free  edge  is  mainly  observed;  the  theoretical 
+value of the point is 0.3086. The results of the MITC4+ and MITC4+R 
+are listed in Table 3. The same accuracy is shown in the results of each.
+
+4.1.5.  Spherical shell
+
+A hemispherical shell is a double curvature problem, a relatively 
+complex example of studying membrane and bending strain. There are 
+two models of the hemispherical shell with holes and without holes. The 
+spherical shell with holes can eﬀectively avoid dividing triangular ele-
+ments. The geometric model is shown in Fig. 9, where 𝑅 = 10, Young’s 
+modulus 𝐸 = 6.852 × 107, Poisson’s ratio 𝑣 = 0.3 and thickness 𝑡 = 0.04, 
+
+Fig. 11. The clamped square plate problem for distorted mesh.
+
+a quarter of model is considered. The bottom is the free edge to apply 
+a radial load every 90 degrees. The displacement reference solution at 
+the loading point is 0.9024. The results of the MITC4+ and MITC4+R 
+are shown in Table 4. It can be seen that MITC4+R has shown better 
+performance.
+
+4.1.6.  Convergence studies
+
+Consistency and stability are two important requirements for ﬁnite 
+element convergence. An appropriate norm can well detect the conver-
+gence consistency and convergence rate of shell elements. The s-norm 
+method proposed by Hiller and Bathe [39] measure the error of shell 
+problem.
+
+𝐸ℎ =
+
+‖
+2
+‖
+‖
+𝑆
+
+‖
+𝐮𝑟𝑒𝑓 − 𝐮ℎ
+‖
+‖
+‖
+‖
+2
+𝐮𝑟𝑒𝑓
+‖
+‖
+‖
+‖
+𝑠
+
+‖
+‖𝐮 − 𝐮ℎ
+
+‖
+2
+𝑆 = ∫
+‖
+Ω
+
+Δ𝜺𝑇 Δ𝜏𝑑Ω with Δ𝜺 = 𝜺 − 𝜺ℎ, Δ𝜏 = 𝜏 − 𝜏ℎ,
+
+(59)
+
+(60)
+
+where 𝐮 is the analytical solution, and 𝜺 and 𝝉 are the strain and stress 
+vectors. Since there is no speciﬁc analytical solution for some shell ex-
+amples, Lee et al. [40]. 𝐮 was replaced with the exact solution 𝐮𝑟𝑒𝑓 for 
+the very ﬁne mesh calculation.
+
+ComputersandStructures291(2024)1072077X. Cui, G. Peng, Q. Ran et al.
+
+Fig. 12. Convergence curves for the fully clamped square plate problem with: (a) ℎ∕𝑙 = 100 (b) ℎ∕𝑙 = 1000 (c) ℎ∕𝑙 = 10000.
+
+Fig. 13. Convergence curves for the fully clamped square plate problem for distorted mesh: (a) ℎ∕𝑙 = 100 (b) ℎ∕𝑙 = 1000 (c) ℎ∕𝑙 = 10000.
+
+‖
+‖
+‖
+
+𝐮𝑟𝑒𝑓 − 𝐮ℎ
+
+‖
+2
+‖
+‖
+𝑠
+
+= ∫
+Ω𝑟𝑒𝑓
+
+Δ𝜺𝑇 Δ𝜏𝑑Ω𝑟𝑒𝑓 with Δ𝜺 = 𝜺𝑟𝑒𝑓 − 𝜺ℎ, Δ𝜏 = 𝜏𝑟𝑒𝑓 − 𝜏ℎ.
+
+Δ𝑡
+
+stable =
+
+𝐿𝑒
+𝐶𝑑
+
+(62)
+
+(61)
+
+1 ∶ 𝐿
+
+2 ∶ 𝐿
+
+The  normalization  error  𝐸ℎ to  study  the  eﬀect  of  shell  thickness 
+on the solution convergence. The clamped plate problem was used to 
+measure the convergence of the element in Fig. 10 and the distorted 
+mesh is considered as shown in Fig. 11. Each edge is decomposed in the 
+3 ∶ ...𝐿𝑛 = 1 ∶ 2 ∶ 3 ∶ ...𝑁 . A square plate sub-
+following scale: 𝐿
+jected to uniform pressure, a quarter of the model is considered, where 
+Young’s modulus  𝐸 = 1.7472 × 107,  Poisson’s ratio  𝑣 = 0.3 and three 
+cases of plate thickness of 0.1, 0.01, 0.001, and 0.0001 were examined 
+separately. A 72 × 72 mesh of S8R in Abaqus is obtained the reference 
+solution. Its convergence is shown in Fig. 12. It can be seen that the 
+MITC4+ and MITC4+R convergence remain similar almost under the 
+regular mesh except for l/h=10, but there is a slight diﬀerence between 
+the two when the distorted mesh is used. (See Fig. 13.)
+
+4.2.  Dynamic problems
+
+Automatic time increments are used in explicit dynamics problem. 
+The increment of time can be deﬁned by the element length and the 
+wave speed of the material as follows:
+
+𝐿𝑒 denotes the shortest length of the element, while the wave velocity 
+𝐶𝑑 is a property of the material. This algorithm is used for all explicit 
+dynamics problems in the latter sections and the computations are per-
+formed using C++ codes on an Intel Core i5-10400F @ 2.90 GHz, 16-GB 
+RAM, 64-bit Windows 10 operating system.
+
+4.2.1.  Shallow spherical dome
+
+The shallow spherical shell dome is excellent for examining the con-
+vergence properties of the shell elements under uniform pressure. Due 
+to the symmetric model, only a quarter part is considered. Geometric 
+parameters and boundary conditions are shown in Fig. 14 Fully elas-
+tomeric material with Young’s modulus 𝐸 = 1.05 × 107 psi, Poisson’s 
+ratio 𝑣 = 0.3, density 𝜌 = 2.45 × 10−4 psi s2∕in2, initial yield stress 𝜎
+0 = 
+2.4 × 104 psi, and plastic modulus H = 2.4 × 105 psi was used.
+
+The vertical deﬂection of two points as a function of time is con-
+sidered, one for the whole model shallow spherical shell (Point A) and 
+one for the quarter model (Point B). The results are shown in Fig. 15
+and Fig. 16, respectively. It can be seen that the numerical solutions 
+of  MITC4+  and  MITC4+R  are  in  good  agreement  with  the  S4R  of 
+Abaqus [41].
+
+ComputersandStructures291(2024)1072078X. Cui, G. Peng, Q. Ran et al.
+
+Fig. 14. The shallow spherical.
+
+Fig. 15. Dynamic response of Shallow spherical dome at the point A.
+
+Fig. 16. Dynamic response of Shallow spherical dome at point B.
+
+4.2.2.  Twist beam
+
+The twisted beam is a classic example to test the warping problem. 
+The beam is twisted by 90-degree, and when the division is coarse mesh 
+(2 × 12), each element is approximately 7.5-degree warped. Geometric 
+parameters is seen in Fig. 17, where Young’s modulus 𝐸 = 2.9 × 107, 
+
+Poisson’s ratio 𝑣 = 0.22, thickness 𝑡 = 0.32 and density 𝜌 = 2.588 × 10−4
+psi s2∕in2. Both out-of-plane and in-plane load are considered.
+
+The  dynamic  responses  of  MITC4+R  and  MITC4+  elements  are 
+plotted  in  Fig. 18 and  Fig. 19,  respectively.  The  expected  result  are 
+0.005424 and 0.001754 for the dynamic solution. Both MITC4+ and 
+MITC4+R are in general agreement with the results of Abaqus’ S4R.
+
+4.2.3.  Cylinder panel
+
+The cylinder panel is being tested as a large deformation elastic-
+plastic  material  model,  a  thin-walled  cylindrical  shell  using  a  fully 
+elastic-plastic model. Both ends are clamped, and an initial velocity of 
+5650 in/s is applied in the middle region see in Fig. 20. Young’s modu-
+lus 𝐸 = 1.05 × 107 psi, Poisson’s ratio 𝑣 = 0.33, density 𝜌 = 2.5 × 10−4 psi 
+s2/in2, initial yield stress 𝜎
+0 = 4.4 × 104 psi, and plastic modulus H = 0
+psi was used. Half of the model is analysed to verify the dynamic re-
+sponse at the centre (6.28 in) of the symmetry edge and three-quarters 
+(9.42 in) of the span.
+
+Deformed shapes at diﬀerent time are shown in Fig. 21. Fig. 22 and 
+Fig. 23 show  the  deformation  process  at  6.28  in  and  9.42  in  of  the 
+cylinder panel, respectively. It has been observed that the results for 
+both MITC4+ and MITC4+R are consistent with S4R at the point z =
+6.28 in, and the results are close relative to the experiments done by 
+ALuigi et al. [42], but the results of all of them are still diﬀerent from 
+the experimental solution at z = 9.42 in.
+
+4.2.4.  Impact between two tubes
+
+The geometric model of the two thin tubes is shown in Fig. 24. The 
+material is considered elastic– plastic with large strain. Young’s mod-
+ulus 𝐸 = 2 × 1011 psi, Poisson’s ratio 𝑣 = 0.3, density 𝜌 = 9840 kg∕m3, 
+initial yield stress 𝜎
+0 = 2 × 108 psi, and plastic modulus H = 0 psi was 
+used. The initial velocity of the left tube is (80, 0, 0) 𝑚∕𝑠, ane the right 
+is (−80, 0, 30)  𝑚∕𝑠. MITC4+ and MITC4+R were used to solve this 
+problem. Some of the deformation processes are shown in Fig. 25. The 
+results evaluated that MITC4+R has a great ability to handle large de-
+formations in contact.
+
+4.2.5.  A ball impacting a clamped beam
+
+In this work, a ball impacts a claimed beam as shown in Fig. 26. The 
+initial velocity of the ball is 30 𝑚∕𝑠. Both ball and plate are elastic ma-
+terial, Young’s modulus 𝐸 = 2 × 1011 psi, Poisson’s ratio 𝑣 = 0.3, density 
+𝜌 = 9800 × kg∕m3, MITC4+ and MITC4+R were used to solve this prob-
+lem. Fig. 27 shows the deformation of the system at (a) 2 ms, (b) 4 ms 
+and (c) 8 ms, respectively. Their deformation schema is consistent with 
+the results of Cardoso et al. [35].
+
+4.3.  Comparison of calculation time
+
+Finally, the computational eﬃciency of MITC4+ and MITC4+R is 
+compared. For a better view of the results, the above ﬁve examples of 
+explicit dynamics are examined, the calculation time of MITC4+ and 
+MITC4+R was counted for each example. The ﬁnal results are shown 
+in Table 5. All computation times in the table are in seconds, and the 
+letters in the second row of the table indicate the diﬀerent tests: (a) 
+shallow spherical dome, (b) twist beam, (c) cylindrical panel, (d) impact 
+between two tubes, and (e) ball impact clamped beam, respectively. It 
+can be clearly observed that MITC4+R has a higher computational eﬃ-
+ciency in the previous four examples. Due to the division of the sphere 
+ball into a large number of solid elements, only a weak advantage is 
+shown in the last example. In conclusion, the MITC4+R has a higher 
+computational rate than the MITC4+ at the same computational scale.
+
+5.  Conclusions
+
+In this work, we derive a novel reduced integral quadrilateral shell 
+element based on the MITC4+ method. In the patch test, all the compu-
+tational results data of this element match the analytical solution. The 
+
+ComputersandStructures291(2024)1072079X. Cui, G. Peng, Q. Ran et al.
+
+Fig. 17. The twist beam.
+
+Fig. 18. Comparison of the dynamic response for the twist beam (in-plane).
+
+Fig. 19. Comparison of the dynamic response for the twist beam (out-of-plane).
+
+Cookmembrane problem was tested, and the behaviour of the in-plane 
+membrane strain was simulated very successfully. According to the tests 
+with Scordelis-Lo roof, it was also proven that the proposed formulation 
+provides almost unique results in membrane and bending deformation. 
+Based on hemispherical shell testing, the developed shell provides excel-
+lent alleviation of membrane locking when elements are warped. Then, 
+the convergence studies veriﬁed that the shell kept a great agreement 
+with MITC4+ convergence. Finally, a series of explicit dynamics tests, 
+such as Shallow spherical dome, Cylinder panel, and Twist beam illus-
+trate that the element exhibits higher computational eﬃciency without 
+
+Fig. 20. The Cylinder panel under impulse load.
+
+loss of MITC4+ accuracy. Enables the present MITC4+R element to be 
+more potentially applied to engineering applications.
+
+Declaration of competing interest
+
+The authors declared no potential conﬂicts of interest with respect 
+
+to the research, author-ship, or publication of this article.
+
+Data availability
+
+No data was used for the research described in the article.
+
+Acknowledgements
+
+The support of National Science Foundation of China (12002124), 
+Hunan Provincial Natural Science Foundation (2022JJ40031), National 
+Key Research and Development Program of China (2022YFB2503505), 
+China Postdoctoral Science Foundation (2021M690965), Changsha Mu-
+nicipal Natural Science Foundation (kq2014035), and State Key Lab-
+oratory  of  Advanced  Design  and  Manufacturing  for  Vehicle  Body 
+(32065007) are gratefully acknowledged.
+
+Appendix A.  B matrix of transverse shear and bending component
+
+In this section, the B-matrices of the transverse shear and bending 
+components are derived in detail. Eq. (34), Eq. (35) and Eq. (37) can be 
+rewritten for convenience as
+
+𝐉𝑚 =
+
+⎡
+⎢
+⎢
+⎢
+⎣
+
+𝜕𝐱𝑚
+𝜕𝜂
+𝜕𝐱𝑚
+𝜕𝜂
+𝜕𝐱𝑚
+𝜕𝜁
+
+⎤
+⎥
+⎥
+⎥
+⎦
+
+=
+
+1
+4
+
+⎡
+⎢
+⎢
+⎣
+
+𝐽 𝑚0
+11
+𝐽 𝑚0
+21
+0
+
+𝐽 𝑚0
+12
+𝐽 𝑚0
+22
+0
+
+𝐽 𝑚0
+13
+𝐽 𝑚0
+23
+0
+
+⎤
+⎥
+⎥
+⎦
+
++
+
+1
+4
+
+⎡
+⎢
+⎢
+⎣
+
+𝐽 𝑚1
+11
+𝐽 𝑚1
+21
+0
+
+𝜂 𝐽 𝑚1
+12
+𝜉 𝐽 𝑚1
+22
+0
+
+𝜂 𝐽 𝑚1
+13
+𝜉 𝐽 𝑚1
+23
+0
+
+𝜂
+𝜉
+
+⎤
+⎥
+⎥
+⎦
+
+,
+
+(A.1)
+
+ComputersandStructures291(2024)10720710X. Cui, G. Peng, Q. Ran et al.
+
+Fig. 21. Deformation process of cylinder panel.
+
+Fig. 22. Dynamic response of the cylinder panel along the symmetry line at 
+point z = 6.28 in.
+
+Fig. 24. Deformation process of tube impact system.
+
+and
+
+𝐉 =
+
+⎡
+⎢
+⎢
+⎢
+⎣
+
+𝜕𝐱
+𝜕𝜂
+𝜕𝐱
+𝜕𝜂
+𝜕𝐱
+𝜕𝜁
+
+⎤
+⎥
+⎥
+⎥
+⎦
+
+=
+
+1
+4
+
+⎡
+⎢
+⎢
+⎣
+
+𝐽 0
+11
+𝐽 0
+21
+𝐽 0
+31
+
+𝐽 0
+12
+𝐽 0
+22
+𝐽 0
+32
+
+𝐽 0
+13
+𝐽 0
+23
+𝐽 0
+33
+
+⎤
+⎥
+⎥
+⎦
+
++
+
+1
+4
+
+⎡
+⎢
+⎢
+⎣
+
+𝐽 1
+11
+𝐽 1
+21
+0
+
+𝜂 𝐽 1
+12
+𝜉 𝐽 1
+22
+0
+
+𝜂 𝐽 1
+13
+𝜉 𝐽 1
+23
+0
+
+𝜂
+𝜉
+
+⎤
+⎥
+⎥
+⎦
+
+(A.3)
+
+The detailed expression of the transverse shear and bending strain 
+
+component B is as follows:
+
+𝐁
+
+𝑏𝑠0
+1𝑖 =
+
+1
+4
+
+𝑏𝑠0
+2𝑖 = 1
+𝐁
+
+4
+
+⎡
+⎢
+⎢
+⎢
+⎢
+⎢
+⎢
+⎢
+⎢
+⎣
+
+⎡
+⎢
+⎢
+⎢
+⎢
+⎢
+⎢
+⎢
+⎢
+⎣
+
+0
+0
+0
+0
+0
+0.5𝜙0
+0.5𝜙0
+𝜉𝑖𝐽 𝑏0
+11
+𝜂𝑖𝐽 𝑏0
+21
+
+0
+𝜂𝑖𝐽 𝑏
+0
+11
+0
+0
+
+⎤
+⎥
+⎥
+⎥
+⎥
+⎥
+⎥
+⎥
+⎥
+⎦
+
+, (A.4)
+
+(A.5)
+
+0
+0
+0
+0
+0
+0.5𝜙0
+0.5𝜙0
+
+0
+0
+𝐵0
+
+13𝑖
+
+−
+
+0
+0
+𝐵0
+
+23𝑖
+
+𝑎𝑖
+2
+
+−
+
+𝑎𝑖
+2
+
+0
+0
+𝜓 0
+𝜓 0
+
+𝑎𝑖
+4
+𝑎𝑖
+4
+
+2AC𝑖
+
+2DB𝑖
+
+0
+0
+0
+0
+0
+0.5𝜙0
+3AC𝑖 −
+0.5𝜙0
+3DB𝑖 −
+𝑎𝑖
+𝜉𝑖𝐵𝑚0𝑖
+12
+2
+𝑎𝑖
+𝜉𝑖𝐵𝑚0𝑖
+22
+2
+
+1AC𝑖
+
+1DBi
+
+2AC𝑖
+
+2DB𝑖
+𝜉𝑖𝐽 𝑏0
+𝜂𝑖𝐽 𝑏0
+
+13 −
+23 −
+
+𝑎𝑖
+2
+
+0
+
+0
+𝜂𝑖𝐽 𝑏
+13 −
+0
+0
+
+𝜉𝑖𝐽 𝑏0
+12
+𝜂𝑖𝐽 𝑏0
+22
+
+0
+𝜂𝑖𝐽 𝑏
+0
+12
+0
+0
+
+𝑎𝑖
+4
+𝑎𝑖
+4
+
+𝑎𝑖
+2
+𝑎𝑖
+2
+
+𝑎𝑖
+2
+
+0
+0
+𝜓 0
+1AC𝑖 −
+𝜓 0
+1DB𝑖 −
+𝜉𝑖𝐵𝑚0𝑖
+⎤
+11
+⎥
+𝜂𝑖𝐵𝑚0𝑖
+⎥
+21
+⎥
+⎥
+⎥
+⎥
+⎥
+⎥
+⎦
+
+0
+𝜂𝑖𝐵𝑚0𝑖
+11
+0
+0
+0
+0
+0
+𝜉𝑖𝐵𝑚0𝑖
+21
+0
+0
+
+⎤
+⎥
+⎥
+⎥
+⎥
+⎥
+⎥
+⎦
+
+.
+
+𝑎𝑖
+2
+
+0
+𝜂𝑖𝐵𝑚0𝑖
+12
+0
+0
+0
+0
+0
+𝜉𝑖𝐵𝑚0𝑖
+22
+0
+0
+
++ 1
+4
+
+⎡
+⎢
+⎢
+⎢
+⎢
+⎢
+⎢
+⎣
+
+0
+0
+0
+𝜂𝑖𝜉𝑖𝐽 𝑏0
+21
+0
+0
+
+0
+0
+0
+𝜂𝑖𝜉𝑖𝐽 𝑏0
+22
+0
+0
+
+0
+0
+0
+𝜂𝑖𝜉𝑖𝐽 𝑏0
+0
+0
+
+23 −
+
+𝑎𝑖
+2
+
+(A.2)
+
+Where, the corrected hourglass terms of the transverse shear bend-
+
+ing component become
+
+Fig. 23. Dynamic response of the cylinder panel along the symmetry line at 
+point z = 9.42 in.
+
+𝐉𝑏 =
+
+⎡
+⎢
+⎢
+⎢
+⎣
+
+𝜕𝐱𝑏
+𝜕𝜂
+𝜕𝐱𝑏
+𝜕𝜂
+𝜕𝐱𝑏
+𝜕𝜁
+
+⎤
+⎥
+⎥
+⎥
+⎦
+
+=
+
+𝑎
+
+8
+
+⎡
+⎢
+⎢
+⎣
+
+𝐽 𝑏0
+11
+𝐽 𝑏0
+21
+0
+
+𝐽 𝑏0
+12
+𝐽 𝑏0
+22
+0
+
+𝐽 𝑏0
+13
+𝐽 𝑏0
+23
+0
+
+⎤
+⎥
+⎥
+⎦
+
++
+
+𝑎
+
+8
+
+⎡
+⎢
+⎢
+⎣
+
+𝐽 𝑏1
+11
+𝐽 𝑏1
+21
+0
+
+𝜂 𝐽 𝑏1
+12
+𝜉 𝐽 𝑏1
+22
+0
+
+𝜂 𝐽 𝑏1
+13
+𝜉 𝐽 𝑏1
+23
+0
+
+𝜂
+𝜉
+
+⎤
+⎥
+⎥
+⎦
+
+ComputersandStructures291(2024)10720711X. Cui, G. Peng, Q. Ran et al.
+
+Fig. 25. Deformation process of tube impact system.
+
+Fig. 26. Deformation process of two ball.
+
+Table 5
+Comparison of computational eﬃciency.
+
+Element
+
+test
+
+a
+
+b
+
+c
+
+d
+
+e
+
+MITC4+R
+MITC4+
+
+1.73
+4.84
+
+14.83
+28.63
+
+4.76
+15.84
+
+11.08
+59.5
+
+349.67
+698.96
+
+𝐁
+
+𝑏𝑠𝐻
+1𝑖 =
+
+1
+4
+
+𝐁
+
+𝑏𝑠𝐻
+2𝑖 =
+
+1
+4
+
+𝑏𝑠𝐻
+
+4𝑖 = 1
+𝐁
+
+4
+
+⎡
+⎢
+⎢
+⎢
+⎢
+⎢
+⎢
+⎢
+⎣
+
+⎡
+⎢
+⎢
+⎢
+⎢
+⎢
+⎢
+⎢
+⎣
+
+⎡
+⎢
+⎢
+⎢
+⎢
+⎢
+⎢
+⎢
+⎣
+
++ 1
+4
+
+⎡
+⎢
+⎢
+⎢
+⎢
+⎢
+⎢
+⎢
+⎣
+
+0
+𝜂𝑖𝐽 𝑏1
+21
+0
+𝜉𝑖𝐽 𝑏1
+21
+0
+0
+
+0
+0
+0
+0
+0
+0.5𝜙H
+
+1DB𝑖
+
+0
+0
+0
+0
+0
+0.5𝜙H
+
+2DB𝑖
+
+−
+
+0
+0
+0
+0
+0
+0.5𝜙H
+3DB𝑖 −
+
+𝑎𝑖
+2
+
+𝑎𝑖
+4
+
+13 −
+
+0
+0
+𝜉𝑖𝐵0𝑖
+0
+0
+𝜓 H
+1DB𝑖 −
+
+𝑎𝑖
+2
+
+𝑎𝑖
+4
+
+0
+0
+𝜉𝑖𝐵0𝑖
+23
+0
+0
+𝜓 H
+
+2DB𝑖
+
+0
+0
+0
+0
+0.5𝜙H
+1AC𝑖
+0
+
+0
+0
+0
+0
+0.5𝜙H
+2AC𝑖
+0
+
+0
+0
+0
+0
+0.5𝜙H
+3AC𝑖 −
+0
+
+−
+
+𝑎𝑖
+2
+
+𝑎𝑖
+4
+
+0
+0
+𝜂
+
+𝐵0𝑖
+
+13 −
+
+1
+0
+𝜓 H
+1AC𝑖 −
+
+𝑎𝑖
+2
+
+𝑎𝑖
+4
+
+0
+0
+𝜂
+
+1
+0
+𝜓 H
+
+0
+
+𝐵0𝑖
+23
+
+2AC𝑖
+
+0
+
+𝑎𝑖
+2
+
+𝑎𝑖
+2
+
+0
+ℎ𝑖𝐵𝑚0𝑖
+21
+0
+ℎ𝑖𝐵𝑚0𝑖
+11
+0
+0
+
+⎤
+⎥
+⎥
+⎥
+⎥
+⎥
+⎥
+⎥
+⎦
+
+0
+21
+
+0
+11
+
+0
+ℎ𝑖𝐽 𝑏
+0
+ℎ𝑖𝐽 𝑏
+0
+0
+0
+𝜂𝑖𝐽 𝑏1
+22
+0
+𝜉𝑖𝐽 𝑏1
+22
+0
+0
+
+0
+ℎ𝑖𝐽 𝑏
+0
+ℎ𝑖𝐽 𝑏
+0
+0
+
+0
+22
+
+0
+12
+
+0
+ℎ𝑖𝐽 𝑏
+0
+ℎ𝑖𝐽 𝑏
+0
+0
+0
+𝜂𝑖𝐽 𝑏1
+23 −
+0
+𝜉𝑖𝐽 𝑏1
+23 −
+0
+0
+
+0
+
+23 −
+
+0
+
+13 −
+
+𝑎𝑖
+2
+
+𝑎𝑖
+2
+
+0
+ℎ𝑖𝐵𝑚0𝑖
+22
+0
+ℎ𝑖𝐵𝑚0𝑖
+12
+0
+0
+
+𝑎𝑖
+2
+
+𝑎𝑖
+2
+
+0
+𝜂𝑖𝐵𝑚1𝑖
+22
+0
+𝜉𝑖𝐵𝑚1𝑖
+12
+0
+0
+
+𝑎𝑖
+2
+
+𝑎𝑖
+2
+
+0
+𝜂𝑖𝐵𝑚1𝑖
+21
+0
+𝜉𝑖𝐵𝑚1𝑖
+11
+0
+0
+
+⎤
+⎥
+⎥
+⎥
+⎥
+⎥
+⎥
+⎥
+⎦
+
+,
+
+⎤
+⎥
+⎥
+⎥
+⎥
+⎥
+⎥
+⎥
+⎦
+
+⎤
+⎥
+⎥
+⎥
+⎥
+⎥
+⎥
+⎥
+⎦
+
+,
+
+,
+
+(A.6)
+
+(A.7)
+
+(A.8)
+
+Fig. 27. Deformation process of two ball.
+
+𝑏𝑠𝐻
+
+5𝑖 = 1
+𝐁
+
+4
+
+⎡
+⎢
+⎢
+⎢
+⎢
+⎢
+⎢
+⎢
+⎣
+𝜉𝑖𝐽 𝑏1
+21
+0
+0
+𝜉𝑖𝐽 𝑏1
+11
+0
+0
+
+0
+21
+
+0
+11
+
+ℎ𝑖𝐽 𝑏
+0
+0
+ℎ𝑖𝐽 𝑏
+0
+0
+𝜉𝑖𝐽 𝑏1
+22
+0
+0
+𝜉𝑖𝐽 𝑏1
+12
+0
+0
+
+0
+22
+
+0
+12
+
+ℎ𝑖𝐽 𝑏
+ℎ𝑖𝐽 𝑏
+0
+0
+0
+0
+ℎ𝑖𝐽 𝑏
+ℎ𝑖𝐽 𝑏
+0
+0
+0
+0
+𝑎𝑖
+𝜉𝑖𝐽 𝑏1
+23 −
+2
+0
+0
+𝜉𝑖𝐽 𝑏1
+13 −
+0
+0
+
+𝑎𝑖
+2
+
++ 1
+4
+
+⎡
+⎢
+⎢
+⎢
+⎢
+⎢
+⎢
+⎢
+⎣
+
+0
+
+13 −
+
+0
+
+23 −
+
+𝑎𝑖
+2
+
+𝑎𝑖
+2
+
+ℎ𝑖𝐵𝑚0𝑖
+12
+0
+0
+ℎ𝑖𝐵𝑚0𝑖
+22
+0
+0
+
+𝑎𝑖
+2
+
+𝑎𝑖
+2
+
+ℎ𝑖𝐵𝑚0𝑖
+11
+0
+0
+ℎ𝑖𝐵𝑚0𝑖
+11
+0
+0
+
+⎤
+⎥
+⎥
+⎥
+⎥
+⎥
+⎥
+⎥
+⎦
+
+𝜉𝑖𝐵𝑚1𝑖
+12
+0
+0
+𝜂𝑖𝐵𝑚1𝑖
+22
+0
+0
+
+𝑎𝑖
+2
+
+𝑎𝑖
+2
+
+𝜉𝑖𝐵𝑚1𝑖
+11
+0
+0
+𝜂𝑖𝐵𝑚1𝑖
+11
+0
+0
+
+⎤
+⎥
+⎥
+⎥
+⎥
+⎥
+⎥
+⎥
+⎦
+
+.
+
+The term of 𝐵𝑖𝑘
+
+𝛼𝛽 are given by
+
+𝛼𝛽 = 𝐉𝑖
+𝐵𝑖𝑘
+
+𝛼 ⋅ 𝐕𝑘
+𝛽 ,
+
+(A.9)
+
+(A.10)
+
+ComputersandStructures291(2024)10720712X. Cui, G. Peng, Q. Ran et al.
+
+where 𝛼 =1 - 3; 𝛽 = 1 - 2; i = 0, m0, m1, the transverse shear inter-
+polation coeﬃcients by
+(
+𝜉𝑖 + ℎ𝑖
+(
+1 + 𝜂𝑖
+
+(
+𝜂𝑖 + ℎ𝑖
+(
+
+)
+
+)
+
+)
+
+)
+
+)
+
+)
+
+,
+
+,
+
+𝜙0
+𝑥DB𝑖 = 𝐽 D
+3𝛼
+𝛽DB𝑖 = 𝐵D
+𝜓 0
+𝛽2𝑖
+(
+𝜂𝑖 + ℎ𝑖
+𝛼DB𝑖 = 𝐽 D
+𝜙H
+3𝑥
+(
+𝛽DB𝑖 = 𝐵D
+𝜓 H
+𝛽2𝑖
+
+1 + 𝜉𝑖
+
+1 + 𝜉𝑖
+)
+
+)
+
+)
+
+(
+𝜂𝑖 − ℎ𝑖
+(
+1 − 𝜉𝑖
+)
+
++ 𝐽 B
+3𝛼
++ 𝐵B
+𝛽2𝑖
+(
+𝜂𝑖 − ℎ𝑖
+(
+1 − 𝜉𝑖
+
+− 𝐽 B
+3𝛼
+− 𝐵B
+𝛽2𝑖
+
+)
+
+,
+
+𝑥AC𝑖 = 𝐽 A
+𝜙0
+3𝑥
+𝛽AC𝑖 = 𝐵A
+𝜓 0
+𝛽1𝑖
+(
+𝜉𝑖 + ℎ𝑖
+𝛼AC𝑖 = 𝐽 A
+𝜙H
+3𝛼
+(
+𝛽ACi = 𝐵A
+1 + 𝜂𝑖
+𝜓 H
+𝛽1𝑖
+
+)
+
+)
+
+)
+
+(
+𝜉𝑖 − ℎ𝑖
+(
+1 − 𝜂𝑖
+)
+
++ 𝐽 C
+3𝑥
++ 𝐵C
+𝛽1𝑖
+(
+𝜉𝑖 − ℎ𝑖
+(
+1 − 𝜂𝑖
+
+− 𝐽 C
+3𝑥
+− 𝐵C
+𝛽1𝑖
+
+)
+
+where 𝐉𝐴,𝐵,𝐶,𝐷
+𝛼
+
+is the Jacobian terms in sampling point.
+
+𝐵A,B,C,D
+𝛼𝛽𝑖
+
+= 𝐉𝐴,𝐵,𝐶,𝐷
+𝛼
+
+⋅ 𝐕𝑖
+𝛽 ,
+
+and 𝛼 = 1 − 3; 𝛽 = 1 − 2; 𝑖 = 1 − 4.
+
+References
+
+(A.11)
+
+(A.12)
+
+[1] Adini Ari, Clough Ray W. Analysis of plate bending by the ﬁnite element method. 
+
+[2] MacNeal Richard. Perspective on ﬁnite elements for shell analysis. Finite Elem Anal 
+
+University of California; 1960.
+
+Des 1998;30:175–86.
+
+[3] Hughes Thomas, Tezduyar Tayfun. Finite elements based upon Mindlin plate theory 
+with particular reference to the four-node bilinear isoparametric element. J Appl 
+Mech 1981;48:587–96.
+
+[4] Ahmad Sohrabuddin. Curved ﬁnite elements in the analysis of solid, shell and plate 
+
+structures. PhD thesis. University College of Swansea; 1969.
+
+[5] Bathe Klaus-Jürgen,  Dvorkin Eduardo.  A  formulation  of  general  elements—the 
+use of mixed interpolation of tensorial components. Int J Numer Methods Eng 
+1986;22:697–722.
+
+[6] Jang Junho, Pinsky Peter. A covariant strain based 9-node shell element. Int J Numer 
+
+Methods Eng 1987;24:2389–411.
+
+[7] Zienkiewicz O, Taylor R, Too J. Reduced integration technique in general analysis 
+
+of plates and shells. Int J Numer Methods Eng 1971;3:275–90.
+
+[8] Macneal Richard, Harder Robert. A proposed set of problems to test ﬁnite element 
+
+accuracy. Finite Elem Anal Des 1985;1:3–20.
+
+[9] Stolarski Henryk, Belytschko Ted. Shear and membrane locking in c0 elements. 
+
+Comput Methods Appl Mech Eng 1983;41:279–96.
+
+[10] Hughes Thomas, Taylor R, Kanok-Nukulchai Worsak. A simple and eﬃcient fe for 
+
+plate bending. Int J Numer Methods Eng 1977;11:1529–43.
+
+[11] Hughes Thomas, Cohen Martin, Haroun Medhat. Reduced and selective integration 
+
+techniques in the f.e. analysis of plates. Nucl Eng Des 1978;46:203–22.
+
+[12] Macneal Richard. Derivation of element stiﬀness matrices by assumed strain distri-
+
+butions. Nucl Eng Des 1982;70:3–12.
+
+[13] Koschnick Frank, Bischoﬀ Manfred, Camprubí Natalia, Bletzinger Kai-Uwe. The dis-
+crete strain gap method and membrane locking. Comput Methods Appl Mech Eng 
+2005;194(21–24):2444–63.
+
+[14] Bletzinger Kai-Uwe, Bischoﬀ Manfred, Ramm Ekkehard. A uniﬁed approach for 
+shear-locking-free triangular and rectangular shell ﬁnite elements. Comput Struct 
+2000;75(3):321–34.
+
+[15] Simo J, Rifai M. A class of mixed assumed strain methods and the method of incom-
+
+patible modes. Int J Numer Methods Eng 1990;29:1595–638.
+
+[16] Wriggers Peter, Reese Stefanie. A note on enhanced strain method for large defor-
+
+mations. Comput Methods Appl Mech Eng 1996;135:201–9.
+
+[17] Katili Irwan, Batoz Jean-Louis, Maknun Imam, Hamdouni Aziz, Millet Olivier. The 
+development of dkmq plate bending element for thick to thin shell analysis based 
+on the Naghdi/Reissner/Mindlin shell theory. Finite Elem Anal Des 2015;100.
+[18] Štembera Vítˇezslav, Füssl Josef. Dkmq24 shell element with improved membrane 
+
+behaviour. Finite Elem Anal Des 2020;175:103341.
+
+[19] Pantuso Daniel, Bathe Klaus-Jürgen. A four-node quadrilateral mixed-interpolated 
+element for solids and ﬂuids. Math Models Methods Appl Sci 1995;5(08):1113–28.
+[20] Dvorkin Eduardo, Bathe Klaus-Jürgen. A continuum mechanics based four-node 
+
+shell element for general nonlinear analysis. Eng Comput 1984;1:77–88.
+
+[21] Bathe Klaus-Jürgen,  Dvorkin Eduardo.  A  formulation  of  general  elements—the 
+use of mixed interpolation of tensorial components. Int J Numer Methods Eng 
+1986;22:697–722.
+
+[22] Bathe Klaus-Jürgen, Brezzi Franco, Marini L Donatella. The MITC9 shell element 
+in plate bending: mathematical analysis of a simpliﬁed case. Comput Mech jan 
+2011;47(6):617–26.
+
+[23] Bucalem Miguel Luiz, Bathe Klaus-Jüen. Higher-order MITC general shell elements. 
+
+Int J Numer Methods Eng nov 1993;36(21):3729–54.
+
+[24] Kim Do-Nyun, Bathe Klaus-Jürgen. A triangular six-node shell element. Comput 
+
+Struct 2009;87:1451–60.
+
+[25] da Veiga L Beirao, Chapelle Dominique, Suarez I Paris. Towards improving the 
+
+MITC6 triangular shell element. Comput Struct 2007;85(21–22):1589–610.
+
+[26] Choi Chang-Koon, Paik Jong-Gyun. An eﬃcient four node degenerated shell element 
+based on the assumed covariant strain. Struct Eng Mech mar 1994;2(1):17–34.
+[27] Koschnick Frank, Bischoﬀ Manfred, Camprubí Natalia, Bletzinger Kai-Uwe. The dis-
+crete strain gap method and membrane locking. Comput Methods Appl Mech Eng 
+2005;194(21):2444–63.
+
+[28] Ko Yeongbin, Lee Phill-Seung, Bathe Klaus-Jürgen. The mitc4+ shell element and 
+
+its performance. Comput Struct 2016;169:57–68.
+
+[29] Ko Yeongbin, Lee Youngyu, Lee Phill-Seung, Bathe Klaus-Jürgen. Performance of the 
+mitc3+ and mitc4+ shell elements in widely-used benchmark problems. Comput 
+Struct 2017;193:187–206.
+
+[30] Kosloﬀ Dan, Frazier Gerald A. Treatment of hourglass patterns in low order ﬁnite 
+
+element codes. Int J Numer Anal Methods Geomech 1978;2(1):57–72.
+
+[31] Taylor RL. Finite element for general shell analysis. In: 5th international seminar on 
+
+computational aspects of the ﬁnite element method; 1979.
+
+[32] Hughes Thomas JR, Liu Wing Kam. Nonlinear ﬁnite element analysis of shells: Part 
+I. Three-dimensional shells. Comput Methods Appl Mech Eng 1981;26(3):331–62.
+[33] Ted Belytschko, Lin Jerry I, Chen-Shyh Tsay. Explicit algorithms for the nonlinear 
+
+dynamics of shells. Comput Methods Appl Mech Eng 1984;42(2):225–51.
+
+[34] Belytschko Ted,  Leviathan Itai.  Physical  stabilization  of  the  4-node  shell 
+element  with  one  point  quadrature.  Comput  Methods  Appl  Mech  Eng 
+1994;113(3–4):321–50.
+
+[35] Cardoso Rui PR, Yoon Jeong-Whan, Grácio José J, Barlat Frédéric, de Sá José 
+MA  César.  Development  of  a  one  point  quadrature  shell  element  for  nonlin-
+ear applications with contact and anisotropy. Comput Methods Appl Mech Eng 
+2002;191(45):5177–206.
+
+[36] Zeng Qiang, Combescure Alain. A new one-point quadrature, general non-linear 
+quadrilateral shell element with physical stabilization. Int J Numer Methods Eng 
+1998;42(7):1307–38.
+
+[37] Abed-Meraim Farid,  Combescure Alain.  An  improved  assumed  strain  solid–
+shell  element  formulation  with  physical  stabilization  for  geometric  non-linear 
+applications  and  elastic–plastic  stability  analysis.  Int  J  Numer  Methods  Eng 
+2009;80(13):1640–86.
+
+[38] Bathe Klaus-Jürgen. Finite element procedures. Englewood Cliﬀs, NJ: Prentice-Hall; 
+
+1982.
+
+[39] Hiller Jean-François,  Bathe Klaus-Jürgen.  Measuring  convergence  of  mixed  ﬁ-
+nite  element  discretizations:  an  application  to  shell  structures.  Comput  Struct 
+2003;81:639–54.
+
+[40] Lee Youngyu, Yoon Kyungho, Lee Phill-Seung. Improving the mitc3 shell ﬁnite ele-
+
+ment by using the Hellinger–Reissner principle. Comput Struct 2012;110:93–106.
+[41] Version  Abaqus.  6.14  documentation.  Dassault  Systemes  Simulia  Corporation, 
+
+651(6.2), 2014.
+
+[42] Morino Luigi, Leech J, Witmer E. An improved numerical calculation technique for 
+large elastic-plastic transient deformations of thin shells: Part 2—evaluation and 
+applications. J Appl Mech 1971;38:429.
+
+ComputersandStructures291(2024)10720713

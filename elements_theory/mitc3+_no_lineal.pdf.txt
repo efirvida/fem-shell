@@ -1,0 +1,2478 @@
+Computers and Structures 146 (2015) 91–104
+
+Contents lists available at ScienceDirect
+
+Computers and Structures
+
+j o u r n a l h o m e p a g e : w w w . e l s e v i e r . c o m / l o c a t e / c o m p s t r u c
+
+The MITC3+ shell element in geometric nonlinear analysis
+Hyeong-Min Jeon a, Youngyu Lee a, Phill-Seung Lee a,⇑
+
+, Klaus-Jürgen Bathe b
+
+a Division of Ocean Systems Engineering, Korea Advanced Institute of Science and Technology, 291 Daehak-ro, Yuseong-gu, Daejeon 305-701, Republic of Korea
+b Department of Mechanical Engineering, Massachusetts Institute of Technology, Cambridge, MA 02139, USA
+
+a r t i c l e
+
+i n f o
+
+a b s t r a c t
+
+In this paper, we present the MITC3+ shell ﬁnite element for geometric nonlinear analysis and demon-
+strate its performance. The MITC3+ shell element, recently proposed for linear analysis [1], represents
+a further development of the MITC3 shell element. The total Lagrangian formulation is employed allow-
+ing for large displacements and large rotations. Considering several analysis problems, the nonlinear
+solutions using the MITC3+ shell element are compared with those obtained using the MITC3 and MITC4
+shell elements. We conclude that the MITC3+ shell element shows, in the problems considered, the same
+excellent performance in geometric nonlinear analysis as already observed in linear analysis.
+
+(cid:2) 2014 Elsevier Ltd. All rights reserved.
+
+Article history:
+Received 17 June 2014
+Accepted 15 September 2014
+
+Keywords:
+Shell element
+3-node triangular element
+Mixed ﬁnite element method
+MITC method
+Geometric nonlinear analysis
+Large displacements and rotations
+
+1. Introduction
+
+Due to signiﬁcant efforts over the past decades, the ﬁnite ele-
+ment method has become a powerful tool for the linear and non-
+linear analyses of shell structures [2]. The available capabilities
+have been continuously improved in reliability and effectiveness
+but there are still important research and development tasks to
+be accomplished. One such task is the development of an optimal
+3-node shell element.
+
+When modeling complex shell structures, an effective mesh of
+triangular shell elements is relatively easy to generate provided
+general element shapes are allowed, that is, the element employed
+must be effective even when used in general triangular shapes. Lee
+et al. proposed recently the 3-node MITC3+ shell element for linear
+analysis that was shown to perform even well when highly dis-
+torted elements are used [1]. Hence this element is a good candi-
+date for use in general meshes. Of course, a shell surface can also
+be meshed rather easily using 4-node quadrilateral elements, but
+then in general practical analysis quite distorted elements might
+be present that show low predictive capabilities. Namely, quadri-
+lateral elements generally do not perform well when highly
+distorted.
+
+It is difﬁcult to develop effective shell ﬁnite elements that give
+reliable and efﬁcient solutions for general shell problems, when
+considering the various shell geometries, boundary and loading
+conditions, and mesh patterns used [2–4]. The difﬁculty is basically
+
+⇑ Corresponding author.
+
+E-mail address: phillseung@kaist.edu (P.S. Lee).
+
+http://dx.doi.org/10.1016/j.compstruc.2014.09.004
+0045-7949/(cid:2) 2014 Elsevier Ltd. All rights reserved.
+
+due to the highly sensitive and complex behavior of shell struc-
+tures (categorized as bending dominated, membrane dominated
+and mixed behaviors), in particular, when the shell thickness is
+small [3,4]. Then a shell ﬁnite element discretization frequently
+gives too stiff solutions. This phenomenon is called ‘‘locking’’,
+which must be alleviated for reliable shell ﬁnite element analysis.
+Among various schemes to alleviate the locking, the MITC (Mixed
+Interpolation of Tensorial Components) scheme has been used very
+successfully in the development of general shell elements [1–7].
+
+The MITC3+ shell element is based on the concepts of the MITC3
+shell element developed by Lee and Bathe [6] with an enrichment
+by a cubic bubble function for the rotations. The cubic bubble func-
+tion provides a higher-order interpolation inside the element to
+enrich the element behavior while maintaining the linear interpo-
+lation along the element edges. The degrees of freedom corre-
+sponding to the bubble function can be statically condensed out
+on the element level. To alleviate shear locking, a newly developed
+assumed transverse shear strain ﬁeld is used. The shell element
+passes the basic numerical tests – the isotropy, zero energy mode
+and patch tests – and shows an excellent convergence behavior in
+linear analysis.
+
+A particular strength of the MITC approach is that a formulation
+achieved for linear analysis can be directly extended to nonlinear
+analysis by ‘‘simply’’ using the appropriate stress and strain mea-
+sures [2], although the performance in nonlinear solutions must
+then of course still be studied.
+
+Our objective in this paper is to present the formulation of the
+MITC3+ shell element in geometric nonlinear analysis. The stan-
+dard total Lagrangian formulation is employed allowing for large
+
+92
+
+H.M. Jeon et al. / Computers and Structures 146 (2015) 91–104
+
+Fig. 1. The MITC3+ shell ﬁnite element with the bubble node: (a) Geometry of the MITC3+ shell ﬁnite element. (b) Deﬁnition of rotational degrees of freedom ak and bk. In
+linear analysis the superscript t is not used.
+
+displacements and large rotations [2]. Solving various shell prob-
+lems, the performance of the MITC3+ shell element is evaluated
+by comparison of the solution accuracies obtained with the
+MITC3+, MITC3 and MITC4 shell elements. Of course, the MITC4
+quadrilateral shell element has been, and is, widely employed in
+
+engineering practice due to its superior performance in both linear
+and nonlinear analyses. Our study reveals that the performance of
+the MITC3+ shell element in nonlinear analysis is as good as the
+performance of the MITC4 shell element, even when highly dis-
+torted meshes are used.
+
+Next, in Section 2, the linear formulation of the MITC3+ shell
+element is reviewed and, in Section 3, we present the geometric
+nonlinear formulation. In Section 4, we examine the performance
+of the MITC3+ shell element in geometric nonlinear analysis
+through the solutions of various shell problems.
+
+2. The MITC3+ shell element for linear analysis
+
+In this section, we brieﬂy review the formulation of the
+MITC3+ shell element for linear analysis [1]. The two key aspects
+of the MITC3+ shell element are the geometry and displacement
+interpolations and the assumed covariant transverse shear strain
+ﬁelds.
+
+(a)
+
+(b)
+
+2.1. Geometry and displacement interpolations
+
+The geometry interpolation of the MITC3+ shell element, shown
+
+in Fig. 1, is given by
+
+(c)
+
+Fig. 2. Transverse shear strains e1n, e2n and e3n, and the tying positions (A), (B), (C),
+(D), (E) and (F) for the assumed transverse shear strain ﬁeld.
+
+Table 1
+Tying positions for the assumed transverse shear strain for the MITC3+ shell
+elements. The distance d is deﬁned in Fig. 2(c), and d = 1/10,000 is used [1].
+
+Tying position
+
+r
+
+Fig. 2(b)
+
+Fig. 2(c)
+
+(A)
+(B)
+(C)
+(D)
+(E)
+(F)
+
+1/6
+2/3
+1/6
+1/3 + d
+1/3 (cid:2) 2d
+1/3 + d
+
+s
+
+2/3
+1/6
+1/6
+1/3 (cid:2) 2d
+1/3 + d
+1/3 + d
+
+(a)
+
+(b)
+
+Fig. 3. Cantilever plate subjected to end shear force. (a) Problem description. (b)
+Meshes used for the MITC4 (top), MITC3 and MITC3+ (bottom) shell elements.
+
+H.M. Jeon et al. / Computers and Structures 146 (2015) 91–104
+
+93
+
+Fig. 4. Load–displacement curves for the cantilever plate subjected to end shear force. For the triangular element meshes, essentially the same response is measured at the
+two corners.
+
+position vector of node i in the global Cartesian coordinate system,
+ai and Vi
+n denote the shell thickness and the director vector at node
+i, respectively, and fi(r, s) are the two-dimensional interpolation
+functions that include the cubic bubble function f4 corresponding
+to the internal node 4
+
+f 1 ¼ h1 (cid:2)
+
+1
+3
+f 4 ¼ 27rsð1 (cid:2) r (cid:2) sÞ:
+
+f 4;
+
+f 2 ¼ h2 (cid:2)
+
+1
+3
+
+f 4;
+
+f 3 ¼ h3 (cid:2)
+
+1
+3
+
+f 4;
+
+ð2Þ
+
+Unlike the standard 3-node shell elements, the MITC3+ shell
+element has an internal node and the corresponding cubic bubble
+function in the geometry interpolation.
+
+From Eq. (1), the displacement interpolation of the MITC3+ shell
+
+element for linear analysis is obtained by [1]
+
+Fig. 5. Deformed conﬁgurations of the cantilever plate under end shear force.
+
+Fig. 6. Cantilever plate subjected to end moment.
+
+xðr; s; nÞ ¼
+
+3
+X
+
+hiðr; sÞxi þ
+
+i¼1
+
+n
+2
+
+4
+X
+
+i¼1
+
+aif iðr; sÞVi
+
+n
+
+with h1 ¼ 1 (cid:2) r (cid:2) s; h2 ¼ r; h3 ¼ s;
+
+uðr; s; nÞ ¼
+
+3
+X
+
+hiðr; sÞui þ
+
+i¼1
+
+n
+2
+
+4
+X
+
+i¼1
+
+(cid:2)
+
+aif iðr; sÞ (cid:2)Vi
+
+2ai þ Vi
+
+1bi
+
+(cid:3)
+;
+
+ð3Þ
+
+1 and Vi
+
+1 and Vi
+
+n about Vi
+
+in which ui is the nodal displacement vector in the global Cartesian
+coordinate system, Vi
+2 are the unit vectors orthogonal to Vi
+n
+and to each other, and ai and bi are the rotations of the director vec-
+tor Vi
+2, respectively, at node i.
+The interior node, with rotation degrees of freedom only, is
+positioned on the ﬂat surface deﬁned by the three corner nodes
+of the element. Only the bending and transverse shear strain ﬁelds
+are enriched by the bubble function, and the geometry of the ele-
+ment remains ﬂat, as for the MITC3 element, in a large deformation
+analysis. Of course, static condensation can be carried out on the
+element level for the rotations a4 and b4, and hence in practice
+the element is really a 3-node element.
+
+2.2. Assumed covariant transverse shear strain ﬁelds
+
+For linear analysis, the linear part of the Green–Lagrange strain
+
+tensor is used and its covariant strain components are
+
+eij ¼
+
+(cid:4)
+
+1
+2
+
+gi (cid:3) u;j þ gj (cid:3) u;i
+
+(cid:5);
+
+in which
+
+ð4Þ
+
+ð5Þ
+
+a4V4
+
+n ¼
+
+1
+3
+
+(cid:2)
+a1V1
+
+n þ a2V2
+
+n þ a3V3
+
+n
+
+(cid:3)
+
+;
+
+ð1Þ
+
+gi ¼
+
+@x
+@ri
+
+; u;i ¼
+
+@u
+@ri
+
+with r1 ¼ r; r2 ¼ s; r3 ¼ n:
+
+in which hi(r, s) is the two-dimensional interpolation function of the
+standard isoparametric procedure corresponding to node i, xi is the
+
+Since the MITC3+ shell element is ﬂat, the covariant in-plane
+strain components are directly calculated using Eqs. (1)–(5). How-
+
+94
+
+H.M. Jeon et al. / Computers and Structures 146 (2015) 91–104
+
+Fig. 7. Load–displacement curves for the cantilever plate subjected to end moment. For the triangular element meshes, essentially the same response is measured at the two
+corners.
+
+excellent convergence behavior in both membrane and bending
+dominated shell problems, even when distorted meshes are used
+[1].
+
+3. The MITC3+ shell element for geometric nonlinear analysis
+
+In this section, we present the geometric nonlinear formulation
+of the MITC3+ shell element. The total Lagrangian formulation is
+employed allowing for large displacements and large rotations. In
+the formulation, a superscript (and subscript) t is used to denote
+‘‘time’’ for general analysis, with in static solutions ‘‘time’’ simply
+denoting the load step and conﬁguration [2].
+
+We discuss below the large displacement kinematics and the
+interpolation of the Green–Lagrange strain components. With the
+given expressions, the now classical incremental equations used
+in the total Lagrangian formulation can directly be established [2].
+
+3.1. Large displacement kinematics
+
+Fig. 8. Deformed conﬁgurations of the cantilever plate under end moment.
+
+uration at time t shown in Fig. 1 is interpolated with
+
+The geometry of the MITC3+ shell ﬁnite element in the conﬁg-
+
+ever, the covariant transverse shear strain ﬁelds are established
+using the MITC scheme to alleviate shear locking. The assumed
+transverse shear strain ﬁelds of the MITC3+ shell element are given
+by
+
+eAS
+rn ¼
+
+eAS
+sn ¼
+
+(cid:6)
+
+eðBÞ
+rn (cid:2)
+
+(cid:6)
+
+eðAÞ
+sn (cid:2)
+
+2
+3
+
+2
+3
+
+1
+2
+
+1
+2
+
+(cid:7)
+
+þ
+
+eðBÞ
+sn
+
+(cid:7)
+
+þ
+
+eðAÞ
+rn
+
+1
+3
+
+1
+3
+
+(cid:2)
+
+rn þ eðCÞ
+eðCÞ
+
+sn
+
+(cid:3)
+
+þ
+
+(cid:2)
+
+rn þ eðCÞ
+eðCÞ
+
+sn
+
+(cid:3)
+
+þ
+
+1
+3
+
+1
+3
+
+^cð3s (cid:2) 1Þ;
+
+txðr; s; nÞ ¼
+
+3
+X
+
+hiðr; sÞtxi þ
+
+i¼1
+
+n
+2
+
+4
+X
+
+aif iðr; sÞtVi
+n;
+
+i¼1
+
+ð7Þ
+
+in which txi is the position vector of node i in the conﬁguration at
+time t, and tVi
+n denotes the director vector at node i in the conﬁgu-
+ration at time t.
+
+The incremental displacements from the conﬁguration at time t
+
+to the conﬁguration at time t + Dt are
+
+^cð1 (cid:2) 3rÞ;
+
+ð6Þ
+
+uðr; s; nÞ ¼ tþDtxðr; s; nÞ (cid:2) txðr; s; nÞ;
+
+sn þ eðEÞ
+
+rn (cid:2) eðFÞ
+
+rn (cid:2) eðDÞ
+
+where ^c ¼ eðFÞ
+sn and the tying positions (A), (B), (C),
+(D), (E), and (F) are presented in Fig. 2 and Table 1. We use d = 1/
+10,000 as suggested [1]. If d = 0 is used, there is one spurious zero
+eigenvalue for a single element, which however disappears as soon
+as two elements are used in the mesh.
+
+and hence
+
+uðr; s; nÞ ¼
+
+3
+X
+
+i¼1
+
+hiðr; sÞui þ
+
+n
+2
+
+4
+X
+
+(cid:2)
+aif iðr; sÞ tþDtVi
+
+n (cid:2) tVi
+
+n
+
+i¼1
+
+The MITC3+ shell element is based on the ‘basic mathematical
+shell model’ [4,8,9] and the MITC scheme. The element passes
+the basic numerical tests, namely, the isotropy, zero energy mode,
+and patch tests. Furthermore, the MITC3+ shell element shows an
+
+where ui is the vector of incremental nodal displacements at node i
+from time t to time t + Dt. Note that u(r, s, n) is the displacement
+vector in the linear formulation, see Eq. (3), but here it is the vector
+of incremental displacements.
+
+ð8Þ
+
+ð9Þ
+
+(cid:3)
+;
+
+H.M. Jeon et al. / Computers and Structures 146 (2015) 91–104
+
+95
+
+Fig. 9. Slit annular plate under end shear force. (a) Problem description. (b) Meshes used.
+
+ð12Þ
+
+ð13Þ
+
+The director vector at time t + Dt at node i is obtained from the
+
+director vector at time t
+
+tþDtVi
+
+n ¼ tþDt
+
+t Q
+
+i tVi
+n;
+
+ð10Þ
+
+t Q i is the rotation matrix which rotates the director
+in which tþDt
+vector at node i from the conﬁguration at time t to the conﬁguration
+at time t + Dt. Additionally, the two unit vectors tVi
+2 are
+obtained by (see Fig. 1(b)),
+
+1 and tVi
+
+with
+
+i
+
+tþDt
+
+t Q
+
+¼ I3 þ
+
+(cid:2)
+sin tþDt
+
+t hi
+
+(cid:3)
+
+i
+
+tþDt
+
+t h
+
+i
+
+tþDt
+
+t H
+
+2
+
+4
+
+1
+2
+
+þ
+
+(cid:2)
+sin tþDt
+
+t hi=2
+
+(cid:3)
+
+3
+
+2
+
+tþDt
+
+t h
+
+i
+
+=2
+
+5
+
+(cid:2)
+
+tþDt
+
+t H
+
+(cid:3)2
+
+i
+
+tVi
+
+1 ¼
+
+e2 (cid:4) tVi
+n
+(cid:8)
+e2 (cid:4) tVi
+(cid:8)
+(cid:8)
+n
+
+(cid:8)
+(cid:8)
+(cid:8)
+
+;
+
+tVi
+
+2 ¼ tVi
+
+n (cid:4) tVi
+1:
+
+ð11Þ
+
+i
+
+tþDt
+
+t H
+
+¼
+
+2
+
+6
+6
+6
+4
+
+For the vector-like parameterization of ﬁnite rotations [2,10],
+
+we employ the well-known formula
+
+0
+
+(cid:2)tþDt
+
+t hi
+
+3
+
+tþDt
+
+3
+
+t hi
+t hi
+
+2
+
+(cid:2)tþDt
+
+0
+
+tþDt
+
+t hi
+
+1
+
+tþDt
+
+(cid:2)tþDt
+
+2
+
+t hi
+t hi
+
+1
+
+3
+
+7
+7
+7
+5
+
+;
+
+0
+
+Fig. 10. Load–displacement curves for the slit annular plate under end shear force.
+
+96
+
+H.M. Jeon et al. / Computers and Structures 146 (2015) 91–104
+
+i
+
+tþDt
+
+t h
+
+¼ ai
+
+tVi
+
+1 þ bi
+
+tVi
+2;
+
+in which I3 is the 3 (cid:4) 3 identity matrix, tþDt
+t hi
+
+ric matrix
+
+¼ ½tþDt
+ﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃ
+2
+i
+ðtþDt
+t h
+3Þ
+
+tþDt
+
+t hi
+
+¼
+
+operator,
+
+þ ðtþDt
+
+þ ðtþDt
+
+t hi
+
+i
+1Þ
+
+i
+2Þ
+
+t h
+
+t h
+
+q
+
+tþDt
+
+2
+
+1
+
+2
+
+.
+
+ð14Þ
+t Hi is the skew-symmet-
+t hi
+and
+3(cid:5)
+
+t hi
+
+tþDt
+
+tþDt
+
+2
+
+,
+
+T
+
+Using a Taylor series expansion, the ﬁnite rotation tensor tþDt
+
+t Q i
+
+can be represented by
+
+i
+
+tþDt
+
+t Q
+
+¼ I3 þ tþDt
+
+t H
+
+i
+
+þ
+
+1
+2!
+
+(cid:2)
+
+tþDt
+
+t H
+
+(cid:3)2
+
+i
+
+þ
+
+1
+3!
+
+(cid:2)
+
+tþDt
+
+t H
+
+(cid:3)3
+
+i
+
+þ (cid:3) (cid:3) (cid:3) (cid:3) (cid:3) (cid:3) :
+
+ð15Þ
+
+Fig. 11. Deformed conﬁgurations of the slit annular plate under end shear force.
+
+Fig. 12. Hemispherical shell subjected to alternating radial forces. (a) Problem solved. (b) Meshes used (8 (cid:4) 32).
+
+H.M. Jeon et al. / Computers and Structures 146 (2015) 91–104
+
+97
+
+Fig. 13. Load–displacement curves for the hemispherical shell subjected to alternating radial forces when (a) 8 (cid:4) 32 and (b) 12 (cid:4) 48 element meshes are used.
+
+Fig. 14. Deformed conﬁgurations of the hemispherical shell subjected to alternating radial forces.
+
+98
+
+H.M. Jeon et al. / Computers and Structures 146 (2015) 91–104
+
+Fig. 15. Clamped semi-cylindrical shell under point load. (a) Problem description (b) Meshes used (20 (cid:4) 20).
+
+Using only the terms up to quadratic order in Eq. (15), the fol-
+
+3.2. Green–Lagrange strain and its interpolation
+
+lowing equation is obtained
+
+tþDtVi
+
+n (cid:2) tVi
+
+n ¼ tþDt
+t h
+
+i
+
+(cid:4) tVi
+
+n þ
+
+1
+2
+
+i
+
+tþDt
+
+t h
+
+(cid:4) ðtþDt
+
+t h
+
+i
+
+(cid:4) tVi
+
+nÞ;
+
+ð16Þ
+
+The covariant components of the Green–Lagrange strain tensor
+in the conﬁguration at time t, referred to the conﬁguration at time
+0, are deﬁned by [2]
+
+and using Eq. (14) in Eq. (16), we obtain for a ‘consistent lineariza-
+tion’ of the element displacements [2]
+
+t
+
+0eij ¼
+
+(cid:4)
+
+1
+2
+
+tgi (cid:3) tgj (cid:2) 0gi (cid:3) 0gj
+
+(cid:5) with 0gi ¼
+
+@0x
+@ri
+
+; tgi ¼
+
+@tx
+@ri
+
+¼ 0gi þ tu;i;
+
+tþDtVi
+
+n (cid:2) tVi
+
+n ¼ (cid:2)ai
+
+tVi
+
+2 þ bi
+
+tVi
+
+1 (cid:2)
+
+1
+2
+
+(cid:4)
+ai
+
+2 þ b2
+i
+
+(cid:5)tVi
+n:
+
+ð17Þ
+
+Substituting Eq. (17) into Eq. (9), the vector of incremental dis-
+
+placements including second-order rotation effects is
+
+in which tu;i ¼
+
+@tu
+@ri
+
+; tu ¼ tx (cid:2) 0x; r1 ¼ r; r2 ¼ s; r3 ¼ n:
+
+ð23Þ
+
+Hence the incremental covariant strains are
+
+ð22Þ
+
+0eij ¼ tþDt
+
+0eij (cid:2) t
+
+0eij
+
+uðr; s; nÞ ¼
+
+3
+X
+
+hiðr; sÞui
+
+i¼1
+
+þ
+
+n
+2
+
+4
+X
+
+i¼1
+
+(cid:10)
+
+aif iðr; sÞ (cid:2)ai
+
+tVi
+
+2 þ bi
+
+tVi
+
+1 (cid:2)
+
+(cid:4)
+ai
+
+2 þ b2
+i
+
+(cid:5)tVi
+
+n
+
+(cid:11)
+
+;
+
+1
+2
+
+ð18Þ
+
+¼
+
+(cid:4)
+
+1
+2
+
+u;i (cid:3) tgj þ tgi (cid:3) u;j þ u;i (cid:3) u;j
+
+(cid:5) with u;i ¼
+
+@u
+@ri
+
+:
+
+Using Eq. (19) in Eq. (24), these strains are approximated as
+
+in which ai and bi are the incremental rotations of the director vec-
+tor tVi
+
+2, respectively, at node i.
+
+n about tVi
+
+1 and tVi
+
+Note that the incremental displacement in Eq. (18) consists
+of two parts, the linear part ul and the quadratic part uq,
+hence
+
+0eij ¼ 0eij þ 0gij;
+
+where 0eij and 0gij are the linear and nonlinear parts, respectively,
+
+0eij ¼
+
+1
+2
+
+(cid:6)
+
+@ul
+@ri
+
+(cid:3) tgj þ tgi (cid:3)
+
+(cid:7)
+
+@ul
+@rj
+
+¼ BijU;
+
+ð26Þ
+
+ð24Þ
+
+ð25Þ
+
+uðr; s; nÞ ¼ ulðr; s; nÞ þ uqðr; s; nÞ;
+
+with
+
+ð19Þ
+
+0gij ¼
+
+(cid:7)
+
+1
+2
+
+(cid:6)
+
+@ul
+@ri
+
+(cid:3)
+
+@ul
+@rj
+
+þ
+
+1
+2
+
+(cid:6)
+
+@uq
+@ri
+
+(cid:3) tgj þ tgi (cid:3)
+
+(cid:7)
+
+@uq
+@rj
+
+¼
+
+1
+2
+
+UT NijU;
+
+ð27Þ
+
+ulðr; s; nÞ ¼
+
+3
+X
+
+i¼1
+
+hiðr; sÞui þ
+
+n
+2
+
+4
+X
+
+i¼1
+
+(cid:2)
+
+aif iðr; sÞ (cid:2)ai
+
+tVi
+
+2 þ bi
+
+tVi
+1
+
+(cid:3)
+;
+
+ð20Þ
+
+in which Bij and Nij are the strain–displacement matrices and U is
+the vector of incremental nodal displacements and rotations ui, ai
+and bi for all element nodes. In addition, the strain variations are
+
+d0eij ¼ BijdU;
+
+d0gij ¼ dUT NijU:
+
+ð28Þ
+
+and
+
+uqðr; s; nÞ ¼ (cid:2)
+
+n
+4
+
+4
+X
+
+i¼1
+
+aif iðr; sÞ ai
+
+h
+
+(cid:4)
+
+2 þ b2
+i
+
+(cid:5)tVi
+
+n
+
+i
+:
+
+ð21Þ
+
+Note that Eqs. (25)–(28) contain all the strain terms to have a
+consistent linearization in the establishment of the tangent stiff-
+ness matrix.
+
+H.M. Jeon et al. / Computers and Structures 146 (2015) 91–104
+
+99
+
+Fig. 16. Load–displacement curves for the clamped semi-cylindrical shell under point load when (a) 20 (cid:4) 20 and (b) 32 (cid:4) 32 element meshes are used.
+
+To alleviate shear locking, the MITC scheme used in the linear
+formulation of the MITC3+ shell element is also employed for the
+incremental covariant transverse shear strains in the nonlinear for-
+mulation. Therefore, the covariant transverse shear strains in Eqs.
+(25)–(28) are substituted by
+
+for the evaluation of these element quantities clearly more compu-
+tational time.
+
+4. Numerical examples
+
+0eAS
+
+rn ¼
+
+(cid:6)
+2
+3 0eðBÞ
+
+rn (cid:2)
+
+1
+2 0eðBÞ
+
+sn
+
+(cid:7)
+
+þ
+
+0eAS
+
+sn ¼
+
+(cid:6)
+2
+3 0eðAÞ
+
+sn (cid:2)
+
+1
+2 0eðAÞ
+
+rn
+
+(cid:7)
+
+þ
+
+(cid:2)
+1
+3 0eðCÞ
+
+rn þ 0eðCÞ
+
+sn
+
+(cid:2)
+1
+3 0eðCÞ
+
+rn þ 0eðCÞ
+
+sn
+
+(cid:3)
+
+þ
+
+1
+3 0^cð3s (cid:2) 1Þ;
+
+(cid:3)
+
+þ
+
+1
+3 0^cð1 (cid:2) 3rÞ;
+
+ð29Þ
+
+ð30Þ
+
+To assess the performance of the MITC3+ shell element in geo-
+metric nonlinear analysis, the solutions of several benchmark
+problems are given in this section. The problems involve the large
+displacement and large rotation response of shells with various
+shell geometries. The results calculated using the following MITC
+shell elements are given
+
+0eAS
+
+jn ¼ 0eAS
+
+jn þ 0gAS
+jn ;
+
+0eAS
+
+jn ¼ BAS
+
+jn U;
+
+0gAS
+
+jn ¼
+
+1
+2
+
+UT NAS
+
+jn U with j ¼ r; s
+
+ð31Þ
+
+rn (cid:2) 0eðFÞ
+
+rn (cid:2) 0eðDÞ
+
+in which 0^c ¼ 0eðFÞ
+sn þ 0eðEÞ
+jn are the strain–
+displacement matrices for the assumed covariant transverse shear
+strains. Of course, the tying positions deﬁned in Fig. 2 and Table 1
+are used.
+
+jn and NAS
+
+sn , BAS
+
+For the evaluation of the element stiffness matrix and internal
+nodal force vector, we use 7-point Gauss integration in the r–s
+plane (as for the MITC6 shell element) due to the cubic bubble
+function. Hence, since also 6 tying points and the fourth node are
+used, compared to the MITC3 shell element (using 3 tying points
+and 3-point Gauss integration), the MITC3+ shell element requires
+
+(cid:6) MITC3: 3-node triangular shell element
+(cid:6) MITC3+: 3-node triangular shell element enriched by a cubic
+
+bubble function (presented in this paper)
+(cid:6) MITC4: 4-node quadrilateral shell element
+
+In each example, the reference solutions are given by either an
+analytical result or a calculated solution using a ﬁne uniform mesh
+of the MITC9 shell element (these meshes used twice the number
+of elements in each direction as employed in the MITC4 element
+solutions) [11]. The MITC9 element is known to satisfy the elliptic-
+ity and consistency conditions and to show good convergence
+behavior [5,11,12]. For comparison, we also plot the results of
+the linear analysis calculated using the MITC9 shell element. The
+
+100
+
+H.M. Jeon et al. / Computers and Structures 146 (2015) 91–104
+
+iterations to solve the nonlinear equations have been performed in
+each load step to a convergence tolerance of 0.1 percent on the rel-
+ative incremental energy.
+
+Note that in some benchmark problems, point loads are used,
+which cause a stress singularity at the point of loading. However,
+the use of point loads is acceptable in the studies here given
+because the meshes are not very ﬁne (the point loads act as an
+equivalent pressure applied over a small area) [2].
+
+solutions are calculated using a 32 (cid:4) 2 element mesh of the MITC9
+shell element.
+
+Fig. 4 shows the calculated load–displacement curves. Fig. 5
+depicts the deformed conﬁgurations of
+the cantilever plate
+obtained using the MITC3+ shell element at various load levels
+(P = 0.25Pmax, 0.5Pmax, 0.75Pmax, and Pmax). All shell elements con-
+this
+sidered show excellent performance in the solution of
+problem.
+
+4.1. Cantilever plate subjected to end shear force
+
+4.2. Cantilever plate subjected to end moment
+
+The cantilever plate shown in Fig. 3(a) is subjected to a shear
+force at the free end. This problem has been considered many
+times before, see e.g. [13-15]. The material properties, geometry
+and applied force are chosen as E = 1.2 (cid:4) 106, v = 0, L = 10, B = 1,
+h = 0.1 and Pmax = 4. Fig. 3(b) shows the 16 (cid:4) 1 mesh used for the
+solution with the MITC4 shell element and the corresponding mesh
+used for the MITC3 and MITC3+ shell elements. The reference
+
+Fig. 6 shows the cantilever plate subjected to a moment at the
+free end. This is a good problem to test the large rotation capability
+of shell elements [16-19]. The cantilever plate has length L = 12,
+width B = 1, thickness h = 0.1, Young’s modulus E = 1.2 (cid:4) 106 and
+Poisson’s ratio v = 0. We use the end moment Mmax = 2pM0 with
+M0 = EI/L, and hence the cantilever rolls up into a complete circle.
+The structure is modeled using a 16 (cid:4) 1 element mesh of the
+
+Fig. 17. Deformed conﬁgurations of the clamped semi-cylindrical shell under point load.
+
+Fig. 18. Distorted mesh patterns of the clamped semi-cylindrical shell (N = 4) (a) for the MITC4 shell element and (b) for the MITC3 and MITC3+ shell elements.
+
+H.M. Jeon et al. / Computers and Structures 146 (2015) 91–104
+
+101
+
+MITC4 shell element and the corresponding MITC3 and MITC3+
+shell element meshes, see Fig. 3(b). The reference solutions are cal-
+culated using a 32 (cid:4) 2 element mesh of the MITC9 shell element.
+The cantilever forms a circular arc of radius R given by the clas-
+sical formula R = EI/M. Thus, the analytical tip displacements are
+derived as
+
+U
+L
+
+¼
+
+M0
+M
+
+sin
+
+(cid:6) (cid:7)
+M
+M0
+
+(cid:2) 1;
+
+W
+L
+
+¼
+
+M0
+M
+
+(cid:6)
+
+1 (cid:2) cos
+
+(cid:7)
+
+:
+
+M
+M0
+
+ð32Þ
+
+Fig. 7 depicts the calculated load–displacement curves and
+Fig. 8 shows successive deformed conﬁgurations calculated using
+the MITC3+ shell element at various load stages (M = 0.1Mmax,
+
+0.2Mmax, 0.3Mmax, . . ., Mmax). All computed results show good
+agreement with the analytical solutions.
+
+4.3. Slit annular plate under end shear force
+
+We examine here a slit annular plate, as shown in Fig. 9(a). This
+example was suggested by Bas(cid:2)ar and Ding [20] and has been
+widely considered [16,19,21-25]. The geometry and elastic mate-
+rial properties are given by Ri = 6, Re = 10, h = 0.03, E = 21 (cid:4) 106
+and v = 0. The transverse shear force Pmax = 3.2 is incrementally
+applied at one end of the slit while the other end of the slit is fully
+clamped. The plate undergoes large displacements and large
+
+)
+x
+a
+m
+P
+5
+.
+0
+/
+
+P
+(
+
+d
+a
+o
+l
+
+t
+n
+i
+o
+P
+
+1 0.
+
+0 8.
+
+0 6.
+
+0 4.
+
+0 2.
+
+0 0.
+
+Mesh (cid:3594)
+
+Reference
+)
+MITC4 (uniform mesh
+MITC4 (distorted mesh)
+
+0 0.
+
+0 1.
+
+0 2.
+
+0 3.
+
+Horizontal displacement at point
+
+0 4.
+,A Av
+
+1 0.
+
+0 8.
+
+0 6.
+
+0 4.
+
+0 2.
+
+0 0.
+
+)
+x
+a
+m
+P
+5
+.
+0
+/
+
+P
+(
+
+d
+a
+o
+l
+
+t
+n
+i
+o
+P
+
+Reference
+MITC (3 uniform mesh
+)
+MITC3 (distorted mesh
+)
+MITC3+ (uniform mesh
+)
+
+MITC3+ (distorted mesh
+)
+
+0 0.
+
+0 1.
+
+0 2.
+
+0 3.
+
+Horizontal displacement at point
+
+0 4.
+,A Av
+
+Mesh (cid:3595)
+
+)
+x
+a
+m
+P
+5
+.
+0
+/
+
+P
+(
+
+d
+a
+o
+l
+
+t
+n
+i
+o
+P
+
+1 0.
+
+0 8.
+
+0 6.
+
+0 4.
+
+0 2.
+
+0 0.
+
+Reference
+3 uniform mesh
+MITC (
+)
+distorted mesh
+MITC3 (
+)
+MITC3+ (uniform mesh
+)
+
+MITC3+ (distorted mesh
+)
+
+0 0.
+
+0 1.
+
+0 2.
+
+0 3.
+
+Horizontal displacement at point
+
+0 4.
+,A Av
+
+Fig. 19. Load–displacement curves for the clamped semi-cylindrical shell with the distorted mesh patterns shown in Fig. 18.
+
+Fig. 20. Fully clamped plate under uniform pressure and mesh used (4 (cid:4) 4).
+
+102
+
+H.M. Jeon et al. / Computers and Structures 146 (2015) 91–104
+
+rotations. This structure is modeled using a 6 (cid:4) 30 element mesh
+of the MITC4 shell element and the corresponding MITC3 and
+MITC3+ shell element meshes, see Fig. 9(b). The reference solutions
+are obtained using a 12 (cid:4) 60 element mesh of the MITC9 shell
+element.
+
+The load–displacement curves at two different points, A and B,
+are depicted in Fig. 10. The deformed conﬁgurations calculated
+using the MITC4, MITC3 and MITC3+ shell elements are shown in
+Fig. 11. As seen, the MITC3 shell element displays too stiff a behav-
+ior. However, the results using the MITC3+ shell element are in
+
+agreement with those using the MITC4 shell element and reason-
+ably close to the reference solutions.
+
+4.4. Hemispherical shell subjected to alternating radial forces
+
+Here we consider a hemispherical shell with an 18(cid:7) circular cut-
+out, as shown in Fig. 12(a). The shell is pinched along one direction
+at points B and D and pulled along the perpendicular direction at
+points A and C [13,15,23,24,26]. The material and geometric prop-
+erties are given by E = 6.825 (cid:4) 107, v = 0.3, R = 10, and the thickness
+
+)
+x
+a
+m
+q
+/
+q
+(
+
+e
+r
+u
+s
+s
+e
+r
+p
+m
+r
+o
+f
+i
+n
+U
+
+)
+x
+a
+m
+q
+/
+q
+(
+
+e
+r
+u
+s
+s
+e
+r
+p
+m
+r
+o
+f
+i
+n
+U
+
+1.0
+
+0.8
+
+0.6
+
+0.4
+
+0.2
+
+0.0
+
+1.0
+
+0.8
+
+0.6
+
+0.4
+
+0.2
+
+0.0
+
+h L/ =1/10
+
+Linear analysis
+Reference
+MITC4
+MITC3
+MITC3+
+
+h L/ =1/100
+
+Linear analysis
+Reference
+MITC4
+MITC3
+MITC3+
+
+)
+x
+a
+m
+q
+/
+q
+(
+
+e
+r
+u
+s
+s
+e
+r
+p
+m
+r
+o
+f
+i
+n
+U
+
+1.0
+
+0.8
+
+0.6
+
+0.4
+
+0.2
+
+0.0
+
+0.00
+
+0.07
+
+0.14
+
+0.21
+
+0.28
+
+0.000
+
+0.007
+
+0.014
+
+0.021
+
+0.028
+
+Vertical displacement at point C,
+
+Cw
+
+Vertical displacement at point C,
+
+Cw
+
+h L/ =1/1,0 00
+
+Linear analysis
+Reference
+MITC4
+MITC3
+MITC3+
+
+0.0000
+
+0.0007
+
+0.0021
+Vertical displacement at point C,
+
+0.0014
+
+)
+x
+a
+m
+q
+/
+q
+(
+
+e
+r
+u
+s
+s
+e
+r
+p
+m
+r
+o
+f
+i
+n
+U
+
+1.0
+
+0.8
+
+0.6
+
+0.4
+
+0.2
+
+0.0
+
+0.0028
+Cw
+
+h L/ =1/10, 000
+
+Linear analysis
+Reference
+MITC4
+MITC3
+MITC3+
+
+0.00000
+
+0.00007
+
+0.00021
+Vertical displacement at point C,
+
+0.00014
+
+0.00028
+Cw
+
+Fig. 21. Load–displacement curves for the fully clamped plate under uniform pressure.
+
+Fig. 22. Distorted meshes of the fully clamped plate (a) for the MITC4 shell element and (b) for the MITC3 and MITC3+ shell elements.
+
+H.M. Jeon et al. / Computers and Structures 146 (2015) 91–104
+
+103
+
+is 0.04. The point load is incrementally applied to a maximum
+value Pmax = 400. The shell is modeled using 8 (cid:4) 32 and 12 (cid:4) 48
+element meshes of the MITC4 shell element and the corresponding
+MITC3 and MITC3+ shell element meshes, see Fig. 12(b). A 24 (cid:4) 96
+element mesh of the MITC9 shell element is used to obtain the ref-
+erence solutions.
+
+Fig. 13 shows the load-radial displacement curves at the loaded
+points A and B. The deformed conﬁgurations obtained using a
+8 (cid:4) 32 element mesh of the MITC4 shell element and the corre-
+sponding MITC3 and MITC3+ shell element meshes are shown in
+Fig. 14. For the meshes used, the MITC4 and MITC3+ shell elements
+produce much better solution accuracy than the MITC3 shell ele-
+ment in this problem.
+
+4.5. Clamped semi-cylindrical shell under point load
+
+A well-known benchmark problem for geometric nonlinear
+analysis of shells is the semi-cylindrical shell under a point load
+shown in Fig. 15(a) [16,19,21,27]. The length and radius of the half
+cylinder are L = 0.3048 and R = 1.016, respectively, and the thick-
+ness is h = 0.03; the material constants are E = 2.0685 (cid:4) 107 and
+v = 0.3. The load applied to the shell increases up to Pmax = 2000.
+The structure is modeled using 20 (cid:4) 20 and 32 (cid:4) 32 element
+meshes of the MITC4 shell element and the corresponding MITC3
+and MITC3+ shell element meshes, see Fig. 15(b). The reference
+solutions are obtained using a 64 (cid:4) 64 element mesh of the MITC9
+shell element.
+
+Fig. 16 gives the obtained load–displacement curves, and Fig. 17
+shows the deformed shapes calculated using the 20 (cid:4) 20 element
+mesh of the MITC3+ shell ﬁnite elements at various load levels,
+P = Pmax/3, 2Pmax/3, and Pmax. The three shell elements show good
+performance in the solution of this shell problem with the meshes
+used.
+
+We then perform the analysis with the distorted mesh patterns
+shown in Fig. 18. For an N (cid:4) N element mesh, each edge is discret-
+ized with the following ratio: L1: L2:L3:. . .LN = 1:2:3:. . .N. The solu-
+tions are obtained with a 24 (cid:4) 24 element mesh of the MITC4,
+MITC3 and MITC3+ shell elements. Fig. 19 shows the calculated
+load–displacement curves when the distorted mesh patterns in
+Fig. 18 are used. The MITC3+ shell element shows a good perfor-
+mance regardless of which mesh pattern in Fig. 18(b) is used.
+
+4.6. Fully clamped plate under uniform pressure
+
+Fig. 20 shows the fully clamped plate under uniform pressure
+[14,17,22,26,28,29]. A square plate of dimensions 2L (cid:4) 2L and
+uniform thickness h is considered and all edges are fully clamped
+with the hard boundary condition [2]. Due to symmetry, only
+one-quarter of the plate is modeled, with the following boundary
+conditions: ux = hy = 0 along BC, uy = hx = 0 along DC and ux = uy =
+hx = hy = 0 along AB and AD. The material properties used are
+E = 1.7472 (cid:4) 103 and v = 0.3. The pressure applied to the plate
+increases up to qmax = h3 (cid:4) 105. The length of the plate is L = 1
+and four different plate thicknesses (h/L = 1/10, 1/100, 1/1,000
+
+h L
+
+/ =1/ 100
+
+Reference
+MITC4 (uniform mesh) 
+MITC4 (distorted mesh) 
+
+)
+x
+a
+m
+q
+/
+q
+(
+
+e
+r
+u
+s
+s
+e
+r
+p
+m
+r
+o
+f
+i
+n
+U
+
+1.0
+
+0.8
+
+0.6
+
+0.4
+
+0.2
+
+0.0
+
+h L
+
+/ =1/100
+
+Mesh Ⅰ
+
+)
+x
+a
+m
+q
+/
+q
+(
+
+e
+r
+u
+s
+s
+e
+r
+p
+m
+r
+o
+f
+i
+n
+U
+
+1.0
+
+0.8
+
+0.6
+
+0.4
+
+0.2
+
+0.0
+
+0.000
+
+0.007
+
+0.014
+
+0.021
+
+0.028
+
+Vertical displacementat point C,
+
+Cw
+
+h L/ =1/100
+
+Mesh Ⅱ
+
+)
+x
+a
+m
+q
+/
+q
+(
+
+e
+r
+u
+s
+s
+e
+r
+p
+m
+r
+o
+f
+i
+n
+U
+
+1.0
+
+0.8
+
+0.6
+
+0.4
+
+0.2
+
+0.0
+
+Reference
+MITC3 (uniform mesh)
+MITC3 (distorted mesh)
+MITC3+(uniform mesh)
+
+MITC3+(distorted mesh)
+
+Reference
+MITC3 (uniform mesh)
+MITC3 (distorted mesh)
+MITC3+(uniform mesh)
+
+MITC3+(distorted mesh)
+
+0.000
+
+0.007
+
+0.014
+
+0.021
+
+0.028
+
+0.000
+
+0.007
+
+0.014
+
+0.021
+
+0.028
+
+Vertical displacementat point C,
+
+Cw
+
+Vertical displacementat point C,
+
+Cw
+
+Fig. 23. Load–displacement curves for the fully clamped plate with the distorted meshes shown in Fig. 22.
+
+104
+
+H.M. Jeon et al. / Computers and Structures 146 (2015) 91–104
+
+and 1/10,000) are considered. This problem is modeled using a
+10 (cid:4) 10 element mesh of the MITC4 shell element and the corre-
+sponding MITC3 and MITC3+ shell element meshes. The reference
+solutions are calculated using a 20 (cid:4) 20 element mesh of the
+MITC9 shell element.
+
+Fig. 21 shows the calculated vertical displacement at point C
+versus the uniform pressure. The solutions using the MITC3 shell
+element deteriorate as the shell thickness decreases due to shear
+locking. However, the MITC3+ and MITC4 shell ﬁnite elements
+show excellent results compared to the reference solutions.
+
+each
+
+We also consider the same problem with the distorted 4 (cid:4) 4 ele-
+ment mesh shown in Fig. 22 when h/L = 1/100. In the distorted ele-
+ment meshes,
+ratio:
+L1:L2:L3:L4 = 1:2:3:4. Fig. 23 shows the calculated load–displace-
+ment curves. The MITC3+ and MITC4 shell elements show an excel-
+lent performance even when the distorted meshes are used. It is also
+observed that, compared to the MITC3 shell element, the MITC3+
+shell element gives less sensitive solutions to mesh patterns.
+
+divided
+
+edge
+
+the
+
+by
+
+is
+
+5. Conclusions
+
+In this paper, the formulation of the MITC3+ shell element was
+extended to geometric nonlinear analysis. The total Lagrangian for-
+mulation is employed allowing for large displacements and large
+rotations. The nonlinear formulation is based on the same discret-
+ization assumptions that are employed in the linear formulation of
+the element. The nonlinear performance of the MITC3+ shell ele-
+ment was numerically investigated by solving several benchmark
+problems. In the tests considered, the predictive capability of the
+MITC3+ shell element is seen to be much better than of the MITC3
+shell element. Indeed, the MITC3+ element gave practically as
+accurate results as the MITC4 shell element.
+
+Considering also the excellent behavior of the MITC3+ shell ele-
+ment in linear analysis [1], we can conclude that the element is a
+very attractive element for general shell analyses. In future studies,
+it would be valuable to further develop the formulation for large
+strain solutions of shell structures [30], and to possibly enrich
+the displacement ﬁelds by using interpolation covers [31].
+
+Acknowledgements
+
+This work was supported by the Basic Science Research Pro-
+gram through the National Research Foundation of Korea (NRF)
+funded by the Ministry of Education, Science and Technology
+(No. 2014R1A1A1A05007219), and the Human Resources Develop-
+ment (No. 20134030200300) of the Korea Institute of Energy Tech-
+nology Evaluation and Planning (KETEP) grant funded by the Korea
+government Ministry of Trade, Industry and Energy.
+
+References
+
+[2] Bathe KJ. Finite element procedures. 2nd ed, 2014. Watertown, MA.
+[3] Lee PS, Bathe KJ. On the asymptotic behavior of shell structures and the
+
+evaluation in ﬁnite element solutions. Comput Struct 2002;80:235–55.
+
+[4] Chapelle D, Bathe KJ. The ﬁnite element analysis of shells – fundamentals. 2nd
+
+ed. Berlin: Springer-Verlag; 2011.
+
+[5] Bathe KJ, Lee PS. Measuring the convergence behavior of shell analysis
+
+schemes. Comput Struct 2011;89:285–301.
+
+[6] Lee PS, Bathe KJ. Development of MITC isotropic triangular shell ﬁnite
+
+elements. Comput Struct 2004;82:945–62.
+
+[7] Lee Y, Yoon K, Lee PS. Improving the MITC3 shell ﬁnite element by using the
+
+Hellinger–Reissner principle. Comput Struct 2012;110–1:93–106.
+
+[8] Chapelle D, Bathe KJ. The mathematical shell model underlying general shell
+
+elements. Int J Num Methods Eng 2000;48:289–313.
+
+[9] Lee PS, Bathe KJ. Insight into ﬁnite element shell discretizations by use of the
+
+‘‘basic shell mathematical model’’. Comput Struct 2005;83:69–90.
+
+[10] Argyris J. An excursion into large rotations. Comput Methods Appl Mech Eng
+
+1982;32:85–155.
+
+[11] Bathe KJ, Lee PS, Hiller JF. Towards improving the MITC9 shell element.
+
+Comput Struct 2003;81:477–89.
+
+[12] Lee PS, Bathe KJ. The quadratic MITC plate and MITC shell elements in plate
+
+bending. Adv Eng Software 2010;41:712–28.
+
+[13] Jiang L, Chernuka MW. A simple four-noded corotational shell element for
+
+arbitrarily large rotations. Comput Struct 1994;53:1123–32.
+
+[14] To CWS, Liu ML. Hybrid strain based three node ﬂat triangular shell elements –
+Struct
+
+investigation of nonlinear problems. Comput
+
+II. Numerical
+1995;54:1057–76.
+
+[15] Briassoulis D. Non-linear behaviour of the RFNS element – large displacements
+
+and rotations. Comput Method Appl Mech Eng 2003;192:2909–24.
+
+[16] Sze KY, Liu XH, Lo SH. Popular benchmark problems for geometric nonlinear
+
+analysis of shell. Finite Elem Anal Des 2004;40:1551–69.
+
+[17] Hsiao KM, Chen YR. Nonlinear analysis of shell structures by degenerated
+
+isoparametric shell element. Comput Struct 1989;31:427–38.
+
+[18] Simo JC, Fox DD, Rifai MS. On a stress resultant geometrically exact shell
+model. Part III: computational aspects of the nonlinear theory. Comput
+Method Appl Mech Eng 1990;70:21–70.
+
+[19] Arciniega RA, Reddy JN. Tensor-based ﬁnite element
+
+formulation for
+geometrically nonlinear analysis of shell structures. Comput Method Appl
+Mech Eng 2007;196:1048–73.
+
+[20] Bas(cid:2)ar Y, Ding Y. Finite-rotation shell elements for the analysis of ﬁnite-rotation
+
+shell problems. Int J Num Methods Eng 1992;34:165–9.
+
+[21] Brank B, Peric´ D, Damjanic´ FB. On implementation of a nonlinear four node
+shell ﬁnite element for thin multilayered elastic shells. Comput Mech
+1995;16:341–59.
+
+[22] Kim CH, Sze KY, Kim YH. Curved quadratic triangular degenerated- and solid-
+shell elements for geometric non-linear analysis. Int J Num Methods Eng
+2003;57:2077–97.
+
+[23] Sansour C, Bocko J. On hybrid stress, hybrid strain and enhanced strain ﬁnite
+element formulations for a geometrically exact shell theory with drilling
+degrees of freedom. Int J Num Methods Eng 1998;43:175–92.
+
+[24] Sansour C, Kollmann FG. Families of 4-node and 9-node ﬁnite elements for a
+ﬁnite deformation shell theory. an assessment of hybrid stress, hybrid strain
+and enhanced strain elements. Comput Mech 2000;24:435–47.
+
+[25] Hong WI, Kim JH, Kim YH, Lee SW. An assumed strain triangular curved solid
+shell element formulation for analysis for plates and shells undergoing ﬁnite
+rotations. Int J Num Methods Eng 2001;52:747–61.
+
+[26] Providas E, Kattis MA. A simple ﬁnite element model for the geometrically
+
+nonlinear analysis of thin shells. Comput Mech 1999;24:127–37.
+
+[27] Klinkel S, Gruttmann W, Wagner W. A continuum based three-dimensional
+shell element for laminated structures. Comput Struct 1999;71:43–62.
+[28] Bucalem ML, Nóbrega SHS. A mixed formulation for general triangular
+isoparametric shell elements based on the degenerated solid approach.
+Comput Struct 2000;78:35–44.
+
+[29] Kim JH, Kim YH. A three-node C0 ANS element for geometrically non-linear
+structural analysis. Comput Method Appl Mech Eng 2002;191:4035–59.
+[30] Sussman T, Bathe KJ. 3D-shell elements for structures in large strains. Comput
+
+Struct 2013;122:2–12.
+
+[31] Jeon HM, Lee PS, Bathe KJ. The MITC3 shell ﬁnite element enriched by
+
+[1] Lee Y, Lee PS, Bathe KJ. The MITC3+ shell element and its performance. Comput
+
+interpolation covers. Comput Struct 2014;134:128–42.
+
+Struct 2014;138:12–23.
+
+

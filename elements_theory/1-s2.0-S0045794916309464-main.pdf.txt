@@ -1,0 +1,3918 @@
+Computers and Structures 182 (2017) 404–418
+
+Contents lists available at ScienceDirect
+
+Computers and Structures
+
+j o u r n a l h o m e p a g e : w w w . e l s e v i e r . c o m / l o c a t e / c o m p s t r u c
+
+A new MITC4+ shell element
+Yeongbin Ko a, Phill-Seung Lee a,⇑
+
+, Klaus-Jürgen Bathe b
+
+a Department of Mechanical Engineering, Korea Advanced Institute of Science and Technology, 291 Daehak-ro, Yuseong-gu, Daejeon 34141, Republic of Korea
+b Department of Mechanical Engineering, Massachusetts Institute of Technology, Cambridge, MA 02139, USA
+
+a r t i c l e
+
+i n f o
+
+a b s t r a c t
+
+We presented in Ko et al. (2016) an MITC4+ shell element that shows a much improved convergence
+behavior when compared to the widely used MITC4 (Dvorkin and Bathe, 1984) shell element.
+However, the element does still not show optimal convergence behavior when used in distorted meshes
+in the analysis of some shell problems. In the present paper, we establish a new MITC4+ shell element
+which shows signiﬁcantly improved and indeed an almost optimal convergence behavior. In this new
+continuum mechanics-based shell element, the shear locking is alleviated using the well-known assumed
+transverse shear strain ﬁeld of the original MITC4 shell element and the membrane locking is alleviated
+using a new assumed membrane strain ﬁeld. The new MITC4+ shell element passes all basic tests: the
+isotropy, zero energy mode and patch tests. The excellent performance of the shell element is demon-
+strated through convergence studies in the solution of well-selected behavior-encompassing shell bench-
+mark problems.
+
+(cid:1) 2016 Elsevier Ltd. All rights reserved.
+
+Article history:
+Received 21 September 2016
+Accepted 9 November 2016
+Available online 18 January 2017
+
+Keywords:
+Shell structures
+Shell ﬁnite elements
+4-node element
+MITC method
+MITC4 element
+Shear and membrane locking
+
+1. Introduction
+
+shell
+
+structures,
+
+In the ﬁnite element analysis of
+
+the
+development of ‘‘ideal” shell ﬁnite elements that satisfy the ellip-
+ticity, consistency and inf-sup conditions have been pursued with
+high interest [3–6]. Such shell elements should not contain an
+adjustable numerical factor, pass the basic tests (the isotropy, zero
+energy mode and patch tests) as well as show uniformly optimal
+convergence behavior for any shell problem solved with uniform
+(regular) or distorted meshes regardless of the asymptotic category
+of the problem (with membrane-dominated, bending-dominated,
+or mixed shell behavior). Of course, the category of a shell problem
+depends on the shell geometry, loading and boundary conditions
+[6–8].
+
+The major obstacles in the development of shell ﬁnite elements
+are shear and membrane locking. To alleviate the locking behav-
+iors, the MITC (Mixed Interpolation of Tensorial Components)
+method was established to obtain various quadrilateral and
+triangular shell ﬁnite elements [1–3,9–18]. Of particular interest
+are 4-node continuum mechanics based elements, and here the
+convergence behavior of the 4-node MITC element (MITC4) [2] is
+observed to be close to uniformly optimal in the solution of many
+problems when uniform meshes are used due to the effective treat-
+
+⇑ Corresponding author.
+
+E-mail address: phillseung@kaist.edu (P.S. Lee).
+
+http://dx.doi.org/10.1016/j.compstruc.2016.11.004
+0045-7949/(cid:1) 2016 Elsevier Ltd. All rights reserved.
+
+ment of shear locking. The MITC4 shell element is widely used in
+engineering practice, but since membrane locking is not treated
+in the element formulation, the solution accuracy can deteriorate
+when curved geometries are solved with distorted meshes [1,19].
+In Ref. [1], we presented an improved MITC4 shell element,
+named the MITC4+ element, which showed better convergence
+behavior, however not an optimal or ideal behavior when distorted
+meshes are used in the solution of doubly-curved shells.
+
+There have been several attempts to alleviate the membrane
+locking of 4-node continuum mechanics based shell ﬁnite ele-
+ments. The method of reduced integration [20–22] can greatly alle-
+viate membrane locking as well as shear locking, but the elements
+suffer from rank deﬁciency and do not properly represent physical
+rigid body modes, needing undesirable stabilization and displace-
+ment projection techniques. The method of assumed strains
+[1,12,23–25] was applied to the membrane strains (in-plane
+strains evaluated at the mid-surface) to alleviate membrane
+locking.
+
+In these developments, the assumed membrane strain ﬁeld pro-
+posed by Choi and Paik is very interesting [23]. The ﬁeld greatly
+eliminates membrane locking of 4-node continuum mechanics
+based shell elements, but the element fails the membrane patch
+test. In a subsequent development, Cho and Roh successfully
+applied the assumed membrane strain ﬁeld and developed a
+4-node exact geometry shell element [24], and Kulikov and
+Plotnikova developed a methodology to overcome locking in a
+
+Y. Ko et al. / Computers and Structures 182 (2017) 404–418
+
+405
+
+4-node exact geometry shell element [25]. Geometry exact shell
+elements are formulated using mathematical shell models with
+the exact representation of shell mid-surfaces [6,7,24–26], and
+thus membrane locking can be investigated with relative ease.
+However, in continuum mechanics based shell ﬁnite elements, cur-
+vatures do not explicitly appear in the element formulations,
+which makes it difﬁcult to identify how to alleviate locking and
+thus formulate a generally applicable element for any shell geom-
+etry and boundary conditions.
+
+Our objective in this paper is to give an effective 4-node contin-
+uum mechanics based shell element, in which shear and mem-
+brane locking are greatly reduced by employing the MITC
+method. The shear locking is resolved using the well-known
+assumed transverse shear strain ﬁeld of the original MITC4 shell
+element [2], and we focus on the development of a new assumed
+membrane strain ﬁeld to alleviate membrane locking. Doing so,
+we ﬁrst extract the membrane strains in the shell element formu-
+lation with the strains represented in terms of characteristic geom-
+etry and displacement vectors. We then start with the membrane
+strain ﬁeld proposed by Choi and Paik [23], adopt the idea of Kuli-
+kov and Plotnikova [25], and reach the new element formulation to
+also alleviate membrane locking. The resulting shell element, the
+new MITC4+ element, passes all basic tests and shows excellent
+convergence behavior in the analysis of various difﬁcult well-
+chosen shell problems even when using distorted meshes. The ele-
+ment shows a signiﬁcantly better convergence behavior than the
+MITC4+ shell element previously published [1].
+
+In the following sections, the formulation of the MITC4 shell
+element is brieﬂy reviewed and then the formulation of the new
+MITC4+ shell element is presented. The performance of the new
+shell element is illustrated through the basic tests as well as the
+established convergence tests.
+
+2. The MITC4 shell ﬁnite element
+
+It is useful to note the following representation of interpolation
+
+function hiðr; sÞ:
+
+hiðr; sÞ ¼ 1
+ð1 þ nirÞð1 þ gisÞ with i ¼ 1; 2; 3; 4;
+4
+½
+n1
+n4
+n3
+n2
+g1 g2 g3 g4
+
+(cid:2) ¼ 1 (cid:3)1 (cid:3)1 1
+(cid:2);
+(cid:2) ¼ 1 1 (cid:3)1 (cid:3)1
+
+(cid:2);
+
+½
+
+½
+
+½
+
+ð2Þ
+
+in which ni and gi are permuted together.
+
+The corresponding displacement interpolation of the element is
+
+uðr; s; tÞ ¼
+
+X4
+
+i¼1
+
+hiðr; sÞui þ t
+2
+
+X4
+
+aihiðr; sÞð(cid:3)Vi
+
+2ai þ Vi
+
+1bi
+
+Þ;
+
+ð3Þ
+
+i¼1
+
+in which ui is the nodal displacement vector in the global Cartesian
+coordinate system, Vi
+n and
+to each other, and ai and bi are the rotations of the director vector
+Vi
+
+2 are unit vectors orthogonal to Vi
+
+2, respectively, at node i.
+
+n about Vi
+
+1 and Vi
+
+1 and Vi
+
+The linear terms of the displacement-based covariant strain
+
+components are given by
+
+eij ¼ 1
+2
+
+ðgi
+
+(cid:4) u;j þ gj
+
+(cid:4) u;iÞ;
+
+in which
+
+¼
+
+gi
+
+@x
+@ri
+
+; u;i ¼
+
+@u
+@ri
+
+with r1 ¼ r; r2 ¼ s; r3 ¼ t:
+
+ð4Þ
+
+ð5Þ
+
+For the MITC4 shell element, the covariant in-plane strain compo-
+nents are calculated using Eqs. (1)–(3) without any modiﬁcation.
+The transverse shear strain ﬁeld is based on assuming constant
+covariant transverse shear strain conditions along the edges, see
+Ref. [2]
+
+In this section, we brieﬂy review the formulation of the MITC4
+
+shell element.
+
+The geometry of a standard 4-node continuum mechanics based
+
+quadrilateral shell ﬁnite element is interpolated using [1–3]
+
+~ert ¼ 1
+2
+~est ¼ 1
+2
+
+ð1 þ sÞe
+
+ðAÞ
+rt
+
+ð1 þ rÞe
+
+ðCÞ
+st
+
+þ 1
+2
+þ 1
+2
+
+ð1 (cid:3) sÞe
+
+ðBÞ
+rt
+
+;
+
+ð1 (cid:3) rÞe
+
+ðDÞ
+st
+
+;
+
+xðr; s; tÞ ¼
+
+X4
+
+i¼1
+
+hiðr; sÞxi þ t
+2
+
+X4
+
+aihiðr; sÞVi
+n
+
+;
+
+i¼1
+
+where the tying points are shown in Fig. 2 [1,9].
+
+ð1Þ
+
+where hiðr; sÞ is the two-dimensional interpolation function of the
+standard isoparametric procedure corresponding to node i; xi
+is
+the position vector of node i in the global Cartesian coordinate sys-
+tem, and ai and Vi
+n denote the shell thickness and the director vector
+at the node, respectively, see Fig. 1.
+
+s
+
+ert
+
+const
+
+.
+
+: Tying points
+
+)
+
+(D
+
+ste
+
+1
+
+est
+
+const
+
+.
+
+1
+
+( A
+)
+
+rte
+
+)
+
+(B
+
+rte
+
+1
+
+)
+
+(C
+
+ste
+
+1
+
+r
+
+est
+
+const
+
+.
+
+Fig. 1. A standard 4-node quadrilateral continuum mechanics based shell ﬁnite
+element.
+
+Fig. 2. Tying positions (A)–(D) for the assumed transverse shear strain ﬁeld of the
+MITC4 shell element. The constant transverse shear strain conditions are imposed
+along its edges.
+
+ert
+
+const
+
+.
+
+406
+
+Y. Ko et al. / Computers and Structures 182 (2017) 404–418
+
+Fig. 3. Representative vectors for the element geometry. (a) Two in-plane vectors xr and xs, and the plane P with normal vector n. (b) Two in-plane vectors mr and ms. (c)
+Distortion vector xd. (d) Four edge vectors x1
+e
+
+e and x4
+e .
+
+; x2
+e
+
+; x3
+
+: Tying points
+
+)
+
+( Cm
+
+sse
+
+1
+
+r
+
+s
+
+1
+
+)
+
+( Am
+
+rre
+
+)
+
+( Em
+
+rse
+
+)
+
+( Bm
+
+rre
+
+1
+
+)
+
+( Dm
+
+sse
+
+1
+
+Fig. 4. Tying positions (A)–(E) for the assumed membrane shear strain ﬁeld.
+
+3. The new MITC4+ shell element
+
+We present in this section the formulation of the new MITC4+
+shell element. The covariant membrane strains are represented
+using characteristic geometry and displacement vectors.
+
+3.1. Covariant membrane strains and characteristic vectors
+
+We can write the covariant in-plane strain components in Eq.
+
+ð7bÞ
+
+ð7cÞ
+
+ð7dÞ
+
+ð8aÞ
+
+em
+ij
+
+¼ 1
+2
+
+eb1
+ij
+
+¼ 1
+2
+
+eb2
+ij
+
+¼ 1
+2
+
+(cid:2)
+
+@xm
+@ri
+
+(cid:2)
+
+@xm
+@ri
+
+(cid:2)
+
+@xb
+@ri
+
+(cid:4)
+
+@um
+@rj
+
+þ
+
+@xm
+@rj
+
+(cid:4)
+
+@ub
+@rj
+
+þ
+
+@xm
+@rj
+
+(cid:4)
+
+(cid:4)
+
+(cid:4)
+
+@ub
+@rj
+
+þ
+
+@xb
+@rj
+
+(cid:4)
+
+@ub
+@ri
+
+(cid:3)
+;
+
+@um
+@ri
+
+þ
+
+@ub
+@ri
+(cid:3)
+;
+
+@xb
+@ri
+
+(cid:4)
+
+@um
+@rj
+
+þ
+
+@xb
+@rj
+
+(cid:4)
+
+@um
+@ri
+
+(cid:3)
+;
+
+X4
+
+hiðr; sÞxi;
+
+i¼1
+
+xb ¼ 1
+2
+
+X4
+
+aihiðr; sÞ Vi
+n
+
+;
+
+i¼1
+
+with
+
+xm ¼
+
+um ¼
+
+X4
+
+i¼1
+
+hiðr; sÞui; ub ¼ 1
+2
+
+X4
+
+aihiðr; sÞ ð(cid:3)Vi
+
+2ai þ Vi
+
+1bi
+
+Þ:
+
+ð8bÞ
+
+i¼1
+
+The ﬁrst term em
+in Eq. (7a) is the covariant in-plane membrane
+ij
+strain at the shell mid-surface (t ¼ 0), and the remaining terms
+are the covariant in-plane strains due to bending. The in-plane
+membrane strain, see Eq. (7b), can in general induce locking and
+it is this term that we modify as described below; we leave the
+other terms in Eq. (7a) as they are and evaluate them using the dis-
+placement formulation.
+
+Using Eq. (2) in Eqs. (8a) and (8b), we obtain the following
+
+relations:
+@xm
+@r
+
+¼ xr þ sxd;
+
+@xm
+@s
+
+¼ xs þ rxd;
+
+@um
+@r
+
+¼ ur þ sud;
+
+@um
+@s
+
+¼ us þ rud;
+
+with
+xr ¼ 1
+4
+
+ur ¼ 1
+4
+
+i¼1
+X4
+
+i¼1
+
+X4
+
+nixi;
+
+xs ¼ 1
+4
+
+X4
+
+gixi;
+
+xd ¼ 1
+4
+
+X4
+
+nigixi;
+
+niui; us ¼ 1
+4
+
+giui; ud ¼ 1
+4
+
+nigiui
+
+i¼1
+X4
+
+i¼1
+
+i¼1
+X4
+
+i¼1
+
+ð9Þ
+
+(4) as
+
+eij ¼ em
+ij
+
+þ t eb1
+ij
+
+þ t2eb2
+
+ij with i; j ¼ 1; 2;
+
+ð7aÞ
+
+in which the characteristic geometry vectors xr; xs and xd arise nat-
+urally from the nodal point positions, see Fig. 3, and the correspond-
+ing displacement vectors are ur; us and ud. Note that the geometry
+
+Y. Ko et al. / Computers and Structures 182 (2017) 404–418
+
+407
+
+y
+
+(0,10)
+
+(10,10)
+
+(4,7)
+
+(8,7)
+
+(2,2)
+
+(0,0)
+
+(8,3)
+
+x
+
+(10,0)
+
+Fig. 5. Mesh geometry used for the patch tests.
+
+vector xd connects the centers of two diagonal lines in the element
+geometry.
+
+The two vectors xr and xs form the plane P with the normal vec-
+
+tor n
+n ¼ xr (cid:5) xs
+kxr (cid:5) xsk
+
+;
+
+ð10Þ
+
+as shown in Fig. 3(a). For an arbitrarily distorted shell element, the
+plane P is the only ﬂat surface that can be deﬁned by equally
+accounting for the geometry of each nodal point, as required for
+passing the isotropy test. Since the two in-plane vectors, xr and
+xs, are not orthogonal, it is convenient to deﬁne their dual basis vec-
+tors, mr and ms on the plane P, such that
+
+mri (cid:4) xrj
+
+¼ di
+j
+
+; mri (cid:4) n ¼ 0 with r1 ¼ r; r2 ¼ s;
+
+ð11Þ
+
+as shown in Fig. 3(b).
+
+Since membrane locking occurs due to out-of-plane distortions
+of the element geometry, the ‘distortion vector’ xd, shown in Fig. 3
+(c), is of particular interest. The length of the distortion vector
+becomes nonzero for both in-plane and out-of-plane distortions
+of the element geometry. The distortion vector can be decomposed
+into in-plane and out-of-plane components using the geometry
+vectors (xr, xs and n):
+xd ¼ ðxd (cid:4) mrÞxr þ ðxd (cid:4) msÞxs þ ðxd (cid:4) nÞn;
+
+ð12Þ
+
+in which the dual basis vectors mr and ms ‘measure’ the distortion
+in the direction of in-plane vectors xr and xs, the values mr (cid:4) xd and
+ms (cid:4) xd are the corresponding in-plane distortions, and xd (cid:4) n corre-
+sponds to the out-of-plane distortion.
+
+In addition, the ‘edge vectors’ which lie along the element edges
+
+are
+
+x1
+e
+
+x2
+e
+
+x3
+e
+
+x4
+e
+
+¼ x2 (cid:3) x1
+2
+¼ x3 (cid:3) x2
+2
+¼ x4 (cid:3) x3
+2
+¼ x1 (cid:3) x4
+2
+
+¼ (cid:3)xr (cid:3) xd ¼ (cid:3)
+
+ð0; 1Þ;
+
+ð(cid:3)1; 0Þ;
+
+@xm
+@r
+@xm
+@s
+ð0; (cid:3)1Þ;
+
+ð1; 0Þ;
+
+¼ xr (cid:3) xd ¼
+
+¼ (cid:3)xs þ xd ¼ (cid:3)
+@xm
+@r
+@xm
+@s
+
+¼ xs þ xd ¼
+
+see Fig. 3(d). The edge vectors form the corresponding edge strains,
+
+em
+rr
+em
+ss
+
+ð0; 1Þ ¼ x1
+e
+ð(cid:3)1; 0Þ ¼ x2
+e
+
+(cid:4) u1
+e
+(cid:4) u2
+e
+
+;
+
+em
+rr
+
+ð0; (cid:3)1Þ ¼ x3
+e
+
+(cid:4) u3
+e
+
+;
+
+em
+ss
+
+ð1; 0Þ ¼ x4
+e
+
+(cid:4) u4
+e
+
+;
+
+;
+
+ð14Þ
+
+in which each strain contains only two nodal displacements.
+
+In the original displacement-based element formulation, the
+displacements at the four nodes give the ‘rr’- and ‘ss’- membrane
+
+z
+
+y
+
+D
+
+A
+
+q
+
+L2
+
+C
+
+B
+
+h
+
+t
+
+x
+
+L2
+
+x
+
+Fig. 6. Fully clamped square plate under uniform pressure (L ¼ 1:0; E ¼
+1:7472 (cid:5) 107; q ¼ 1:0 and m ¼ 0:3).
+
+D
+
+A
+
+4L
+
+3L
+
+1L2L
+
+C
+
+D
+
+B
+
+A
+
+(a)
+
+(b)
+
+Fig. 7. Distorted mesh patterns for (a) N ¼ 4 and (b) N ¼ 8.
+
+C
+
+B
+
+strains. However, constraints arise from the condition that the
+membrane strains should vanish in pure bending situations. The
+use of the edge strains in Eq. (14) is important to establish an
+improved behavior in bending-dominated problems [1,23–25,27].
+The membrane strains in Eq. (7b) can be expressed using the
+
+ð13Þ
+
+characteristic geometry and displacement vectors
+
+em
+rr
+em
+ss
+
+¼ em
+rr
+¼ em
+ss
+
+em
+rs
+
+¼ em
+rs
+
+(cid:4)
+(cid:4)
+con:
+(cid:4)
+(cid:4)
+con:
+(cid:4)
+(cid:4)
+con:
+
+(cid:4)
+(cid:4)
+bil:
+(cid:4)
+(cid:4)
+bil:
+
+(cid:4)
+(cid:4)
+lin:
+(cid:4)
+(cid:4)
+lin:
+(cid:4)
+(cid:4)
+lin:
+
+(cid:4) s þ em
+rs
+(cid:4) r þ em
+rs
+(cid:4) r þ 1
+2
+
+em
+rr
+
+þ em
+rr
+þ em
+ss
+þ 1
+2
+
+em
+ss
+
+(cid:4) s2;
+(cid:4) r2;
+(cid:4)
+(cid:4)
+
+lin:
+
+(cid:4) s þ em
+rs
+
+(cid:4)
+(cid:4)
+
+(cid:4) rs
+
+bil:
+
+ð15Þ
+
+with
+(cid:4)
+(cid:4)
+(cid:4)
+(cid:4)
+
+em
+rr
+
+em
+rr
+
+con:
+
+lin:
+
+¼ xr (cid:4) ur; em
+ss
+
+(cid:4)
+(cid:4)
+
+con:
+
+¼ xs (cid:4) us;
+
+¼ xr (cid:4) ud þ xd (cid:4) ur;
+
+em
+ss
+
+(cid:4)
+(cid:4)
+
+con:
+
+em
+rs
+
+¼ 1
+2
+¼ xs (cid:4) ud þ xd (cid:4) us; em
+rs
+
+ðxr (cid:4) us þ xs (cid:4) urÞ;
+(cid:4)
+(cid:4)
+bil:
+
+(cid:4)
+(cid:4)
+
+lin:
+
+¼ xd (cid:4) ud:
+ð16Þ
+
+408
+
+Y. Ko et al. / Computers and Structures 182 (2017) 404–418
+
+MITC4
+
+MITC4+
+
+New MITC4+
+
+0
+
+-0.6
+
+-1.2
+
+log Eh
+
+-1.8
+
+-2.4
+
+-3
+
+-3.6
+
+0
+
+-0.6
+
+-1.2
+
+-1.8
+
+-2.4
+
+-3
+
+-3.6
+
+0
+
+-0.6
+
+-1.2
+
+-1.8
+
+-2.4
+
+-3
+
+-3.6
+
+t/L= 1/100
+t/L= 1/1000
+t/L= 1/10000
+
+-2.1 -1.5 -0.9 -0.3
+log h
+
+-2.1 -1.5 -0.9 -0.3
+log h
+
+-2.1 -1.5 -0.9 -0.3
+log h
+
+(a)
+
+MITC4
+
+MITC4+
+
+New MITC4+
+
+0
+
+-0.6
+
+-1.2
+
+log Eh
+
+-1.8
+
+-2.4
+
+-3
+
+-3.6
+
+0
+
+-0.6
+
+-1.2
+
+-1.8
+
+-2.4
+
+-3
+
+-3.6
+
+0
+
+-0.6
+
+-1.2
+
+-1.8
+
+-2.4
+
+-3
+
+-3.6
+
+t/L= 1/100
+t/L= 1/1000
+t/L= 1/10000
+
+-2.1 -1.5 -0.9 -0.3
+log h
+
+-2.1 -1.5 -0.9 -0.3
+log h
+
+-2.1 -1.5 -0.9 -0.3
+log h
+
+(b)
+
+Fig. 8. Convergence curves for the fully clamped square plate problem with (a) the regular and (b) distorted meshes shown in Fig. 7. The bold line represents the optimal
+convergence rate.
+
+in which the subscripts ‘con.’, ‘lin.’ and ‘bil.’ denote constant, linear
+and bilinear terms, respectively.
+
+(cid:2)em
+
+rr
+
+3.2. Construction of the assumed membrane strain ﬁeld
+
+ss
+
+(cid:2)em
+(cid:2)em
+
+rs
+
+ðemðAÞ
+rr
+
+¼ 1
+2
+¼ 1
+ðemðCÞ
+ss
+2
+¼ emðEÞ
+rs
+
+þ emðDÞ
+ss
+(cid:4)
+(cid:4)
+con:
+
+:
+
+¼ em
+rs
+
+Þ þ 1
+2
+Þ þ 1
+2
+
+þ emðBÞ
+rr
+
+ðemðAÞ
+rr
+
+(cid:3) emðBÞ
+rr
+
+Þ (cid:4) s ¼ ðem
+rr
+
+þ em
+rs
+
+Þ þ em
+rr
+
+(cid:4)
+(cid:4)
+con:
+(cid:4)
+(cid:4)
+
+con:
+
+(cid:4)
+(cid:4)
+
+bil:
+(cid:4)
+(cid:4)
+
+bil:
+
+(cid:4)
+(cid:4)
+lin:
+(cid:4)
+(cid:4)
+lin:
+
+(cid:4) s;
+
+(cid:4) r;
+
+ðemðCÞ
+ss
+
+(cid:3) emðDÞ
+ss
+
+Þ (cid:4) r ¼ ðem
+ss
+
+þ em
+rs
+
+Þ þ em
+ss
+
+The following ﬁve strain components obtained at tying points
+are used to construct the assumed membrane strain ﬁeld [1,23–25]
+
+emðAÞ
+rr
+
+¼ em
+rr
+
+ð0; 1Þ ¼ em
+rr
+
+þ em
+rr
+
+þ em
+rs
+
+(cid:4)
+(cid:4)
+con:
+(cid:4)
+(cid:4)
+
+(cid:4)
+(cid:4)
+lin:
+(cid:4)
+(cid:4)
+lin:
+
+;
+
+(cid:4)
+(cid:4)
+bil:
+(cid:4)
+(cid:4)
+
+þ em
+ss
+
+;
+
+(cid:3) em
+rr
+(cid:4)
+(cid:4)
+lin:
+(cid:4)
+(cid:4)
+lin:
+
+(cid:3) em
+ss
+
+bil:
+
+þ em
+rs
+(cid:4)
+(cid:4)
+bil:
+(cid:4)
+(cid:4)
+bil:
+
+þ em
+rs
+
+;
+
+þ em
+rs
+
+emðBÞ
+rr
+
+¼ em
+rr
+
+emðCÞ
+ss
+
+¼ em
+ss
+
+emðDÞ
+ss
+
+¼ em
+ss
+
+emðEÞ
+rs
+
+¼ em
+rs
+
+con:
+
+ð0; (cid:3)1Þ ¼ em
+rr
+(cid:4)
+(cid:4)
+con:
+(cid:4)
+(cid:4)
+
+ð1; 0Þ ¼ em
+ss
+
+ð(cid:3)1; 0Þ ¼ em
+ss
+(cid:4)
+(cid:4)
+
+ð0; 0Þ ¼ em
+rs
+
+con:
+
+con:
+
+;
+
+ð17Þ
+
+;
+
+which are effective to reduce membrane locking. The tying points
+(A)–(E) as well as the corresponding strain components are shown
+in Fig. 4.
+
+We are particularly interested in the assumed membrane strain
+ﬁeld proposed by Choi and Paik [23], which was subsequently
+applied to an exact geometry shell element by Cho and Roh [24]
+
+ð18Þ
+
+We add linear terms in the covariant in-plane shear strain in
+Eq. (18) and obtain the following assumed membrane strain ﬁeld
+
+^em
+
+rr
+
+¼ (cid:2)em
+
+rr
+
+;
+
+^em
+
+ss
+
+¼ (cid:2)em
+
+ss
+
+;
+
+^em
+
+rs
+
+¼ (cid:2)em
+
+rs
+
+(cid:4)
+(cid:4)
+
+em
+rr
+
+lin:
+
+þ 1
+2
+
+(cid:4) r þ 1
+2
+
+(cid:4)
+(cid:4)
+lin:
+
+em
+ss
+
+(cid:4) s;
+
+ð19Þ
+
+which is necessary for the shell element to pass the patch test. Then,
+the ﬁve sampled strains in Eq. (17) are used to assume the mem-
+brane strain ﬁeld to be one order lower than implicitly given in
+the original displacement-based element.
+
+Comparing the strain ﬁeld in Eq. (19) with the strain ﬁeld of the
+displacement-based element (given in Eq. (15)), we can identify
+the following relations
+
+em
+rr
+em
+ss
+
+rr
+
+¼ ^em
+¼ ^em
+
+ss
+
+(cid:3) em
+rs
+(cid:3) em
+rs
+
+(cid:4)
+(cid:4)
+bil:
+(cid:4)
+(cid:4)
+bil:
+
+(cid:4)
+(cid:4)
+bil:
+(cid:4)
+(cid:4)
+bil:
+
+þ em
+rs
+þ em
+rs
+
+(cid:4) s2;
+(cid:4) r2;
+
+em
+rs
+
+¼ ^em
+
+rs
+
+þ em
+rs
+
+(cid:4)
+(cid:4)
+bil:
+
+(cid:4) rs;
+
+ð20Þ
+
+Y. Ko et al. / Computers and Structures 182 (2017) 404–418
+
+409
+
+z
+
+C
+
+D
+
+θ
+
+x
+
+A
+
+R
+
+B
+
+L2
+
+(a)
+
+(cid:25)(cid:19)
+
+(cid:28)(cid:19)
+
+(cid:22)(cid:19)
+
+θ
+
+(b)
+
+β
+
+(cid:20)
+
+(cid:19)(cid:17)(cid:24)
+
+θp
+(
+
+p
+0/)
+
+(cid:19)
+
+(cid:16)(cid:19)(cid:17)(cid:24)
+
+(cid:16)(cid:20)
+
+(cid:19)
+
+y
+
+(c)
+
+Fig. 9. Cylindrical shell problem (L ¼ R ¼ 1:0; E ¼ 2:0 (cid:5) 105; m ¼ 1=3 and p0
+t=L ¼ 1=100). (b) Pressure loading. (c) Distorted mesh in Fig. 7 applied.
+
+¼ 1:0). (a) Problem description with the graded regular mesh for the clamped case (8 (cid:5) 8 mesh,
+
+strain
+
+contain
+
+components
+
+and we can see that the strain components added to the strain ﬁeld
+in Eq. (19) (to complete the strain ﬁeld of the displacement-based
+element) cause membrane locking. It is important to note that all
+the
+term,
+(cid:4)
+(cid:4)
+em
+rs
+
+added
+¼ xd (cid:4) ud (given in Eq. (16)).
+
+bil:
+In order to establish an appropriate value for em
+rs
+
+(cid:4)
+(cid:4)
+bil:, we adopt
+the idea of Kulikov and Plotnikova [25]. The assumed membrane
+strain ﬁeld is constructed by the linear combination of the ﬁve
+strain coefﬁcients in Eq. (18) such as to keep the improved bending
+performance with the membrane locking alleviated
+~em
+
+same
+
+the
+
+Þ
+
+(cid:4)
+(cid:4)
+con:
+(cid:4)
+(cid:4)
+con:
+
+(cid:4)
+(cid:4)
+þ em
+bil:
+rs
+þ B4 (cid:4) em
+rr
+
+(cid:4)
+(cid:4)
+Þ þ B2 (cid:4) ðem
+con:
+ss
+(cid:4)
+(cid:4)
+þ B5 (cid:4) em
+lin:
+ss
+
+(cid:4)
+(cid:4)
+lin:
+
+þ em
+rs
+;
+
+(cid:4)
+(cid:4)
+bil:
+
+¼ B1 (cid:4) ðem
+rr
+þ B3 (cid:4) em
+rs
+
+(cid:4)
+(cid:4)
+bil:
+
+rs
+
+ð21Þ
+
+where the constants (B1; B2; B3; B4 and B5) need to be determined.
+Note that the ﬁve strain coefﬁcients can be easily obtained from
+the sampled strain components in Eq. (17).
+
+To pass the membrane patch tests, the new membrane strain
+
+ﬁeld should satisfy the following condition:
+~em
+
+bil: when the element geometry is flat ðxd (cid:4) n ¼ 0Þ
+
+(cid:4)
+(cid:4)
+bil:
+
+¼ em
+rs
+
+(cid:4)
+(cid:4)
+
+rs
+
+ð22Þ
+
+for arbitrary in-plane deformation modes in the ﬂat geometry.
+
+For a ﬂat element geometry with xd (cid:4) n ¼ 0 in the plane P
+
+deﬁned in Eq. (10), the distortion vector in Eq. (12) becomes
+xd ¼ ðxd (cid:4) mrÞxr þ ðxd (cid:4) msÞxs:
+
+ð23Þ
+
+Solving Eq. (22) for arbitrary in-plane modes with Eq. (23), the ﬁve
+constants in Eq. (21) are determined, see Appendix A,
+
+B1 ¼ c2
+r
+
+=d;
+
+B2 ¼ c2
+s
+
+=d;
+
+B3 ¼ 2crcs=d;
+
+B4 ¼ (cid:3)cr=d;
+
+B5 ¼ (cid:3)cs=d;
+ð24Þ
+
+with
+cr ¼ xd (cid:4) mr;
+þ c2
+d ¼ c2
+s
+r
+
+cs ¼ xd (cid:4) ms;
+
+(cid:3) 1 ¼ ðx2
+e
+
+(cid:4) msÞðx4
+e
+
+(cid:4) msÞ þ ðx3
+e
+
+(cid:4) mrÞðx1
+e
+
+(cid:4) mrÞ þ 1;
+
+in which cr and cs denote the in-plane distortions in Eq. (23) and d
+measures the distortion of pairs of edges within the element and is
+only equal to zero when the element is extremely distorted. Hence
+we assume in the following that d is not zero.
+
+Then, the assumed membrane strain term for ~em
+(cid:4)
+(cid:4)
+bil:
+
+Þ (cid:3) em
+rr
+
+þ em
+rs
+
+(cid:4)
+(cid:4)
+
+i
+
+h
+
+rs
+
+~em
+
+rs
+
+crðem
+rr
+h
+
+¼ cr
+d
+þ cs
+d
+
+(cid:4)
+(cid:4)
+con:
+(cid:4)
+(cid:4)
+con:
+
+(cid:4)
+(cid:4)
+bil:
+(cid:4)
+(cid:4)
+bil:
+
+csðem
+ss
+
+þ em
+rs
+
+Þ (cid:3) em
+ss
+
+lin:
+
+lin:
+(cid:4)
+(cid:4)
+
+i
+
+þ 2crcs
+d
+
+(cid:4)
+(cid:4)
+
+em
+rs
+
+:
+
+con:
+
+ð25Þ
+
+(cid:4)
+(cid:4)
+bil: is given by
+
+Substituting this assumed strain term into all added strain compo-
+nents in Eq. (20), we ﬁnally obtain the new assumed membrane
+strain ﬁeld for the 4-node continuum mechanics based shell
+element,
+¼ ^em
+~em
+¼ ^em
+~em
+
+þ ~em
+rs
+(cid:4) rs:
+
+(cid:3) ~em
+þ ~em
+
+(cid:4)
+(cid:4)
+bil:
+
+(cid:4)
+(cid:4)
+bil:
+
+(cid:4)
+(cid:4)
+bil:
+
+¼ ^em
+
+(cid:3) ~em
+
+þ ~em
+
+ð26Þ
+
+(cid:4) r2;
+
+(cid:4) s2;
+
+~em
+
+ss
+
+ss
+
+rs
+
+rs
+
+rs
+
+rr
+
+rr
+
+rs
+
+rs
+
+rs
+
+(cid:4)
+(cid:4)
+bil:
+(cid:4)
+(cid:4)
+bil:
+
+For an efﬁcient implementation in computer codes, the assumed
+strain ﬁeld in Eq. (26) can be rewritten as
+
+~em
+
+rr
+
+ð1 (cid:3) 2aA þ s þ 2aA (cid:4) s2ÞemðAÞ
+
+rr
+
+¼ 1
+2
+þ aCð(cid:3)1 þ s2ÞemðCÞ
+
+ss
+
+þ aDð(cid:3)1 þ s2ÞemðDÞ
+
+ss
+
+þ 1
+2
+
+ð1 (cid:3) 2aB (cid:3) s þ 2aB (cid:4) s2ÞemðBÞ
+þ aEð(cid:3)1 þ s2ÞemðEÞ
+
+rr
+
+;
+
+rs
+
+ð27aÞ
+
+410
+
+Y. Ko et al. / Computers and Structures 182 (2017) 404–418
+
+MITC4
+
+0
+
+-0.6
+
+-1.2
+
+log Eh
+
+-1.8
+
+-2.4
+
+-3
+
+-3.6
+
+0
+
+-0.6
+
+-1.2
+
+-1.8
+
+-2.4
+
+-3
+
+-3.6
+
+MITC4+
+
+New MITC4+
+
+0
+
+-0.6
+
+-1.2
+
+-1.8
+
+-2.4
+
+-3
+
+-3.6
+
+t/L= 1/100
+t/L= 1/1000
+t/L= 1/10000
+
+-2.1 -1.5 -0.9 -0.3
+log h
+
+-2.1 -1.5 -0.9 -0.3
+log h
+
+-2.1 -1.5 -0.9 -0.3
+log h
+
+(a)
+
+MITC4
+
+MITC4+
+
+New MITC4+
+
+0
+
+-0.6
+
+-1.2
+
+log Eh
+
+-1.8
+
+-2.4
+
+-3
+
+-3.6
+
+0
+
+-0.6
+
+-1.2
+
+-1.8
+
+-2.4
+
+-3
+
+-3.6
+
+0
+
+-0.6
+
+-1.2
+
+-1.8
+
+-2.4
+
+-3
+
+-3.6
+
+t/L= 1/100
+t/L= 1/1000
+t/L= 1/10000
+
+-2.1 -1.5 -0.9 -0.3
+log h
+
+-2.1 -1.5 -0.9 -0.3
+log h
+
+-2.1 -1.5 -0.9 -0.3
+log h
+
+(b)
+
+Fig. 10. Convergence curves for the clamped cylindrical shell problem with (a) the graded regular or (b) distorted meshes. The bold line represents the optimal convergence
+rate.
+
+~em
+
+ss
+
+¼ aAð(cid:3)1 þ r2Þ emðAÞ
+
+rr
+
+þ aBð(cid:3)1 þ r2Þ emðBÞ
+
+rr
+
+þ 1
+2
+
+ð1 (cid:3) 2aC þ r
+
+þ 2aC (cid:4) r2Þ emðCÞ
+
+þ 1
+2
+þ aEð(cid:3)1 þ r2Þ emðEÞ
+;
+
+ss
+
+rs
+
+ð1 (cid:3) 2aD (cid:3) r þ 2aD (cid:4) r2Þ emðDÞ
+
+ss
+
+ðr þ 4aA (cid:4) rsÞ emðAÞ
+
+ð(cid:3)r þ 4aB (cid:4) rsÞ emðBÞ
+
+rr
+
+rr
+
+þ 1
+4
+ð(cid:3)s þ 4aD (cid:4) rsÞ emðDÞ
+
+ss
+
+~em
+
+rs
+
+¼ 1
+4
+
+(cid:4) rsÞ emðCÞ
+
+ss
+
+þ 1
+4
+
+with
+
+aA ¼ crðcr (cid:3) 1Þ
+aD ¼ csðcs þ 1Þ
+
+2d
+
+2d
+
+;
+
+;
+
+;
+
+aB ¼ crðcr þ 1Þ
+2d
+aE ¼ 2crcs
+d
+
+:
+
+aC ¼ csðcs (cid:3) 1Þ
+
+2d
+
+;
+
+ð27bÞ
+
+þ 1
+4
+
+ðs þ 4aC
+
+þ ð1 þ aE (cid:4) rsÞ emðEÞ
+
+rs
+
+;
+
+ð27cÞ
+
+ment geometry is ﬂat. That is, in two-dimensional plane stress
+problems, both shell elements always yield the identical solutions.
+We also note that the computational cost of the new MITC4+ shell
+element is only somewhat higher than that of the original MITC4
+shell element.
+
+In the numerical solutions, we use 2 (cid:5) 2 (cid:5) 2 Gauss integration
+
+over the element domain for all shell elements considered.
+
+In this section, we have developed the formulation of a new
+generally applicable continuum mechanics based shell element.
+We illustrate the excellent performance of the new MITC4+ shell
+element in the next sections.
+
+4. Basic numerical tests
+
+We note that the element formulation does not include any
+numerical factor, and consider next the isotropy, zero energy mode
+and patch tests.
+
+We note that the membrane part of the new MITC4+ shell element
+is identical to that of the displacement-based element when the ele-
+
+The spatially isotropic behavior is an important requirement for
+any shell element. The element behavior should not depend on the
+
+Y. Ko et al. / Computers and Structures 182 (2017) 404–418
+
+411
+
+MITC4
+
+MITC4+
+
+New MITC4+
+
+0
+
+-0.6
+
+-1.2
+
+log Eh
+
+-1.8
+
+-2.4
+
+-3
+
+-3.6
+
+0
+
+-0.6
+
+-1.2
+
+-1.8
+
+-2.4
+
+-3
+
+-3.6
+
+0
+
+-0.6
+
+-1.2
+
+-1.8
+
+-2.4
+
+-3
+
+-3.6
+
+t/L= 1/100
+t/L= 1/1000
+t/L= 1/10000
+
+-2.1 -1.5 -0.9 -0.3
+log h
+
+-2.1 -1.5 -0.9 -0.3
+log h
+
+-2.1 -1.5 -0.9 -0.3
+log h
+
+(a)
+
+MITC4
+
+MITC4+
+
+New MITC4+
+
+0
+
+-0.6
+
+-1.2
+
+log Eh
+
+-1.8
+
+-2.4
+
+-3
+
+-3.6
+
+0
+
+-0.6
+
+-1.2
+
+-1.8
+
+-2.4
+
+-3
+
+-3.6
+
+0
+
+-0.6
+
+-1.2
+
+-1.8
+
+-2.4
+
+-3
+
+-3.6
+
+t/L= 1/100
+t/L= 1/1000
+t/L= 1/10000
+
+-2.1 -1.5 -0.9 -0.3
+log h
+
+-2.1 -1.5 -0.9 -0.3
+log h
+
+-2.1 -1.5 -0.9 -0.3
+log h
+
+(b)
+
+Fig. 11. Convergence curves for the free cylindrical shell problem with (a) the regular and (b) distorted meshes. The bold line represents the optimal convergence rate.
+
+sequence of node numbering,
+[1,3,15–18]. The element passes the test of spatial isotropy.
+
+i.e. on the element orientation
+
+In the zero energy mode test, the number of zero eigenvalues of
+the stiffness matrix of a single unsupported element are counted
+[1–3,9–18]. For the new element only the six zero eigenvalues cor-
+responding to the six rigid body modes are obtained. That is, the
+element passes the zero energy mode test.
+
+We perform three patch tests: the membrane, bending and
+shearing patch tests, see Refs. [1–3,9–18] for the patch tests. The
+mesh geometry is shown in Fig. 5. The patch of elements is sub-
+jected to the minimum number of constrains to prevent rigid body
+motions and the nodal point forces on the boundary corresponding
+to the constant stress states are applied. The patch tests are passed
+if the correct values of constant stress ﬁelds are calculated at any
+location within the mesh. The element passes the membrane,
+bending and shearing patch tests.
+
+5. Convergence studies
+
+In this section, we perform convergence studies using appropri-
+ate and well-established benchmark problems to study the behav-
+
+ior of shell elements: a clamped square plate problem, and
+cylindrical, hyperboloid and spherical shell problems [1,5–11,13,
+14–17,24,26,28–32]. We note that the chosen problems are
+behavior-encompassing, in that the typical shell behaviors encoun-
+tered in shell analyses are considered.
+
+We measure the solution errors in an appropriate norm consid-
+ering membrane and bending-dominated shell problems with var-
+ious curvatures, thicknesses, and boundary conditions.
+
+To measure the error in the ﬁnite element solution, we use the
+
+s-norm proposed by Hiller and Bathe [29]
+
+ku (cid:3) uhk2
+
+s
+
+¼
+
+Z
+
+X
+
+DeTDsdX with De ¼ e (cid:3) eh; Ds ¼ s (cid:3) sh;
+
+ð28Þ
+
+where u is the exact solution, uh is the solution of the ﬁnite element
+discretization, and e and s are the strain and stress vectors. This is a
+proper norm for investigating whether a ﬁnite element formulation
+satisﬁes the consistency and inf-sup conditions [3–5,13–18,29,30].
+Since many good benchmark shell problems designed to detect
+locking have no analytical solution, an accurate ﬁnite element
+solution using a very ﬁne mesh uref is used to replace the exact
+solution u. Hence the s-norm in Eq. (28) is modiﬁed to be
+
+412
+
+Y. Ko et al. / Computers and Structures 182 (2017) 404–418
+
+z
+0
+
+1
+
+1
+
+D
+
+C
+
+L2
+
+y
+
+x
+
+-1
+
+A
+0
+x
+
+1
+
+B
+
+(a)
+
+θ
+
+z
+
+0.5
+
+0
+
+y
+
+-0.5
+
+-1
+
+t6
+
+Fig. 12. Hyperboloid shell problem (E ¼ 2:0 (cid:5) 1011; m ¼ 1=3; L ¼ 1:0 and p0
+t=L ¼ 1=1000). (c) Distorted mesh in Fig. 7 applied.
+
+¼ 1:0). (a) Problem description. (b) Graded regular mesh for the clamped case (8 (cid:5) 8 mesh,
+
+(b)
+
+(c)
+
+kuref (cid:3) uhk2
+
+s
+
+¼
+
+Z
+
+X
+
+ref
+
+DeTDsdXref with De ¼ eref (cid:3) eh; Ds ¼ sref (cid:3) sh:
+
+ð29Þ
+
+To study the solution convergence of shell ﬁnite elements
+with decreasing shell thicknesses, we use the normalized relative
+error Eh
+
+Eh ¼
+
+kuref (cid:3) uhk2
+kuref k2
+
+s
+
+s
+
+:
+
+ð30Þ
+
+Then, when we use an N (cid:5) N element mesh, each edge is dis-
+cretized in the following ratio: L1:L2:L3: . . . LN = 1:2:3: . . . N.
+
+Fig. 8 gives the convergence curves of the three shell elements.
+A 72 (cid:5) 72 element mesh of MITC9 shell elements is used to obtain
+the reference solution. We use N (cid:5) N element meshes (N ¼ 4, 8, 16,
+32, and 64) to calculate the solutions. The element size in the con-
+vergence curves is h ¼ L=N. The performance of the elements is
+uniformly optimal in both the regular and distorted meshes. Note
+that membrane locking is inherently not present in this plate bend-
+ing problem.
+
+The theoretical convergence behavior, which corresponds to the
+optimal convergence, is given by
+
+5.2. Cylindrical shell problems
+
+Eh ﬃ Chk;
+
+ð31Þ
+
+in which C is a constant independent of the shell thickness and h is
+the element size. For 4-node shell elements, k ¼ 2.
+
+In this study, well-converged reference solutions calculated
+using ﬁne regular meshes of the MITC9 shell elements are used.
+The MITC9 shell element is known to satisfy the ellipticity and
+consistency conditions and to show good convergence behaviors
+[3–6,10,13,28–30].
+
+In each of the problem analyses we give the results obtained
+using the classical MITC4 shell element, the previously published
+and the new MITC4+ shell elements, and we show how the results
+change as the thickness of the shell decreases. Also, uniformly reg-
+ular and distorted meshes are used.
+
+5.1. Fully clamped square plate problem
+
+The plate bending problem [1,5,11,14–17,30,31] shown in Fig. 6
+is considered. A square plate of dimensions 2L (cid:5) 2L and uniform
+thickness t is subjected to a uniform pressure. Utilizing the sym-
+metry condition, only a one-quarter model is considered, with
+the following boundary conditions: ux ¼ hy ¼ 0 along BC,
+uy ¼ hx ¼ 0 along DC and ux ¼ uy ¼ uz ¼ hx ¼ hy ¼ 0 along AB and
+AD. In addition to the regular mesh in Fig. 6, we consider the same
+plate bending problem with distorted meshes shown in Fig. 7.
+
+We consider the cylindrical shell of length 2L, radius R and uni-
+form thickness t as shown in Fig. 9(a), see Refs. [1,5–7,15–17,26,
+28]. The loading is a smoothly varying pressure pðhÞ
+
+pðhÞ ¼ p0 cosð2hÞ;
+
+see Fig. 9(b).
+
+ð32Þ
+
+This shell structure shows two different asymptotic behaviors
+depending on the boundary conditions at its ends: bending-
+dominated behavior when both ends are free and membrane-
+dominated behavior when both ends are clamped.
+
+Using symmetry, only the region ABCD in Fig. 9(a) is modeled.
+For the membrane-dominated case, the clamped boundary condi-
+tion is imposed: uz ¼ b ¼ 0 along AB, uy ¼ b ¼ 0 along DC, and
+ux ¼ a ¼ 0 along BC, and ux ¼ uy ¼ uz ¼ a ¼ b ¼ 0 along AD. For
+the bending-dominated case, the free boundary condition is
+imposed: uz ¼ b ¼ 0 along AB, uy ¼ b ¼ 0 along DC, and
+ux ¼ a ¼ 0 along BC. When using the clamped boundary condition,
+ﬃﬃ
+, see
+t
+the regular mesh is graded with a boundary layer of width 2
+Refs. [1,6,28] for details. In the free boundary condition, the graded
+mesh with a boundary layer of width 0:5
+is considered [1,6]. We
+also perform the convergence studies with the distorted meshes
+shown in Fig. 9(c).
+
+p
+
+p
+
+ﬃﬃ
+t
+
+Fig. 10 gives the convergence curves in the solution of the
+clamped cylindrical shell problems. The reference solutions are cal-
+
+Y. Ko et al. / Computers and Structures 182 (2017) 404–418
+
+413
+
+MITC4
+
+MITC4+
+
+New MITC4+
+
+0
+
+-0.6
+
+-1.2
+
+log Eh
+
+-1.8
+
+-2.4
+
+-3
+
+-3.6
+
+0
+
+-0.6
+
+-1.2
+
+-1.8
+
+-2.4
+
+-3
+
+-3.6
+
+0
+
+-0.6
+
+-1.2
+
+-1.8
+
+-2.4
+
+-3
+
+-3.6
+
+t/L= 1/100
+t/L= 1/1000
+t/L= 1/10000
+
+-2.1 -1.5 -0.9 -0.3
+log h
+
+-2.1 -1.5 -0.9 -0.3
+log h
+
+-2.1 -1.5 -0.9 -0.3
+log h
+
+(a)
+
+MITC4
+
+MITC4+
+
+New MITC4+
+
+0
+
+-0.6
+
+-1.2
+
+log Eh
+
+-1.8
+
+-2.4
+
+-3
+
+-3.6
+
+0
+
+-0.6
+
+-1.2
+
+-1.8
+
+-2.4
+
+-3
+
+-3.6
+
+0
+
+-0.6
+
+-1.2
+
+-1.8
+
+-2.4
+
+-3
+
+-3.6
+
+t/L= 1/100
+t/L= 1/1000
+t/L= 1/10000
+
+-2.1 -1.5 -0.9 -0.3
+log h
+
+-2.1 -1.5 -0.9 -0.3
+log h
+
+-2.1 -1.5 -0.9 -0.3
+log h
+
+(b)
+
+Fig. 13. Convergence curves for the clamped hyperboloid shell problem with (a) the graded regular and (b) distorted meshes. The bold line represents the optimal
+convergence rate.
+
+culated using a 72 (cid:5) 72 element mesh of MITC9 shell elements.
+The solutions are obtained with N (cid:5) N element meshes (N ¼ 4, 8,
+16, 32, and 64). The element size is h ¼ L=N. In this problem, all
+shell elements present similarly good convergence behaviors.
+
+Fig. 11 shows the convergence curves for the free cylindrical
+shell problems. Note that, in the regular meshes, all 4-node shell
+elements have a ﬂat geometry, and thus membrane locking does
+not occur. However, in the distorted meshes, the element geometry
+is not ﬂat, which induces membrane locking. In those cases, the
+performance of the MITC4 shell element severely deteriorates.
+The new MITC4+ shell element shows an excellent performance.
+
+5.3. Hyperboloid shell problems
+
+Here, the hyperboloid shell shown in Fig. 12(a) is considered,
+see Refs. [1,5,6,13,14–17,26,29]. The mid-surface of the shell struc-
+ture is given by
+
+x2 þ z2 ¼ 1 þ y2;
+
+y 2 ½ (cid:3)1; 1 (cid:2):
+
+ð33Þ
+
+As for the cylindrical shell problems, a smoothly varying pressure in
+Eq. (32) is applied.
+
+A bending-dominated behavior is obtained with free ends and a
+membrane-dominated behavior is given with clamped ends, simi-
+lar to the cases of the cylindrical shell.
+
+Due to symmetry, only one-eighth of the structure correspond-
+ing to the shaded region ABCD in Fig. 12(a) is modeled for the anal-
+ysis. For the membrane-dominated case, the clamped boundary
+condition is imposed: uz ¼ b ¼ 0 along BC, ux ¼ b ¼ 0 along AD,
+uy ¼ a ¼ 0 along DC, and ux ¼ uy ¼ uz ¼ a ¼ b ¼ 0 along AB. For
+the bending-dominated case, the free boundary condition is
+imposed: uz ¼ b ¼ 0 along BC, ux ¼ b ¼ 0 along AD, and
+uy ¼ a ¼ 0 along DC.
+
+In both cases, a 72 (cid:5) 72 element mesh of MITC9 shell elements
+is used to obtain the reference solutions. The solutions are calcu-
+lated using N (cid:5) N element meshes (N ¼ 4, 8, 16, 32 and 64). The
+element size is h ¼ L=N. For the clamped boundary condition, the
+regular mesh graded in a boundary layer of width 6
+shown in
+Fig. 12(b) is considered, see Refs. [1,6,13,14–17,29]. For the free
+boundary condition, the regular mesh is graded in a boundary layer
+
+p
+ﬃﬃ
+t
+
+414
+
+Y. Ko et al. / Computers and Structures 182 (2017) 404–418
+
+MITC4
+
+MITC4+
+
+New MITC4+
+
+0
+
+-0.6
+
+-1.2
+
+log Eh
+
+-1.8
+
+-2.4
+
+-3
+
+-3.6
+
+0
+
+-0.6
+
+-1.2
+
+-1.8
+
+-2.4
+
+-3
+
+-3.6
+
+0
+
+-0.6
+
+-1.2
+
+-1.8
+
+-2.4
+
+-3
+
+-3.6
+
+t/L= 1/100
+t/L= 1/1000
+t/L= 1/10000
+
+-2.1 -1.5 -0.9 -0.3
+log h
+
+-2.1 -1.5 -0.9 -0.3
+log h
+
+-2.1 -1.5 -0.9 -0.3
+log h
+
+(a)
+
+MITC4
+
+MITC4+
+
+New MITC4+
+
+0
+
+-0.6
+
+-1.2
+
+log Eh
+
+-1.8
+
+-2.4
+
+-3
+
+-3.6
+
+0
+
+-0.6
+
+-1.2
+
+-1.8
+
+-2.4
+
+-3
+
+-3.6
+
+0
+
+-0.6
+
+-1.2
+
+-1.8
+
+-2.4
+
+-3
+
+-3.6
+
+t/L= 1/100
+t/L= 1/1000
+t/L= 1/10000
+
+-2.1 -1.5 -0.9 -0.3
+log h
+
+-2.1 -1.5 -0.9 -0.3
+log h
+
+-2.1 -1.5 -0.9 -0.3
+log h
+
+(b)
+
+Fig. 14. Convergence curves for the free hyperboloid shell problem with (a) the regular and (b) distorted meshes. The bold line represents the optimal convergence rate.
+
+p
+ﬃﬃ
+t
+
+of width 0:5
+studies with the distorted meshes shown in Fig. 12(c).
+
+[1,6,13,14,29]. We also perform the convergence
+
+Fig. 13 shows the good convergence behavior of all elements in
+the solution of the clamped hyperboloid shell problem. Fig. 14
+shows the convergence curves for the solution of the free hyper-
+boloid shell problem. While all shell elements behave well when
+using the regular meshes, the convergence behavior of the MITC4
+and previously published MITC4+ shell elements deteriorate when
+using the distorted meshes. However, the new MITC4+ shell ele-
+ment shows an almost uniformly optimal and thus ideal conver-
+gence behavior.
+
+5.4. Spherical shell problems
+
+Finally, the spherical shell of radius R shown in Fig. 15(a) is con-
+sidered. The spherical shell has 18(cid:3) circular cutouts at its top and
+bottom. The varying pressure in Eq. (32) with the azimuthal angle
+h is applied. The problem geometry is as in Refs. [6,10,11,24,32] but
+a different loading and different boundary conditions are used.
+
+A bending-dominated behavior is obtained with free ends and a
+membrane-dominated behavior is given with clamped ends, simi-
+lar to the cylindrical and hyperboloid shell problems.
+
+Utilizing the symmetry, only one-eighth of the structure corre-
+sponding to the shaded region ABCD in Fig. 15(a) is modeled for the
+analysis. For the membrane-dominated case, the clamped bound-
+ary condition is imposed: ux ¼ b ¼ 0 along BC, uy ¼ b ¼ 0 along
+AD, uz ¼ a ¼ 0 along AB, and ux ¼ uy ¼ uz ¼ a ¼ b ¼ 0 along DC.
+For the bending-dominated case, the free boundary condition is
+imposed: ux ¼ b ¼ 0 along BC, uy ¼ b ¼ 0 along AD, and
+uz ¼ a ¼ 0 along AB. In the free boundary condition, we found by
+¼ 15(cid:7) and
+numerical experiments a boundary layer of angle ul
+hence we use the regular mesh graded in that boundary layer
+shown in Fig. 15(b). We also perform the convergence studies with
+the distorted meshes shown in Fig. 15(c).
+
+Fig. 16 presents the convergence curves in the solution of the
+clamped spherical shell problem. The reference solutions are
+calculated using a 72 (cid:5) 72 element mesh of MITC9 shell elements.
+The solutions are obtained with N (cid:5) N element meshes (N ¼ 4, 8,
+
+Y. Ko et al. / Computers and Structures 182 (2017) 404–418
+
+415
+
+z
+
+D
+
+C
+
+0φ
+
+A
+
+θ
+
+R
+
+β
+
+B
+
+y
+
+(a)
+
+y
+
+(c)
+
+x
+
+z
+
+lφ
+
+(b)
+
+x
+
+Fig. 15. Spherical shell problem (E ¼ 2:0 (cid:5) 1011; m ¼ 1=3; R ¼ 1:0; u0
+ul
+
+¼ 15(cid:7)). (c) Distorted mesh in Fig. 7 applied.
+
+¼ 18(cid:7) and p0
+
+¼ 1:0). (a) Problem description. (b) Graded regular mesh for the free case (8 (cid:5) 8 mesh,
+
+16, 32, and 64). The element size is h ¼ L=N with L ¼ R. All shell
+elements present similarly good convergence behaviors.
+
+Fig. 17 shows the convergence curves for the free spherical shell
+problem. In the regular meshes, all elements perform equally and
+very well. However, in the distorted meshes, the convergence
+behaviors of the MITC4 and previously published MITC4+ shell ele-
+ments deteriorate. On the other hand, the new MITC4+ shell ele-
+ment also then shows an excellent performance.
+
+The new MITC4+ shell element displays a signiﬁcantly better
+behavior than the earlier published MITC4+ shell element, and is
+computationally more effective. The element is identical to the
+original MITC4 shell element for a ﬂat geometry and hence the
+membrane behavior is well preserved. Finally we should note that
+the given MITC schemes are also applicable in the formulation of
+solid-shell [32] and 3D-shell elements [33] and in nonlinear anal-
+ysis [3,34].
+
+6. Concluding remarks
+
+In this study, we developed a new MITC4+ continuum
+mechanics-based shell element using the MITC approach to allevi-
+ate shear and membrane locking. The shear locking is alleviated by
+using the interpolations of the classical MITC4 element formula-
+tion. The membrane locking is alleviated by the use of characteris-
+tic geometry and displacement vectors and using a new MITC
+interpolation on the membrane strains. The new MITC4+ shell ele-
+ment does not contain an adjustable numerical factor, passes all
+basic tests and shows in an appropriate norm excellent perfor-
+mance in the solution of membrane and bending-dominated prob-
+lems even when signiﬁcantly distorted meshes are used. Indeed, in
+the difﬁcult to solve elliptic and hyperboloid shell analysis prob-
+lems the element shows an almost ideal behavior.
+
+Acknowledgments
+
+This research was supported by a grant (MPSS-CG-2016-04)
+through the Disaster and Safety Management Institute funded by
+Ministry of Public Safety and Security of Korean government, and
+the Climate Change Research Hub of KAIST (No. N11160021).
+
+Appendix A. Derivation of the constants in Eq. (24)
+
+(cid:4)
+(cid:4)
+
+Our objective is to determine the constants in Eq. (24).
+The term em
+bil:
+rs
+deformation mode
+ur ¼ ar; us ¼ as; ud ¼ 0;
+
+¼ xd (cid:4) ud should become zero in the following
+
+ðA:1Þ
+
+416
+
+Y. Ko et al. / Computers and Structures 182 (2017) 404–418
+
+MITC4
+
+MITC4+
+
+New MITC4+
+
+0
+
+-0.6
+
+-1.2
+
+log Eh
+
+-1.8
+
+-2.4
+
+-3
+
+-3.6
+
+0
+
+-0.6
+
+-1.2
+
+-1.8
+
+-2.4
+
+-3
+
+-3.6
+
+0
+
+-0.6
+
+-1.2
+
+-1.8
+
+-2.4
+
+-3
+
+-3.6
+
+t/L= 1/100
+t/L= 1/1000
+t/L= 1/10000
+
+-2.1 -1.5 -0.9 -0.3
+log h
+
+-2.1 -1.5 -0.9 -0.3
+log h
+(a)
+
+-2.1 -1.5 -0.9 -0.3
+log h
+
+MITC4
+
+MITC4+
+
+New MITC4+
+
+0
+
+-0.6
+
+-1.2
+
+log Eh
+
+-1.8
+
+-2.4
+
+-3
+
+-3.6
+
+0
+
+-0.6
+
+-1.2
+
+-1.8
+
+-2.4
+
+-3
+
+-3.6
+
+0
+
+-0.6
+
+-1.2
+
+-1.8
+
+-2.4
+
+-3
+
+-3.6
+
+t/L= 1/100
+t/L= 1/1000
+t/L= 1/10000
+
+-2.1 -1.5 -0.9 -0.3
+log h
+
+-2.1 -1.5 -0.9 -0.3
+log h
+(b)
+
+-2.1 -1.5 -0.9 -0.3
+log h
+
+Fig. 16. Convergence curves for the clamped spherical shell problem with (a) the regular and (b) distorted meshes. The bold line represents the optimal convergence rate.
+
+in which ar and as are arbitrary constant vectors placed in the plane
+P. From the condition in Eq. (22), the assumed membrane strain in
+Eq. (21) also should be zero,
+~em
+
+ðA:2Þ
+
+¼ 0
+
+(cid:4)
+(cid:4)
+bil:
+
+rs
+
+and thus
+
+B1 (cid:4) xr þ B3 (cid:4) xs=2 þ B4 (cid:4) xd ¼ 0;
+
+B3 (cid:4) xr=2 þ B2 (cid:4) xs þ B5 (cid:4) xd ¼ 0:
+
+ðA:5Þ
+
+Comparing Eq. (A.5) with Eq. (23), we can easily identify
+
+in the deformation mode of Eq. (A.1).
+
+Using Eq. (A.1) in Eq. (16), the ﬁve strain coefﬁcients in Eq. (18)
+
+B1 ¼ c2
+r
+
+=d;
+
+B2 ¼ c2
+s
+
+=d;
+
+B3 ¼ 2crcs=d;
+
+B4 ¼ (cid:3)cr=d;
+
+B5 ¼ (cid:3)cs=d
+ðA:6Þ
+
+(cid:4)
+(cid:4)
+bil:
+
+Þ ¼ xr (cid:4) ar; ðem
+ss
+
+(cid:4)
+(cid:4)
+con:
+
+(cid:4)
+(cid:4)
+bil:
+
+þ em
+rs
+
+Þ ¼ xs (cid:4) as;
+
+with cr ¼ xd (cid:4) mr; cs ¼ xd (cid:4) ms and a constant d.
+
+become
+(cid:4)
+(cid:4)
+con:
+
+ðem
+rr
+(cid:4)
+(cid:4)
+(cid:4)
+(cid:4)
+
+em
+rs
+
+em
+rr
+
+con:
+
+lin:
+
+þ em
+rs
+¼ 1
+2
+¼ xd (cid:4) ar;
+
+ðxr (cid:4) as þ xs (cid:4) arÞ;
+(cid:4)
+(cid:4)
+
+em
+ss
+
+lin:
+
+¼ xd (cid:4) as:
+
+Substituting Eqs. (A.2) and (A.3) into Eq. (21), the following equa-
+tion is obtained
+
+ðB1 (cid:4) xr þ B3 (cid:4) xs=2 þ B4 (cid:4) xdÞ (cid:4) ar þ ðB3 (cid:4) xr=2 þ B2 (cid:4) xs þ B5 (cid:4) xdÞ (cid:4) as ¼ 0
+
+ðA:4Þ
+
+for arbitrary constant vectors ar and as,
+
+ðA:3Þ
+
+~em
+
+rs
+
+We then obtain
+(cid:6)
+(cid:4)
+(cid:4)
+
+(cid:4)
+(cid:4)
+con:
+
+bil:
+
+em
+rr
+
+¼ c2
+r
+d
+þ 2crcs
+d
+
+em
+rs
+
+þ em
+rs
+(cid:4)
+(cid:4)
+con:
+
+(cid:4)
+(cid:4)
+bil:
+(cid:3) cr
+d
+(cid:4)
+(cid:4)
+
+(cid:7)
+
+(cid:4)
+(cid:4)
+
+bil:
+
+þ em
+rs
+
+(cid:7)
+
+þ c2
+s
+d
+(cid:4)
+(cid:4)
+lin:
+
+em
+rr
+
+(cid:6)
+
+em
+ss
+
+(cid:4)
+(cid:4)
+
+(cid:3) cs
+d
+
+con:
+(cid:4)
+(cid:4)
+lin:
+
+em
+ss
+
+:
+
+ðA:7Þ
+
+We can identify that em
+rs
+mode
+ur ¼ 0; us ¼ 0; ud ¼ xd;
+
+bil:
+
+¼ xd (cid:4) xd in the following deformation
+
+ðA:8Þ
+
+Y. Ko et al. / Computers and Structures 182 (2017) 404–418
+
+417
+
+MITC4
+
+0
+
+-0.6
+
+-1.2
+
+log Eh
+
+-1.8
+
+-2.4
+
+-3
+
+-3.6
+
+0
+
+-0.6
+
+-1.2
+
+-1.8
+
+-2.4
+
+-3
+
+-3.6
+
+MITC4+
+
+New MITC4+
+
+0
+
+-0.6
+
+-1.2
+
+-1.8
+
+-2.4
+
+-3
+
+-3.6
+
+t/L= 1/100
+t/L= 1/1000
+t/L= 1/10000
+
+-2.1 -1.5 -0.9 -0.3
+log h
+
+-2.1 -1.5 -0.9 -0.3
+log h
+
+-2.1 -1.5 -0.9 -0.3
+log h
+
+(a)
+
+MITC4
+
+MITC4+
+
+New MITC4+
+
+0
+
+-0.6
+
+-1.2
+
+log Eh
+
+-1.8
+
+-2.4
+
+-3
+
+-3.6
+
+0
+
+-0.6
+
+-1.2
+
+-1.8
+
+-2.4
+
+-3
+
+-3.6
+
+0
+
+-0.6
+
+-1.2
+
+-1.8
+
+-2.4
+
+-3
+
+-3.6
+
+t/L= 1/100
+t/L= 1/1000
+t/L= 1/10000
+
+-2.1 -1.5 -0.9 -0.3
+log h
+
+-2.1 -1.5 -0.9 -0.3
+log h
+
+-2.1 -1.5 -0.9 -0.3
+log h
+
+(b)
+
+Fig. 17. Convergence curves for the free spherical shell problem with (a) the graded regular and (b) distorted meshes. The bold line represents the optimal convergence rate.
+
+and from the condition in Eq. (22), the following equation should be
+satisﬁed for this deformation mode
+~em
+
+ðA:9Þ
+
+¼ xd (cid:4) xd:
+
+(cid:4)
+(cid:4)
+bil:
+
+rs
+
+Using Eq. (A.8) in Eq. (16), the ﬁve strain coefﬁcients in Eq. (18)
+become
+(cid:6)
+(cid:4)
+(cid:4)
+þ em
+con:
+rs
+¼ xr (cid:4) xd; em
+ss
+
+¼ xd (cid:4) xd; ðem
+ss
+(cid:4)
+(cid:4)
+¼ xs (cid:4) xd:
+
+Þ ¼ xd (cid:4) xd; em
+rs
+
+(cid:4)
+(cid:4)
+bil:
+
+þ em
+rs
+
+em
+rr
+(cid:4)
+(cid:4)
+
+¼ 0;
+
+em
+rr
+
+con:
+
+con:
+
+bil:
+
+(cid:7)
+
+(cid:4)
+(cid:4)
+
+(cid:4)
+(cid:4)
+
+(cid:4)
+(cid:4)
+
+lin:
+
+lin:
+
+Substituting Eqs. (A.9) and (A.10) into Eq. (A.7), the constant d is
+determined
+
+ðA:10Þ
+
+Using Eq. (13) in Eq. (A.12), the constant d becomes
+
+d ¼ ðx2
+e
+
+(cid:4) msÞðx4
+e
+
+(cid:4) msÞ þ ðx3
+e
+
+(cid:4) mrÞðx1
+e
+
+(cid:4) mrÞ þ 1
+
+ðA:13Þ
+
+and the constants in Eq. (24) are ﬁnally obtained from Eq. (A.7).
+
+References
+
+[1] Ko Y, Lee PS, Bathe KJ. The MITC4+ shell element and its performance. Comput
+
+Struct 2016;169:57–68.
+
+[2] Dvorkin EN, Bathe KJ. A continuum mechanics based four-node shell element
+
+for general nonlinear analysis. Eng Comput 1984;1(1):77–88.
+
+[3] Bathe KJ. Finite element procedures. 2nd ed. Watertown, MA: Klaus-Jürgen
+
+Bathe; 2014.
+
+d ¼ c2
+r
+
+þ c2
+s
+
+(cid:3) 1;
+
+which can be rewritten as
+
+d ¼ ðcr þ 1Þðcr (cid:3) 1Þ þ ðcs þ 1Þðcs (cid:3) 1Þ þ 1
+
+¼ ½ðxd þ xrÞ (cid:4) mr(cid:2)½ðxd (cid:3) xrÞ (cid:4) mr(cid:2) þ ½ðxd þ xsÞ (cid:4) ms(cid:2)½ðxd (cid:3) xsÞ (cid:4) ms(cid:2) þ 1:
+
+ðA:12Þ
+
+ðA:11Þ
+
+[4] Bathe KJ. The inf–sup condition and its evaluation for mixed ﬁnite element
+
+methods. Comput Struct 2001;79(2):243–52.
+
+[5] Bathe KJ, Iosilevich A, Chapelle D. An inf-sup test for shell ﬁnite elements.
+
+Comput Struct 2000;75(5):439–56.
+
+[6] Chapelle D, Bathe KJ. The ﬁnite element analysis of shells – fundamentals. 2nd
+
+ed. Berlin: Springer; 2011.
+
+[7] Chapelle D, Bathe KJ. Fundamental considerations for the ﬁnite element
+
+analysis of shell structures. Comput Struct 1998;66(1):19–36. 711–2.
+
+[8] Lee PS, Bathe KJ. On the asymptotic behavior of shell structures and the
+evaluation in ﬁnite element solutions. Comput Struct 2002;80(3):235–55.
+
+418
+
+Y. Ko et al. / Computers and Structures 182 (2017) 404–418
+
+[9] Bathe KJ, Dvorkin EN. A formulation of general shell elements – the use of
+mixed formulation of tensorial components. Int J Numer Meth Eng 1986;22
+(3):697–722.
+
+[22] Belytschko T, Leviathan I. Projection schemes for one-point quadrature shell
+
+elements. Comp Meth Appl Mech Eng 1994;115(3):277–86.
+
+[23] Choi CK, Paik JG. An efﬁcient four node degenerated shell element based on the
+
+[10] Bucalem ML, Bathe KJ. Higher-order MITC general shell elements. Int J Numer
+
+assumed covariant strain. Struct Eng Mech 1994;2(1):17–34.
+
+Meth Eng 1993;36(21):3729–54.
+
+[24] Roh HY, Cho M. The application of geometrically exact shell elements to B-
+
+[11] Bucalem ML, Bathe KJ. Finite element analysis of shell structures. Archiv
+
+spline surfaces. Comp Meth Appl Mech Eng 2004;193(23):2261–99.
+
+Comput Meth Eng 1997;4(1):3–61.
+
+[12] Vampa V. Analysis of in-layer strains in the low order MITC shell element.
+
+Latin Am J Solid Struct 2007;4(2):87–102.
+
+[25] Kulikov GM, Plotnikova SV. A family of ANS four-node exact geometry shell
+elements in general convected curvilinear coordinates. Int J Numer Meth Eng
+2010;83(10):1376–406.
+
+[13] Bathe KJ, Lee PS, Hiller JF. Towards improving the MITC9 shell element.
+
+[26] Lee PS, Bathe KJ. Insight into ﬁnite element shell discretizations by use of the
+
+Comput Struct 2003;81(8):477–89.
+
+‘‘basic shell mathematical model”. Comput Struct 2005;83(1):69–90.
+
+[14] da Veiga LB, Chapelle D, Suarez IP. Towards improving the MITC6 triangular
+
+[27] Prathap G. A C0 continuous four-noded cylindrical shell element. Comput
+
+shell element. Comput Struct 2007;85(21):1589–610.
+
+Struct 1985;21(5):995–9.
+
+[15] Lee PS, Bathe KJ. Development of MITC isotropic triangular shell ﬁnite
+
+[28] Bathe KJ, Iosilevich A, Chapelle D. An evaluation of the MITC shell elements.
+
+elements. Comput Struct 2004;82(11):945–62.
+
+Comput Struct 2000;75(1):1–30.
+
+[16] Lee Y, Yoon K, Lee PS. Improving the MITC3 shell ﬁnite element by using the
+
+Hellinger-Reissner principle. Comput Struct 2012;110–111:93–106.
+
+[17] Lee Y, Lee PS, Bathe KJ. The MITC3+ shell element and its performance. Comput
+
+Struct 2014;138:12–23.
+
+[29] Hiller
+
+JF, Bathe KJ. Measuring convergence of mixed ﬁnite element
+discretizations: an application to shell structures. Comput Struct 2003;81
+(8):639–54.
+
+[30] Lee PS, Bathe KJ. The quadratic MITC plate and MITC shell elements in plate
+
+[18] Kim DN, Bathe KJ. A triangular six-node shell element. Comput Struct 2009;87
+
+bending. Adv Eng Software 2010;41(5):712–28.
+
+(23):1451–60.
+
+[31] Batoz JL, Bathe KJ, Ho LW. A study of three-node triangular plate bending
+
+[19] Lee Y, Jeon HM, Lee PS, Bathe KJ. The modal behavior of the MITC3+ triangular
+
+elements. Int J Numer Meth Eng 1980;15(12):1771–812.
+
+shell element. Comput Struct 2015;153:148–64.
+
+[20] Zienkiewicz OC, Taylor RL, Too JM. Reduced integration technique in general
+analysis of plates and shells. Int J Numer Meth Eng 1971;3(2):275–90.
+[21] Belytschko T, Tsay CS. A stabilization procedure for the quadrilateral plate
+J Numer Meth Eng 1983;19
+
+Int
+
+element with one-point quadrature.
+(3):405–19.
+
+[32] Klinkel S, Gruttmann F, Wagner W. A robust non-linear solid shell element
+based on a mixed variational formulation. Comp Meth in App Mech Eng
+2006;195(1):179–201.
+
+[33] Sussman T, Bathe KJ. 3D-shell elements for structures in large strains. Comput
+
+Struct 2013;122:2–12.
+
+[34] Jeon HM, Lee Y, Lee PS, Bathe KJ. The MITC3+ shell element in geometric
+
+nonlinear analysis. Comput Struct 2015;146:91–104.
+
+

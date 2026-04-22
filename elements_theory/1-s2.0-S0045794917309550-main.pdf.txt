@@ -1,0 +1,2870 @@
+Computers and Structures 193 (2017) 187–206
+
+Contents lists available at ScienceDirect
+
+Computers and Structures
+
+j o u r n a l h o m e p a g e : w w w . e l s e v i e r . c o m / l o c a t e / c o m p s t r u c
+
+Performance of the MITC3+ and MITC4+ shell elements in widely-used
+benchmark problems
+Yeongbin Ko a, Youngyu Lee b, Phill-Seung Lee a,⇑
+
+, Klaus-Jürgen Bathe c
+
+a Department of Mechanical Engineering, Korea Advanced Institute of Science and Technology, 291 Daehak-ro, Yuseong-gu, Daejeon 34141, Republic of Korea
+b Agency for Defense Development, Yuseong-gu, Daejeon 34186, Republic of Korea
+c Department of Mechanical Engineering, Massachusetts Institute of Technology, Cambridge, MA 02139, USA
+
+a r t i c l e
+
+i n f o
+
+a b s t r a c t
+
+Recently, new 3-node and 4-node MITC shell elements, the MITC3+ and MITC4+ elements, have been pro-
+posed. The two shell elements were tested through theoretically well-established convergence studies. In
+this paper we continue to investigate the performance of the MITC3+ and MITC4+ shell elements in rel-
+atively simple but widely adopted benchmark problems. To perform these tests as usually done, the pre-
+dictive capability of the elements is assessed through point-wise convergence of displacements at speciﬁc
+locations of shell structures. The results obtained using the MITC3+ and MITC4+ shell elements are com-
+pared with those found for some other shell elements.
+
+(cid:1) 2017 Elsevier Ltd. All rights reserved.
+
+Article history:
+Received 17 June 2017
+Accepted 4 August 2017
+Available online 1 September 2017
+
+Keywords:
+Shell structures
+Shell ﬁnite elements
+3- and 4-node elements
+MITC method
+Convergence study
+Benchmark tests
+
+1. Introduction
+
+For the last several decades, the ﬁnite element method has been
+dominantly used for the analysis of shell structures. However,
+although a great effort has been expended since the 1950s to
+develop effective shell ﬁnite elements, ‘‘ideal” shell elements were
+not reached. The difﬁculty is due to the highly sensitive and com-
+plicated behavior of shell structures [1,2]. Ideal shell elements
+should satisfy the consistency, ellipticity and inf-sup conditions
+and show optimal solution convergence for all asymptotic cate-
+gories of shell behaviors (membrane dominated, bending domi-
+nated and mixed behaviors)
+regardless of shell geometry,
+boundary and loading conditions, and mesh patterns used [1–8].
+
+The main challenge to obtain such shell elements is to reduce
+and ideally eliminate ‘‘locking”. When a ﬁnite element discretiza-
+tion is deﬁcient in approximating the displacement ﬁelds of shells,
+the solution accuracy deteriorates. This phenomenon is called
+‘‘locking” and becomes more severe as the shell
+thickness
+decreases [1,2,9]. The MITC (Mixed Interpolation of Tensorial Com-
+ponents) method [1] has been effectively adopted for remedying
+shear and membrane locking present in shell ﬁnite elements. The
+4-node MITC4 shell element has been widely used in engineering
+practice due to its simple formulation and excellent performance
+
+⇑ Corresponding author.
+
+E-mail address: phillseung@kaist.edu (P.S. Lee).
+
+http://dx.doi.org/10.1016/j.compstruc.2017.08.003
+0045-7949/(cid:1) 2017 Elsevier Ltd. All rights reserved.
+
+[10]. Subsequently, a 3-node MITC3 shell element was proposed
+[11].
+
+In further research, two new MITC shell elements (the MITC3+
+and MITC4+ elements) were developed [3–5]. The MITC3+ shell
+element outperforms the MITC3 shell element and the MITC4+
+shell element provides a signiﬁcantly improved performance in
+distorted meshes compared to the MITC4 shell element [3–5].
+Indeed, the behavior of these shell elements is very close to opti-
+mal. The elements, of course, pass all the basic tests; the zero
+energy mode, isotropy, and patch tests.
+
+The MITC3+ and MITC4+ shell elements were tested through
+convergence studies in various membrane and bending dominated
+shell problems – in ‘‘all-encompassing test problems” – consider-
+ing uniform and distorted meshes. The ‘‘all-encompassing” refers
+to the fact that membrane and bending dominated problems of
+shells with positive and negative Gaussian curvatures are included.
+The errors in the shell element solutions were measured using the
+s-norm [12], and the solution convergence rates with decreasing
+shell thickness were compared with the optimal convergence rates
+This test procedure is theoretically well-founded but requires spe-
+cial coding for the calculation of the s-norm [1,12].
+
+In previous research on shell elements this norm was not used
+and hence a comparison of the predictive capabilities of the MITC
+shell elements with published solution data requires that the pre-
+viously used problems and solution measurements are employed.
+There exist some test problems of shell elements that have been
+
+188
+
+Y. Ko et al. / Computers and Structures 193 (2017) 187–206
+
+Fig. 1. The 3-node MITC3+ shell element. The coordinates r and s are in the two in-plane directions, and t is in the direction through the shell thickness.
+
+Fig. 2. The 4-node MITC shell elements. (a) The assumed transverse shear strains for the MITC4 and MITC4+ elements. (b) The assumed membrane strains for the MITC4+
+element.
+
+Table 1
+Shell ﬁnite elements considered in this study.
+
+Elements
+
+Results generated in this study
+
+3-node
+
+4-node
+
+Results taken from the literature
+
+3-node
+
+4-node
+
+Y. Ko et al. / Computers and Structures 193 (2017) 187–206
+
+189
+
+Name
+
+MITC3+
+
+S4
+MITC4
+MITC4+
+
+DST3
+DSG3
+TRIC3
+
+DKQ4
+DKMQ
+SIMO4
+IBRA4
+DSG4
+
+Description
+
+New MITC shell element by Lee et al. [3]
+
+Shell element in ABAQUS [14]
+MITC shell element by Dvorkin and Bathe [10]
+New MITC shell element by Ko et al. [5]
+
+Discrete shear triangular shell element by Batoz and Katili [18]
+Shell element based on the discrete strain gap method by Bletzinger et al. [22]
+Shell element based on the natural mode method by Argyris et al. [26]
+
+Discrete Kirchhoff quadrilateral shell element by Batoz et al. [17]
+Discrete Kirchhoff quadrilateral shell element by Katili [19]
+Stress resultant geometrically exact shell element by Simo et al. [20]
+Stress resultant shell element with drilling DOFs by Ibrahimbegovic´ and Frey [21]
+Shell element based on the discrete strain gap method by Bletzinger et al. [22]
+
+(cid:3)8, E ¼ 1:0 (cid:2) 104 and m ¼ 0:3). (b)
+Fig. 3. Square plate problem. (a) Problem description (L ¼ 1:0, thickness t ¼ 0:01, 0:001 and 0:0001, p ¼ 1:0 (cid:2) 10
+Regular mesh pattern (N ¼ 4). (c) Distorted mesh pattern (N ¼ 4, L1 : L2 . . . LN ¼ 1 : 2 . . . N). In (b) and (c), the solid and dotted lines denote quadrilateral and triangular
+elements, respectively.
+
+(cid:3)5 and 1:0 (cid:2) 10
+
+(cid:3)2, 1:0 (cid:2) 10
+
+widely used for many years [13]. The solution convergence is sim-
+ply measured through the point-wise convergence of a displace-
+ment at a point of the shell structure. As discussed in depth in
+Ref. [2], this procedure to test shell elements is not stringent and
+does not thoroughly measure the predictive capability of shell
+ﬁnite elements. However, many shell ﬁnite elements previously
+developed have been assessed using these benchmark problems
+and, indeed, in new publications these tests are still frequently
+employed. For this reason, it is valuable to also test the new MITC
+shell elements using these problems, and to compare the predicted
+response with the results obtained using other shell elements.
+
+In this paper, we assess the performance of the new MITC shell
+elements in these benchmark shell problems and give some com-
+parisons with other shell elements previously developed. We con-
+sider various shell thicknesses and mesh distortions to identify
+whether shear locking or membrane locking occurs. Hence we
+focus on the analysis of structures, for which shear effects are
+small. The performance of the MITC3+ and MITC4+ shell elements
+
+is presented by data in tables and convergence curves. The tables
+allow other researchers to directly compare the performance of
+any shell element against the elements considered here.
+
+2. Shell ﬁnite elements
+
+In this section, we describe the shell ﬁnite elements considered
+in this study. The key features of the MITC shell elements are
+brieﬂy presented. For comparison, several shell elements have
+been selected from the literature as well as available commercial
+ﬁnite element software. We give here also brief descriptions of
+these elements.
+
+2.1. The MITC shell elements
+
+The key of the MITC formulation is the choice of the assumed
+strain ﬁelds. We brieﬂy present the assumed strain ﬁelds used in
+the MITC3+, MITC4, and MITC4+ shell elements.
+
+190
+
+Y. Ko et al. / Computers and Structures 193 (2017) 187–206
+
+Fig. 4. Convergence of normalized displacement at point A for the clamped square plate problem with the (a) regular and (b) distorted meshes.
+
+Table 2
+Normalized displacement at the plate center (point A) for the clamped square plate problem with the regular mesh in Fig. 3(b).
+
+3-node element
+
+4-node elements
+
+t=L
+
+1/100
+
+1/1000
+
+1/10000
+
+N
+
+4
+8
+16
+32
+64
+
+4
+8
+16
+32
+64
+
+MITC3+
+
+0.9321
+0.9817
+0.9947
+0.9980
+0.9988
+
+0.9316
+0.9813
+0.9943
+0.9976
+0.9984
+
+4
+8
+16
+32
+64
+Reference solution: (cid:3)2.2137 (cid:2) 10(cid:3)1
+
+0.9230
+0.9806
+0.9942
+0.9976
+0.9984
+
+S4
+
+0.9876
+0.9963
+0.9984
+0.9990
+0.9991
+
+0.9871
+0.9958
+0.9980
+0.9985
+0.9986
+
+0.9871
+0.9958
+0.9979
+0.9985
+0.9986
+
+MITC4
+
+0.9875
+0.9962
+0.9984
+0.9989
+0.9990
+
+0.9871
+0.9958
+0.9980
+0.9985
+0.9986
+
+0.9871
+0.9958
+0.9979
+0.9985
+0.9986
+
+MITC4+
+
+0.9875
+0.9962
+0.9984
+0.9989
+0.9990
+
+0.9871
+0.9958
+0.9980
+0.9985
+0.9986
+
+0.9871
+0.9958
+0.9979
+0.9985
+0.9986
+
+Fig. 1 presents the basic features of the MITC3+ shell element
+[1,11]. The nodal degrees of freedom (DOFs), the assumed strain
+ﬁelds for transverse shear strains and the corresponding tying
+positions are given. The MITC3+ shell element has the nodal
+degrees-of freedom (DOFs) of standard 3-node shell elements, that
+
+is, 5 DOFs per node and 15 DOFs in total. However, in the MITC3+
+formulation two internal rotations interpolated by the cubic bub-
+ble function are used. The corresponding DOFs are condensed out
+on the element level. Since the geometry of the 3-node shell ele-
+ment is ﬂat, membrane locking is not treated.
+
+Table 3
+Normalized displacement at the plate center (point A) for the clamped square plate problem with the distorted mesh in Fig. 3(c).
+
+Y. Ko et al. / Computers and Structures 193 (2017) 187–206
+
+191
+
+3-node element
+
+4-node elements
+
+t=L
+
+1/100
+
+1/1000
+
+1/10000
+
+N
+
+4
+8
+16
+32
+64
+
+4
+8
+16
+32
+64
+
+MITC3+
+
+1.010
+1.004
+1.000
+0.9995
+0.9992
+
+1.009
+1.003
+1.000
+0.9991
+0.9988
+
+4
+8
+16
+32
+64
+Reference solution: (cid:3)2.2137 (cid:2) 10(cid:3)1
+
+1.004
+1.003
+1.000
+0.9990
+0.9988
+
+S4
+
+1.029
+1.008
+1.002
+0.9999
+0.9994
+
+1.028
+1.008
+1.001
+0.9994
+0.9989
+
+1.028
+1.008
+1.001
+0.9994
+0.9988
+
+MITC4
+
+1.029
+1.008
+1.002
+0.9998
+0.9993
+
+1.028
+1.008
+1.001
+0.9994
+0.9989
+
+1.028
+1.008
+1.001
+0.9994
+0.9988
+
+MITC4+
+
+1.029
+1.008
+1.002
+0.9998
+0.9993
+
+1.028
+1.008
+1.001
+0.9994
+0.9989
+
+1.028
+1.008
+1.001
+0.9994
+0.9988
+
+Fig. 5. Convergence of normalized displacement at point A for the simply supported square plate problem with the (a) regular and (b) distorted meshes.
+
+In Fig. 2, we present the nodal DOFs, the assumed strain ﬁelds
+for the transverse shear and membrane strains and the corre-
+sponding tying positions [4,5,10]. In the MITC4 shell element, the
+MITC method is only employed for the transverse shear strains to
+alleviate shear locking. The MITC4+ shell element uses the same
+assumed transverse shear strain ﬁelds as the MITC4 shell element,
+
+but also assumed membrane strains to also alleviate membrane
+locking. The 4-node shell elements have the nodal DOFs of stan-
+dard 4-node shell elements (5 DOFs per node and 20 nodal DOFs
+in total). The coefﬁcients for the assumed membrane strain ﬁelds
+are derived from the element geometry, see Refs. [4,5] for the
+details.
+
+192
+
+Y. Ko et al. / Computers and Structures 193 (2017) 187–206
+
+Table 4
+Normalized displacement at the plate center (point A) for the simply supported square plate problem with the regular mesh in Fig. 3(b).
+
+3-node element
+
+4-node elements
+
+t=L
+
+1/100
+
+1/1000
+
+1/10,000
+
+t=L
+
+1/100
+
+1/1000
+
+1/10000
+
+N
+
+4
+8
+16
+32
+64
+
+4
+8
+16
+32
+64
+
+N
+
+4
+8
+16
+32
+64
+
+4
+8
+16
+32
+64
+
+MITC3+
+
+0.9690
+0.9963
+1.002
+1.002
+1.003
+
+0.9688
+0.9960
+1.001
+1.001
+1.001
+
+MITC3+
+
+0.9957
+1.004
+1.004
+1.004
+1.004
+
+0.9953
+1.003
+1.003
+1.002
+1.001
+
+4
+8
+16
+32
+64
+Reference solution: (cid:3)7.0971 (cid:2) 10(cid:3)1
+
+0.9655
+0.9957
+1.001
+1.001
+1.001
+
+4
+8
+16
+32
+64
+Reference solution: (cid:3)7.0971 (cid:2) 10(cid:3)1
+
+0.9917
+1.003
+1.003
+1.002
+1.001
+
+S4
+
+0.9954
+0.9997
+1.001
+1.003
+1.004
+
+0.9949
+0.9988
+0.9998
+1.000
+1.000
+
+0.9949
+0.9988
+0.9998
+1.000
+1.000
+
+MITC4
+
+0.9952
+0.9992
+1.000
+1.001
+1.002
+
+0.9949
+0.9988
+0.9998
+1.000
+1.000
+
+0.9949
+0.9988
+0.9998
+1.000
+1.000
+
+MITC4+
+
+0.9952
+0.9992
+1.000
+1.001
+1.002
+
+0.9949
+0.9988
+0.9998
+1.000
+1.000
+
+0.9949
+0.9988
+0.9998
+1.000
+1.000
+
+S4
+
+1.020
+1.007
+1.004
+1.004
+1.004
+
+1.020
+1.006
+1.002
+1.001
+1.000
+
+1.020
+1.006
+1.002
+1.000
+1.000
+
+MITC4
+
+MITC4+
+
+1.020
+1.006
+1.003
+1.003
+1.003
+
+1.020
+1.006
+1.002
+1.001
+1.000
+
+1.020
+1.006
+1.002
+1.000
+1.000
+
+1.020
+1.006
+1.003
+1.003
+1.003
+
+1.020
+1.006
+1.002
+1.001
+1.000
+
+1.020
+1.006
+1.002
+1.000
+1.000
+
+Table 5
+Normalized displacement at the plate center (point A) for the simply supported square plate problem with the distorted mesh in Fig. 3(c).
+
+3-node element
+
+4-node elements
+
+2.2. Shell elements for comparison
+
+We describe here brieﬂy the shell elements selected for the
+comparison study. All shell elements have 5 DOFs per node unless
+otherwise noted.
+
+The S4 shell element offered in ABAQUS [14] is used. The S4 ele-
+ment is a fully integrated 4-node shell element using the Dvorkin-
+Bathe transverse shear interpolation [9,10]. Hence, as shown in the
+example solutions below, the performance of the S4 element is like
+for the MITC4 shell element. For the plate solutions considered, the
+same results to 3 digits are obtained even when using distorted
+meshes, but for curved structures, due to the curvature and mem-
+brane effects, the S4 and MITC4 shell elements result in different
+solutions.
+
+Based on the discrete Kirchhoff plate theory, the discrete Kirch-
+hoff triangular (DKT) 3-node shell element [15,16] and the discrete
+Kirchhoff quadrilateral 4-node shell element (DKQ4) [17] were
+developed. These elements are known to accurately represent
+thin-plate limit solutions. The 3-node and 4-node shell elements
+were extended to include the effect of transverse shear deforma-
+tions, resulting in the DST3 [18] and DKMQ [19] elements, respec-
+tively. The DKMQ element also uses the Dvorkin-Bathe transverse
+shear interpolation.
+
+We also consider the stress resultant 4-node shell elements
+developed by Simo et al. [20] and by Ibrahimbegovic´ and Frey
+[21], which are denoted as SIMO4 and IBRA4, respectively. For
+the formulation of the SIMO4 shell element, the Hellinger-
+Reissner principle was used for the in-plane strains and the
+assumed strain method was used for the transverse shear strains.
+For the IBRA4 element, the incompatible mode technique and the
+assumed strain method were used for the in-plane strains and
+the transverse shear strains, respectively. The element includes
+the drilling degrees of freedom and thus the IBRA4 element has 6
+DOFs per node. Both elements use the Dvorkin-Bathe transverse
+shear interpolation scheme.
+
+The DSG discrete shear gap method was developed by Blet-
+zinger et al. for reducing shear locking [22] and the 3-node and
+4-node DSG shell elements were proposed. The DSG3 element does
+not satisfy the isotropy condition and thus the behavior of the ele-
+ment depends on the node numbering sequence used [22,23]. The
+DSG4 element formulation gives the MITC4 element when used for
+plates. The DSG method was later applied to alleviate membrane
+locking of the 4-node shell element [24] but the resulting element
+fails to pass the patch tests.
+
+The NM (Natural Mode) method has been successfully
+employed, in particular for the development of 3-node triangular
+
+Y. Ko et al. / Computers and Structures 193 (2017) 187–206
+
+193
+
+Fig. 6. Circular plate problem. (a) Problem description (R ¼ 1:0, thickness t ¼ 0:01, 0:001 and 0:0001, p ¼ 1:0 (cid:2) 10
+Mesh with N ¼ 4. (c) Mesh with N ¼ 8. In (b) and (c), the solid and dotted lines denote quadrilateral and triangular element meshes, respectively.
+
+(cid:3)2, 1:0 (cid:2) 10
+
+(cid:3)5 and 1:0 (cid:2) 10
+
+(cid:3)8, E ¼ 1:0 (cid:2) 104 and m ¼ 0:3). (b)
+
+Fig. 7. Convergence of normalized displacement at point A for the clamped circular plate problem.
+
+plate and shell elements [25,26]. The method assumes rigid-body,
+constant and higher-order straining modes naturally arising from
+the element geometry. The 3-node TRIC shell element is consid-
+ered to be the best of this kind [26].
+
+Table 1 lists the shell elements considered. The S4, MITC4,
+MITC3+ and MITC4+ shell elements are in this study tested (ABA-
+QUS is used to test the S4 element) whereas the results for the
+other shell elements are simply quoted from given data in publica-
+tions. However, results using distorted meshes of the elements in
+the literature have largely not been published and hence such
+results are not given in this paper. Thus, without programming
+these elements, we cannot see whether these elements lock when
+distorted meshes are employed.
+
+We use for the in-plane integration 3-point Gauss integration
+for the MITC3+ shell element and 2 (cid:2) 2 Gauss integration for the
+
+S4, MITC4 and MITC4+ shell elements. In all cases, we use 2-
+point Gauss integration in the thickness direction.
+
+3. Solutions of benchmark problems
+
+In this section, we present the results of several test problems
+which have been widely adopted for the evaluation of shell ele-
+ments: square and circular plate problems, the pinched cylinder
+problem, the Scordelis-Lo roof problem, the twisted beam prob-
+lems, a hemispherical shell problem, a full hemisphere shell prob-
+lem and a hyperbolic paraboloid shell problem [1–6,8–13,15–30].
+For the convergence studies, the results of the displacement solu-
+tions are given both in tabular form and convergence graphs to
+facilitate the use of the results in future works. In particular,
+
+194
+
+Y. Ko et al. / Computers and Structures 193 (2017) 187–206
+
+Table 6
+Normalized displacement at the plate center (point A) for the clamped circular plate problem.
+
+3-node elements
+
+4-node elements
+
+MITC3+
+
+DST3
+
+DSG3
+
+t=L
+
+1/100
+
+1/1000
+
+1/10,000
+
+N
+
+4
+8
+16
+32
+64
+
+4
+8
+16
+32
+64
+
+0.9580
+0.9910
+0.9989
+1.001
+1.001
+
+0.9564
+0.9895
+0.9974
+0.9994
+0.9999
+
+–
+–
+–
+–
+–
+
+1.020
+1.006
+1.001
+–
+–
+
+4
+0.9534
+8
+0.9893
+16
+0.9974
+32
+0.9994
+64
+0.9998
+Reference solution: (cid:3)2.1328 (cid:2) 10(cid:3)2
+
+–
+–
+–
+–
+–
+
+–
+–
+–
+–
+–
+
+0.9621
+0.9908
+0.9978
+–
+–
+
+–
+–
+–
+–
+–
+
+S4
+
+0.9949
+1.000
+1.002
+1.002
+1.002
+
+0.9934
+0.9986
+0.9997
+0.9999
+1.000
+
+0.9934
+0.9986
+0.9997
+0.9999
+1.000
+
+MITC4
+
+0.9949
+1.000
+1.001
+1.001
+1.002
+
+0.9934
+0.9986
+0.9997
+0.9999
+1.000
+
+0.9934
+0.9986
+0.9997
+0.9999
+1.000
+
+MITC4+
+
+DSG4
+
+0.9949
+1.000
+1.001
+1.001
+1.002
+
+0.9934
+0.9986
+0.9997
+0.9999
+1.000
+
+0.9934
+0.9986
+0.9997
+0.9999
+1.000
+
+–
+–
+–
+–
+–
+
+0.9927
+0.9985
+0.9997
+–
+–
+
+–
+–
+–
+–
+–
+
+Fig. 8. Convergence of normalized displacement at point A for the simply supported circular plate problem.
+
+Table 7
+Normalized displacement at the plate center (point A) for the simply supported circular plate problem.
+
+3-node element
+
+4-node elements
+
+t=L
+
+1/100
+
+1/1000
+
+1/10000
+
+N
+
+4
+8
+16
+32
+64
+
+4
+8
+16
+32
+64
+
+MITC3+
+
+0.9725
+0.9934
+0.9986
+0.9999
+1.000
+
+0.9721
+0.9930
+0.9983
+0.9996
+0.9999
+
+4
+8
+16
+32
+64
+Reference solution: (cid:3)8.6953 (cid:2) 10(cid:3)2
+
+0.9714
+0.9929
+0.9982
+0.9996
+0.9999
+
+S4
+
+0.9803
+0.9954
+0.9992
+1.000
+1.000
+
+0.9800
+0.9950
+0.9988
+0.9997
+0.9999
+
+0.9800
+0.9950
+0.9988
+0.9997
+0.9999
+
+MITC4
+
+0.9803
+0.9954
+0.9991
+1.000
+1.000
+
+0.9800
+0.9950
+0.9988
+0.9997
+0.9999
+
+0.9800
+0.9950
+0.9988
+0.9997
+0.9999
+
+MITC4+
+
+0.9803
+0.9954
+0.9991
+1.000
+1.000
+
+0.9800
+0.9950
+0.9988
+0.9997
+0.9999
+
+0.9800
+0.9950
+0.9988
+0.9997
+0.9999
+
+DKMQ
+
+0.9900
+0.9976
+–
+–
+–
+
+–
+–
+–
+–
+–
+
+–
+–
+–
+–
+–
+
+Y. Ko et al. / Computers and Structures 193 (2017) 187–206
+
+195
+
+Fig. 9. Pinched cylinder problem. (a) Problem description (L ¼ 600, R ¼ 300, thickness t ¼ 3:0, P ¼ 1:0, E ¼ 3:0 (cid:2) 106 and m ¼ 0:3). (b) The regular mesh with N ¼ 4. (c)
+Distorted mesh pattern. (d) The distorted mesh with N ¼ 4. In (b) and (d), the solid and dotted lines denote quadrilateral and triangular element meshes, respectively.
+
+Fig. 10. Convergence of normalized displacement at point C for the pinched cylinder problem with the (a) regular and (b) distorted meshes.
+
+solutions with distorted meshes are also presented for the S4,
+MITC4, MITC3+ and MITC4+ shell elements.
+
+For describing the displacement boundary conditions, we use
+the notation u, v and w to denote the translational displacements
+
+in the global x, y and z directions. While the two local rotations a
+and b are used for the MITC4, MITC3+ and MITC4+ shell elements,
+the global rotations hx, hy and hz (about the global x, y and z axes,
+respectively) are used for the S4 shell element in ABAQUS.
+
+196
+
+Y. Ko et al. / Computers and Structures 193 (2017) 187–206
+
+Table 8
+Normalized displacement at the point of load application (point C) for the pinched cylinder problem with the regular mesh in Fig. 9(b).
+
+N
+
+4
+8
+16
+32
+64
+
+3-node elements
+
+4-node elements
+
+MITC3+
+
+TRIC3
+
+0.4074
+0.7681
+0.9308
+0.9847
+1.002
+Reference solution: (cid:3)1.8248 (cid:2) 10(cid:3)5
+
+0.394
+0.778
+0.953
+–
+–
+
+S4
+
+0.3882
+0.7544
+0.9328
+0.9902
+1.008
+
+MITC4
+
+0.3788
+0.7469
+0.9286
+0.9871
+1.005
+
+MITC4+
+
+0.3904
+0.7548
+0.9313
+0.9878
+1.005
+
+SIMO4
+
+0.399
+0.763
+0.934
+–
+–
+
+DKQ4
+
+0.636
+0.951
+1.016
+–
+–
+
+Table 9
+Normalized displacement at the point of load application (point C) for the pinched cylinder problem with the distorted mesh in Fig. 9(d).
+
+N
+
+4
+8
+16
+32
+64
+
+3-node element
+
+MITC3+
+
+0.4088
+0.7237
+0.8986
+0.9734
+0.9992
+Reference solution: (cid:3)1.8248 (cid:2) 10(cid:3)5
+
+4-node elements
+
+S4
+
+0.4010
+0.7647
+0.9375
+0.9924
+1.009
+
+MITC4
+
+0.3751
+0.7498
+0.9308
+0.9882
+1.005
+
+IBRA4
+
+0.3700
+0.7367
+0.9343
+–
+–
+
+MITC4+
+
+0.3793
+0.7535
+0.9321
+0.9886
+1.005
+
+Fig. 11. Scordelis-Lo roof problem. (a) Problem description (L ¼ 50, R ¼ 25, u
+¼ 40(cid:4), thickness t ¼ 0:25, density q ¼ 360, acceleration of gravity g with magnitude 1:0,
+E ¼ 4:32 (cid:2) 108 and m ¼ 0:0). (b) The regular mesh with N ¼ 4. (c) The distorted mesh in Fig. 9(c) used here (N ¼ 4). In (b) and (c), the solid and dotted lines denote
+quadrilateral and triangular element meshes, respectively.
+
+0
+
+Y. Ko et al. / Computers and Structures 193 (2017) 187–206
+
+197
+
+Fig. 12. Convergence of normalized displacement at point A for the Scordelis-Lo roof problem with the (a) regular and (b) distorted meshes.
+
+Table 10
+Normalized displacement at the center of the free edge (point A) for the Scordelis-Lo roof problem with the regular mesh in Fig. 11(b).
+
+N
+
+4
+8
+16
+32
+64
+
+3-node elements
+
+4-node elements
+
+MITC3+
+
+TRIC3
+
+0.6695
+0.8577
+0.9550
+0.9851
+0.9932
+Reference solution: (cid:3)3.0240 (cid:2) 10(cid:3)1
+
+0.697
+0.902
+–
+–
+–
+
+S4
+
+1.036
+1.002
+0.9966
+0.9961
+0.9965
+
+MITC4
+
+0.9432
+0.9726
+0.9886
+0.9936
+0.9955
+
+MITC4+
+
+1.048
+1.005
+0.9973
+0.9958
+0.9960
+
+SIMO4
+
+1.083
+1.015
+1.000
+–
+–
+
+DKQ4
+
+1.048
+1.005
+0.996
+–
+–
+
+IBRA4
+
+1.047
+1.005
+0.9974
+–
+–
+
+Table 11
+Normalized displacement at the center of the free edge (point A) for the Scordelis-Lo roof problem with the distorted mesh in Fig. 11(c).
+
+N
+
+4
+8
+16
+32
+64
+
+3-node element
+
+MITC3+
+
+0.7982
+0.9223
+0.9757
+0.9909
+0.9948
+Reference solution: (cid:3)3.0240 (cid:2) 10(cid:3)1
+
+4-node elements
+
+S4
+
+1.139
+1.029
+1.003
+0.9975
+0.9967
+
+MITC4
+
+0.9389
+0.9607
+0.9831
+0.9919
+0.9949
+
+MITC4+
+
+1.040
+0.9973
+0.9942
+0.9948
+0.9957
+
+Following the earlier publications,
+
+in some problems con-
+centrated point loads are applied to the structure and in all
+problems the displacement at only a point is measured to
+identify the convergence behavior. This is not a mathemati-
+cally well-founded and stringent procedure, as discussed in
+detail
+to enable the comparisons we
+need to proceed in that way and the results are of course
+still valuable.
+
+[1,2,12], but
+
+in Refs.
+
+3.1. Square plate problems
+
+We solve the bending problem of the square plate shown in
+Fig. 3(a). A uniformly distributed load of pressure p is applied
+to the plate with clamped or simply supported boundary con-
+ditions along its four edges. Due to symmetry, one-quarter of
+
+the plate corresponding to the shaded region ABCD in Fig. 3
+(a) is modeled. The boundary conditions are u = b = 0 (u = hy =
+hz = 0) along AD, v ¼ a ¼ 0 (v = hx = hz = 0) along AB. Along BC
+and CD, u ¼ v ¼ w ¼ a ¼ b ¼ 0 (u ¼ v ¼ w ¼ hx ¼ hy ¼ hz ¼ 0)
+the simply
+for
+supported case.
+
+the clamped case, and u ¼ v ¼ w ¼ 0 for
+
+The solutions are obtained using N (cid:2) N element meshes
+(N = 4, 8, 16, 32, and 64).
+In addition to the regular mesh
+the distorted mesh
+pattern in Fig. 3(b), we also consider
+pattern in Fig. 3(c) such that each edge is discretized in the
+. . . N for an N (cid:2) N
+following ratio: L1:L2:L3:
+element mesh.
+
+. . . LN = 1:2:3:
+
+In this bending-dominated problem, we consider the thickness
+to length ratios t/L = 1/100, 1/1000 and 1/10000. The correspond-
+(cid:3)5 and
+ing applied load magnitudes are p ¼ 1:0 (cid:2) 10
+
+(cid:3)2, 1:0 (cid:2) 10
+
+198
+
+Y. Ko et al. / Computers and Structures 193 (2017) 187–206
+
+Fig. 13. Twisted beam problem (2 (cid:2) 12 mesh, L ¼ 12:0, b ¼ 1:1, thickness t ¼ 0:32 and 0:0032, P ¼ F ¼ 1:0 and P ¼ F ¼ 1:0 (cid:2) 10
+in-plane and (b) out-of-plane load cases. The solid and dotted lines denote quadrilateral and triangular element meshes, respectively.
+
+(cid:3)6, E ¼ 29:0 (cid:2) 106 and m ¼ 0:22) with the (a)
+
+(cid:3)8. The following reference displacements at the plate cen-
+1:0 (cid:2) 10
+ter (point A) obtained using the Kirchhoff thin plate theory are
+used [27]:
+
+wref ¼ (cid:3)1:267 (cid:2) 10
+
+wref ¼ (cid:3)4:062 (cid:2) 10
+
+(cid:3)3 pL4
+D
+(cid:3)3 pL4
+D
+
+for the clamped case;
+
+for the simply supported case
+
+ð1Þ
+
+with the bending rigidity D ¼
+
+Et3
+12ð1 (cid:3) m2Þ
+
+:
+
+Fig. 4 and Tables 2–3 show the convergence of the normalized
+displacement (wA=wref ) at the plate center for the clamped square
+plate problem with regular and distorted meshes. Fig. 5 and Tables
+4–5 present these results when considering the simply supported
+plate. All considered shell elements perform in this analysis very
+well in both the regular and distorted meshes, and the S4 and
+MITC4 element results are the same to 3 digits because, for plates,
+the S4 element seems to be the MITC4 element.
+
+3.2. Circular plate problems
+
+We consider the circular plate shown in Fig. 6(a). The uniformly
+distributed load with pressure p is applied to the plate with
+clamped and simply supported boundary conditions along its
+edges. Utilizing symmetry, only one-quarter of the plate corre-
+sponding to the shaded region ABC in Fig. 6(a) is modeled. The
+boundary conditions are u = b = 0 (u = hy = hz = 0) along AC, and
+v ¼ a ¼ 0
+BC,
+u ¼ v ¼ w ¼ a ¼ b ¼ 0
+the
+clamped case, and u ¼ v ¼ w ¼ 0 for the simply supported case.
+The solutions are obtained using N elements per edge with N = 4,
+8, 16, 32 and 64.
+
+(u ¼ v ¼ w ¼ hx ¼ hy ¼ hz ¼ 0)
+
+(v = hx = hz = 0)
+
+Along
+
+along
+
+AB.
+
+for
+
+(cid:3)2, 1:0 (cid:2) 10
+
+(cid:3)5 and 1:0 (cid:2) 10
+
+The thickness to length ratios used are t/L = 1/100, 1/1000 and
+1/10,000 (L ¼ 2R), where the applied load magnitudes are varied
+(cid:3)8. The reference dis-
+to be p ¼ 1:0 (cid:2) 10
+placements at the plate center (point A) are given as follows [27]:
+wref ¼ (cid:3) pR4
+64D
+wref ¼ (cid:3) pR4
+64D
+
+for the clamped case;
+(cid:5) 5 þ m
+1 þ m
+
+for the simply supported case;
+
+ð2Þ
+
+which are based on the Kirchhoff thin plate theory.
+
+Fig. 7 and Table 6, and Fig. 8 and Table 7 present the conver-
+gence of the normalized displacement (wA=wref ) at the plate center
+for the clamped and simply supported plate problems, respec-
+tively. The MITC3+ and MITC4+ shell elements show excellent con-
+vergence behavior in the entire range of thickness to length ratios
+considered.
+
+3.3. Pinched cylinder problem
+
+The pinched cylinder with rigid end diaphragms shown in Fig. 9
+(a) is considered. The structure is subjected to a pair of pinching
+forces P. One-eighth of the cylinder corresponding to the shaded
+region ABCD in Fig. 9(a) is modeled for the analysis. The boundary
+conditions are u = b = 0 (u = hy = hz = 0) along CD, w ¼ b ¼ 0
+(w ¼ hx ¼ hy ¼ 0) along AB, v ¼ a ¼ 0 (v = hx = hz = 0) along BC,
+and u ¼ w ¼ b ¼ 0 (u ¼ w ¼ hy ¼ 0) along AD.
+
+The solutions are obtained using N (cid:2) N element meshes (N = 4,
+8, 16, 32, and 64). In addition to the regular mesh pattern in Fig. 9
+(b), the distorted mesh pattern in Fig. 9(c) is employed where
+edges AB and CD are discretized in the following ratio: L1:L2:L3:
+. . . LN = 1:2:3: . . . N for an N (cid:2) N element mesh. The used distorted
+mesh is shown in Fig. 9(d). The reference displacement at the posi-
+tion of load, point C, is wref ¼ (cid:3)1:8248 (cid:2) 10
+
+(cid:3)5 [28].
+
+Y. Ko et al. / Computers and Structures 193 (2017) 187–206
+
+199
+
+Fig. 14. Convergence of normalized displacements at point A for the twisted beam problem with (a) in-plane and (b) out-of-plane loads.
+
+Table 12
+Normalized horizontal displacement at the tip center (point A) for the twisted beam under in-plane load.
+
+t=L
+
+0.02667
+
+0.0002667
+
+N
+
+3-node elements
+
+4-node elements
+
+MITC3+
+
+2
+4
+8
+16
+32
+Reference solution: 5.4240 (cid:2) 10(cid:3)3
+
+0.9810
+0.9899
+0.9947
+0.9965
+0.9970
+
+2
+4
+8
+16
+32
+Reference solution: 5.2560 (cid:2) 10(cid:3)3
+
+1.000
+0.9881
+0.9932
+0.9963
+0.9975
+
+TRIC3
+
+0.986
+–
+–
+–
+–
+
+–
+–
+–
+–
+–
+
+S4
+
+1.003
+1.001
+1.001
+1.001
+1.001
+
+0.9888
+0.9965
+0.9985
+0.9988
+0.9988
+
+MITC4
+
+0.9892
+0.9944
+0.9964
+0.9970
+0.9972
+
+0.9783
+0.9905
+0.9959
+0.9975
+0.9979
+
+MITC4+
+
+0.9942
+0.9960
+0.9968
+0.9971
+0.9972
+
+1.003
+0.9966
+0.9974
+0.9978
+0.9979
+
+IBRA4
+
+0.9965
+0.9976
+–
+–
+–
+
+–
+–
+–
+–
+–
+
+200
+
+Y. Ko et al. / Computers and Structures 193 (2017) 187–206
+
+Table 13
+Normalized vertical displacement at the tip center (point A) for the twisted beam under out-of-plane load.
+
+t=L
+
+0.02667
+
+0.0002667
+
+N
+
+3-node element
+
+4-node elements
+
+MITC3+
+
+2
+4
+8
+16
+32
+Reference solution: 1.7540 (cid:2) 10(cid:3)3
+
+0.8329
+0.9233
+0.9740
+0.9912
+0.9960
+
+2
+4
+8
+16
+32
+Reference solution: 1.2940 (cid:2) 10(cid:3)3
+
+0.9901
+0.9898
+0.9951
+0.9975
+0.9982
+
+S4
+
+0.9862
+0.9962
+0.9996
+1.001
+1.001
+
+0.9852
+0.9964
+0.9986
+0.9991
+0.9992
+
+MITC4
+
+0.9188
+0.9732
+0.9907
+0.9959
+0.9972
+
+0.9738
+0.9917
+0.9967
+0.9980
+0.9983
+
+MITC4+
+
+0.9832
+0.9936
+0.9965
+0.9973
+0.9975
+
+0.9874
+0.9949
+0.9975
+0.9982
+0.9984
+
+IBRA4
+
+1.0000
+0.9994
+–
+–
+–
+
+–
+–
+–
+–
+–
+
+Fig. 16. Convergence of normalized displacement at point A for the hook problem.
+
+Fig. 15. Hook problem (2 (cid:2) 12 mesh, R1 ¼ 14, h1 ¼ 60(cid:4), R2 ¼ 46, h2 ¼ 150(cid:4), b ¼ 20,
+thickness t ¼ 2:0, P ¼ 1:0, E ¼ 3:3 (cid:2) 103 and m ¼ 0:3). The solid and dotted lines
+denote quadrilateral and triangular element meshes, respectively.
+
+Fig. 10 and Tables 8–9 present the convergence of the normal-
+ized displacement (wC/wref) at the location of the pinching force.
+The MITC3+ and MITC4+ shell elements provide solutions
+comparable to those obtained with the other shell elements con-
+sidered in this study.
+
+3.4. Scordelis-Lo roof problem
+
+The Scordelis-Lo roof problem is shown in Fig. 11(a). The cylin-
+drical roof structure supported by rigid diaphragms at both ends is
+subjected to its self-weight. Only one-quarter of the roof structure
+corresponding to the shaded region ABCD in Fig. 11(a) is modeled.
+
+The boundary conditions are u = b = 0 (u = hy = hz = 0) along CD,
+v ¼ a ¼ 0
+(v = hx = hz = 0)
+u ¼ w ¼ b ¼ 0
+along
+(u ¼ w ¼ hy ¼ 0) along BC.
+
+and
+
+AD,
+
+The solutions are obtained using N (cid:2) N element meshes (N = 4,
+8, 16, 32, and 64). The regular and distorted mesh patterns in Fig. 9
+(b) and (c) are again used as shown in Fig. 11(b) and (c), respec-
+tively. The reference displacement at the center of the free edge
+(point A) is wref ¼ (cid:3)0:3024 [28].
+
+Fig. 12 and Tables 10–11 present the convergence of the nor-
+malized displacement (wA=wref ) at the center of the free edge. This
+shell is known to be subjected to a mixed membrane-bending
+behavior [6]. The MITC3+ and MITC4+ shell elements show a good
+performance.
+
+3.5. Twisted beam problems
+
+We solve the twisted beam problems shown in Fig. 13. The ini-
+tially twisted beam is fully clamped at one end and is loaded by a
+point load at the center of the free tip (point A). Two load cases are
+considered: an in-plane and an out-of-plane load as shown in
+Fig. 13(a) and (b). We use N (cid:2) 6N meshes with N = 2, 4, 8, 16,
+and 32. Two thickness to length ratios t/L = 0.02667 and
+0.0002667 are considered, where the corresponding load magni-
+(cid:3)6,
+F ¼ P ¼ 1:0
+
+F ¼ P ¼ 1:0 (cid:2) 10
+
+varied
+
+and
+
+as
+
+are
+
+tudes
+respectively.
+
+Y. Ko et al. / Computers and Structures 193 (2017) 187–206
+
+201
+
+Table 14
+Normalized displacement at the point of load application (point A) for the hook problem.
+
+N
+
+2
+4
+8
+16
+32
+
+3-node element
+
+4-node elements
+
+MITC3+
+
+0.9896
+0.9794
+0.9800
+0.9877
+0.9952
+
+Reference solution: 4.82482
+
+S4
+
+0.9204
+0.9675
+0.9915
+1.003
+1.008
+
+MITC4
+
+0.9531
+0.9635
+0.9782
+0.9911
+0.9973
+
+MITC4+
+
+0.9531
+0.9635
+0.9782
+0.9911
+0.9973
+
+When t/L = 0.02667, the reference displacements at point A are
+(cid:3)3 for the out-of-plane
+wref ¼ 1:754 (cid:2) 10
+and in-plane load cases, respectively. When t/L = 0.0002667,
+
+(cid:3)3 and uref ¼ 5:424 (cid:2) 10
+
+reference
+
+the
+uref ¼ 5:256 (cid:2) 10
+respectively [29].
+
+displacements
+and
+(cid:3)3 for the out-of-plane and in-plane load cases,
+
+are wref ¼ 1:294 (cid:2) 10
+
+(cid:3)3
+
+Fig. 14(a) and Table 12, and Fig. 14(b) and Table 13 show the
+convergence of
+the normalized displacements
+and
+wA=wref ) at the tip center for the in-plane and out-of-plane load
+cases, respectively. The considered elements perform well, includ-
+ing the MITC3+ and MITC4+ shell elements.
+
+(uA=uref
+
+3.6. Hook problem
+
+The hook problem shown in Fig. 15 is considered [30]. The
+structure is fully clamped at one end and is loaded by a
+shear load P applied as a uniformly distributed traction at
+its tip. We use N (cid:2) 6N element meshes with N = 2, 4, 8, 16,
+32 and each circular arc modeled by one half of the total
+is
+mesh.
+wref ¼ 4:82482, obtained using the MITC9 shell element with
+N = 64. Fig. 16 and Table 14 show the convergence of the
+normalized displacement (wA=wref ) at the tip (point A). A good
+convergence is observed for the solutions using the MITC3+
+and MITC4+ shell elements.
+
+displacement
+
+reference
+
+point
+
+The
+
+at
+
+A
+
+3.7. Hemispherical shell with cut-out problem
+
+We consider the hemispherical shell problem shown in Fig. 17.
+The hemispherical shell with an opening at its top is subjected to
+two pairs of radial forces along its equator. Using symmetry, one-
+quarter of the structure corresponding to the shaded region ABCD
+in Fig. 17(a) is modeled, with the following boundary conditions:
+u = b = 0 (u = hy = hz = 0) along BC, v = b = 0 (v = hx = hz = 0) along
+AD, and w ¼ 0 at point A.
+
+The solutions are obtained using N (cid:2) N element meshes (N = 4,
+8, 16, 32, and 64). The regular and distorted mesh patterns in Fig. 3
+(b) and (c) are considered as shown in Fig. 17(b) and (c),
+respectively.
+
+In this bending-dominated, doubly-curved shell problem, we
+consider two different thickness to length ratios, t/L = 4/1000 and
+4/10,000 (L = R), and the corresponding load magnitudes are
+P ¼ 2:0 and 2:0 (cid:2) 10
+reference
+displacement of uref ¼ 0:093 at point A can be used for the test
+cases [20].
+
+respectively. The
+
+same
+
+(cid:3)3,
+
+Fig. 18 and Tables 15–16 present the convergence of the
+normalized displacement (uA=uref ) at point A. When the regu-
+the MITC3+, MITC4, MITC4+ and S4
+lar meshes are used,
+shell elements show an excellent performance. However, with
+the distorted meshes, the solutions using the MITC4 and S4
+
+¼ 18(cid:4),
+
+Fig. 17. Hemispherical shell with cut-out problem. (a) Problem description
+(R ¼ 10:0, u
+(cid:3)3,
+E ¼ 6:825 (cid:2) 107 and m ¼ 0:3). (b) The regular mesh with N ¼ 8. (c) The distorted
+mesh in Fig. 3(c) used here (N ¼ 8). In (b) and (c), the solid and dotted lines denote
+quadrilateral and triangular element meshes, respectively.
+
+thickness t ¼ 0:04 and 0:004, P ¼ 2:0 and 2:0 (cid:2) 10
+
+0
+
+shell elements are in large error while the MITC3+ and
+MITC4+ shell elements continue to provide good response
+predictions.
+
+3.8. Full hemisphere problem
+
+The shell problem considering a full hemisphere is shown in
+Fig. 19. The hemisphere is subjected to two pairs of radial forces
+along its equator. Due to symmetry, only one-quarter of the struc-
+ture corresponding to the shaded region ABC in Fig. 19(a) is mod-
+u = b = 0
+eled, with the
+(u = hy = hz = 0) along BC, v = b = 0 (v = hx = hz = 0) along AC, and
+w ¼ 0 at point A. The solutions are obtained using N elements
+per edge with N = 4, 8, 16, 32, and 64.
+
+conditions:
+
+boundary
+
+following
+
+202
+
+Y. Ko et al. / Computers and Structures 193 (2017) 187–206
+
+Fig. 18. Convergence of normalized displacement at point A for the hemispherical shell with cut-out problem with the (a) regular and (b) distorted meshes.
+
+Table 15
+Normalized displacement at the point of load application (point A) for the hemispherical shell with cut-out problem with the regular mesh in Fig. 17(b).
+
+3-node element
+
+4-node elements
+
+t=R
+
+4/1000
+
+4/10000
+
+N
+
+4
+8
+16
+32
+64
+
+MITC3+
+
+1.099
+1.027
+1.004
+1.003
+1.005
+
+4
+1.096
+8
+1.026
+16
+0.9979
+32
+0.9863
+64
+0.9832
+Reference solution: 9.3000 (cid:2) 10(cid:3)2
+
+S4
+
+0.9889
+0.9954
+1.000
+1.004
+1.006
+
+0.9875
+0.9857
+0.9811
+0.9816
+0.9835
+
+MITC4
+
+1.044
+1.007
+1.001
+1.004
+1.005
+
+1.044
+0.9993
+0.9838
+0.9815
+0.9829
+
+MITC4+
+
+SIMO4
+
+1.044
+1.009
+1.003
+1.005
+1.006
+
+1.044
+0.9994
+0.9834
+0.9823
+0.9836
+
+1.004
+0.998
+0.999
+–
+–
+
+–
+–
+–
+–
+–
+
+DKQ4
+
+0.928
+1.010
+1.003
+–
+–
+
+–
+–
+–
+–
+–
+
+IBRA4
+
+1.011
+1.002
+1.001
+–
+–
+
+–
+–
+–
+–
+–
+
+Y. Ko et al. / Computers and Structures 193 (2017) 187–206
+
+203
+
+Table 16
+Normalized displacement at
+hemispherical shell with cut-out problem with the distorted mesh in Fig. 17(c).
+
+load application (point A)
+
+the point of
+
+for the
+
+t=R
+
+N
+
+3-node element
+
+4-node elements
+
+MITC3+
+
+S4
+
+MITC4
+
+MITC4+
+
+4/1000
+
+4/10000
+
+4
+8
+16
+32
+64
+
+1.033
+1.016
+1.009
+1.006
+1.006
+
+0.1668
+0.5715
+0.9304
+0.9973
+1.005
+
+1.030
+1.006
+0.9949
+0.9888
+0.9858
+
+4
+8
+16
+32
+64
+Reference solution: 9.3000 (cid:2) 10(cid:3)2
+
+0.0031
+0.0251
+0.1586
+0.6412
+0.9457
+
+0.0397
+0.1556
+0.5815
+0.9437
+1.001
+
+0.0005
+0.0040
+0.0280
+0.1774
+0.6936
+
+0.8659
+0.9736
+0.9958
+1.003
+1.005
+
+0.5502
+0.9048
+0.9736
+0.9807
+0.9831
+
+Fig. 20 and Table 17 show the convergence of the normalized
+displacement (uA=uref ) at point A. The MITC3+ and MITC4+ shell
+elements present a good performance compared to the other shell
+elements considered in this study.
+
+3.9. Hyperbolic paraboloid shell problem
+
+We consider the hyperbolic paraboloid shell problem shown in
+
+Fig. 21. The mid-surface of the shell structure is given by
+
+z ¼ y2 (cid:3) x2;
+
+x; y 2 ½(cid:3)1=2;
+
+1=2(cid:6):
+
+ð3Þ
+
+This is a doubly-curved shell with negative Gaussian curvature,
+
+which makes the problem difﬁcult to solve.
+
+The shell structure is clamped at one edge and subjected to its
+self-weight. Due to symmetry, only one-half of the structure corre-
+sponding to the shaded region ABCD in Fig. 21(a) is modeled, with
+the following boundary conditions: u = b = 0 (u = hy = hz = 0) along
+CD, and u ¼ v ¼ w ¼ a ¼ b ¼ 0 (u ¼ v ¼ w ¼ hx ¼ hy ¼ hz ¼ 0)
+along AD. The solutions are obtained using N (cid:2) 2N element meshes
+with N = 4, 8, 16, 32, and 64. The regular and distorted mesh pat-
+terns in Fig. 9(b) and (c) are used as shown in Fig. 21(b) and (c),
+respectively.
+
+In this bending-dominated shell problem, we test two different
+t/L = 1/1000 and 1/10,000. The
+
+to length ratios:
+
+thickness
+
+Fig. 19. Full-hemisphere shell problem. (a) Problem description (R ¼ 10, thickness
+(cid:3)3, E ¼ 6:825 (cid:2) 107 and m ¼ 0:3). (b) Mesh
+t ¼ 0:04 and 0:004, P ¼ 2:0 and 2:0 (cid:2) 10
+with N ¼ 4. (c) Mesh with N ¼ 8. In (b) and (c), the solid and dotted lines denote
+quadrilateral and triangular element meshes, respectively.
+
+We test this bending-dominated shell problem for two different
+thickness to length (radius) ratios: t/L = 4/1000 and 4/10,000
+(L = R). The corresponding load magnitudes are P ¼ 2:0 and
+2:0 (cid:2) 10
+of
+uref ¼ 0:0924 at point A [28] is used. In this problem, both mem-
+brane locking and shear locking can occur.
+
+displacement
+
+respectively.
+
+reference
+
+The
+
+(cid:3)3,
+
+Fig. 20. Convergence of normalized displacement at point A for the full-hemisphere shell problem.
+
+204
+
+Y. Ko et al. / Computers and Structures 193 (2017) 187–206
+
+Table 17
+Normalized displacement at the point of load application (point A) for the full hemisphere shell problem.
+
+3-node elements
+
+4-node elements
+
+t=R
+
+4/1000
+
+4/10000
+
+N
+
+4
+8
+16
+32
+64
+
+MITC3+
+
+1.056
+1.019
+0.9994
+0.9965
+0.9992
+
+TRIC3
+
+1.022
+1.013
+1.000
+–
+–
+
+4
+8
+16
+32
+64
+Reference solution: 9.2400 (cid:2) 10(cid:3)2
+
+1.055
+1.018
+0.9956
+0.9837
+0.9791
+
+–
+–
+–
+–
+–
+
+S4
+
+0.3761
+0.9450
+0.9908
+0.9977
+1.000
+
+0.0289
+0.2904
+0.8536
+0.9705
+0.9781
+
+MITC4
+
+0.3722
+0.9186
+0.9899
+0.9971
+0.9996
+
+0.0182
+0.1625
+0.6915
+0.9541
+0.9766
+
+MITC4+
+
+SIMO4
+
+1.026
+1.002
+0.9960
+0.9982
+0.9999
+
+1.026
+0.9926
+0.9798
+0.9771
+0.9784
+
+0.651
+0.968
+0.993
+–
+–
+
+–
+–
+–
+–
+–
+
+DKQ4
+
+0.753
+0.985
+0.998
+–
+–
+
+–
+–
+–
+–
+–
+
+Fig. 21. Hyperbolic paraboloid shell problem. (a) Problem description (L ¼ 1:0, thickness t ¼ 0:001 and 0:0001, density q ¼ 360 and 360 (cid:2) 10
+(cid:3)2, acceleration of gravity g with
+magnitude 1:0, E ¼ 2:0 (cid:2) 1011 and m ¼ 0:3). (b) The regular mesh with N ¼ 4. (c) The distorted mesh in Fig. 9(c) used here (N ¼ 4). In (b) and (c), the solid and dotted lines
+denote quadrilateral and triangular element meshes, respectively.
+
+corresponding load magnitudes are scaled by using the densities
+q ¼ 360 and 360 (cid:2) 10
+(cid:3)2, respectively. We use the reference dis-
+placements at the center of the free edge, point C, established using
+(cid:3)4
+a 72 (cid:2) 144 mesh of MITC9 shell elements: wref ¼ 2:8780 (cid:2) 10
+(cid:3)4 for t/L = 1/1000 and 1/10,000, respec-
+and wref ¼ 2:3856 (cid:2) 10
+tively. The two reference displacements are different due to the
+presence of the membrane strain energy [6].
+
+Fig. 22 and Tables 18–19 show the convergence of the normal-
+ized displacement (wC/wref) at point C. Once again, the MITC3+ and
+
+MITC4+ shell elements converge well while the performance of the
+other shell elements severely deteriorates when the mesh is
+distorted.
+
+4. Concluding remarks
+
+We have tested the performance of the new MITC shell ele-
+ments (the MITC3+ and MITC4+ elements) through a set of
+widely-used benchmark problems. The problems considered are
+
+Y. Ko et al. / Computers and Structures 193 (2017) 187–206
+
+205
+
+Fig. 22. Convergence of normalized displacement at point C for the hyperbolic paraboloid shell problem with the (a) regular and (b) distorted meshes.
+
+Table 18
+Normalized displacement at the center of free edge (point C) for the hyperbolic
+paraboloid shell problem with the regular mesh in Fig. 21(b).
+
+t=L
+
+N
+
+3-node element
+
+4-node elements
+
+MITC3+
+
+S4
+
+MITC4
+
+MITC4+
+
+1/1000
+
+1/10000
+
+0.9533
+0.9589
+0.9728
+0.9868
+0.9951
+
+4
+8
+16
+32
+64
+Reference solution: 2.8780 (cid:2) 10(cid:3)4
+
+0.9582
+0.9674
+0.9846
+0.9943
+0.9983
+
+1.009
+0.9774
+0.9828
+0.9886
+0.9937
+
+4
+8
+16
+32
+64
+Reference solution: 2.3856 (cid:2) 10(cid:3)4
+
+1.015
+0.9850
+0.9823
+0.9910
+0.9971
+
+0.9475
+0.9479
+0.9699
+0.9873
+0.9956
+
+1.019
+0.9809
+0.9750
+0.9840
+0.9929
+
+0.9532
+0.9555
+0.9762
+0.9906
+0.9969
+
+1.020
+0.9827
+0.9777
+0.9868
+0.9947
+
+Table 19
+Normalized displacement at the center of the free edge (point C) for the hyperbolic
+paraboloid shell problem with the distorted mesh in Fig. 21(c).
+
+t=L
+
+N
+
+3-node element
+
+4-node elements
+
+MITC3+
+
+S4
+
+MITC4
+
+MITC4+
+
+1/1000
+
+1/10000
+
+0.5685
+0.8359
+0.9483
+0.9816
+0.9936
+
+4
+8
+16
+32
+64
+Reference solution: 2.8780 (cid:2) 10(cid:3)4
+
+0.2176
+0.6945
+0.9607
+0.9948
+0.9990
+
+0.6149
+0.7943
+0.9358
+0.9816
+0.9922
+
+4
+8
+16
+32
+64
+Reference solution: 2.3856 (cid:2) 10(cid:3)4
+
+0.0007
+0.0492
+0.2902
+0.8267
+0.9859
+
+0.0622
+0.2714
+0.7814
+0.9760
+0.9969
+
+0.0001
+0.0010
+0.0711
+0.3909
+0.8903
+
+0.7559
+0.9622
+0.9904
+0.9962
+0.9988
+
+0.5302
+0.8843
+0.9936
+1.000
+0.9995
+
+206
+
+Y. Ko et al. / Computers and Structures 193 (2017) 187–206
+
+mostly bending dominated problems including various geometries
+and loading conditions: from plate to doubly curved shell problems
+of moderately thick to thin structures, and distributed loading and
+concentrated load conditions. Like in the papers giving solutions to
+the widely-used benchmark tests, we focused on displacements at
+some points. Through the convergence studies including compar-
+isons with other elements, the performance of the MITC3+ and
+MITC4+ shell elements is shown to be consistently good even when
+distorted meshes are used. However, we did not consider the anal-
+ysis of thick and composite structures in which shear effects can be
+important.
+
+Once more we have demonstrated that while a shell element
+may perform very well in regular meshes, its performance may
+severely deteriorate in distorted meshes [3–5]. Therefore, the per-
+formance of shell elements should be thoroughly tested in both
+regular and properly selected distorted meshes. The numerical
+data provided in this study should be beneﬁcial for the evaluation
+of many plate and shell ﬁnite elements.
+
+Acknowledgments
+
+This research was supported by a grant (MPSS-CG-2015-01)
+through the Disaster and Safety Management Institute funded by
+Ministry of Public Safety and Security of Korean government, and
+the Climate Change Research Hub of KAIST (No. N11170061).
+
+References
+
+[1] Chapelle D, Bathe KJ. Fundamental considerations for the ﬁnite element
+
+analysis of shell structures. Comput Struct 1998;66(1):19–36. 711-2.
+
+[2] Chapelle D, Bathe KJ. The ﬁnite element analysis of shells – fundamentals. 2nd
+
+ed. Berlin: Springer; 2011.
+
+[3] Lee Y, Lee PS, Bathe KJ. The MITC3+ shell element and its performance. Comput
+
+Struct 2014;138:12–23.
+
+[4] Ko Y, Lee PS, Bathe KJ. A new MITC4+ shell element. Comput Struct
+
+2017;182:404–18.
+
+[5] Ko Y, Lee PS, Bathe KJ. A new 4-node MITC element for analysis of two-
+dimensional solids and its application in shell analyses. Comput Struct
+2017;192:34–49.
+
+[6] Lee PS, Bathe KJ. On the asymptotic behavior of shell structures and the
+evaluation in ﬁnite element solutions. Comput Struct 2002;80(3):235–55.
+[7] Bathe KJ. The inf–sup condition and its evaluation for mixed ﬁnite element
+
+methods. Comput Struct 2001;79(2):243–52.
+
+[8] Bathe KJ, Iosilevich A, Chapelle D. An inf-sup test for shell ﬁnite elements.
+
+Comput Struct 2000;75(5):439–56.
+
+[9] Bathe KJ. Finite element procedures. Prentice Hall; 1996, 2nd ed. KJ Bathe,
+
+Watertown, MA; 2014 and Higher Education Press, China; 2016.
+
+[10] Dvorkin EN, Bathe KJ. A continuum mechanics based four-node shell element
+
+for general nonlinear analysis. Eng Comput 1984;1(1):77–88.
+
+[11] Lee PS, Bathe KJ. Development of MITC isotropic triangular shell ﬁnite
+
+elements. Comput Struct 2004;82(11):945–62.
+
+[12] Hiller
+
+JF, Bathe KJ. Measuring convergence of mixed ﬁnite element
+discretizations: an application to shell structures. Comput Struct 2003;81
+(8):639–54.
+
+[13] MacNeal RH, Harder RL. A proposed standard set of problems to test ﬁnite
+
+element accuracy. Finit Elem Anal Des 1985;1(1):3–20.
+
+[14] ABAQUS 6.12 Theory manual. Dassault Systèmes Simulia Corp., Providence,
+
+Rhode Island; 2012.
+
+[15] Batoz JL, Bathe KJ, Ho LW. A study of three-node triangular plate bending
+
+elements. Inter J Num Meth Eng 1980;15:1771–812.
+
+[16] Bathe KJ, Ho LW. A simple and effective element for analysis of general shell
+
+structures. Comput Struct 1981;13(5–6):673–81.
+
+[17] Batoz JL, Zheng CL, Hammadi F. Formulation and evaluation of new triangular,
+quadrilateral, pentagonal and hexagonal discrete Kirchhoff plate/shell
+elements. Inter J Num Meth Eng 2001;52(5–6):615–30.
+
+[18] Batoz JL, Katili I. On a simple triangular Reissner/Mindlin plate element based
+on incompatible modes and discrete constraints. Inter J Num Meth Eng
+1992;35(8):1603–32.
+
+[19] Katili I. A new discrete Kirchhoff-Mindlin element based on Mindlin-Reissner
+plate theory and assumed shear strain ﬁelds—part II: an extended DKQ
+element for thick-plate bending analysis. Inter J Num Meth Eng 1993;36
+(11):1885–908.
+
+[20] Simo JC, Fox DD, Rifai MS. On a stress resultant geometrically exact shell
+model. Part II: The linear theory; computational aspects. Comput Meth Appl
+Mech Eng 1989;73(1):53–92.
+
+[21] Ibrahimbegovic´ A, Frey F. Stress resultant geometrically non-linear shell
+theory with drilling rotations. Part III: Linearized kinematics.. Inter J Num
+Meth Eng 1994;37(21):3659–83.
+
+[22] Bletzinger KU, Bischoff M, Ramm E. A uniﬁed approach for shear-locking-free
+triangular and rectangular shell ﬁnite elements. Comput Struct 2000;75
+(3):321–34.
+
+[23] Lee PS, Noh HC, Bathe KJ. Insight into 3-node triangular shell ﬁnite elements:
+the effects of element isotropy and mesh patterns. Comput Struct 2007;85
+(7):404–18.
+
+[24] Koschnick F, Bischoff M, Camprubí N, Bletzinger KU. The discrete strain gap
+method and membrane locking. Comput Meth Appl Mech Eng 2005;194
+(21):2444–63.
+
+[25] Argyris J, Tenek L. An efﬁcient and locking-free ﬂat anistropic plate and shell
+triangular element. Comput Meth Appl Mech Eng 1994;118(1):63–119.
+[26] Argyris JH, Papadrakakis M, Apostolopoulou C, Koutsourelakis S. The TRIC shell
+element: theoretical and numerical investigation. Comput Meth Appl Mech
+Eng 2000;182(1):217–45.
+
+[27] Timoshenko S, Woinowsky-Krieger S. Theory of plates and shells. 2nd ed. New
+
+York: McGraw-Hill; 1959.
+
+[28] Belytschko T, Stolarski H, Liu WK, Carpenter N, Ong JS. Stress projection for
+membrane and shear locking in shell ﬁnite elements. Comput Meth Appl Mech
+Eng 1985;51(1):221–58.
+
+[29] Belytschko T, Wong BL, Stolarski H. Assumed strain stabilization procedure for
+Inter J Num Meth Eng 1989;28
+
+the 9-node Lagrange shell element.
+(2):385–414.
+
+[30] Knight NF. Raasch challenge for shell elements. AIAA J 1997;35(2):375–81.
+
+

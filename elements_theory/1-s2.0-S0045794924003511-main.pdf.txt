@@ -1,0 +1,5171 @@
+Computers and Structures 308 (2025) 107622 
+
+Contents lists available at ScienceDirect
+
+Computers and Structures
+
+journal homepage: www.elsevier.com/locate/compstruc
+
+Continuum mechanics-based shell elements with six degrees of freedom at
+each node (cid:0)
+
+the MITC4 / D and MITC4+ / D elements
+
+Yeongbin Ko a,*, Klaus-Jürgen Bathe b, Xinwei Zhang a
+a Bentley Systems, Incorporated, Team ADINA, 685 Stockton Drive, Exton, PA 19341, USA
+b Department of Mechanical Engineering, Massachusetts Institute of Technology, Cambridge, MA 02139, USA
+
+A R T I C L E I N F O
+
+A B S T R A C T
+
+Keywords:
+Continuum-mechanics based shell finite
+elements
+4-node elements
+MITC method
+Locking
+Drill rotations
+Numerical testing
+
+We give the formulation and numerical assessment for using six degrees of freedom at each node of 4-node
+continuum mechanics-based quadrilateral shell elements. The formerly published MITC4 and MITC4 + shell
+elements are considered and extended to now include the drilling rotational degrees of freedom at the nodes.
+Including these degrees of freedom enables the modeling of shells with beam elements and shell surfaces
+intersecting at large angles and in addition results in an improvement of the membrane behavior of the elements.
+The elements pass all basic tests, show alleviated locking behavior in the analysis of general curved geometries
+and show close to optimal convergence behaviors in the analysis of the “all-encompassing” shell test problems.
+
+1. Introduction
+
+An effective numerical scheme to analyze shell structure is of high
+importance [1,2,3,4]. In finite element analysis, continuum mechanics-
+based shell finite elements have been widely adopted because these el-
+ements directly couple the membrane, shear and bending behaviors. The
+element behaviors are described using five degrees of freedom at the
+nodes. We consider here the MITC4 and MITC4 + shell elements which
+are very effective in the analysis of shells [5,6,7,8,9]. However, since the
+elements do not carry three rotational degrees of freedom at the nodes,
+they cannot directly be used in the modeling of intersection shells at
+large angles or shells with beam elements.
+
+Another benefit of including the drill rotation in the formulations of
+shell elements is to possibly improve the element in-plane behavior. The
+possible improvement of the element behavior by using the drill rotation
+was first studied for plane-stress elements by Allman [10,11] and then,
+for example, also in Refs. [12,13,14,15]. The kinematics involved the
+inclusion of a quadratic interpolation of displacement at the fictitious
+mid-side nodes of the elements. However, the focus in these works was
+largely on using flat elements. An effective formulation for general shell
+elements is much more difficult to reach.
+
+We should recall that considering the behavior of general shell
+structures, the membrane and bending actions are fully coupled and this
+coupling needs to be properly included within the domain of each finite
+element in the finite element model. Geometrically flat elements may not
+
+properly represent this behavior and indeed not provide acceptable
+convergence behavior, see Ref. [1].
+
+When developing a general shell element, difficulties can arise in
+passing the basic element tests, that is, the rigid body mode, isotropy and
+patch tests. Specifically, when considering the patch tests, only the
+minimum degrees of freedom to prevent a rigid body motion should be
+fixed, that is, the drill rotations should be left free [6,15], and this should
+be possible without special procedures, that is, without including arti-
+ficial factors or stabilization schemes.
+
+In this paper, we propose a new formulation to include the drill
+rotational degree of freedom for quadrilateral continuum mechanics-
+based shell elements (that, in general, are not of flat geometry). We apply
+the approach to our original MITC4 shell element [3,6] and the MITC4
++ shell element [5,7]. We denote these elements by using the suffix “/ D”
+to have the denotations “MITC4 / D” and “MITC4+ / D”. We study the
+element behaviors considering the basic tests including the patch tests in
+membrane, shear and bending actions, and their convergence behaviors
+in the analysis of shell strcutures, as proposed in Refs. [1–5]. These tests
+may also show an improved membrane behavior. In addition, we also
+illustrate the use of the novel elements in the solution of some nonlinear
+problems.
+
+2. New shell finite elements
+
+In this section, we briefly review the formulation of the MITC4 and
+
+* Corresponding author.
+
+E-mail address: Yeongbin.Ko@bentley.com (Y. Ko).
+
+https://doi.org/10.1016/j.compstruc.2024.107622
+Received 29 October 2024; Accepted 4 December 2024
+Available online 3 January 2025 
+0045-7949/© 2024 Elsevier Ltd. All rights are reserved, including those for text and data mining, AI training, and similar technologies. 
+
+Y. Ko et al.
+
+Computers and Structures 308 (2025) 107622 
+
+Fig. 1. A standard 4-node quadrilateral continuum mechanics-based shell finite element and geometry-vectors. (a) Element geometry. (b) Vectors related to the
+fictitious plane at the element center. (c) Vectors related to element distortions and edges.
+
+Fig. 2. Rotations and projections. (a) The drill rotation direction. (b) The coordinate systems for projecting rotations.
+
+improved MITC4 + shell elements, and then enhance the element for-
+mulations by introducing the effects of the drilling rotations.
+
+[ ξ1
+[ η1
+
+ξ2
+η2
+
+ξ3
+η3
+
+ξ4 ] = [ 1 (cid:0) 1 (cid:0) 1 1 ]
+] = [ 1 1 (cid:0) 1 (cid:0) 1 ]
+η4
+
+2.1. Geometry and displacement interpolations
+
+The corresponding displacement interpolation of the element is
+
+The geometry of a standard 4-node continuum mechanics based
+
+quadrilateral shell finite element is interpolated using [4–8]
+
+u(r, s, t) =
+
+∑4
+
+i=1
+
+hi(r, s)ui + t
+2
+
+∑4
+
+i=1
+
+aihi(r, s)(θi × Vi
+n
+
+)
+
+(2)
+
+(3a)
+
+x(r, s, t) =
+
+∑4
+
+i=1
+
+hi(r, s)xi + t
+2
+
+∑4
+
+i=1
+
+aihi(r, s)Vi
+n
+
+(1)
+
+in which ui and θi are the nodal displacement and rotation vectors in the
+global Cartesian coordinate system (ix, iy, iz),
+
+where hi(r, s) is the two-dimensional interpolation function of the stan-
+dard isoparametric procedure corresponding to node i, xi is the position
+vector of node i in the global Cartesian coordinate system, and ai and Vi
+n
+denote the shell thickness and the director vector at the node, respec-
+tively, see Fig. 1.
+
+The isoparametric interpolation functions hi(r, s) are given by
+hi(r, s) = 1
+4
+and
+
+(1 + ξir)(1 + ηis) with i = 1, 2, 3, 4,
+
+2 
+
+ui = ui
+
+xix + ui
+
+yiy + ui
+
+ziz
+
+θi = θi
+
+xix + θi
+
+yiy + θi
+
+ziz
+
+(3b)
+
+(3c)
+
+1 and Vi
+and Vi
+2 are unit vectors orthogonal to Vi
+⃦
+)
+(cid:0)
+⃦
+/
+
+=
+
+.
+
+= Vi
+n
+
+× Vi
+1
+
+⃦
+⃦; Vi
+
+2
+
+iy × Vi
+n
+
+iy × Vi
+n
+
+Vi
+1
+
+n, which can be given by
+
+(3d)
+
+Y. Ko et al.
+
+Computers and Structures 308 (2025) 107622 
+
+Fig. 3. Kinematics of in-plane rotations. (a) Locations of fictitious mid-side nodes. (b) Interpolation along the edges. (c) Directions of in-plane displacements.
+
+We note that the geometry of the element xi is, in general, not a flat
+surface.
+
+The geometry and displacement derivatives are given by
+
+due to the action of the nodal drill (see Fig. 2(b)),
+
+θD
+i
+
+= θD
+
+i VD
+
+=
+
+gi
+
+∂x
+∂ri
+
+, u,i =
+
+∂u
+∂ri
+
+with r1 = r, r2 = s, r3 = t.
+
+and the standard rotation
+
+(4a)
+
+θS
+i
+
+= αiVi
+1
+
++ βiVi
+
+2
+
+The covariant derivatives for the 4-node element can be further
+
+expressed as
+
+=
+
+gr
+
+=
+
+gs
+
+∂x
+∂r
+
+∂x
+∂s
+
+= xr + sxd, u,r =
+
+= xs + rxd, u,s =
+
+∂u
+∂r
+
+∂u
+∂s
+
+= ur + sud,
+
+= us + rud,
+
+xr = 1
+4
+
+ur = 1
+4
+
+∑4
+
+i=1
+
+∑4
+
+i=1
+
+ξixi, xs = 1
+4
+
+ξiui, us = 1
+4
+
+∑4
+
+i=1
+
+∑4
+
+i=1
+
+ηixi, xd = 1
+4
+
+ηiui, ud = 1
+4
+
+∑4
+
+i=1
+
+∑4
+
+i=1
+
+ξiηixi,
+
+ξiηiui
+
+with the following characteristic geometry and displacement vectors
+
+where θD
+i
+
+is the drill rotation about the direction of VD.
+The total rotation at the node is the sum of the two rotations
+
+θi = θS
+i
+
++ θD
+i
+
+(4b)
+
+θi = αiVi
+1
+
++ βiVi
+
+2
+
++ γiVi
+
+n
+
+and a change in the rotation γi is given by the change in θD
+i
+
+δγi
+
+= δθD
+i
+
+(Vi
+
+n⋅VD)
+
+where as usual “δ” denotes “virtual”.
+
+We also have that the total drill rotation is given by
+
+(4c)
+
+θD
+i
+
+= αi(Vi
+
+1⋅VD) + βi
+
+(Vi
+
+2⋅VD) + γi
+
+(Vi
+
+n⋅VD)
+
+(6a)
+
+(6b)
+
+(6c)
+
+(6d)
+
+(6e)
+
+(6f)
+
+where the vectors xr, xs and xd shown in Fig. 1 arise naturally from the
+element geometry.
+
+In order to pass the rigid body mode test, the drill rotation for a 4-
+node shell element needs to be defined from a single base. Considering
+the 4-node shell element, there is a plane P (see Fig. 1(b)) given by ge-
+ometry derivative vectors that is always flat [7,8]. We define a normal
+vector to the plane at its center to establish the direction of the drill
+rotation, see VD(Fig. 2(a)),:
+VD = xr × xs
+‖xr × xs‖
+
+(0, 0, 0), xs = gs
+
+, xr = gr
+
+(0, 0, 0),
+
+(5)
+
+with gi in Eq. (4a).
+
+In the formulation we distinguish between the rotation at the node
+
+We note that the rotations (αi, βi, γi) in Eq. (6d) are only used to update
+the director vectors (Vi
+n) [5,9], and the components in Eq. (6d)
+give directly the global components in Eq. (3c), and vice versa.
+
+2, Vi
+
+1, Vi
+
+To establish the strain–displacement matrices of the element we
+apply Eqs. (6a) to (6c) sequentially. As we present below, we use the
+rotations θD
+i in Eq. (6a) to establish the element strains due to the drilling
+rotations at the four corner nodes. Thereafter we add the strain com-
+ponents that are not due to the drilling rotations at the nodes.
+
+The linear terms of the displacement-based covariant strain compo-
+
+nents are given by
+
+eij = 1
+2
+
+(gi⋅u,j + gj⋅u,i)
+
+(7)
+
+We can write the covariant in-plane strain components in Eq. (7) as
+
+3 
+
+Y. Ko et al.
+
+Computers and Structures 308 (2025) 107622 
+
+eij = em
+ij
+
++ t eb1
+ij
+
++ t2eb2
+
+em
+ij
+
+= 1
+2
+
+(
+
+∂xm
+∂ri
+
+∂um
+⋅
+∂rj
+
++
+
+∂xm
+∂rj
+
+⋅
+
+∂um
+∂ri
+
+ij with i, j = 1, 2
+)
+
+(
+
+(
+
+eb1
+ij
+
+= 1
+2
+
+eb2
+ij
+
+= 1
+2
+
+with
+
+xm =
+
+um =
+
+∑4
+
+i=1
+
+∑4
+
+i=1
+
+⃒
+⃒
+
+= gri
+
+Fig. 4. Description of displacement tying. (a) The base vectors of each edge
+(xI
+(rI ,sI ) at the mid-point of the edge I). (b) Displacement field constructed
+ri
+=
+from normal displacement due to drill rotation (deformation shown with θD
+1
+θ, θD
+2
+
+= (cid:0) θ, θD
+3
+
+= θ, θD
+4
+
+= (cid:0) θ).
+
+)
+
+∂xb
+∂ri
+
+⋅
+
+∂um
+∂rj
+
++
+
+∂xb
+∂rj
+
+∂um
+⋅
+∂ri
+
+∂xm
+∂ri
+
+∂ub
+⋅
+∂rj
+
++
+
+∂xm
+∂rj
+
++
+
+∂ub
+⋅
+∂ri
+)
+
+∂xb
+∂ri
+
+∂ub
+⋅
+∂rj
+
++
+
+∂xb
+∂rj
+
+∂ub
+⋅
+∂ri
+
+hi(r, s)xi, xb = 1
+2
+
+hi(r, s)ui, ub = 1
+2
+
+∑4
+
+i=1
+
+∑4
+
+i=1
+
+aihi(r, s) Vi
+n
+
+,
+
+aihi(r, s) (θi × Vi
+n
+
+)
+
+(8a)
+
+(8b)
+
+(8c)
+
+(8d)
+
+(9a)
+
+(9b)
+
+The first term em
+ij in Eq. (8a) is the covariant in-plane membrane strain at
+the shell mid-surface (t = 0), and the remaining terms are the covariant
+in-plane strains due to bending.
+
+2.2. New interpolation functions and development of kinematics
+
+In the formulation to include the drill rotation we create just a single
+additional interpolation function (along the edges) to have stability of
+the element for in-plane rotations, pass the patch test when the rotation
+is free (without use of a special procedures, see Refs. [5,6,7,15]) and
+improve the element behavior.
+
+Hence, consider in addition to the interpolation functions hi(r, s)
+corresponding to the corner nodes, see Eq. (2), also the mid-side node
+interpolation functions corresponding to the “fictitious” nodes 5, 6, 7, 8
+located at the mid-points of the element sides as shown in Fig. 3(a)
+
+[h5 h6 h7 h8 ]
+
+[
+
+=
+
+(cid:0)
+
+1
+2
+
+1 (cid:0) s2
+
+(cid:0)
+
+)
+(1 + r) 1
+2
+
+1 (cid:0) r2
+
+)
+
+(cid:0)
+
+(1 + s) 1
+2
+
+1 (cid:0) s2
+
+(cid:0)
+
+)
+(1 (cid:0) r) 1
+2
+
+1 (cid:0) r2
+
+)
+(1 (cid:0) s)
+
+]
+
+Fig. 5. Tying positions (A), (B), (C) and (D) for the assumed transverse shear
+strain field of the MITC4 shell element. The constant transverse shear strain
+conditions are imposed along the edges.
+
+where we shall use the following notation with I denoting the edge and
+= hI,s.To proceed we then
+m the fictious mid-side node hI
+simplify the derivatives of these functions and use
+
+= hI,r, hI
+
+m,r
+
+m,s
+
+(10)
+
+Fig. 6. Tying positions for the assumed membrane shear strain field for the MITC4 + shell elements. (a) For the internally embedded strain em
+membrane strain em
+ij .
+
+ij . (b) For the final shell
+
+4 
+
+Y. Ko et al.
+
+Computers and Structures 308 (2025) 107622 
+
+Fig. 7. Patch tests. (a) Mesh used. (b) Bending patch test. (c) Shearing patch test. (d) Extension patch test.
+
+Fig. 8. Straight slender cantilever (E = 1.0 × 107, thickness 0.1, ν = 0.3). (a)
+Mesh type 1, (b) Mesh type 2.
+
+Table 1
+Vertical deflection ( (cid:0) uy) at the tip (average of displacements at nodes near point
+A) for the slender cantilever problems.
+
+Elements
+
+MITC4
+MITC4-IC
+MITC4 / D
+MITC4+ / D
+Reference solution
+
+Mesh
+
+Mesh type 1
+
+0.010088
+0.107328
+0.0976755
+0.0976755
+0.1081
+
+Mesh type 2
+
+0.00290874
+0.00569730
+0.00550604
+0.00550838
+
+Fig. 9. Thick curved beam problem (Plane stress condition, 1 × 4 mesh, E =
+1.0 × 103 and ν = 0.0, unit thickness).
+
+5 
+
+Y. Ko et al.
+
+Computers and Structures 308 (2025) 107622 
+
+Table 2
+Vertical displacements at the tip (point A) for the curved beam problem.
+
+Elements
+
+Regular mesh
+
+subscript t along the edge at node 5, see Fig. 3(b),
+
+(
+
+u5
+t
+
+(l) =
+
+1 (cid:0)
+
+)
+
+l
+L5
+
+u4
+t
+
++ l
+L5
+
+u1
+t
+
+(12a)
+
+MITC4
+MITC4-IC
+MITC4 / D
+MITC4+ / D
+Reference solution
+
+1 × 2
+
+22.5988
+52.2291
+51.2489
+51.2692
+90.1
+
+1 × 4
+
+57.9325
+84.6070
+84.1086
+84.1444
+
+1 × 8
+
+79.9218
+89.3023
+89.1698
+89.2077
+
+Fig. 10. Cantilever beam with roller support (Plane stress condition, 1 × 4
+mesh, E = 3.0 × 104 and ν = 0.0, unit thickness). (a) Regular mesh. (b) Dis-
+torted mesh.
+
+Table 3
+Vertical displacements at the tip (point A) for the cantilever problem.
+
+Elements
+
+Regular mesh
+
+Distorted mesh
+
+MITC4
+MITC4-IC
+MITC4 / D
+MITC4+ / D
+Reference solution
+
+0.235608
+0.347810
+0.347810
+0.347810
+0.347810
+
+0.203966
+0.342552
+0.339249
+0.341015
+
+[
+
+̃
+h5,r
+
+̃
+h6,r
+
+̃
+h7,r
+
+̃
+h8,r
+
+[
+
+]
+
+=
+
+0
+
+1
+2
+
+( (cid:0) 2r)(1 + s) 0
+
+( (cid:0) 2r)(1 (cid:0) s)
+
+1
+2
+
+]
+,
+
+I
+̃
+h
+m,r
+
+= ̃
+
+hI,r,
+
+[
+
+̃
+h5,s
+
+̃
+h6,s
+
+̃
+h7,s
+
+̃
+h8,s
+
+[
+
+]
+
+=
+
+1
+2
+
+I
+̃
+h
+m,s
+
+= ̃
+hI,s
+
+( (cid:0) 2s)(1 + r) 0
+
+( (cid:0) 2s)(1 (cid:0) r) 0
+
+,
+
+1
+2
+
+(11a)
+]
+
+(11b)
+
+where we use the “curl” to signify that simplified functions are used.
+Here the zeros in Eq. (11b) are introduced to avoid a higher order of
+numerical
+integration than used with the original elements. The
+important point is that this simplification can be used with the basic and
+patch tests still satisfied, and we also see good convergence behavior.
+
+We remark that the idea of using modified higher-order interpolation
+
+functions can be also found in Refs. [16,17].
+
+Next, we need an expression for the displacements at the fictitious
+nodes, and we employ the expressions proposed by Allman [10,11] and
+Cook [18]. We use for the tangential displacement identified using the
+
+where the superscripts 1, 4, 5 denote the nodal values, the length of edge
+is L5 and l is the coordinate value along the edge, see Fig. 2(a) and Fig. 3
+(b). The normal displacement along the edge of node 5 is given by a
+quadratic interpolation
+
+(
+
+u5
+n
+
+(l) =
+
+1 (cid:0)
+
+)
+
+l
+L5
+
+u4
+n
+
++ l
+L5
+
+u1
+n
+
++ 4l
+L5
+
+(
+
+1 (cid:0)
+
+)
+
+θ5
+n
+
+l
+L5
+
+(12b)
+
+where the last term corresponds to the normal displacement at node 5
+(along the edge of node 5 between nodes 1 and 4) measured from the
+linear displacement given by the first two terms on the right-hand side of
+Eq. (12b).
+
+The value of θ5
+
+n is measured as all other nodal rotations, see discus-
+
+sion below, and can be obtained from the boundary condition
+
+⃒
+⃒
+⃒
+⃒
+l=L5
+
+∂u5
+n
+∂l
+
+(cid:0)
+
+⃒
+⃒
+⃒
+⃒
+l=0
+
+∂u5
+n
+∂l
+
+= (cid:0) θ4 + θ1
+
+Hence
+
+θ5
+n
+
+= L5
+8
+
+(θ4 (cid:0) θ1) = L5
+8
+
+(θD
+4
+
+(cid:0) θD
+1
+
+)
+
+(12c)
+
+(12d)
+
+We use the same assumptions for the displacements due to drill rotations
+along the other 3 edges on which the mid-side fictitious nodes 6, 7 and 8
+are located.
+
+A key point in our solution procedure is that we utilize the vector VD
+at the element center about which to measure all rotations at the nodal
+i for all nodes i = 1, 2, … 8, hence all nodal
+points (that is, we use θi = θD
+drill rotations are measured as drill rotations about the same vector VD).
+It then follows that continuity between edge displacements is always
+obtained, and the rigid body mode test is always satisfied even when the
+shell element is curved.
+
+Our objective is to now obtain the total element strain over the
+
+element domain.
+
+Consider the displacements corresponding to the in-plane directions
+shown in Fig. 3(c). The transformation to tangential and normal di-
+rections in Fig. 3(b) gives
+
+r mr + uI
+uI
+
+s ms = uI
+
+n in + uI
+
+t it
+
+in which xri ⋅mrj = δij where δij is the Kronecker delta.
+The tangential and normal directions at the edge I are
+
+it = xI
+m
+
+⃦
+⃦
+/
+xI
+m
+
+⃦
+⃦, in = it × VD
+
+and we have
+
+[
+
+m x6
+x5
+
+m x7
+
+m x8
+
+m
+
+[
+
+]
+
+=
+
+1
+8
+
+(x4 (cid:0) x1) 1
+8
+
+(x1 (cid:0) x2) 1
+8
+
+(x2 (cid:0) x3) 1
+8
+
+(x3 (cid:0) x4)
+
+(13a)
+
+(13b)
+
+]
+
+(13c)
+
+The displacement field introduced in Eq. (13a) will lead to a strain
+definition in covariant coordinates. Note that unlike the displacements
+which occur in the element natural directions (r and s), the displace-
+ments in Eq. (13a) are defined using the fixed coordinate system (mr and
+ms), hence, additional terms due to a change in the basis vectors (xr and
+xs) will not arise. The coordinate systems defined at each edge (xI
+r and
+s) are shown in Fig. 4(a). Here xI
+xI
+(rI ,sI ) at the mid-point of the edge
+ri
+I.
+
+= gri
+
+⃒
+⃒
+
+From Eq. (13a) we obtain for the displacement components on the
+
+edges
+
+= uI
+
+n in⋅xI
+
+r
+
++ uI
+
+t it⋅xI
+
+r
+
+, uI
+s
+
+= uI
+
+n in⋅xI
+
+s
+
++ uI
+
+t it⋅xI
+
+s
+
+.
+
+(14a)
+
+uI
+r
+
+6 
+
+Y. Ko et al.
+
+Computers and Structures 308 (2025) 107622 
+
+Fig. 11. Cylindrical shell problem (E = 2.0 × 1011, ν = 1/3, L = 1.0 and p0 = 1.0). (a) Problem description with graded regular mesh (8 × 8 mesh, t/L = 1/1000).
+(b) Pressure distribution. (c) Distorted mesh used (8 × 8 mesh).
+
+the element to pass the patch test, we use
+
+uI
+r
+
+= uI
+
+θ(l) in⋅xI
+r
+
+, uI
+s
+
+= uI
+
+θ(l) in⋅xI
+s
+
+.
+
+(14b)
+
+us = hI
+
+muI
+
+s
+
+[
+
+(LI
+2
+
+) = 1⃦
+⃦
+xI
+m
+
+⃦
+⃦
+
+(cid:0) hI
+
+muI
+
+θ(LI
+2
+
+]
+
+)xI
+s
+
+× VD
+
+⋅xI
+m
+
+(15b)
+
+θ(l) is the drill rotational effect along the side I and at the point
+
+where uI
+given by l, for example,
+(
+
+)
+
+θ (l) = 4l
+u5
+L5
+
+1 (cid:0)
+
+l
+L5
+
+θ5
+n
+
+, similar for edges 6, 7, 8.
+
+(14c)
+
+Here u5
+
+θ is the displacement normal to the edge due to the drill
+
+rotation at the edge (given by the drill rotations at nodes 1 and 4).
+
+Using the above equations, we have for each edge I
+
+uI
+r
+
+(l) = 1⃦
+⃦
+xI
+m
+
+uI
+s
+
+(l) = 1⃦
+⃦
+xI
+m
+
+⃦
+⃦ (uI
+
+θ(l)xI
+m
+
+× VD⋅xI
+r
+
+)
+
+⃦
+⃦ (uI
+
+θ(l)xI
+m
+
+× VD⋅xI
+s
+
+)
+
+(14d)
+
+(14e)
+
+The continuous displacements over the elements due to the drill rota-
+tions are then obtained by interpolation and summing over the respec-
+tive edges I
+
+ur = hI
+
+muI
+
+r
+
+[
+
+(LI
+2
+
+) = 1⃦
+⃦
+xI
+m
+
+⃦
+⃦
+
+(cid:0) hI
+
+muI
+
+θ(LI
+2
+
+]
+⋅xI
+m
+
+)xI
+r
+
+× VD
+
+(15a)
+
+7 
+
+in which we use l = LI
+fictitious nodes and also
+
+⃦
+⃦
+
+⃦
+⃦ = LI
+8 .
+
+xI
+m
+
+2 for each edge because the tying is performed at the
+
+Using the geometric relations (Eq. (12d) and (13c)), the displace-
+
+(cid:0)
+
+ment fields assumed in Eq. (15) reduce to
+)
+(cid:0)
+(cid:0) θD
+xI
+m⋅
+i
+)
+(cid:0) θD
+xI
+m⋅
+i
+
+ur(θ) = hI
+us(θ) = (cid:0) hI
+
+× VD
+(cid:0) xI
+r
+)
+(cid:0)
+× VD
+xI
+s
+
+θD
+i+1
+(cid:0)
+θD
+i+1
+
+)
+
+(16a)
+
+where the edge I corresponds to nodes i and i + 1. Eq. (16a) is the
+displacement-based interpolation of the drill effect with the standard
+mid-side interpolation hI
+m
+
+= hI given in Eq. (10).
+Next we use the ‘assumed interpolation’ at the edges. By applying Eq.
+
+(11) to Eq. (16a), we obtain
+
+(cid:0)
+
+I
+
+̃ur(θ) = ̃
+h
+I
+̃us(θ) = (cid:0) ̃
+h
+m
+
+m
+
+θD
+i+1
+(cid:0)
+
+(cid:0) θD
+i
+
+θD
+i+1
+
+(cid:0) θD
+i
+
+)
+(cid:0)
+xI
+m⋅
+)
+xI
+m⋅
+
+× VD
+)
+
+(cid:0) xI
+r
+(cid:0)
+× VD
+
+xI
+s
+
+)
+,
+
+(16b)
+
+As we mentioned earlier, all drill-rotations are defined for the curved
+shell as rotations about the normal VD to the plane P formed by
+adjoining the fictitious nodes. The calculated values are then projected
+
+Y. Ko et al.
+
+Computers and Structures 308 (2025) 107622 
+
+Fig. 12. Convergence curves for the clamped cylindrical shell problem with (a) the graded regular and (b) distorted meshes. The bold line represents the optimal
+convergence rate.
+
+back to the nodal locations using Eq. (6). Proceeding this way, that is,
+using the rotations about VD , leads to satisfying the element isotropy
+test and rigid body modes test, and even when the element is not flat
+(Fig. 1(c) and 2(b)).
+
+In addition, it is valuable to note that using the single normal to the
+plane P results in an overall improved element behavior when compared
+to using a changing normal over the element geometry.
+
+gs
+
+with the indices i and j = 1,2 corresponding to r1 = r and r2 = s. We also
+use j = det[ gr
+] |(r,s,0) and j0 = j(0,0,0). The strain in Eq. (17a) is
+the usual displacement-based strain and the strain in Eq. (17b) is an
+approximation that is simple, relative to the value used in Ref. [20], and
+when used leads to satisfying the patch tests.
+
+gt
+
+Substituting from Eq. (16b) into Eq. (17b), the individual compo-
+nents for the “drill-membrane” strain (identified using the superscript
+‘md’) are
+
+2.3. The new membrane strain due to the drilling degrees of freedom
+
+̃e
+
+md
+rr
+
+= (j0/j)̃ur,r(θ) = (j0/j)̃
+h
+
+I
+m,r
+
+(θD
+
+i+1
+
+(cid:0) θD
+i
+
+)xI
+
+m⋅((cid:0) xI
+
+r
+
+× VD)
+
+Using the displacements in Eqs. (15) to (16), we have the strain as
+
+(cid:0)
+
+eij(θ) = 1
+2
+
+)
+
+ui,j + uj,i
+
+̃eij(θ) = j0
+j
+
+1
+2
+
+(
+
+)
+
+̃ui,j + ̃uj,i
+
+̃e
+
+md
+ss
+
+= (j0/j)̃us,s(θ) = (cid:0) (j0/j)̃
+h
+
+I
+m,s
+
+(θD
+
+i+1
+
+(cid:0) θD
+i
+
+)xI
+
+m⋅(xI
+
+s
+
+= (1/2)(j0/j)(̃us,r(θ) + ̃ur,s(θ))
+I
+= (1/2)(j0/j)[̃
+m,sxI
+h
+
+m⋅((cid:0) xI
+
+r
+
+I
+× VD) (cid:0) ̃
+m,rxI
+h
+
+m⋅(xI
+
+s
+
+(17a)
+
+(17b)
+
+̃e
+
+md
+rs
+
+8 
+
+× VD)
+
+× VD)](θD
+i+1
+
+(cid:0) θD
+i
+
+)
+
+(18)
+
+Y. Ko et al.
+
+Computers and Structures 308 (2025) 107622 
+
+Fig. 13. Convergence curves for the free cylindrical shell problem with (a) the graded regular and (b) distorted meshes. The bold line represents the optimal
+convergence rate.
+
+9 
+
+Y. Ko et al.
+
+Computers and Structures 308 (2025) 107622 
+
+We note that these expressions are given using the individual nodal drill
+rotations θD
+i and that these expressions need to be summed over the
+edges I connecting nodes i and i + 1.
+
+Hence the assumed strain–displacement relations corresponding to
+
+the nodal drill rotations are
+⎡
+
+⎡
+
+⎤
+
+⎤
+
+⎥
+⎥
+⎥
+⎥
+⎦
+
+⎢
+⎢
+⎢
+⎢
+⎣
+
+̃e
+̃e
+̃e
+
+md
+rr
+md
+ss
+md
+rs
+
+= ̃
+B
+
+⎢
+⎢
+⎢
+⎢
+⎢
+⎣
+
+θD
+1
+θD
+2
+θD
+3
+θD
+4
+
+⎥
+⎥
+⎥
+⎥
+⎥
+⎦
+
+B = j0
+, ̃
+j
+
+⎤
+
+⎦
+
+⎡
+
+⎣
+
+̃
+Brr
+̃Bss
+̃
+Brs
+
+(19a)
+
+]
+
+]
+
+[
+
+[
+
+̃
+Brr =
+
+̃
+Bss =
+
+([
+
+5
+(cid:0) ̃
+m,rc5
+h
+[
+
+s
+
+5
+̃
+m,rc5
+h
+
+r
+
+6
+
+(cid:0) ̃
+h
+
+m,rc6
+
+r
+
+6
+̃
+m,rc6
+h
+
+r
+
+7
+(cid:0) ̃
+m,rc7
+h
+
+r
+
+7
+̃
+m,rc7
+h
+
+r
+
+8
+
+(cid:0) ̃
+h
+
+m,rc8
+
+r
+
+8
+̃
+m,rc8
+h
+
+r
+
+5
+
+(cid:0) ̃
+h
+
+m,rc5
+
+r
+
+5
+
+(cid:0) ̃
+h
+
+m,sc5
+
+s
+
+6
++ ̃
+m,sc6
+h
+
+s
+
+6
+
+(cid:0) ̃
+h
+
+m,sc6
+
+s
+
+7
+
++ ̃
+h
+
+7
+(cid:0) ̃
+m,sc7
+h
+
+s
+
+8
+
++ ̃
+h
+
+m,sc8
+
+s
+
+8
+
+(cid:0) ̃
+h
+
+m,sc8
+
+s
+
+5
++ ̃
+m,sc5
+h
+
+s
+
+s
+
+m,sc7
+Brs = 1
+̃
+2
+7
+(cid:0) ̃
+m,rc7
+h
+
+s
+
+6
+
++ ̃
+h
+
+m,rc6
+
+s
+
+6
+
+(cid:0) ̃
+h
+
+m,rc6
+
+s
+
+7
++ ̃
+m,rc7
+h
+
+s
+
+8
+
++ ̃
+h
+
+m,rc8
+
+s
+
+8
+
+(cid:0) ̃
+h
+
+m,rc8
+
+s
+
+5
+
++ ̃
+h
+
++
+
+5
+̃
+m,sc5
+h
+
+r
+
+6
+
+(cid:0) ̃
+h
+
+m,sc6
+
+r
+
+6
+̃
+m,sc6
+h
+
+r
+
+7
+(cid:0) ̃
+m,sc7
+h
+
+r
+
+7
+̃
+m,sc7
+h
+
+r
+
+8
+
+(cid:0) ̃
+h
+
+m,sc8
+
+r
+
+8
+̃
+m,sc8
+h
+
+r
+
+5
+
+(cid:0) ̃
+h
+
+m,sc5
+
+r
+
+]
+
+m,rc5
+s
+])
+,
+
+× VD), cI
+s
+
+= xI
+
+m⋅(xI
+
+s
+
+× VD)
+
+(19b)
+
+(19c)
+
+cI
+r
+
+= xI
+
+m⋅((cid:0) xI
+
+r
+
+with the membrane coefficients cI
+can also be written as in simpler form
+
+r and cI
+
+s per edge I. These expressions
+
+[
+
+[
+
+̃
+Brr =
+
+̃Bss =
+
+6
+
+(cid:0) ̃
+h
+
+m,rc6
+
+r
+
+5
+
+(cid:0) ̃
+h
+
+m,sc5
+
+s
+
+6
+̃
+m,rc6
+h
+
+r
+
+7
+̃
+m,sc7
+h
+
+s
+
+8
+
+(cid:0) ̃
+h
+
+m,rc8
+
+r
+
+7
+
+(cid:0) ̃
+h
+
+m,sc7
+
+s
+
+]
+
+]
+
+8
+̃
+m,rc8
+h
+
+r
+
+5
+̃
+m,sc5
+h
+
+s
+
+([
+
+̃
+Brs = (1/2)
+
+s
+
+6
+̃
+m,rc6
+h
+(cid:0) ̃
+h
+
+6
+
+(cid:0) ̃
+h
+
+s
+
+m,rc6
+7
+̃
+m,sc7
+h
+
+r
+
+s
+
+8
+̃
+m,rc8
+h
+(cid:0) ̃
+h
+
+7
+
+m,sc7
+
+r
+
+5
+
+m,sc5
+
+r
+
+8
+
+(cid:0) ̃
+m,rc8
+h
+] )
+
+s
+
+[
+
++
+
+5
+̃
+m,sc5
+h
+
+r
+
+Fig. 14. Hyperboloid shell problem (E = 2.0 × 1011, ν = 1/3, L = 1.0 and p0 =
+1.0). (a) Problem description. (b) Graded regular mesh (8 × 8 mesh, t/L =
+1/1000). (c) Distorted mesh pattern (4 × 4 mesh). (d) Distorted mesh used (8
+× 8 mesh).
+
+]
+
+(19d)
+
+Here we used the derivatives in Eq. (11) and edge coefficients cI
+(I = 5, 6, 7, 8).
+
+r and cI
+s
+
+Eqs. (18) and (19d) give the strain field used in the present study,
+attained from the displacements with the assumed interpolations in Eq.
+(11), expressed in a simple explicit form. The equations are useful for the
+implementation of the element.
+
+However, in addition, we can also establish a physical meaning of the
+strain field, using the MITC technique, and this meaning establishes also
+the edge coefficients used in Eq. (19). We present this derivation in
+Appendix A.
+
+2.4. The transverse shear and in-plane strains
+
+Considering the element transverse shear strain, for the MITC4 and
+MITC4 + shell elements the strain field is based on the now classical
+assumption a constant covariant transverse shear strain conditions along
+the edges [6,19],
+
+̃ert = 1
+2
+
+(1 + s)e
+
+(A)
+
+rt + 1
+2
+
+(1 (cid:0) s)e
+
+(B)
+
+rt , ̃est = 1
+2
+
+(1 + r)e
+
+(C)
+
+st + 1
+2
+
+(1 (cid:0) r)e
+
+(D)
+st
+
+(20)
+
+= gi
+
+(0, 0, 0) = xri and gi = gi(0,0,0) = mri . Hence the
+with gi⋅gk = δik, gi
+base vectors gi and gi are constant over the element domain. Note that
+for the MITC shell elements, the strain in Eq. (21) is calculated only once
+through the thickness t, and the calculation of the coefficients cI
+s and
+(gi⋅gk) is only performed once per each element.
+
+r, cI
+
+Considering next the individual elements, when including the drill-
+membrane strain into the standard MITC4 element, the in-plane strain
+in Eq. (9a) is modified to be.
+
+eij = em
+ij
+
++ emd
+ij
+
++ t eb1
+ij
+
++ t2eb2
+
+ij with i, j = 1, 2
+
+(22a)
+
+This element is denoted as ‘MITC4 / D’. We also have for this element
+
+⃒
+⃒
+(r, s) = (gi⋅gk)(gj⋅gl)
+⃒
+
+em
+ij
+
+⃒
+⃒
+(r, s) = (gi⋅gk)(gj⋅gl)
+⃒
+
+em
+ij
+
+em
+kl
+
+em
+kl
+
+(r,s,0)
+
+(r,s,0)
+
+= gk
+
+i gl
+
+jem
+
+kl
+
+(22b)
+
+(22c)
+
+= (gi⋅gj)
+
+with gj
+i
+Here, em
+ij
+
+⃒
+⃒
+(r,s,0).
+
+is the “standard” displacement-based strain but defined
+using the element center coordinate to establish (gi). Further, the stan-
+dard membrane strain em
+ij can be expanded as
+
+where the tying points are shown in Fig. 5, and transverse shear strains
+are obtained from Eq. (7).
+
+Considering the element in-plane strain, the final drill-membrane
+strain is obtained by a transformation of Eq. (18) to the element natu-
+ral coordinate system (the (r, s) system)
+
+emd
+ij
+
+= (gi⋅gk)(gj⋅gl)̃e
+
+md
+kl
+
+(21)
+
+10 
+
+em
+rr
+
+= err|
+
+con. + err|
+
+lin.⋅s + ers|
+
+bil.⋅s2
+
+em
+ss
+
+= ess|
+
+con. + ess|
+
+lin.⋅r + ers|
+
+bil.⋅r2
+
+em
+rs
+
+= ers|
+
+con. + 1
+err|
+2
+
+lin.⋅r + 1
+ess|
+2
+
+lin.⋅s + ers|
+
+bil.⋅rs
+
+(23a)
+
+Y. Ko et al.
+
+Computers and Structures 308 (2025) 107622 
+
+Fig. 15. Convergence curves for the clamped hyperboloid shell problem with (a) the graded regular and (b) distorted meshes. The bold line represents the optimal
+convergence rate.
+
+with
+
+err|
+
+con. = xr⋅ur, ess|
+lin. = xr⋅ud + xd⋅ur, ess|
+
+con. = xs⋅us, ers|
+
+con. = 1
+2
+lin. = xs⋅ud + xd⋅us, ers|
+
+err|
+
+(xr⋅us + xs⋅ur),
+
+bil. = xd⋅ud
+
+(23b)
+
+For the MITC4 + shell element (that is, not considering yet the drilling
+effect) the membrane strain is assumed to have the form
+ijem(E)
+
+ijem(A)
+
+ijem(D)
+
+ijem(C)
+
+ijem(B)
+
++ a3 |
+
++ a4 |
+
++ a1 |
+
+= a0|
+
++ a2|
+
+(24a)
+
+m
+ij
+
+̃e
+
+rr
+
+rr
+
+rs
+
+ss
+
+ss
+
+obtain
+⃒
+⃒
+⃒
+
+̃e
+
+m
+rs
+
+bil.
+
+rs
+
+]
+
+⃒
+⃒
+
+)
+
+[
+cr
+
+(
+em
+rr
+]
+
+(cid:0) em
+rr
+
+⃒
+⃒
+lin.
+
+= cr
+d
+
+⃒
+⃒
+con. + em
++ 2crcs
+d
+cr = xd⋅gr|(r,s,0), cs = xd⋅gs|(r,s,0), d = c2
+
+(cid:0) em
+ss
+
+bil.
+⃒
+⃒
+
+em
+rs
+
+con.
+
+lin.
+
+⃒
+⃒
+
++ cs
+d
+
+[
+
+(
+
+cs
+
+em
+ss
+
+⃒
+⃒
+
+con. + em
+
+rs
+
+)
+
+⃒
+⃒
+bil.
+
+(24c)
+
+(cid:0) 1.Eq. (24b) improves
+the membrane behavior, and Eq. (24c) improves the bending part of the
+shell behavior by eliminating membrane locking.
+
++ c2
+s
+
+r
+
+and we use the following two assumptions to improve the element
+behavior, specifically to alleviate membrane-locking:
+
+em
+rr
+
+= em
+rr
+
+(0, 0) +
+
+em
+ss
+
+= em
+ss
+
+(0, 0) +
+
+√
+
+̅̅̅
+3
+2
+√
+̅̅̅
+3
+2
+
+λ(r, s)(em(A)
+
+rr
+
+(cid:0) em(B)
+
+rr
+
+) s,
+
+λ(r, s) (em(C)
+
+ss
+
+(cid:0) em(D)
+
+ss
+
+) r, em
+rs
+
+= em
+rs
+
+(0, 0)
+
+(24b)
+
+with λ(r, s) = j0
+j
+
+(r, s, 0) and the tying points shown in Fig. 6. Then we
+
+⎡
+
+⎢
+⎢
+⎢
+⎢
+⎣
+
+11 
+
+The constants ak|
+⎤
+
+ij with k = 0, 1, 2, 3, 4, and 5 are given by
+
+[
+= Q(r, s)R(r, s)S
+
+em(A)
+
+rr
+
+em(B)
+
+rr
+
+em(C)
+
+ss
+
+em(D)
+
+ss
+
+em(E)
+
+rs
+
+]
+T
+
+(25a)
+
+⎥
+⎥
+⎥
+⎥
+⎦
+
+̃e
+̃e
+̃e
+
+m
+rr
+m
+ss
+m
+rs
+
+Y. Ko et al.
+
+Computers and Structures 308 (2025) 107622 
+
+Fig. 16. Convergence curves for the free hyperboloid shell problem with (a) the graded regular and (b) distorted meshes. The bold line represents the optimal
+convergence rate.
+
+⎡
+
+⎣
+
+a0|
+rr
+a0|
+a0|
+
+ss
+
+rs
+
+ss
+
+a1|
+rr
+a1|
+a1|
+⎡
+
+rs
+
+a2|
+rr
+a2|
+a2|
+
+ss
+
+rs
+
+a3|
+rr
+a3|
+a3|
+
+ss
+
+rs
+
+⎤
+⎦ = Q(r, s)R(r, s)S
+
+a4|
+rr
+a4|
+ss
+a4|
+
+rs
+
+Q(r, s) =
+
+⎣
+
+⎡
+
+R(r,s) = λ
+
+⎣
+
+(1 + crs)2
+(crr)2
+crr(1 + crs)
+√
+
+̅̅̅
+1/λ +
+3
+√
+̅̅̅
+m2r
+3
+0
+
+n1s
+
+(css)2
+(1 + csr)2
+css(1 + csr)
+̅̅̅
+√
+n2s
+3
+√
+̅̅̅
+1/λ +
+3
+
+0
+
+2css(1 + crs)
+2crr(1 + csr)
+crcsrs + (1 + crs)(1 + csr)
+
+⎤
+
+⎦
+
+̅̅̅
+√
+n5s n3s n4s n1s/
+3
+2
+√
+̅̅̅
+m5r m4r m3r m1r/
+3
+m1r 2
+1/λ
+0
+
+0
+
+⎤
+
+⎦
+
+̅̅̅
+√
+3
+√
+̅̅̅
+3
+
+⎡
+
+⎢
+⎢
+⎢
+⎢
+⎢
+⎢
+⎣
+
+S =
+
+1/2 (cid:0) aA 1/2 (cid:0) aB
+
+(cid:0) ac
+
+(cid:0) aD
+
+(cid:0) aA
+0
+1/2
+0
+aA
+
+(cid:0) aB
+0
+(cid:0) 1/2
+0
+aB
+
+1/2 (cid:0) ac 1/2 (cid:0) aD
+
+0
+0
+1/2
+ac
+
+0
+0
+(cid:0) 1/2
+aD
+
+0
+⎤
+
+(cid:0) aE
+(cid:0) aE
+1
+0
+0
+aE
+
+⎥
+⎥
+⎥
+⎥
+⎥
+⎥
+⎦
+
+(25c)
+
+aA = cr (cr (cid:0) 1)
+
+, aB = cr (cr +1)
+
+, aC = cs(cs(cid:0) 1)
+
+, aD = cs(cs+1)
+
+, aE = 2cr cs
+d ,
+
+2d
+
+2d
+
+2d
+
+2d
+
+(25b)
+
+n1 = 1
+2
+
+[(cid:0)
+
+[(cid:0)
+
+]
+
+gr
+r
+
+(cid:0)
+
+(cid:0)
+
+(cid:0)
+
++
+
+gr
+r
+
+gr
+r
+
+)
+2
+
+)
+2
+
+⃒
+⃒
+⃒
+(A)
+⃒
+⃒
+⃒
+(A)
+⃒
+⃒
+(A)+(gr
+)
+rgs
+rgs
+r
+r
+⃒
+)
+(cid:0)
+⃒
+2
+(cid:0)
+⃒
+⃒
+⃒
+⃒
+
+)
+2
+
+gs
+s
+
+(C)
+
++
+
+(cid:0)
+
+gs
+s
+
+gs
+s
+
+gs
+s
+
+(C)
+
+)
+
+)
+
+2|(B)
+⃒
+⃒
+⃒
+
+2
+
+⃒
+⃒
+)
+(B)
+⃒
+)
+⃒
+2
+⃒
+⃒
+⃒
+⃒
+
+)
+2
+
+(D)
+
+(D)
+
+(B)
+]
+
+,n2 = 1
+2
+]
+,
+
+, n5 = 1
+2
+]
+,m2 = 1
+2
+]
+,
+
+[
+
+gr
+r
+(gr
+[(cid:0)
+
+n3 = 1
+2
+n4 = 1
+2
+m1 = 1
+2
+
+[(cid:0)
+
+m3 = 1
+2
+
+[(cid:0)
+
+)
+
+2
+
+⃒
+⃒
+⃒
+
+gs
+r
+
+(cid:0)
+
+(A)
+
+)
+2
+
+⃒
+⃒
+⃒
+
+(cid:0)
+
+gs
+r
+
+]
+
+,
+
+(B)
+
+[
+
+(gr
+rgs
+r
+[(cid:0)
+
+gr
+s
+
+⃒
+⃒
+)
+)
+2
+
+(A)(cid:0) (gr
+⃒
+⃒
+(cid:0)
+⃒
+
+rgs
+r
+(cid:0)
+
+(C)
+
+⃒
+⃒
+)
+(B)
+⃒
+)
+⃒
+2
+⃒
+
+gr
+s
+
+]
+
+,
+
+(D)
+
+]
+
+,
+
+[
+
+m4 = 1
+2
+
+(gr
+
+sgs
+
+s
+
+⃒
+⃒
+)
+
+(C) + (gr
+
+sgs
+
+s
+
+]
+
+⃒
+⃒
+)
+
+(D)
+
+, m5 = 1
+2
+
+[
+(gr
+
+sgs
+
+s
+
+⃒
+⃒
+)
+
+(C) (cid:0) (gr
+
+sgs
+
+s
+
+]
+
+⃒
+⃒
+)
+
+(D)
+
+(25d)
+
+The matrices Q, R, and S respectively arise from the transformation of
+the strain components. The coefficients require only few bases to be
+calculated, and the computation is performed only once per element, see
+Appendix B.
+
+We note that the expressions in Eq. (24) include the improvements
+proposed in Ref. [8] for the MITC4 + element presented in Refs. [5,7].
+By adding the drill-membrane strain given in Eq. (21), we obtain the
+
+12 
+
+Y. Ko et al.
+
+Computers and Structures 308 (2025) 107622 
+
+Fig. 17. Scordelis-Lo shell problem (E = 4.32 × 108, ν = 0.0, R = 25.0, L = 25.0 and self-weight = 90 per unit surface area). (a) Problem description with graded
+regular mesh (8 × 8 mesh). (b) Distorted mesh pattern (4 × 4 mesh). (c) Distorted mesh applied (8 × 8 mesh).
+
+element denoted as ‘MITC4+ / D’.
+
+3. Numerical Assessments
+
+eij = ̃e
+
+m
+ij
+
++ emd
+ij
+
++ t eb1
+ij
+
++ t2eb2
+
+ij with i, j = 1, 2
+
+(26)
+
+In the above sections, we presented the elements for linear analyses.
+The formulations can directly be extended to nonlinear analyses using
+the procedures given in Ref. [4]. There is only a special consideration on
+how the total strain from the drill rotation can be measured and intro-
+duced. Without using the nonlinear terms in the strain terms, we can use
+the linear part of the strain given in Eqs. (19) and (21) but we need to
+accumulate the total drill rotation using always the instantaneous di-
+rection (VD) to obtain the total drill-strain (emd
+ij ) corresponding to the
+total deformation.
+
+We should also note that the above interpolation used for the MITC4
++ shell element might appear rather complicated when in fact it is
+reasonably straight-forward in application. However, of course, related
+research efforts may be pursued to simplify the formulation, see for
+example Ref. [36], but then also the drill degree-of-freedom needs to be
+embedded in an effective way.
+
+In this section we first discuss that the new MITC4/D and MITC4+/D
+elements pass the basic tests (including the patch tests) and then, to
+indicate the capabilities of the MITC4/D element, we give the results of
+some illustrative planar beam solutions. These studies are followed by
+the evaluation of the new MITC4/D and MITC4+/D elements in shell
+linear analyses, as advocated in refs. [1,4,5]. Finally, we give some re-
+sults of nonlinear analyses. We note that the elements require only the 2
+× 2 Gauss integration over the element surfaces.
+
+In some analyses, we compare the performance of the elements with
+the performance of the MITC4 element including incompatible modes,
+see Ref. [4], which we call the MITC4-IC element.
+
+All MITC elements presented in this paper and used in the solutions
+below have been implemented in ADINA, version 24.0 of Bentley Sys-
+tems, Inc. [21].
+
+3.1. Basic tests including the patch tests
+
+MITC/D and MITC4+/D elements pass the spatial isotropy test. The
+elements pass the zero energy mode tests, and rigid body modes are
+properly represented.
+
+13 
+
+Y. Ko et al.
+
+Computers and Structures 308 (2025) 107622 
+
+Fig. 18. Convergence curves for the Scordelis-Lo shell problem with (a) the regular and (b) distorted meshes. The bold line represents the optimal convergence rate.
+
+The patch tests are shown in Fig. 7. We consider the ‘strong form’ of
+the patch tests [5,6,22,23], i.e. we require that the calculations give the
+analytical solutions of constant and zero stresses throughout the patch
+due to the applied loading. When considering the patch tests, it is
+important that the ‘minimum boundary conditions’ are imposed to
+constrain the patch from undergoing a rigid body motion. For each test,
+the solution should then be the constant straining mode.
+
+Fig. 7 shows in detail what boundary conditions are imposed when
+including the drill degree of freedom θz at the nodes for the extension,
+bending, and shearing tests. We note that in all cases θz is left free at the
+element nodes except at the corner node B.
+
+problem solutions, using the MITC4/D and MITC4+/D shell elements
+the drill rotation is left free except at the edges with prescribed
+displacement boundary conditions. The reference solutions have been
+calculated using Reissner beam theory.
+
+First, we solve for the response of a straight slender cantilever beam
+and consider a regular mesh and a distorted mesh of elements, see Fig. 8
+[12,24,25]. The results are given in Table 1 and show that the MITC4/D
+and MITC4+/D elements perform quite well when using Mesh type 1
+also compared to the performance of the MITC4-IC element, but all el-
+ements would need to be used with a much finer mesh when employing
+Mesh type 2.
+
+It is important that this strict form of the patch tests is performed,
+and for the elements presented all tests are strictly passed. Also, the use
+of θz = 0 at the corner node C does not affect the results.
+
+Next, we solve for the response of a thick curved cantilever beam, see
+Fig. 9 [8,25,26]. The resulting displacements are given in Table 2 and
+again the MITC4/D and MITC4+/D elements perform well.
+
+3.2. Illustrative solutions of 2D planar beam problems
+
+We briefly show the in-plane performance of the MITC4/D element
+when compared to the use of the MITC4 and MITC4-IC elements. In all
+
+14 
+
+Finally, we consider the response of the thick cantilever in Fig. 10
+[12,18,22,25] and use regular and distorted meshes for the analysis. The
+results are presented in Table 3 and here too, good response predictions
+are observed using the MITC4/D and MITC4+/D elements.
+
+Y. Ko et al.
+
+Computers and Structures 308 (2025) 107622 
+
+Fig. 19. Hinged spherical shell problem (E = 68.95, ν = 0.3, R = 2540, a = b = 784.9 and t = 99.45). (a) Problem description. (b) Mesh used (3 × 3 mesh).
+
+‖u (cid:0) uh‖2
+
+s
+
+=
+
+∫
+
+Ω
+
+ΔεTΔτdΩ with Δε = ε (cid:0) εh, Δτ = τ (cid:0) τh
+
+(27)
+
+where u is the exact solution, uh is the solution of the finite element
+discretization, and ε and τ are the strain and stress vectors. This is a
+proper norm for investigating whether a finite element formulation
+satisfies the consistency and inf-sup conditions [1,27,28].
+
+Since an analytical solution is generally not available, an accurate
+finite element solution using a very fine mesh uref is used instead. Hence
+the s-norm is modified to be.
+∫
+⃦
+⃦
+
+ΔεTΔτdΩref withΔε = εref (cid:0) εh, Δτ = τref (cid:0) τh.
+
+uref (cid:0) uh
+
+(28)
+
+=
+
+⃦
+⃦2
+s
+
+Ωref
+
+To study the solution convergence of shell finite elements with
+
+decreasing thicknesses, we use the normalized relative error Eh
+
+Eh =
+
+⃦
+⃦2
+s
+
+⃦
+⃦
+
+uref (cid:0) uh
+⃦
+⃦
+⃦2
+⃦
+s
+
+uref
+
+(29)
+
+The theoretical convergence behavior, which corresponds to the optimal
+convergence, is given by
+
+Eh ≅ Chk
+
+(30)
+
+in which C is a constant independent of the shell thickness t and h is the
+element size. For 4-node shell elements, k = 2.
+
+In the testing, we use decreasing shell thicknesses and study the so-
+lution error measured in the s-norm to identify whether the discretiza-
+tion scheme gives a close to optimal performance, that is, the error is
+close to independent of the shell thickness and close to the value in Eq.
+(30). The rotational boundary conditions are either applied in the global
+system or in the local system using (α, β, γ), as indicated in the
+description of the problems.
+
+3.3.1. Cylindrical shell problem
+
+We solve the cylindrical shell problem described in Fig. 11 (a)
+[1,2,3,28]. This shell structure has a single curvature and shows two
+different asymptotic behaviors depending on the boundary conditions at
+its ends: bending-dominated behavior when both ends are free and
+membrane-dominated behavior when both ends are clamped.
+
+The loading is a smoothly varying pressure p(θ) (Fig. 11(b))
+
+p(θ) = p0cos(2θ)
+
+(31)
+
+Using symmetry, only the region ABCD in Fig. 11(a) is modeled. For the
+
+Fig. 20. Load-displacement curves for the hinged spherical shell problem.
+
+3.3. Convergence in solutions of linear shell problems
+
+As discussed previously, see Ref. [1–5], a mathematical convergence
+analysis of shell elements directed to solving general shell structures is
+out of reach. Hence numerical tests need to be performed and these tests
+should be well-designed and “all-encompassing” considering membrane
+dominated, bending-dominated and mixed shell behaviors.
+
+In the MITC4/D and MITC4+/D formulations using the drill degree
+of freedom, the “drill-membrane strain” can enhance the element
+behavior in membrane and mixed membrane/bending dominated
+conditions.
+
+The shell structural analysis problems we consider below are all-
+
+encompassing in behavior [1–5,27–29].
+
+An important point is that a proper error norm needs to be used to
+measure the convergence. We use the s-norm proposed by Hiller and
+Bathe [27].
+
+15 
+
+Y. Ko et al.
+
+Computers and Structures 308 (2025) 107622 
+
+Fig. 21. Channel section beam problem, for the short channel section beam, E = 1.0 × 107, ν = 0.333, L = 36, b1 = 6, b2 = 2, t1 = t2 = 0.05. For the long channel
+section beam, E = 21000, ν = 0.3, L = 900, b1 = 30, b2 = 10, t1 = 1 and t2 = 1.6. (a) Problem description. (b) Mesh used for short channel problem case.
+
+Fig. 22. Load-displacement curves for the short channel section beam problem.
+
+Fig. 23. Load-displacement curves for the long channel section beam problem.
+
+bending-dominated and membrane-dominated cases, the boundary
+conditions are ux = α = γ = 0 along BC, uy = β = γ = 0 along DC, and
+uz = β = γ = 0 along AB. In addition, all degrees of freedom along AD
+are left free for the free boundary condition case and set to zero for the
+clamped boundary condition case.
+
+√
+
+Considering the clamped boundary condition, the regular mesh is
+̅̅
+graded with a boundary layer of width 2
+, see Refs. [1,3] for details. In
+t
+the free boundary condition, the graded mesh with a boundary layer of
+width 0.5
+is considered [1]. We also perform the convergence studies
+with the distorted meshes shown in Fig. 11(c), where each edge is dis-
+cretized in the following ratio: L1:L2:L3: …… LN = 1: 2: 3: …… N for N ×
+N element mesh (Fig. 14 (b)).
+
+√
+̅̅
+t
+
+The solutions are obtained with N × N element meshes (N = 4, 8, 16,
+32 and 64). The element size is h = L/N. The reference solutions are
+calculated using a 72 × 72 element undistorted mesh of MITC9 shell
+elements.
+
+Figs. 12 and 13 give the convergence curves in the solution of the
+cylindrical shell problems with clamped and free boundary conditions,
+respectively. All elements perform well in the clamped case using the
+regular or distorted meshes. However, while all elements also perform
+
+16 
+
+well in the problem free case with the regular mesh, when using the
+distorted mesh, only the MITC4+/D shell element shows a close to
+optimal convergence behavior.
+
+3.3.2. Hyperboloid shell problems
+
+An important problem to solve is the hyperboloid shell problem
+shown in Fig. 14 (a) [1,5,27,31] because the structure has two and
+opposing curvatures. The mid-surface of the shell structure is given by
+
+x2 + z2 = 1 + y2; y ∈ [ (cid:0) 1, 1 ].
+
+(32)
+
+We apply the pressure loading used already above, given in Eq. (31). The
+structure is bending-dominated when free along the boundary AB and
+membrane-dominated when fixed along AB.
+
+Using again symmetry, one-eighth of the structure corresponding to
+the shaded region ABCD in Fig. 14(a) is modeled for the analysis. We test
+the elements in the bending-dominated case with the boundary condi-
+tions uz = β = γ = 0 along BC, ux = β = γ = 0 along AD, and uy = α =
+γ = 0 along DC and all degrees free along AB. For the membrane-
+dominated case, the same boundary conditions are used along the
+symmetry lines, but the clamped boundary condition is imposed using
+
+Y. Ko et al.
+
+Computers and Structures 308 (2025) 107622 
+
+Fig. 24. Deformed shapes for the short channel-section beam when using the
+MITC4 /D element for the solution.
+
+Fig. 26. An ad-hoc structure of two plates modeled with a very coarse ideali-
+zation (E = 2.1 × 105, ν = 0.0, L = 20, H = 2 and t = 0.1). The plates are each
+subjected to the end-moment M, are connected by five beam elements (a = b =
+0.1, E = 2.1 × 108, G = 1.05 × 108) and are also subjected to the corner tip
+loads P as shown (magnitude of P = MH/2). Since the plates undergo large
+displacements, see Fig. 27, we need to use shell elements to model the plates.
+
+LN = 1: 2: 3: …… N , see Fig. 14(d).
+
+Fig. 15 Shows the convergence of the solutions considering the
+clamped hyperboloid shell problem. All elements perform well in both
+mesh configurations
+
+Fig. 16 gives the results considering the free hyperboloid shell
+problem. When the non-distorted mesh is used, all elements perform
+well. However, using the distorted mesh, only the MITC4+/D shows
+close to optimal behavior.
+
+3.3.3. A shell problem with mixed membrane-bending actions
+
+We consider the Scordelis-Lo shell shown in Fig. 17(a), see Refs.
+[6,8,19,29,30]. The shell is supported by rigid diaphragms at the ends
+and is free along the longitudinal edges which induces mixed
+membrane-bending behavior in the shell interior. This behavior corre-
+sponds in essence to a superposition of the membrane- and bending-
+dominant behaviors seen in the elliptical shell problems solved above.
+Using symmetry, only the shaded region ABCD in Fig. 17(a) was
+modeled for analysis. The following boundary conditions are employed:
+ux = β = γ = 0 along DC, the condition of the rigid-diaphragm ux = uz =
+β = 0 along AD and the symmetry conditions uy = α = γ = 0 along BC.
+As load, self-weight in the uz(cid:0) direction was applied.
+
+The solutions are calculated using N × N element meshes, with the
+distorted mesh patterns shown in Fig. 17(b) and 17(c). The use of the
+distorted meshes substantially tests, in particular, the performance of
+the shell elements. A non-distorted mesh of 72 × 72 MITC9 shell
+
+Fig. 25. Deformations of the long channel-section beam using the MITC4 / D
+element for the solution.
+
+ux = uy = uz = α = β = γ = 0 along AB.
+
+The solutions are calculated using N × N element meshes (N = 4, 8,
+16, 32 and 64). The element size is h = L/N. A 72 × 72 element mesh of
+undistorted MITC9 shell elements is used to obtain the reference
+solutions.
+
+We use again a regular mesh and a distorted mesh. With the regular
+√
+̅̅
+mesh, we grade the mesh of width 0.5
+for the free boundary condition
+t
+and 6
+for the clamped boundary condition [1,27,31]. Using the dis-
+torted mesh, we apply the distortion pattern in Fig. 14(c), where for the
+N × N element mesh, each edge is discretized in the ratio L1:L2:L3: ……
+
+√
+̅̅
+t
+
+17 
+
+Y. Ko et al.
+
+Computers and Structures 308 (2025) 107622 
+
+Fig. 27. Load-displacement curves for the ad-hoc problems of Fig. 26. (a) Load case in Fig. 26(a). (b) Load case in Fig. 26(b).
+
+elements was used to obtain the reference solution.
+
+Fig. 18 shows the convergence graphs of the elements used. The
+MITC4+/D element converges significantly better than the MITC4
+element, and indeed also better than the shell elements earlier presented
+in Refs. [5,7,8].
+
+3.4. Geometric nonlinear analyses
+
+The purpose of this section is to illustrate the use of the elements in
+nonlinear analyses. In addition, we also illustrate how the elements can
+be used when intersecting shells need be modeled (like when analyzing a
+channel).
+
+restrained, and a very coarse mesh of 3 × 3 elements was used, see
+Fig. 19(b).
+
+We required the analysis to find the load–displacement path and
+used the arc-length method or ‘Load-Displacement Control’ in ADINA
+[32]. The solutions were calculated until the downward displacement at
+point A exceeded the threshold value of 300. The analytical reference
+solution was furnished by Leichester [19].
+
+Fig. 20 Shows the calculated load–displacement curves using the
+elements. It is remarkable that the solutions using all elements in this
+coarse mesh predict a response reasonably close to the reference
+solution
+
+For the problems solved, the response predictions using the MITC4/D
+
+3.4.2. Channel section beam problems
+
+and MITC4+/D shell elements are almost identical.
+
+3.4.1. Hinged spherical shell problem
+
+We consider the hinged spherical shell problem in Fig. 19 [4,19].
+Utilizing symmetry, only one-quarter of the structure corresponding to
+the shaded region ABCD in Fig. 19(a) is modeled for the analysis. The
+symmetry boundary conditions are imposed as ux = θy = θz = 0 along
+AB and uy = θx = θz = 0 along AD. The edges are simply supported with
+ux = uy = uz = 0 along BC and DC. The drill degrees of freedom were not
+
+We consider and solve the channel section beam problems referred to
+in Fig. 21 [33,34]. The beam can be either short or long. These cases are
+known to exhibit very different behaviors. The response of a short
+channel section beam is dominated by a local behavior (local buckling),
+while long channel section beams are dominated by a global behavior.
+Fig. 22 presents the load–displacement curve of a short channel
+section beam compared to the solutions in Refs. [33,34] and Fig. 23
+shows the load–displacement curve of a long channel section beam
+compared to the solutions in these references. The solutions obtained
+
+18 
+
+Y. Ko et al.
+
+Computers and Structures 308 (2025) 107622 
+
+using the MITC4/D element discretizations follow closely the earlier
+published results (and in Fig. 22 closer than when using the MITC4 shell
+element). The deformed shapes given in Fig. 24 and Fig. 25 show the
+presence of local and global buckling, as also displayed in Refs [33,34].
+
+3.4.3. An ad hoc problem of shell to beam connection
+
+merely to show the usefulness of the shell elements when beams need
+to be connected, see Fig. 26. Two parallel plates are modeled with
+meshes of 5 × 2 shell elements. Beam elements using all 6 degrees of
+freedom are connecting the plates along their centerlines. We use shell
+elements for the plate structures because large displacements are ex-
+pected in the response. However, the finite element idealizations are
+rather coarse for this simple demonstration and we cannot expect high
+accuracy in the solutions.
+
+We compare the response obtained using the MITC4/D and MITC4-
+IC elements where the MITC4-IC element formulation does not include
+the drill degrees of freedom and corresponding strain enhancements.
+Fig. 27 presents the load–displacement curves of the finite element
+models. Our new MITC4/D element with the drill degrees of freedom
+shows the full large displacement response without difficulties, whereas
+the model using the MITC4-IC element no longer converges at a rela-
+tively small load. In analyses only requiring five degrees of freedom at
+the nodes, the MITC4-IC element frequently performs better than the
+MITC4 element. However, in this case requiring six degrees of freedom
+at the nodes, as expected, the incompatible modes do not help in the
+response prediction.
+
+4. Concluding remarks
+
+We presented a further development of the quadrilateral MITC shell
+elements to include the drill rotational degree of freedom at the nodes.
+This solution feature can be important in the analysis of practical en-
+gineering problems.
+
+The MITC4/D element includes the drill rotational degree of freedom
+in the widely used MITC4 element. A further development is the
+MITC4+/D shell element. Both element developments include the dril-
+ling stiffness using the fundamental scheme proposed by DJ Allman
+[10,11]. An important point, however,
+is that the MITC4/D and
+MITC4+/D elements are in general not of flat geometry and the bending
+
+Appendix A. Insight into the strain assumptions in Eq. (19)
+
+and membrane actions are fully coupled in their interiors. This interior
+coupling is important in general shell analyses [1].
+
+The new elements pass all basic tests and provide stable solutions
+when used in the analysis of intersecting shells and when connected to
+beam elements. The elements employ all six standard degrees of freedom
+at the nodes, like used with beam elements.
+
+While the use of the drilling degree of freedom provides in linear
+analysis an improvement in modeling features, the use of this degree of
+freedom can also be important in geometrically nonlinear analyses. We
+demonstrated the use of the new MITC4/D element in some nonlinear
+solutions, noting that the use of the MITC4+/D element gives in these
+analyses almost identical response predictions.
+
+Considering future research, it would be valuable to study the per-
+formance of the MITC elements when used as “overlapping elements”, in
+particular, in the AMORE scheme, see Refs. [5,16,35]. Also, it may be
+effective to use the drill rotational degree of freedom only at certain
+nodes of the shell elements, namely only at those that connect shells to
+beams or at intersecting shells.
+
+CRediT authorship contribution statement
+
+Yeongbin Ko: Conceptualization, Data curation, Formal analysis,
+Investigation, Methodology, Project administration, Resources, Super-
+vision, Validation, Writing – original draft, Writing – review & editing.
+Klaus-Jürgen Bathe: Conceptualization, Methodology, Supervision,
+Validation, Writing – review & editing. Xinwei Zhang: Investigation,
+Methodology, Software.
+
+Declaration of competing interest
+
+The authors declare that they have no known competing financial
+interests or personal relationships that could have appeared to influence
+the work reported in this paper.
+
+Acknowledgment
+
+We thank Dr. Jan Walczak of Bentley Systems, Inc. for sharing
+knowledge and insight on the analysis of shell problems in the industry.
+
+We obtain further insight into the strain field of Eq. (19) by considering the derivation using the displacement-based strain and the MITC technique.
+Consider the drill-membrane strain
+
+1
+2
+
+(1 + s)err(θ)|
+
+s=1
+
+(1 + r)ess(θ)|
+
+r=1
+
+]
+
++ 1
+2
+
++ 1
+2
+
+(1 (cid:0) s)err(θ)|
+
+s=(cid:0) 1
+
+]
+
+(1 (cid:0) r)ess(θ)|
+
+r=(cid:0) 1
+
+̃err(θ) = j0
+j
+
+̃ess(θ) = j0
+j
+
+̃ers(θ) = 1
+2
+
+[
+
+[
+
+j0
+j
+
+1
+2
+[
+
+(1 + s)ers(θ)|
+
+s=1
+
++ 1
+2
+
+(1 (cid:0) s)ers(θ)|
+
+s=(cid:0) 1
+
++ 1
+2
+
+(1 + r)ers(θ)|
+
+r=1
+
++ 1
+2
+
+(1 (cid:0) r)ers(θ)|
+
+r=(cid:0) 1
+
+]
+
+(A.1)
+
+1
+2
+
+with s = 1, s = (cid:0) 1, r = 1 and r = (cid:0) 1 corresponding to the ‘location of edges’ in Fig. 4(b), and 1
+2
+j is the volume ratio of the element domain.
+
+functions at tied edges and j0
+
+(1 + s), 1
+2
+
+(1 (cid:0) s), 1
+2
+
+(1 + r) and 1
+2
+
+(1 (cid:0) r) are respective
+
+We can show the equivalence of the strain in Eq. (18) (and Eq. (19d)) to the strain expressions in Eq. (A.1). The strain in Eq. (18) using the
+
+interpolation in Eq. (11) is expanded as
+
+19 
+
+Y. Ko et al.
+
+Computers and Structures 308 (2025) 107622 
+
+) + j0
+j
+
+8
+̃
+m,rc8
+h
+
+r
+
+((cid:0) θD
+3
+
++ θD
+4
+
+)
+
+7
+̃
+m,sc7
+h
+
+s
+
+(cid:0)
+
+)
+
+θD
+2
+
+(cid:0) θD
+3
+
+6
+̃
+m,rc6
+h
+
+r
+
+5
+̃
+m,sc5
+h
+
+s
+
+((cid:0) θD
+1
+
++ θD
+2
+
+(cid:0)
+
+)
+
+θD
+4
+
+(cid:0) θD
+1
+
+6
+̃
+m,rc6
+h
+
+s
+
+(cid:0)
+
+θD
+1
+
+(cid:0) θD
+2
+
+j0
+j
+
++ j0
+j
++ 1
+2
+
+)
+
+̃e
+
+md
+rr
+
+̃e
+
+md
+ss
+
+̃e
+
+md
+rs
+
+= j0
+j
+= j0
+j
+= 1
+2
++ ̃e
+
+2̃e
+
+md
+rs
+
+md
+rr
+
++ ̃e
+
+md
+ss
+
+= 0
+
+(cid:0)
+
+8
+̃
+m,rc8
+h
+
+s
+
+j0
+j
+
+θD
+3
+
+(cid:0) θD
+4
+
+)
+
++ 1
+2
+
+j0
+j
+
+(cid:0)
+
+5
+̃
+m,sc5
+h
+
+r
+
+θD
+1
+
+(cid:0) θD
+4
+
+)
+
++ 1
+2
+
+j0
+j
+
+(cid:0)
+
+7
+̃
+m,sc7
+h
+
+r
+
+)
+
+(cid:0) θD
+2
+
++ θD
+3
+
+and
+
+̃e
+
+md
+rr
+
+= ̃e md
+
+rr
+
+̃e
+
+md
+ss
+
+= ̃e md
+
+ss
+
+⃒
+⃒
+lin
+⃒
+⃒
+lin
+
+⋅r + ̃e md
+
+rr
+
+⋅s + ̃e md
+
+ss
+
+⃒
+⃒
+
+⃒
+⃒
+
+⋅rs
+
+bilin
+
+⋅rs
+
+bilin
+
+̃e
+
+md
+rs
+
+= (cid:0) 1
+̃e md
+2
+
+rr
+
+⃒
+⃒
+lin
+
+⋅r (cid:0) 1
+̃e md
+2
+
+ss
+
+⃒
+⃒
+
+⋅s (cid:0) 1
+2
+
+lin
+
+(
+̃e md
+
+rr
+
+⃒
+⃒
+
++ ̃e md
+
+ss
+
+bilin
+
+⃒
+⃒
+
+bilin
+
+)
+
+rs
+
+̃e md
+
+rr
+
+̃e md
+
+ss
+
+⃒
+⃒
+lin
+
+⃒
+⃒
+lin
+
+= j0
+j
+
+= j0
+j
+
+[
+
+[
+
+1
+2
+
+1
+2
+
+c6
+r
+
+(θD
+1
+
+(cid:0) θD
+2
+
+) + c8
+r
+
+(θD
+3
+
+(cid:0) θD
+4
+
+]
+)
+
+c5
+s
+
+((cid:0) θD
+4
+
++ θD
+1
+
+) + c7
+s
+
+((cid:0) θD
+2
+
++ θD
+3
+
+]
+)
+
+⃒
+⃒
+bilin
+
+̃e md
+
+rr
+
+⃒
+⃒
+bilin
+
+̃e md
+
+ss
+
+= j0
+j
+
+= j0
+j
+
+[
+c6
+r
+
+[
+c5
+s
+
+1
+2
+
+1
+2
+
+(θD
+1
+
+(cid:0) θD
+2
+
+) + c8
+r
+
+((cid:0) θD
+3
+
++ θD
+4
+
+((cid:0) θD
+4
+
++ θD
+1
+
+) + c7
+s
+
+(θD
+2
+
+(cid:0) θD
+3
+
+]
+)
+
+]
+)
+
+(A.2)
+
+(A.3)
+
+where we note that compared with the standard displacement-based membrane strain (em
+additional terms in r and s, respectively.
+
+rr and em
+
+ss) in Eq. (23a), the new strain terms (̃emd
+
+rr and ̃emd
+
+ss ) add
+
+The strain in Eq. (A.1) is now expanded as follows. Using Eqs. (10), (17a) and substituting in Eq. (A.1), we obtain
+
+̃err(θ) = j0
+j
+
+[1
+2
+
+(1 + s)hI,r
+
+⃒
+⃒
+
+s=1
+
++ 1
+2
+
+(1 (cid:0) s)hI,r
+
+⃒
+⃒
+
+](θD
+
+i+1
+
+(cid:0) θD
+i
+
+s=(cid:0) 1
+
+)xI
+
+m⋅((cid:0) xI
+
+r
+
+× VD)
+
+̃ess(θ) = (cid:0)
+
+j0
+j
+
+[1
+2
+
+(1 + r)hI,s
+
+⃒
+⃒
+
+r=1
+
++ 1
+2
+
+(1 (cid:0) r)hI,s
+
+⃒
+⃒
+r=(cid:0) 1
+
+](θD
+
+i+1
+
+(cid:0) θD
+i
+
+)xI
+
+m⋅(xI
+
+s
+
+× VD)
+
+̃ers(θ) = (cid:0)
+
+⃒
+⃒
+
+j0
+j
+
+[1
+4
+
+hI,r
+
+s=1
+
+⃒
+⃒
+
++ 1
+4
+
+hI,r
+
+](θD
+
+i+1
+
+(cid:0) θD
+i
+
+s=(cid:0) 1
+
+)xI
+
+m⋅(xI
+
+s
+
+× VD) + j0
+j
+
+[1
+4
+
+hI,s
+
+⃒
+⃒
+r=1
+
++ 1
+4
+
+hI,s
+
+⃒
+⃒
+⃒
+⃒
+r=(cid:0) 1
+
+](θD
+
+i+1
+
+(cid:0) θD
+i
+
+)xI
+
+m⋅((cid:0) xI
+
+r
+
+× VD)
+
+(A.4)
+
+which gives the strain Eq. (A.1) at the edges I. Then using Eq. (19c) we have
+
+̃err(θ) = j0
+j
+
+[ 0 ((cid:0) r)(1 + s) 0 ((cid:0) r)(1 (cid:0)
+
+s) ]
+
+⎡
+
+⎢
+⎢
+⎢
+⎢
+⎢
+⎣
+
+⎤
+
+⎥
+⎥
+⎥
+⎥
+⎥
+⎦
+
+c5
+r
+c6
+r
+c7
+r
+c8
+r
+
+(θD
+1
+(θD
+2
+(θD
+3
+(θD
+4
+
+(cid:0) θD
+4
+(cid:0) θD
+1
+(cid:0) θD
+2
+(cid:0) θD
+3
+
+)
+
+)
+
+)
+
+)
+
+̃ess(θ) = (cid:0)
+
+j0
+j
+
+[ ((cid:0) s)(1 + r) 0 ((cid:0) s)(1 (cid:0) r) 0 ]
+
+⎡
+
+⎢
+⎢
+⎢
+⎢
+⎢
+⎣
+
+c5
+s
+c6
+s
+c7
+s
+c8
+s
+
+(θD
+1
+(θD
+2
+(θD
+3
+(θD
+4
+
+(cid:0) θD
+4
+(cid:0) θD
+1
+(cid:0) θD
+2
+(cid:0) θD
+3
+
+)
+
+)
+
+)
+
+)
+
+̃ers(θ) = (cid:0) 1
+2
+
+[ 0 ((cid:0) r)(1 + s) 0 ((cid:0) r)(1 (cid:0)
+
+s) ]
+
+⎡
+
+⎢
+⎢
+⎢
+⎢
+⎢
+⎣
+
+c5
+s
+c6
+s
+c7
+s
+c8
+s
+
+(θD
+1
+(θD
+2
+(θD
+3
+(θD
+4
+
+(cid:0) θD
+4
+(cid:0) θD
+1
+(cid:0) θD
+2
+(cid:0) θD
+3
+
+)
+)
+
+)
+
+)
+
+⎤
+
+⎥
+⎥
+⎥
+⎥
+⎥
+⎦
+
+⎤
+
+⎥
+⎥
+⎥
+⎥
+⎥
+⎦
+
++ 1
+2
+
+[ ((cid:0) s)(1 + r) 0 ((cid:0) s)(1 (cid:0) r) 0 ]
+
+⎡
+
+⎢
+⎢
+⎢
+⎢
+⎢
+⎣
+
+c5
+r
+c6
+r
+c7
+r
+c8
+r
+
+(θD
+1
+(θD
+2
+(θD
+3
+(θD
+4
+
+(cid:0) θD
+4
+(cid:0) θD
+1
+(cid:0) θD
+2
+(cid:0) θD
+3
+
+)
+)
+
+)
+
+)
+
+⎤
+
+⎥
+⎥
+⎥
+⎥
+⎥
+⎦
+
+(A.5)
+
+Therefore, ̃eij(θ) = ̃emd
+ij
+
+(θ), which reveals the physical meaning of Eq. (11), namely that of tying strains at the element edges.
+
+20 
+
+Y. Ko et al.
+
+Computers and Structures 308 (2025) 107622 
+
+Appendix B. Computation of coefficients in Eq. (24)
+
+From the definition of the coefficients gi
+
+= xr⋅gr|
+
+(A)
+
+√ ,0)gs
+
+(0, 1̅̅
+3
+
+r
+
+⃒
+⃒
+
+(A)
+
+= xr⋅gs|
+
+⃒
+⃒
+
+(B)
+
+√ ,0)gr
+
+(0, 1̅̅
+3
+
+r
+
+j considering Fig. 6, we have
+
+= xr⋅gr|
+
+√ ,0)gs
+
+r
+
+(0,(cid:0) 1̅̅
+3
+
+= xr⋅gs|
+
+(B)
+
+(0,(cid:0) 1̅̅
+√ ,0)
+3
+
+⃒
+⃒
+
+= xs⋅gr|
+
+(C)
+
+( 1̅̅
+√ ,0,0)
+3
+
+⃒
+⃒
+
+, gs
+s
+
+(C)
+
+= xs⋅gs|
+
+( 1̅̅
+√ ,0,0)
+3
+
+⃒
+⃒
+
+, gr
+s
+
+(D)
+
+= xs⋅gr|
+
+((cid:0) 1̅̅
+√ ,0,0)
+3
+
+⃒
+⃒
+(D)
+
+, gs
+s
+
+= xs⋅gs|
+
+.
+
+((cid:0) 1̅̅
+√ ,0,0)
+3
+
+⃒
+⃒
+
+⃒
+⃒
+
+gr
+r
+
+gr
+s
+
+Using Eq. (4b), and δij = gr
+= 1 (cid:0)
+xr⋅gr|
+
+√ xd⋅gr(0, 1̅̅
+1̅̅
+3
+
+|(r,s,0)⋅gr
+(r,s,0)
+√ , 0), xr⋅gs|
+3
+
+(0, 1̅̅
+√ ,0)
+3
+
+⃒
+⃒
+⃒
+
+, we obtain
+
+(0, 1̅̅
+√ ,0)
+3
+
+= (cid:0)
+
+√ xd⋅gs(0, 1̅̅
+1̅̅
+3
+
+√ , 0) = (cid:0)
+3
+
+cs̅̅
+√ ,
+3
+
+xs⋅gr|
+
+( 1̅̅
+√ ,0,0)
+3
+
+√ xd⋅gr( 1̅̅̅
+= (cid:0) 1̅̅̅
+3
+3
+
+√ , 0, 0) = (cid:0)
+
+cr̅̅̅
+√ , xs⋅gs|
+3
+
+( 1̅̅
+√ ,0,0)
+3
+
+√ xd⋅gs( 1̅̅̅
+= 1 (cid:0) 1̅̅̅
+3
+3
+
+√ , 0, 0),
+
+(B.1)
+
+(B.2)
+
+where we used that gr(a, 0, 0) = gr(0, 0, 0) = mr and gs(0, a, 0) = gs(0, 0, 0) = ms for any a, and the coefficients cr = xd⋅gr|(r,s,0) = xd⋅mr, cs = xd⋅
+gs|(r,s,0) = xd⋅ms in Eq. (24c).
+
+Hence, only the following base vectors (and their conjugates) are required to determine all coefficients in Eq. (24)
+xr, xs, xd, gr(0, 1̅̅
+
+√ , 0), gs( 1̅̅
+1̅̅
+√ , 0, 0),gs((cid:0)
+3
+3
+
+√ , 0), gr(0, (cid:0)
+3
+
+1̅̅
+√ , 0, 0)
+3
+
+Data availability
+
+Data will be made available on request.
+
+References
+
+[1] Chapelle D, Bathe KJ. The finite element analysis of shells - fundamentals. 2nd
+
+edition. Berlin: Springer; 2003. 2011.
+
+[2] Chapelle D, Bathe KJ. Fundamental considerations for the finite element analysis of
+
+shell structures. Comput Struct 1998;66(1). 19-36,711-2.
+
+[3] Bathe KJ, Iosilevich A, Chapelle D. An evaluation of the MITC shell elements.
+
+Comput Struct 2000;75(1):1–30.
+
+[4] Bathe KJ. Finite element procedures. Prentice Hall; 1996, 2nd ed. K.J. Bathe,
+
+Watertown, MA; 2014 and Higher Education Press, China; 2016.
+[5] Bathe KJ. Finite element procedures – en plus. Springer Verlag; 2025.
+[6] Dvorkin EN, Bathe KJ. A continuum mechanics based four-node shell element for
+
+general non-linear analysis. Engineering Comput 1984;1(1):77–88.
+
+[7] Ko Y, Lee PS, Bathe KJ. A new MITC4+ shell element. Comput Struct 2017;182:
+
+404–18.
+
+[8] Ko Y, Lee PS, Bathe KJ. A new 4-node MITC element for analysis of two-
+
+dimensional solids and its formulation in a shell element. Comput Struct 2017;192:
+34–49.
+
+[9] Ko Y, Lee PS, Bathe KJ. The MITC4+ shell element in geometric nonlinear analysis.
+
+Comput Struct 2017;185:1–14.
+
+[10] Allman DJ. A compatible triangular element including vertex rotations for plane
+
+elasticity analysis. Comput Struct 1984;19(1–2):1–8.
+
+[11] Allman DJ. A quadrilateral finite element including vertex rotations for plane
+
+elasticity analysis. Inter J Numer Meth Engrg 1988;26(3):717–30.
+
+[12] MacNeal RH, Harder RL. A refined four-noded membrane element with rotational
+
+degrees of freedom. Comput Struct 1988;28(1):75–84.
+
+[13] Hughes TJR, Brezzi F. On drilling degrees of freedom. Comput Meth Appl Mech
+
+Engrg 1989;72(1):105–21.
+
+[14] Ibrahimbegovic A, Wilson EL. A unified formulation for triangular and
+
+quadrilateral flat shell finite elements with six nodal degrees of freedom. Comm
+Appl Numer Meth. 1991;7(1):1–9.
+
+[15] Wisniewski K, Turska E. Enhanced Allman quadrilateral for finite drilling rotations.
+
+Comput Meth Appl Mech Engrg 2006;195(44–47):6086–109.
+
+[16] Lee S, Bathe KJ. An enhancement of overlapping finite elements. Comput Struct
+
+2022;260:106704.
+
+[17] Lee S, Bathe KJ. Additional overlapping finite elements–The pyramid and prism
+
+elements. Comput Struct 2022;268:106813.
+
+[18] Cook RD. On the Allman triangle and a related quadrilateral element. Comput
+
+Struct 1986;22(6):1065–7.
+
+[19] Bathe KJ, Ho LW. A simple and effective element for analysis of general shell
+
+structures. Comput Struct 1981;13(5–6):673–81.
+
+[20] Lee PS, Bathe KJ. Insight into finite element shell discretizations by use of the
+
+“basic shell mathematical model”. Comput Struct 2005;83(1):69–90.
+[21] Theory and Modeling Guide Volume 1:ADINA, Bentley Systems, Inc., ADINA
+
+24.00.01, Section 2.7.3, 2024.
+
+[22] Ibrahimbegovic A. A novel membrane finite element with an enhanced
+displacement interpolation. Finit Elem Anal Des 1990;7(2):167–79.
+
+[23] Irons BM, Razzaque A. Experience with the patch test for convergence of finite
+elements. In: The mathematical foundations of the finite element method with
+applications to partial differential equations. Academic Press; 1972. p. 557–87.
+
+[24] MacNeal RH, Harder RL. A proposed standard set of problems to test finite element
+
+accuracy. Finit Elem Anal Des 1985;1(1):3–20.
+
+[25] Chen XM, Cen S, Long YQ, Yao ZH. Membrane elements insensitive to distortion
+using the quadrilateral area coordinate method. Comput Struct 2004;82(1):35–54.
+
+[26] Zouari W, Hammadi F, Ayad R. Quadrilateral membrane finite elements with
+
+rotational DOFs for the analysis of geometrically linear and nonlinear plane
+problems. Comput Struct 2016;173:139–49.
+
+[27] Hiller JF, Bathe KJ. Measuring convergence of mixed finite element discretizations:
+
+an application to shell structures. Comput Struct 2003;81(8):639–54.
+
+[28] Bathe KJ, Iosilevich A, Chapelle D. An inf-sup test for shell finite elements. Comput
+
+Struct 2000;75(5):439–56.
+
+[29] Lee PS, Bathe KJ. On the asymptotic behavior of shell structures and the evaluation
+
+in finite element solutions. Comput Struct 2002;80(3):235–55.
+
+[30] Ko Y, Lee Y, Lee PS, Bathe KJ. Performance of the MITC3+ and MITC4+ shell
+
+elements in widely-used benchmark problems. Comput Struct 2017;193:187–206.
+[31] Bathe KJ, Lee PS, Hiller JF. Towards improving the MITC9 shell element. Comput
+
+Struct 2003;81(8):477–89.
+
+[32] Bathe KJ, Dvorkin EN. On the automatic solution of nonlinear finite element
+
+equations. Comput Struct 1983;17(5–6):871–9.
+
+[33] Wisniewski K. Finite rotation shells. basic equations and finite elements for
+
+Reissner kinematics. CIMNE-Springer; 2010.
+
+[34] Chr´oscielewski J, Makowski J, Pietraszkiewicz W. Statics and dynamics of multi-
+
+segmented shells: nonlinear theory and finite element method. Warsaw:
+Wydawnictwo IPPT PAN; 2004.
+
+[35] Bathe KJ. The AMORE paradigm for finite element analysis. Adv Eng Softw 2019;
+
+130:1–13.
+
+[36] Choi HG, Lee PS. The simplified MITC4+ shell element and its performance in
+
+linear and nonlinear analysis. Comput Struct 2024;290:107177.
+
+21 
+
+

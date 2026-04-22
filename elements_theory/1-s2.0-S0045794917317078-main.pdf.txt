@@ -1,0 +1,5153 @@
+Computers and Structures 204 (2018) 48–64
+
+Contents lists available at ScienceDirect
+
+Computers and Structures
+
+j o u r n a l h o m e p a g e : w w w . e l s e v i e r . c o m / l o c a t e / c o m p s t r u c
+
+A comparative formulation of DKMQ, DSQ and MITC4 quadrilateral plate
+elements with new numerical results based on s-norm tests
+Irwan Katili a,⇑
+
+, Jean-Louis Batoz b, Imam Jauhari Maknun a, Pascal Lardeur b
+
+a Universitas Indonesia, Civil Engineering Department, Depok 16424, Indonesia
+b Sorbonne University, Université de Technologie de Compiègne, UMR 6253, Roberval, 60205 Compiègne, France
+
+a r t i c l e
+
+i n f o
+
+a b s t r a c t
+
+Article history:
+Received 8 December 2017
+Accepted 9 April 2018
+Available online 7 May 2018
+
+Keywords:
+Plate bending elements
+DKQ
+MITC4
+DSQ
+DKMQ
+s-norm
+
+1. Introduction
+
+This paper presents a review of the formulation of four plate bending quadrilateral elements and new
+advanced validation test results. The four elements are DKQ, MITC4, DSQ and DKMQ published between
+1982 and 1993. The ﬁrst is valid for thin plates and the three others include transverse shear effects. All
+elements have 4 nodes and 3 dof per node (one displacement and two rotations) and give good results in
+classical benchmark and patch tests for thin plates. The paper presents the respective formulation of the
+four elements in a uniﬁed and comparative manner, starting from the formulation of the classical DKQ
+element published in 1982. The paper includes new convergence behavior analysis using the s-norm
+tests. The numerical results using DKMQ, DSQ and MITC4 elements show the optimal and uniform con-
+vergence for thin and thick plates with a slight advantage for DKMQ due to quadratic terms for the rota-
+tion variables.
+
+(cid:1) 2018 Elsevier Ltd. All rights reserved.
+
+The phenomenon of shear locking in plate bending ﬁnite ele-
+ments based on Reissner-Mindlin theory [1,2] has been the subject
+of a large number of theses and papers during the last 45 years. To
+overcome this numerical phenomenon, reduced and selective inte-
+gration [3–5] in displacement formulations have been used with
+incomplete success considering slenderness ratio, element distor-
+tion,
+individual element test, etc. Mixed formulation [6] and
+Assumed Natural Strain (ANS) proposed by Hughes and Tezduyar
+[7] and MacNeal [8] have been better alternatives to overcome
+the problem of shear locking. ANS has been found a very effective
+method used by many authors to develop new ﬁnite elements
+based on Reissner-Mindlin plate theory. One of the simplest and
+effective ANS formulation to obtain a 4 nodes, three degrees of
+freedom (dof) per node, plate bending element with Transverse
+Shear (TS) effects included is due to Bathe and Dvorkin [9,10]
+who proposed the effective nowadays well-known MITC4 [11] ele-
+ment (Mixed Interpolation of Tensorial Components).
+
+Another approach developed by Batoz and former students was
+to include transverse shear effects in the element DKQ (Discrete
+Kirchhoff Quadrilateral). DKQ, published in 1982 [12], overcomes
+the C1 continuity requirement when considering the Kirchhoff thin
+plate theory by using the Reissner-Mindlin theory but neglecting
+
+⇑ Corresponding author.
+
+E-mail address: irwan.katili@eng.ui.ac.id (I. Katili).
+
+https://doi.org/10.1016/j.compstruc.2018.04.001
+0045-7949/(cid:1) 2018 Elsevier Ltd. All rights reserved.
+
+TS energy and imposing discrete Kirchhoff constraints on edges
+(see also [13] for the triangular element DKT). Rotation compo-
+nents are based on incomplete quadratic polynomials. Extended
+validation based on individual element tests, patch tests, conver-
+gence tests have been performed and the DKQ element is included
+in the library of several softwares. Hence based on the DKQ ele-
+ment Batoz and Lardeur proposed the quadrilateral element called
+DSQ [14,15] (Discrete Shear Quadrilateral) still with 3 dof per node,
+where TS effects have been considered using element equilibrium
+equations and shear constitutive equations to deﬁne constant
+shear strains along the four edges of the element (see also
+[16,17] for the triangular version DST). DST and DSQ elements give
+overall good behavior for the analysis of isotropic and composites
+thin to thick plates but the transverse shear contribution is a bit
+complicated and patch tests for very thick plates were not fully
+satisﬁed.
+
+Sharing several aspects of the formulation of DKQ and DSQ,
+Katili
+[18] proposed in 1993 the element DKMQ (Discrete
+Kirchoff-Mindlin Quadrilateral) using simpliﬁed assumed trans-
+verse shear strains along the element sides (see also the formula-
+tion of the companion triangular element DKMT [19]. Both DKMT
+and DKMQ are valid for thin to thick plates, with good convergence
+properties and full satisfaction of the patch tests for constant
+curvature strain ﬁelds. Elements DST, DKMT, DSQ and DKMQ are
+free of shear locking by element constructions as they reduce
+respectively to DKT and DKQ for thin plates. Their difference relies
+in the representation of the transverse shear strain energy. The
+
+I. Katili et al. / Computers and Structures 204 (2018) 48–64
+
+49
+
+application of the DKMQ element in composite structures, stochas-
+tic and buckling analysis is presented in [20–22]. The extension of
+DKMQ plate element to a DKMQ24 shell element using Naghdi-
+Reissner-Mindlin shell theory taking into account warping effects
+and bending-membrane coupling is presented in [23–27].
+
+A new development based on modiﬁed Timoshenko beam the-
+ory and modiﬁed Reissner-Mindlin plate theory has been proposed
+recently for beam and plate bending problems [28–32]. With this
+approach the shear locking problem does not occur due to the
+strong interdependence between the bending displacement and
+rotations.
+
+Up to the middle of the 1990s the engineering community
+involved in ﬁnite element development technology was mainly
+emphasizing on individual element tests (proper rank for exam-
+ple), patch tests for constant stress situations, convergence analysis
+for particular displacements, (or less common stresses), at particu-
+lar points of the structure with reference to a known analytical
+solution (or more often a numerical solution obtained by a ﬁne
+mesh using reference-proved elements), for regular and distorted
+meshes. The shear locking phenomenon in plate ﬁnite elements
+based on various formulations and in particular mixed and
+assumed natural strains did attract the mathematical oriented
+community. As a result, new methods and tests to assess element
+behavior and convergence have been proposed during the last 25
+years. Among others the so called inf-sup and s-norm tests [33–43].
+The inf-sup condition for plate bending elements is related to
+the veriﬁcation of the lack of shear locking. For the MITC4 element
+inf-sup tests have been performed to assess the monotonic and
+optimal convergence for thin plates [33–43]. For the DSQ and
+DKMQ elements shear locking cannot occur since those elements
+converge to DKQ for thin plates. However, a simple indicator for
+lack of shear locking has been used in this paper by computing
+the eigenvalues of the TS shear stiffness matrix of an individual
+element in an inﬁnite mesh to conﬁrm the lack of shear locking.
+The technique has been presented in [15,44,45].
+
+The method called s-norm proposed in [33,34,38,39] is an
+appropriate method to evaluate the impact of the approximation
+ﬁelds and the element formulation on the whole structure. Numer-
+ical results based on the s-norm tests can evaluate the capacity for
+uniform and optimal convergence. Uniform convergence means
+that the convergence does not depend on the thickness of the prob-
+lem under study while optimal convergence means that the rate of
+convergence and interpolations used in the formulation of the ele-
+ment are of the same order. The application of s-norm was exten-
+sively used in [40–43] to evaluate various MITC plate and shell
+elements.
+
+The paper is organized as follows. Some aspects of the Reissner-
+Mindlin plate theory (kinematic, constitutive, equilibrium equa-
+tions and modiﬁed Hu-Washizu functional) are recalled in Section 2.
+In Sections 3–6 the respective formulation of the elements DKQ,
+MITC, DSQ and DKMQ is presented using a uniﬁed notation. Order
+of presentation is simply the year of publication. Sections 7 and 8
+deal with the pass evaluation tests and s-norm method. In particu-
+lar, the convergence behavior of the four elements for various iso-
+tropic plate situations using the s-norm is presented in Section 9.
+Concluding remarks, acknowledgements and references are given
+at the end.
+
+2. General aspects of the reissner-mindlin plate theory [1,2]
+
+The Reissner-Mindlin (or ﬁrst order RM) plate theory [1,2] is
+widely used for the ﬁnite element analysis of thin to thick isotropic
+and composite plates:
+
+– Kinematic assumptions, displacement and strains:
+
+Fig. 1. Deformation of the normal vector with shear deformation at plane z-x.
+
+Several assumptions are used in the linear ﬁrst order RM plate
+
+theory (Fig. 1).
+
+- A straight line normal to the mid-surface before deformation
+remains straight but not necessarily normal to the deformed
+mid-surface.
+
+- The distance between points located on the straight line
+
+remains constant (no normal strain).
+
+Displacement variables (u, v, w) in the Cartesian coordinates
+system x, y and z respectively are assumed to be independent in
+the following manner, z is the thickness direction.
+u ¼ zbxðx; yÞ;
+
+v ¼ zbyðx; yÞ; w ¼ wðx; yÞ
+
+ð1Þ
+
+where bx and by are the rotations in the z-x and z-y planes respec-
+tively. From (1) the linear bending strains and curvatures are given
+by:
+feg ¼ zfvg
+
+ð2Þ
+
+where
+feg ¼ heiT ¼ hex ey exyiT ;
+
+fvg ¼ hviT ¼ hvx vy vxyiT
+
+ð3Þ
+
+The curvatures are given by:
+8
+9
+><
+>=
+
+8
+><
+
+9
+>=
+
+;
+
+fvg ¼
+
+>:
+
+vx
+vy
+vxy
+
+x
+
+;
+
+bx
+by
+y
+y þ by
+
+¼
+
+>:
+
+>;
+
+;
+
+bx
+
+>;
+
+;
+
+x
+
+ð4Þ
+
+(bx,x and bx,y denotes the ﬁrst derivatives of bx with respect to x and
+y respectively).
+
+The transverse shear strains can be written as:
+)
+
+(
+
+fcg ¼
+
+( )
+cx
+cy
+
+¼
+
+bx þ w;
+by þ w;
+
+x
+
+y
+
+– Generalized constitutive equations:
+
+The constitutive equations for bending are given by:
+9
+>=
+
+8
+><
+
+9
+>=
+
+8
+><
+
+fMg ¼
+
+>:
+
+¼ Hb
+½
+
+(cid:2)
+
+>:
+
+>;
+
+>;
+
+vx
+vy
+vxy
+
+where the bending moments are Mx, My and Mxy. For a linear elastic,
+isotropic homogeneous material, ½Hb(cid:2) is deﬁned as:
+
+½
+
+Hb
+
+(cid:2) ¼ Db
+
+6
+4
+
+3
+
+0
+
+1 t
+t 1
+0 0 ð1 (cid:3) tÞ=2
+
+0
+
+7
+5; Db ¼
+
+Eh3
+12 1 (cid:3) t2
+
+ð
+
+Þ
+
+ð7Þ
+
+Db is the bending plate rigidity, E the Young’s modulus, h the thick-
+ness of the plate, and t the Poisson’s ratio.
+
+The constitutive equation for the shear forces are given by:
+
+fTg ¼
+
+¼ Hs
+½
+
+(cid:2)
+
+(cid:2) (cid:3)
+T x
+T y
+
+( )
+cx
+cy
+
+ð5Þ
+
+ð6Þ
+
+ð8Þ
+
+Mx
+My
+Mxy
+
+2
+
+50
+
+I. Katili et al. / Computers and Structures 204 (2018) 48–64
+
+where the shear forces are Tx and Ty. For a linear elastic, isotropic
+homogeneous material, ½Hs(cid:2) is simply:
+
+½
+
+Hs
+
+(cid:2) ¼ Ds
+
+(cid:4)
+
+1 0
+
+0 1
+
+(cid:5)
+; Ds ¼ jGh
+
+where j is the shear correction factor (usually 5/6 for an isotropic
+homogeneous plate), the shear modulus is G ¼ E=2 1 þ t
+– Equilibrium equations:
+
+Þ.
+
+ð
+
+The internal forces can be used to deﬁne the equilibrium equa-
+tions. Consider a plate subjected to a static distributed load f z
+(Fig. 2) acting on the mid surface:
+
+The equilibrium equations can be written as follows.
+x þ T y;
+
+y þ f z ¼ 0
+
+T x;
+
+Mx;
+
+x þ Mxy;
+
+y (cid:3) T x ¼ 0
+
+Mxy;
+
+x þ My;
+
+y (cid:3) T y ¼ 0
+
+ð10Þ
+
+ð11Þ
+
+ð12Þ
+
+where Tx, Ty, Mx, My and Mxy are the shear forces and bending
+moments per unit length.
+– Hu-Washizu principle:
+
+Various variational principles can be proposed related to the RM
+plate theory. In our paper the modiﬁed Hu-Washizu principle is
+relevant for ongoing discussions. Consider the functional:
+
+P ¼ Pint (cid:3) Pext
+Z
+
+Pext ¼
+
+wfzdA
+
+A
+
+int þ Ps
+Pint ¼ Pb
+Z
+
+int
+
+Pb
+
+int ¼
+
+Ps
+
+int ¼
+
+1
+2
+
+1
+2
+
+þ
+
+hvi Hb
+½
+
+(cid:2)fvgdA
+
+bending energy
+ð
+
+Þ
+
+A
+Z
+
+A
+Z
+
+(cid:2)fcgdA
+
+hci Hs
+½
+(cid:6)
+
+(cid:7)
+
+hTi fcg (cid:3) fcg
+
+ds
+
+shear energy
+Þ
+ð
+
+ð17Þ
+
+Ae
+
+ð9Þ
+
+ð13Þ
+
+ð14Þ
+
+ð15Þ
+
+ð16Þ
+
+Z
+
+Lk
+
+0
+
+(cid:6)
+
+(cid:7)
+
+dT s cs (cid:3) cs
+
+ds ¼ 0
+
+ð19Þ
+
+where Ts and cs are the shear force and assumed shear strain along a
+side of length Lk. If the assumed shear force and strains are constant
+on the side, then we obtain:
+
+csk ¼
+
+Z
+
+Lk
+
+0
+
+1
+Lk
+
+csds
+
+ð20Þ
+
+3. Formulation of DKQ element [12]
+
+The DKQ element was ﬁrst published in 1982 [12]. DKQ element
+has 4 nodes with 3 degrees of freedoms each, which are: w (trans-
+lation in the z direction), bx (rotation in the z-x plane) and by (rota-
+tion in the z-y plane). Incomplete quadratic rotation ﬁelds for bx
+and by are considered in terms of rotations at the four corners
+and of Dbsk
+a temporary variable at mid-side i-j (Fig. 3).
+On each side i-j, the normal rotation bn is a linear function of s,
+
+while rotation bs is quadratic in s (Fig. 4).
+
+In a hierarchical form:
+(cid:9)
+
+(cid:8)
+
+bn ¼ 1 (cid:3)
+
+bni þ
+
+s
+Lk
+
+(cid:8)
+
+bs ¼ 1 (cid:3)
+
+(cid:9)
+
+bsi þ
+
+s
+Lk
+
+bnj
+
+s
+Lk
+(cid:8) (cid:9)
+s
+Lk
+
+bsj þ 4
+
+(cid:8)
+
+1 (cid:3)
+
+s
+Lk
+
+s
+Lk
+
+(cid:9)
+
+Dbsk
+
+ð21Þ
+
+ð22Þ
+
+Based on (21) and (22), the rotation functions of bx and by can be
+
+written in an element as:
+
+X4
+
+X8
+
+bx ¼
+
+Nibxi þ
+
+PkCkDbsk
+
+;
+
+by ¼
+
+X4
+
+X8
+
+Nibyi þ
+
+PkSkDbsk
+
+ð23Þ
+
+i¼1
+
+k¼5
+
+i¼1
+
+k¼5
+
+or
+( )
+bx
+by
+
+¼ NL
+½
+
+(cid:2)fung þ NQ½
+
+(cid:2)fDbsn g
+
+ð24Þ
+
+Where
+
+hci ¼ hcx cyi are independent (assumed) strain variables and
+hTi ¼ hT x
+
+T yi are independent shear forces.
+
+The variation of P with respect to the shear forces leads to the
+
+constraint equation:
+Z
+
+(cid:7)
+hdTi fcg (cid:3) fcg
+
+(cid:6)
+
+dA ¼ 0
+
+ð18Þ
+
+A
+
+At the ﬁnite element level, the above equation can be extended
+
+on any element side and expressed as:
+
+Fig. 3. Kinematic variable of corner node and temporary variable at mid side i-j.
+
+Fig. 2. Moments, shear forces and loads, on a dx (cid:4) dy plate mid-surface element.
+
+I. Katili et al. / Computers and Structures 204 (2018) 48–64
+
+51
+
+Fig. 4. Rotations bs and bn on each side i-j of an element.
+
+where
+
+fung ¼ huniT ¼ h(cid:5) (cid:5) (cid:5) wi bxi
+
+byi
+
+(cid:5) (cid:5) (cid:5) i ¼ 1; 4iT
+
+fDbsn g ¼ hDbsn iT ¼ hDbs5
+
+Dbs6
+
+Dbs7
+
+Dbs8 iT
+
+and
+
+(cid:4)
+
+½
+
+NL
+
+(cid:2) ¼ (cid:5) (cid:5) (cid:5)
+
+0 Ni
+0
+
+0
+0 Ni
+
+(cid:5)
+
+(cid:4)
+
+(cid:5) (cid:5) (cid:5) i ¼ 1; 4
+
+;
+
+NQ½
+
+(cid:2) ¼ (cid:5) (cid:5) (cid:5)
+
+(cid:5)
+
+(cid:5) (cid:5) (cid:5) i ¼ 5; 8
+
+PkCk
+PkSk
+
+Ni are the bilinear shape functions and Pk is the quadratic func-
+tions deﬁned in Table 1. Ck and Sk are the direction cosines of side i-
+j (Fig. 5). Eqs. (23) and (24) satisfy the C0 continuity.
+
+n and g are the reference coordinates on the unit square ele-
+
+ment -1 (cid:6) n, g (cid:6)1
+
+The curvature strains (4) will then be written as:
+
+h
+
+h
+
+i
+fung þ BbDb
+
+i
+
+fvg ¼ Bbb
+
+fDbsn g
+
+ð25Þ
+
+where
+
+where
+
+i
+
+h
+Bbb
+
+¼
+
+2
+
+6
+4
+
+(cid:5) (cid:5) (cid:5) 0
+
+x
+
+0 Ni;
+0
+Ni;
+0
+y
+0 Ni;y Ni;
+
+x
+
+(cid:5) (cid:5) (cid:5)
+
+i ¼ 1; 2; 3; 4
+
+3
+
+7
+5
+
+2
+
+6
+4
+
+(cid:5) (cid:5) (cid:5)
+
+i
+
+h
+BbDb
+
+¼
+
+Pk;
+xCk
+Pk;
+ySk
+yCk þ Pk;
+
+Pk;
+
+xSk
+
+(cid:5) (cid:5) (cid:5) k ¼ 5; 6; 7; 8
+
+3
+
+7
+5:
+
+Ni;
+Pk;
+
+x ¼ j11Ni;
+x ¼ j11Pk;
+
+n þ j12Ni;g; Ni;
+Pk;
+n þ j12Pk;g;
+
+y ¼ j21Ni;
+y ¼ j21Pk;
+
+n þ j22Ni;g
+n þ j22Pk;g
+
+ð26Þ
+
+ð27Þ
+
+ð28Þ
+
+Table 1
+Bilinear and incomplete quadratic shape functions.
+(cid:7)
+ð
+
+Þ 1 (cid:3) g
+Þ
+ð
+
+4 1 (cid:3) n
+ð
+
+N1 ¼ 1
+
+P5 ¼ 1
+
+1 (cid:3) g
+Þ
+(cid:11)
+
+(cid:6)
+2 1 (cid:3) n2
+(cid:10)
+Þ 1 (cid:3) g2
+2 1 þ n
+ð
+(cid:6)
+2 1 (cid:3) n2
+(cid:10)
+Þ 1 (cid:3) g2
+2 1 (cid:3) n
+ð
+
+(cid:7)
+ð
+
+1 þ g
+Þ
+(cid:11)
+
+P6 ¼ 1
+P7 ¼ 1
+
+P8 ¼ 1
+
+N2 ¼ 1
+N3 ¼ 1
+
+4 1 þ n
+ð
+4 1 þ n
+ð
+
+Þ 1 (cid:3) g
+Þ
+ð
+Þ 1 þ g
+Þ
+ð
+
+N4 ¼ 1
+
+4 1 (cid:3) n
+ð
+
+Þ 1 þ g
+Þ
+ð
+
+s = Lij
+
+j = (xj , yj)
+
+constant shear force and zero independent shear strains). From
+(20) we obtain:
+
+csk ¼
+
+Z
+
+Lk
+
+0
+
+1
+Lk
+
+csds ¼ 0
+
+with
+cs ¼ w;
+
+s þ bs
+
+ð29Þ
+
+ð30Þ
+
+By using directly (29) and (30) we can easily integrate and
+obtain for each side (just assuming that w(s) is a continuous func-
+tion of s):
+
+(cid:6)
+
+csk ¼
+
+wj (cid:3) wi
+Lk
+
+þ
+
+1
+2
+
+Ckbxi þ Skbyi þ Ckbxj þ Skbyj
+
+þ
+
+(cid:7)
+
+2
+3
+
+Dbsk
+
+¼ 0
+
+ð31Þ
+
+By collecting (31) on each side i-j we obtain:
+
+fDbsn g ¼ AD½
+
+(cid:2)(cid:3)1
+DKQ Au½
+
+(cid:2)fung
+
+ð32Þ
+
+AD½
+
+(cid:2)DKQ ¼ (cid:3)
+
+2
+
+6
+6
+6
+4
+
+2
+3
+
+3
+
+7
+7
+;
+7
+5
+
+1 0 0 0
+
+0 1 0 0
+
+0 0 1 0
+
+0 0 0 1
+
+AD½
+
+(cid:2)(cid:3)1
+DKQ ¼ (cid:3)
+
+2
+
+6
+6
+6
+4
+
+3
+2
+
+3
+
+7
+7
+7
+5
+
+1 0 0 0
+
+0 1 0 0
+
+0 0 1 0
+
+0 0 0 1
+
+C5 S5
+
+C5 S5
+
+0
+
+0
+
+0
+
+Au½
+
+(cid:2) ¼
+
+2
+
+6
+6
+6
+6
+6
+4
+
+1
+2
+
+(cid:3) 2
+L5
+0
+
+0
+
+2
+L8
+
+2
+L5
+0 (cid:3) 2
+L6
+0
+
+0
+
+0
+
+0
+
+C8 S8
+
+0
+
+0
+
+0
+
+C6 S6
+
+2
+L6
+0 (cid:3) 2
+L7
+0
+
+0
+
+0
+
+0
+
+C6 S6
+
+C7 S7
+
+2
+L7
+0 (cid:3) 2
+L8
+
+ð33Þ
+3
+
+0
+
+0
+
+0
+
+0
+
+C7 S7
+
+C8 S8
+
+7
+7
+7
+:
+7
+7
+5
+
+ð34Þ
+
+0
+
+i
+
+Introducing (35) into (16), the bending energy can then be writ-
+
+ten classically as follows.
+
+Pb
+
+int ¼
+
+1
+2
+
+with
+
+kb½
+
+(cid:2) ¼
+
+Z
+
+A
+
+huni kb½
+
+(cid:2)fung
+
+Bb½
+
+(cid:2)T Hb
+½
+
+(cid:2) Bb½
+
+(cid:2)dA
+
+ð36Þ
+
+ð37Þ
+
+with j11, j12, j21, j22 the components of the inverse Jacobian matrix.
+The TS energy is neglected in the DKQ element and discrete Kirch-
+hoff constraints are considered on the four sides (by assuming
+
+Substituting (32) into (25) we obtain:
+h
+þ BbDb
+
+h
+(cid:2) ¼ Bbb
+
+(cid:2)fung where
+
+Bb½
+
+fvg ¼ Bb½
+
+i
+
+AD½
+
+(cid:2)(cid:3)1
+DKQ Au½
+
+(cid:2)
+
+ð35Þ
+
+k 
+
+s 
+
+s = 0
+
+ij
+
+x
+
+i = (xi , yi)
+
+ij = xji /Lij 
+ij = yji /Lij 
+2
+
+2+ yji
+
+Ck = Cij = cos 
+Sk = Sij = sin 
+Lk
+2= xji
+2= Lij
+xji= xj - xi 
+yji= yj - yi
+
+Fig. 5. The direction cosines of side i-j.
+
+i 
+1 
+2 
+3 
+4 
+
+j 
+2 
+3 
+4 
+1 
+
+k 
+5 
+6 
+7 
+8 
+
+The stiffness matrix of the DKQ element (37) is obtained using a
+2 (cid:4) 2 points Gauss integration scheme. The matrix has a proper
+rank and fully satisfy all constant patch tests for thin plate bending.
+
+4. Formulation of the MITC4 element [11]
+
+MITC4 is a 4-node quadrilateral element proposed by Bathe and
+Dvorkin [11] in 1985, with 3 degrees of freedom i.e. wi, bxi
+and byi
+at the corner nodes. The formulation starts with a classical
+
+ð45Þ
+
+ð46Þ
+
+ð47Þ
+
+s
+Lk
+
+bsj
+
+ð48Þ
+
+ð49Þ
+
+ð50Þ
+
+52
+
+I. Katili et al. / Computers and Structures 204 (2018) 48–64
+
+isoparametric representation of both the coordinates x and y, and
+the independent displacement w and rotation ﬁelds bx and by as
+follows:
+
+X4
+
+Niwi;
+
+w ¼
+
+i¼1
+
+X4
+
+bx ¼
+
+Nibxi
+
+i¼1
+
+;
+
+by ¼
+
+X4
+
+Nibyi
+
+i¼1
+
+ð38Þ
+
+o
+
+n
+cnn
+
+(cid:12)
+¼ Ac
+
+n o
+(cid:13)
+csn
+
+where
+hcsn i ¼ hcs5
+
+and
+
+cs6
+
+cs7
+
+cs8
+
+i
+
+where Ni are bilinear shape functions as deﬁned in Table 1. C0 con-
+tinuity is guaranteed. The relationship between curvature strains
+(4) and nodal variables is deﬁned as follow:
+fvg ¼ Bb½
+
+(cid:2)fung
+
+ð39Þ
+
+2
+
+6
+6
+6
+6
+4
+
+(cid:12)
+
+(cid:13)
+
+Ac
+
+¼
+
+3
+
+7
+7
+7
+7
+5
+
+0
+
+0
+
+L5
+0
+2
+0 L6
+0
+2
+0 0 (cid:3) L7
+0
+2
+0 (cid:3) L8
+2
+
+0 0
+
+0
+
+where
+
+Bb½
+
+(cid:2) ¼
+
+2
+
+6
+4
+
+(cid:5) (cid:5) (cid:5) 0
+
+0 Ni;
+0
+0 Ni;
+
+x
+
+0
+Ni;
+y Ni;
+
+y
+
+(cid:5) (cid:5) (cid:5)
+
+i ¼ 1; 2; 3; 4
+
+3
+
+7
+5
+
+ð40Þ
+
+From (42)–(46) we obtain:
+n o
+(cid:13)
+csn
+
+fcg ¼ ½j(cid:2) Nc
+
+Ac
+
+(cid:13)
+
+(cid:12)
+
+(cid:12)
+
+Ni;
+
+x ¼ j11Ni;
+
+n þ j12Ni;g; Ni;
+
+y ¼ j21Ni;
+
+n þ j22Ni;g
+
+ð41Þ
+
+tion in s (see Fig. 7):
+(cid:8)
+
+x
+
+On each side i-j, we recall that w, bx and by have a linear varia-
+
+cs ¼ w;
+
+s þ bs
+
+; w ¼ 1 (cid:3)
+
+(cid:9)
+
+wi þ
+
+s
+Lk
+
+s
+Lk
+
+(cid:8)
+
+wj; bs ¼ 1 (cid:3)
+
+(cid:9)
+
+bsi þ
+
+s
+Lk
+
+x and Ni;
+
+Ni;
+y denote the ﬁrst derivative of the shape function with
+respect to x and y respectively and jij the components of the inverse
+of the Jacobian matrix [j]. Matrix Bb½
+(cid:2) deﬁned in (40) for MITC4 is the
+
+h
+
+i
+
+same as Bbb
+
+deﬁned in (26) for DKQ.
+
+Independent assumed shear strains cx; cy are expressed in
+
+terms of natural shear strain components as follows:
+
+fcg ¼
+
+(
+
+cx n; gð
+Þ
+cy n; gð
+
+Þ
+
+)
+
+(cid:4)
+
+¼
+
+j11
+j21
+
+j12
+j22
+
+(cid:5)
+
+( )
+cn
+cg
+
+( )
+cn
+cg
+
+¼ ½j(cid:2)
+
+(
+
+)
+
+cnðgÞ
+cgðnÞ
+
+(cid:13)
+
+(cid:12)
+¼ Nc
+
+o
+
+n
+cnn
+
+"
+
+(cid:12)
+
+(cid:13)
+
+Nc
+
+¼
+
+Þ
+
+1
+
+2 1 (cid:3) g
+ð
+0
+
+0
+1
+2 1 þ n
+Þ
+ð
+
+1
+
+2 1 þ g
+Þ
+ð
+0
+
+0
+1
+2 1 (cid:3) n
+ð
+
+Þ
+
+#
+
+where
+hcnni ¼ hcn5
+
+cg6
+
+cn7
+
+cg8
+
+i
+
+ð42Þ
+
+ð43Þ
+
+ð44Þ
+
+It can be seen from Eqs. (42)–(44) and (Fig. 6) that the natural
+shear strains cn is constant in the n direction and linear in the g
+direction. On the other hand cg is constant in the g direction
+and linear in the n direction. These two natural strains cn and cg
+have a similar variation in n and g as w,n and w,g so that the nat-
+ural strains have a consistent approximation in terms of n and g.
+The relationship between the shear strains in natural coordinate
+with the shear strains in the tangential coordinate system can sim-
+ply be deﬁned with the following relations:
+
+Using Eqs. (48) and (20), we obtain:
+
+csk ¼
+
+¼
+
+(cid:11)
+
+wj (cid:3) wi
+
+(cid:10)
+
+1
+Lk
+wj (cid:3) wi
+Lk
+
+þ
+
+1
+2
+
+1
+2
+
+1
+2
+
+bsj
+
+bsi þ
+
+þ
+(cid:6)
+Ckbxi þ Skbyi þ Ckbxj þ Skbyj
+
+(cid:7)
+
+Using (49) for all sides we get:
+
+n o
+csn
+
+¼ Au½
+
+(cid:2)fung
+
+where [Au] is the same as (34). Introducing (50) into (47) we have
+fcg ¼ Bs
+
+(cid:2)fung
+
+ð51Þ
+
+½
+
+with
+
+(cid:12)
+
+(cid:13)
+
+(cid:12)
+
+Bs
+½
+
+(cid:2) ¼ ½j(cid:2) Nc
+
+Ac
+
+(cid:13)
+Au½
+
+(cid:2)
+
+ð52Þ
+
+Introducing (39)–(41) into (16), the bending energy of element
+
+MITC4 can then be written classically as follows:
+
+Pb
+
+int ¼
+
+1
+2
+
+huni kb½
+
+(cid:2)fung
+
+where the bending stiffness matrix is:
+
+Z
+
+kb½
+
+(cid:2) ¼
+
+Bb½
+
+(cid:2)T Hb
+½
+
+(cid:2) Bb½
+
+(cid:2)dA
+
+A
+
+ð53Þ
+
+ð54Þ
+
+Introducing (51), (52) into (17)–(20), the transverse shear
+
+energy of an element is written as follows:
+
+Fig. 6. Constant shear strains on each side of element in tangential and natural coordinate systems.
+
+I. Katili et al. / Computers and Structures 204 (2018) 48–64
+
+53
+
+Ps
+
+int ¼
+
+1
+2
+
+huni ks½
+
+(cid:2)fung
+
+where the shear stiffness matrix is:
+
+Z
+
+ks½
+
+(cid:2) ¼
+
+Bs
+½
+
+(cid:2)T Hs
+½
+
+(cid:2) Bs
+½
+
+(cid:2)dA
+
+A
+
+The total stiffness of the MITC4 element is then:
+
+½k(cid:2) ¼ kb½
+
+(cid:2) þ ks½
+
+(cid:2)
+
+ð55Þ
+
+ð56Þ
+
+ð57Þ
+
+In the general case of a quadrilateral element, the assumed
+Cartesian shear strains cx and cy are not linear in n and g due to
+(62). Hence instead of using a mean value on a side as in (19) we
+simply consider the value of cx and cy at the mid node k of each
+side (collocation technique). Hence:
+
+csk ¼ hCk
+
+Ski
+
+( )
+cx
+cy
+
+¼ hCk
+
+(cid:6)
+
+(cid:12)
+Ski Bsb nk
+
+ð
+
+h
+(cid:13)
+fung þ BsDb nk
+
+ð
+
+; gk
+
+Þ
+
+i
+
+(cid:7)
+fDbsn g
+
+; gk
+
+Þ
+
+ð65Þ
+
+As for DKQ a 2 (cid:4) 2 Gauss integration scheme can be used for the
+
+numerical integration involved in (54) and (56).
+
+Now as for DKQ and MITC4, Eq. (20) is used. Considering also
+
+(30), (31), and (65) we obtain on each side:
+
+5. Formulation of DSQ element [14,15]
+
+The formulation of DSQ (Discrete Shear Quadrilateral) element
+was proposed by Batoz and Lardeur [14,15] in 1990 (written in
+french). Details on the companion triangular element DST have
+been published in english (see [16,17]). The aim of DSQ was to take
+into account transverse shear effects starting with the formulation
+of DKQ but without introduction of additional nodal variables. In
+this section, we brieﬂy recall the formulation of the DSQ element.
+The bending part formulation of DSQ is the same as for DKQ (12).
+In the DSQ element the independent assumed shear strains cx
+and cy are deﬁned using the element equilibrium equations
+(10)–(12) and the constitutive equations (6)–(9).
+
+(cid:10)
+
+þ
+
+wj (cid:3) wi
+Lk
+
+1
+Ckbxi þ Skbyi þ Ckbxj þ Skbyj
+2
+(cid:6)
+(cid:12)
+(cid:3) hCkSki Bsb nk
+
+h
+(cid:13)
+fung þ BsDb nk
+
+; gk
+
+ð
+
+ð
+
+Þ
+
+(cid:11)
+
+þ
+
+; gk
+
+Þ
+
+2
+3
+i
+
+Dbsk
+
+(cid:7)
+fDbsn g
+
+¼ 0
+
+ð66Þ
+
+The ﬁrst part of (66) is the same as for DKQ (involving Dbsk
+), the
+second part results from the assumed TS strains deﬁned at each
+mid node considering the equilibrium and constitutive equations
+on the plate. We see that the second part of (66) implies the four
+components Dbsk
+(k = 5,6,7,8). Considering (66) at each of the four
+sides we can deﬁne the following matrix equation:
+
+fDbsn g ¼ AD½
+
+(cid:2)(cid:3)1
+DSQ Auu
+½
+
+(cid:2)fung
+
+ð67Þ
+
+Consider (5), then (8), (11), (12) and (6) we obtain:
+
+( )
+cx
+cy
+
+fcg ¼
+
+(cid:12)
+(cid:2)(cid:3)1 Hb
+
+¼ Hs
+½
+
+(
+(cid:13) bx;xx þ bx;yy þ by;xy
+bx;yx þ by;xx þ by;yy
+
+)
+
+where
+
+ð58aÞ
+
+where bx and by are given by (23) and (24). We obtain in terms of
+the nodal variables:
+( )
+cx
+cy
+
+¼ ½Bsb (cid:2)fung þ ½BSDb
+
+(cid:2)fDbsn g
+
+fcg ¼
+
+ð58bÞ
+
+AD½
+
+(cid:2)DSQ ¼ (cid:3)
+
+2
+
+6
+6
+6
+4
+
+2
+3
+
+1 0 0 0
+
+0 1 0 0
+
+0 0 1 0
+
+0 0 0 1
+
+3
+
+7
+7
+7
+5 þ
+
+2
+
+6
+6
+6
+6
+6
+6
+6
+6
+4
+
+hC5
+
+hC6
+
+hC7
+
+hC8
+
+h
+
+S5i BsDb n5 ¼ 0; g5 ¼ (cid:3)1
+Þ
+
+ð
+
+h
+
+S6i BsDb n6 ¼ þ1; g6 ¼ 0
+Þ
+
+ð
+
+h
+
+S7i BsDb n7 ¼ 0; g7 ¼ þ1
+Þ
+
+ð
+
+h
+
+S8i BsDb n8 ¼ (cid:3)1; g8 ¼ 0
+Þ
+
+ð
+
+i
+
+3
+
+7
+7
+7
+7
+7
+7
+7
+7
+5
+
+i
+
+i
+
+i
+
+ð68Þ
+
+ð69Þ
+
+3
+
+7
+7
+7
+5
+
+(cid:13)
+Þ
+(cid:13)
+Þ
+(cid:13)
+Þ
+(cid:13)
+Þ
+
+ð59Þ
+
+ð60Þ
+
+(cid:5)
+
+Þ=2
+
+ð61Þ
+3
+
+Þ(cid:2)2(cid:4)12 ¼ Hs
+
+½
+
+(cid:13)
+
+(cid:12)
+(cid:2)(cid:3)1 Hb
+(cid:12)
+(cid:2)(cid:3)1 Hb
+
+(cid:13)
+
+(cid:12)
+T j n; gð
+Þ
+(cid:12)
+T j n; gð
+Þ
+
+(cid:13)
+
+(cid:13)
+
+(cid:12)
+T b
+(cid:12)
+(cid:13)
+
+T Db n; gð
+
+(cid:13)
+Þ
+
+¼ Hs
+½
+
+with
+
+½Bsb n; gð
+h
+
+BsDb n; gð
+
+i
+Þ
+
+(cid:13)
+
+(cid:12)
+Hb
+
+2(cid:4)6 ¼
+
+2(cid:4)4
+(cid:4)
+
+Db
+Ds
+
+1
+
+0
+
+Þ=2
+
+ð
+
+1 (cid:3) t
+0
+
+0
+1 þ t
+
+ð
+
+Þ=2
+
+0
+1 (cid:3) t
+
+0
+Þ=2 1
+
+ð
+
+1 þ t
+ð
+0
+
+½
+
+Auu
+
+(cid:2) ¼ Au½
+
+(cid:2)
+
+4 (cid:4) 12
+
+(cid:3)
+
+2
+
+6
+6
+6
+4
+
+hC5
+hC6
+hC7
+hC8
+
+(cid:12)
+(cid:12)
+(cid:12)
+(cid:12)
+
+S5i Bsb n5 ¼ 0; g5 ¼ (cid:3)1
+S6i Bsb n6 ¼ þ1; g6 ¼ 0
+S7i Bsb n7 ¼ 0; g7 ¼ þ1
+S8i Bsb n8 ¼ (cid:3)1; g8 ¼ 0
+
+ð
+ð
+ð
+ð
+
+where [Au] is the same as (34).
+
+Introducing Eq. (67) into Eq. (25) leads to:
+
+(cid:12)
+T j n; gð
+
+(cid:13)
+Þ
+
+6(cid:4)6 ¼
+
+"
+
+(cid:12) (cid:13)
+tj
+½0(cid:2)
+
+#
+
+;
+
+½0(cid:2)
+(cid:12) (cid:13)
+tj
+
+(cid:12) (cid:13)
+tj
+
+¼
+
+2
+
+6
+4
+
+j2
+11
+j2
+21
+j11j21
+
+j2
+12
+j2
+22
+j12j22
+
+fvg ¼ Bb½
+
+(cid:2)fung with
+
+Bb½
+
+AD½
+
+(cid:2)(cid:3)1
+DSQ Auu
+½
+
+(cid:2)
+
+ð70Þ
+
+i
+
+h
+(cid:2) ¼ Bbb
+
+i
+
+h
+þ BbDb
+
+2j11j12
+2j21j22
+j11j22 þ j12j21
+
+7
+5
+
+Introducing Eq. (67) into Eq. (58), we obtain:
+
+fcg ¼ Bs
+
+½
+
+(cid:2)fung with
+
+(cid:13)
+
+(cid:12)
+(cid:2) ¼ Bsb
+
+½
+
+Bs
+
+i
+
+h
+þ BsDb
+
+AD½
+
+(cid:2)(cid:3)1
+DSQ Auu
+½
+
+(cid:2)
+
+ð71Þ
+
+(cid:13)
+
+(cid:12)
+T b
+
+6(cid:4)12 ¼
+
+1
+4
+
+2
+
+6
+6
+6
+6
+6
+6
+6
+6
+4
+
+0 0 0 0
+
+0
+
+0 0 0 0
+0
+0 1 0 0 (cid:3)1
+0
+0 0 0 0
+
+0
+
+0
+
+0
+
+0
+
+0 0 0 0
+
+0
+
+0 0 0 0
+0
+0 1 0 0 (cid:3)1
+0
+0 0 0 0
+
+0
+
+0
+
+0
+
+0
+
+0 0 0 0
+0 0 1 0
+
+0
+
+0
+0 0 0 0
+0 (cid:3)1 0 0 1 0
+
+0
+0
+0 (cid:3)1
+
+3
+
+7
+7
+7
+7
+7
+7
+7
+7
+5
+
+ð62Þ
+
+ð63Þ
+
+The stiffness matrix for bending and shear are then deﬁned
+using (53)–(57). Again numerical integration can be performed
+using 2 (cid:4) 2 Gauss points.
+
+As a result of (66) and (67) we can see that the elimination of
+will destroy the C0 continuity, however the proper rank is kept
+Dbsk
+and DSQ will converge to DKQ for thin plates. Extensive numerical
+results have been published in [14].
+
+(cid:13)
+Þ
+
+(cid:12)
+T Db n; gð
+6 (cid:4) 4
+
+¼
+
+2
+
+6
+6
+6
+6
+6
+6
+4
+
+Þ
+
+Þ
+
+(cid:3)C5 1 (cid:3) g
+ð
+0
+C5n
+(cid:3)S5 1 (cid:3) g
+ð
+0
+S5n
+
+0
+(cid:3)C6 1 þ n
+Þ
+ð
+(cid:3)C6g
+0
+(cid:3)S6 1 þ n
+Þ
+ð
+(cid:3)S6g
+
+Þ
+
+Þ
+
+(cid:3)C7 1 þ g
+ð
+0
+(cid:3)C7n
+(cid:3)S7 1 þ g
+ð
+0
+(cid:3)S7n
+
+3
+
+7
+7
+7
+7
+7
+7
+5
+
+0
+(cid:3)C8 1 (cid:3) n
+Þ
+ð
+C8g
+0
+(cid:3)S8 1 (cid:3) n
+Þ
+ð
+S8g
+
+ð64Þ
+
+6. Formulation of DKMQ element [18]
+
+The DKMQ (Discrete Kirchhoff Mindlin Quadrilateral) element
+proposed by Katili [18] in 1993 combines some ideas and formula-
+tion aspects found in DKQ, MITC4 and DSQ to achieve a rather
+simple and efﬁcient element valid for thin to thick plates. DKMQ
+has again 4 nodes with 3 degrees of
+freedom at each
+node (Fig. 3). The bending formulation is the same as for DKQ,
+
+54
+
+I. Katili et al. / Computers and Structures 204 (2018) 48–64
+
+(see Eqs. (21)–(28)) and the assumed TS strain ﬁeld is similar com-
+pared to MITC4, (see Eqs. (42)–(47)). In the spirit of DSQ, the inde-
+pendent transverse shear strains are using local equilibrium and
+constitutive equations considering each side as a beam in order
+to keep the C0 continuity.
+
+In [18–19], Katili proposed the assumed independent transverse
+
+shear strain cs along the side i-j, can be expressed as:
+
+where
+
+(cid:12)
+
+(cid:13)
+
+(cid:13)
+
+(cid:12)
+¼ A/
+
+A/D
+
+AD½
+
+(cid:2)(cid:3)1
+DKMQ ¼
+
+2
+
+6
+6
+6
+6
+6
+4
+
+Þ
+
+ð
+
+/5
+1þ/5
+0
+
+0
+
+0
+
+0
+
+Þ
+
+ð
+
+/6
+1þ/6
+0
+
+0
+
+0
+
+0
+
+Þ
+
+ð
+
+/7
+1þ/7
+0
+
+3
+
+7
+7
+7
+7
+7
+5
+
+0
+
+0
+
+0
+
+/8
+1þ/8
+
+ð
+
+Þ
+
+ð83Þ
+
+cs ¼
+
+Db
+Ds
+
+;
+
+bs
+
+ss
+
+ð72Þ
+
+The stiffness matrix for bending and shear using (53)–(57) is
+
+obtained by using 2 (cid:4) 2 Gauss points.
+
+with bs previously deﬁned in (22), on side i-j, (72) can be written as:
+
+Remarks:
+
+csk ¼ (cid:3)
+
+2
+3
+
+/kDbsk
+
+ð73Þ
+
+where the coefﬁcient /k can be obtained for isotropic material
+[18,19]
+
+/k ¼
+
+Db
+Ds
+
+12
+L2
+k
+
+¼
+
+2
+jð1 (cid:3) tÞ
+
+(cid:8) (cid:9)
+2
+h
+Lk
+
+ð74Þ
+
+Where j is the shear correction factor (usually j = 5/6). The fac-
+tor /k, which is characterizing the inﬂuence of shear, maintains the
+consistency of proposed element and precisely explains why
+DKMQ element behaves as either Reissner-Mindlin theory for thick
+plate or as Kirchhoff-Love theory for thin plate. In the thin plate
+problems, where factor /k is close to zero, shear deformation is
+automatically reduced. Accordingly, as the main positive result,
+the shear locking is automatically resolved by this Discrete Kirch-
+hoff Mindlin method. If (73) is applied on all sides of the element,
+the following matrix relation is obtained:
+fcsn g ¼ A/
+
+ð75Þ
+
+(cid:12)
+
+(cid:13)
+fDbsn g
+2
+
+3
+
+7
+7
+7
+5
+
+ð76Þ
+
+(cid:12)
+
+(cid:13)
+
+A/
+
+¼ (cid:3)
+
+6
+6
+6
+4
+
+2
+3
+
+0
+
+0
+
+/5
+0
+0 /6
+0
+
+0
+
+0
+0 /7
+0
+
+0
+0
+0 /8
+
+Introducing (75) into (47), the shear strains for DKMQ can be
+
+expressed as:
+( )
+cx
+cy
+
+fcg ¼
+
+(cid:12)
+¼ ½j(cid:2) Nc
+
+(cid:12)
+(cid:13)
+
+Ac
+
+(cid:13)
+
+(cid:12)
+A/
+
+(cid:13)
+fDbsn g
+
+ð77Þ
+
+Considering Eqs. (20), (73) and (30) we obtain on each side:
+
+wj (cid:3) wi
+Lk
+
+þ
+
+1
+2
+
+(cid:6)
+Ckbxi þ Skbyi þ Ckbxj þ Skbyj
+
+(cid:7)
+
+þ
+
+2
+3
+
+ð
+
+1 þ /k
+
+ÞDbsk
+
+¼ 0
+
+leading to
+
+fDbsn g ¼ AD½
+
+(cid:2)(cid:3)1
+DKMQ Au½
+
+(cid:2)fung
+
+with
+
+AD½
+
+(cid:2)(cid:3)1
+DKMQ ¼ (cid:3)
+
+2
+
+6
+6
+6
+6
+6
+4
+
+3
+2
+
+1
+ð1þ/5Þ
+0
+
+0
+
+0
+
+0
+
+1
+ð1þ/6Þ
+0
+
+0
+
+0
+
+0
+
+1
+ð1þ/7Þ
+0
+
+3
+
+7
+7
+7
+7
+7
+5
+
+0
+
+0
+
+0
+
+1
+ð1þ/8Þ
+
+and ½Au(cid:2) given by (34).
+
+ð78Þ
+
+ð79Þ
+
+ð80Þ
+
+Introduction of (79) into (25) we deﬁne the bending curvatures
+
+as:
+
+fvg ¼ Bb½
+
+(cid:2)fung where
+
+Bb½
+
+i
+
+h
+(cid:2) ¼ Bbb
+
+h
+þ BbDb
+
+i
+
+AD½
+
+(cid:2)(cid:3)1
+DKMQ Au½
+
+(cid:2)
+
+ð81Þ
+
+(cid:13)
+
+(cid:8) ½0(cid:2)
+
+(transverse
+
+– When /k, very small i.e. if h (cid:7) Lk, then AD½
+
+(cid:2)(cid:3)1
+DKQ and
+(cid:12)
+A/D
+Therefore
+DKMQ (cid:8) DKQ . As a consequence, DKMQ is free of shear locking.
+– When /k, very large i.e. the element size Lk (cid:7) h), then
+h
+(cid:2) (cid:8) Bbb
+(cid:8) ½I(cid:2) leading to
+
+(cid:2)(cid:3)1
+DKMQ (cid:8) AD½
+vanish).
+
+(cid:12)
+and A/D
+
+effects
+
+shear
+
+AD½
+
+i
+
+(cid:13)
+
+consequence for /k, very large,
+
+(cid:2)(cid:3)1
+DKMQ (cid:8) ½0(cid:2) leading to Bb½
+(cid:13)
+(cid:2) ¼ ½j(cid:2) Nc
+Au½
+
+(cid:2). As
+
+(cid:12)
+(cid:13)
+
+(cid:12)
+
+Bs
+Ac
+½
+DKMQ (cid:8) MITC4.
+
+7. Past evaluation tests
+
+The proper rank of the stiffness matrix of a single element (DKQ,
+MITC4, DSQ, DKMQ) for any aspect ratio and distortion has been
+veriﬁed in previous publications on the four elements. They satisfy
+an important ellipticity condition: only three zero eigenvalues rep-
+resenting the rigid body modes with the other nine all positive.
+
+Also constant curvatures patch test are satisﬁed for large slen-
+derness ratio (say L/h (cid:9) 100) in accordance with the necessary ele-
+ment consistency condition.
+
+All four elements are free of shear locking: DKQ by direct ele-
+ment formulation, DSQ and DKMQ because they converge to DKQ
+for thin plates. MITC4 is also free of shear locking by choosing con-
+sistent approximations to represent the shear strains in natural
+coordinates. Numerical tests can be used to show the lack of shear
+locking: convergence analysis for thin plates for different shapes,
+different boundary conditions, different loadings. Results can be
+found in the respective references of the elements.
+
+A simple indicator to evaluate the possibility of shear locking is
+to compute the rank of the shear stiffness matrix of a single ele-
+ment in an assumed inﬁnite mesh (Fig. 8).
+
+For the three elements DKMQ, DSQ and MITC4 including trans-
+
+verse shear, we found that:
+
+Cb ¼
+
+3
+(cid:12)
+rank k0
+s
+
+(cid:13) ¼
+
+3
+2
+
+ð84Þ
+
+(cid:12)
+
+(cid:13)
+
+The numerator (=3) of Cb represents the number of dof at node 1
+of the single element. k0
+(cid:2) (12 (cid:4) 12), con-
+s
+sidering full clamping at nodes 2, 3, 4. Cb = 3/2 has been found for
+the 3 elements and for any position of node 1 (distortion effect).
+From the literature, see [15,44,45] among others, a good indicator
+for the lack of shear locking is Cb = 3/2.
+
+is a 3 (cid:4) 3 reduction of ks½
+
+We introducing (79) into (77) obtain:
+(cid:13)
+
+(cid:12)
+(cid:13)
+
+(cid:12)
+
+fcg ¼ Bs
+
+½
+
+(cid:2)fung where
+
+½
+
+Bs
+
+(cid:2) ¼ ½j(cid:2) Nc
+
+Ac
+
+(cid:13)
+
+(cid:12)
+A/D
+
+Au½
+
+(cid:2)
+
+ð82Þ
+
+Fig. 7. Displacement w and rotation bs on each side i-j.
+
+I. Katili et al. / Computers and Structures 204 (2018) 48–64
+
+– For the present plate bending problems, we then have:
+
+(cid:14)
+(cid:14)
+PRef
+(cid:14)
+int
+
+(cid:14)
+(cid:14)
+2
+(cid:14)
+
+¼
+
+XNELT
+
+(cid:14)
+(cid:14)
+(cid:14)
+
+PRef
+int
+
+1
+
+(cid:14)
+(cid:14)
+2
+(cid:14)
+e
+
+55
+
+ð86Þ
+
+NELT is the total number of elements in the reference mesh.
+
+Fig. 8. A single element in an assumed inﬁnite mesh.
+
+A more mathematically oriented numerical test proposed for
+mixed, assumed strain based, (or any other formulation) to evalu-
+ate the risk of shear locking is the inf-sup test. MITC4 has been eval-
+uated using that test (see [33–43]). The programming of this test is
+not easy and we did not consider necessary to perform the inf-sup
+tests for DSQ and DKMQ, relying on the inherent formulation of
+both elements.
+
+In Table 2 we propose an evaluation of the characteristics and
+performances of the 4 elements based on our experience of pro-
+gramming and on results of classical tests (see references [12] for
+DKQ, [14] for DSQ, [18,20,22,23] for DKMQ, [9–11,34] for MITC4,
+and on the results reported in Section 9 of the present paper).
+
+8. s-norm method
+
+Z
+
+(cid:14)
+(cid:14)
+PRef
+(cid:14)
+int
+
+(cid:14)
+(cid:14)
+2
+(cid:14)
+e
+
+¼
+
+1
+2
+
+(cid:4)
+
+hMRef i Hb
+
+½
+
+(cid:2)(cid:3)1fMRef g dA þ
+
+A
+Z
+
+A
+
+hT Ref i Hs
+
+½
+
+(cid:2)(cid:3)1fT Ref g dA
+
+1
+2
+
+and
+(cid:14)
+(cid:14)
+PRef
+(cid:14)
+
+int (cid:3) PFE
+
+int
+
+(cid:14)
+(cid:14)
+PRef
+(cid:14)
+
+int (cid:3) PFE
+
+int
+
+(cid:14)
+(cid:14)
+2
+(cid:14)
+
+(cid:14)
+(cid:14)
+2
+(cid:14)
+e
+
+¼
+
+¼
+
+XNELT
+
+(cid:14)
+(cid:14)
+(cid:14)
+
+1
+
+PRef
+
+int (cid:3) PFE
+
+int
+
+(cid:14)
+(cid:14)
+(cid:14)
+
+2
+
+e
+
+1
+2
+
+(cid:4)
+
+Z
+
+hDMi Hb
+
+½
+
+(cid:2)(cid:3)1fDMgdA þ
+
+A
+Z
+
+A
+
+hDTi Hs
+½
+
+(cid:2)(cid:3)1fDTg dA
+
+1
+2
+
+where
+
+hDMi ¼ hhMRef i (cid:3) hMFEii;
+
+hDTi ¼ hhT Ref i (cid:3) hT FEii
+
+ð87Þ
+
+ð88Þ
+
+ð89Þ
+
+ð90Þ
+
+We integrate over the element area using (2 (cid:4) 2) Gauss points
+in the reference mesh, so that (since the weighting coefﬁcients of
+the 2 (cid:4) 2 Gauss scheme are equal to one):
+(cid:14)
+(cid:14)
+PRef
+(cid:14)
+int
+
+(cid:2)(cid:3)1fMRef nI
+ð
+
+hMRef nI
+
+Þg jJ nI
+ð
+
+Þi Hb
+½
+
+; gI
+
+; gI
+
+; gI
+
+XNPG
+
+¼
+
+Þj
+
+ð
+
+(cid:14)
+(cid:14)
+2
+(cid:14)
+e
+
+1
+2
+
+I¼1
+
+Uniform and optimal convergence of elements can be assessed
+
+using s-norm tests as deﬁned in [38–40,46].
+
+The relative error is computed using the general expression:
+
+þ
+
+1
+2
+
+XNPG
+
+hT Ref nI
+
+ð
+
+I¼1
+
+; gI
+
+Þi Hs
+½
+
+(cid:2)(cid:3)1fT Ref nI
+ð
+
+; gI
+
+Þg jJ nI
+ð
+
+; gI
+
+Þj
+
+ð91Þ
+
+ES ¼
+
+keFEk2
+(cid:14)
+(cid:14)
+(cid:14)
+(cid:14)
+PRef
+(cid:14)
+(cid:14)
+int
+
+2 ¼
+
+intk2
+
+kPRef
+int (cid:3) PFE
+(cid:14)
+(cid:14)
+(cid:14)
+(cid:14)
+2
+PRef
+(cid:14)
+(cid:14)
+int
+
+ð85Þ
+
+where
+(cid:14)
+(cid:14)
+– PRef
+(cid:14)
+int
+
+(cid:14)
+(cid:14)
+(cid:14)
+
+2
+
+refers to the strain energy of the reference solution
+
+which can be deﬁned by an analytical expression (like for circu-
+lar plates, see [15,19,20]) or numerically by using a very ﬁne
+mesh with ‘‘good” elements.
+
+– Even if an analytical solution is available it is not always easy to
+
+(cid:14)
+(cid:14)
+(cid:14)
+
+(cid:14)
+(cid:14)
+(cid:14)
+
+express PRef
+int
+
+2
+
+and usually a very ﬁne mesh is used. In the fol-
+
+lowing section we consider meshes of 128 (cid:4) 128 elements
+using DKMQ elements.
+
+Table 2
+Element characteristics based on classical evaluation tests and formulation aspects.
+
+Element characteristics
+
+DKQ MITC4 DSQ DKMQ
+
+Transverse of shear strains are considered
+
+No
+
+Yes
+
+Yes
+
+Yes
+
+[11,14,18]
+
+Pass the patch test for thin plates [15,18]
+Pass the patch test for thick plates [11,18]
+Relatively insensitive to distortion
+
+[11,12,18]
+
+No shear locking for thin plates [12,15,34]
+Simplicity of formulation and programming
+
+Yes
+–
+Yes
+
+Yes
+Yes
+
+Yes
+Yes
+Yes
+
+Yes
+Yes
+
+Yes
+No
+Yes
+
+Yes
+No
+
+Yes
+Yes
+Yes
+
+Yes
+Yes
+
+[11,12,18]
+
+Proper rank (Exhibit no spurious zero-
+
+Yes
+
+Yes
+
+Yes
+
+Yes
+
+energy modes) [12,15,18]
+
+Good convergence properties in classical
+engineering tests [11,12,14,15,18]
+Possibility to obtain the exact stiffness
+
+matrix for a beam [14,15,29]
+
+Yes
+
+Yes
+
+Yes
+
+Yes
+
+Yes
+
+No
+
+Yes
+
+Yes
+
+and
+(cid:14)
+(cid:14)
+PRef
+(cid:14)
+
+int (cid:3) PFE
+
+int
+
+(cid:14)
+(cid:14)
+2
+(cid:14)
+e
+
+¼
+
+1
+2
+
+XNPG
+
+hDM nI
+
+ð
+
+I¼1
+
+; gI
+
+Þi Hb
+½
+
+(cid:2)(cid:3)1fDM nI
+ð
+
+; gI
+
+Þg jJ nI
+ð
+
+; gI
+
+Þj
+
+þ
+
+1
+2
+
+XNPG
+
+hDT nI
+ð
+
+I¼1
+
+; gI
+
+Þi Hs
+½
+
+(cid:2)(cid:3)1fDT nI
+ð
+
+; gI
+
+Þg jJ nI
+ð
+
+; gI
+
+Þj
+
+ð92Þ
+
+NPG is the total number of Gauss points in each element of the
+
+reference mesh.
+
+And
+
+hDM nI
+ð
+hDT nI
+ð
+
+; gI
+; gI
+
+Þi ¼ hhMRef nI
+ð
+Þi ¼ hhT Ref nI
+
+ð
+
+; gI
+; gI
+
+Þi (cid:3) hMFE nI
+ð
+; gI
+Þi (cid:3) hT FE nI
+
+ð
+
+; gI
+Þii
+
+Þii
+
+ð93Þ
+
+; gI
+
+; gI
+
+ð
+
+ð
+
+Þi and hT FE nI
+
+hMFE nI
+Þi are the bending moments and shear
+forces in the coarse mesh, but one of the difﬁculty is to calculate
+the values of hMFE nI
+Þi at Gauss points (93) of
+each element in the reference mesh (with nI and gI = ±1=
+
+Þi and hT FE nI
+
+; gI
+
+; gI
+
+ﬃﬃﬃ
+3
+
+p
+
+).
+
+ð
+
+ð
+
+The reference solutions PRef
+
+int can either be obtained through
+analytical methods or numerical methods. In practice, analytical
+solutions can be obtained only when very simple geometries are
+considered. For these reasons, numerical methods are frequently
+preferred in obtaining reference solutions.When the exact solution
+is known, Eq. (85) become:
+(cid:14)
+(cid:14)
+(cid:3) PFE
+(cid:14)
+int
+(cid:14)
+(cid:14)
+2
+(cid:14)
+
+(cid:14)
+(cid:14)
+PEx
+(cid:14)
+int
+
+keFEk2
+(cid:14)
+(cid:14)
+2 ¼
+(cid:14)
+(cid:14)
+PEx
+(cid:14)
+(cid:14)
+int
+
+(cid:14)
+(cid:14)
+2
+(cid:14)
+(cid:14)
+(cid:14)
+PEx
+(cid:14)
+int
+
+ER ¼
+
+(cid:14)
+(cid:14)
+2
+(cid:14)
+
+ð94Þ
+
+which states the orthogonality of the exact solution with respect to
+the ﬁnite element solution.
+
+56
+
+I. Katili et al. / Computers and Structures 204 (2018) 48–64
+
+PEx
+
+int refers to the exact solution and PFE
+
+int refers to the ﬁnite ele-
+
+plates. Since DKMQ and DSQ converge to DKQ for thin plates, it
+is nor necessary to report the results for DKQ. We only report the
+values for L/h = 2 and L/h = 104 to obtain the convergence slope.
+
+ment model for a given mesh.
+
+(cid:14)
+(cid:14)
+PFE
+(cid:14)
+int
+
+(cid:14)
+(cid:14)
+2
+(cid:14)
+
+¼
+
+(cid:14)
+(cid:14)
+PFE
+(cid:14)
+int
+
+(cid:14)
+(cid:14)
+2
+(cid:14)
+e
+
+XNELT
+
+1
+
+ð95Þ
+
+9.1. Clamped square plate
+
+NELT is the total number of elements in the reference mesh.
+
+(cid:14)
+(cid:14)
+PFE
+(cid:14)
+int
+
+(cid:14)
+(cid:14)
+2
+(cid:14)
+e
+
+¼
+
+1
+2
+
+Z
+
+A
+
+hMFEi Hb
+
+½
+
+(cid:2)(cid:3)1fMFEg dA þ
+
+Z
+
+A
+
+1
+2
+
+hT FEi Hs
+
+½
+
+(cid:2)(cid:3)1fT FEg dA ð96Þ
+
+In the s-norm method, the errors are represented by plotting
+curves Log of ES in term of Log Lk, where Lk represents an indicator
+of the element size in a mesh (in our work Lk is the element size for
+square elements and an average element size for distorted meshes,
+like for circular plates). The resulting curves based on 2 values of
+L/h are compared with the slopes p = 1 of
+the theoretical
+convergence (energy) formula:
+
+Es ﬃ cL2p
+k
+
+where c is a constant.
+
+ð97Þ
+
+In elements DSQ and DKMQ incomplete quadratic interpola-
+tions for the rotations are considered whereas for MITC4 linear
+approximations are considered. It is therefore important to check
+the three elements (for L/h = 2 and 104), with respect to p = 1.
+
+9. Numerical results based on s-norm
+
+The three elements DKMQ, DSQ and MITC4 have been pro-
+grammed by the authors with results reported below for regular
+and distorted meshes, for rectangular and circular plates under
+uniform loading and for various slenderness ratio (from thick to
+very thin plates). For uniform loading, bilinear approximation for
+the transverse displacement w (n, g) is used for all elements to
+deﬁne the equivalent load vectors. Regarding MITC4, our results
+are in agreement with those published in [33], obtained for thin
+
+We analyze a clamped square plate under uniform loading fz
+where the details can be seen on Fig. 9. Because of symmetry, only
+area ABCD is considered with hard support conditions w = by = bx =
+0 along AB and AD. The symmetry condition bx = 0 along BC and by
+=0 along DC are taken into account.
+
+Table 3 shows the percentage of bending and shear energy for a
+clamped square plate using N (cid:4) N = 128 (cid:4) 128 DKMQ elements for
+different L/h.
+
+For a thick plate (L/h = 2), the shear energy reaches 61% but still
+bending exists since the bending energy is 39% of the total energy.
+Transverse shear effects quickly vanish for L/h > 102. In Fig. 10 we
+report the results obtained using the three elements in the extreme
+situations of L/h = 2 and L/h = 104, in a classical manner, i.e. ES ver-
+sus N number of elements between A and B.
+
+For coarse mesh (N = 4) the results are different with an advan-
+tage to the family of DKQ (for the thin plate), DSQ and DKMQ, com-
+pared to MITC4, but all elements converge quickly and the relative
+errors Es is very small (<0.1%). It is also observed that the same
+results are obtained for DSQ and DKMQ for thin and thick plates.
+By using the solution of DKMQ elements with N (cid:4) N = 128 (cid:4)
+128 as
+reference solution and considering two values of
+L/h (L/h = 2 and 104), Fig. 11 shows the convergence behavior of
+DKMQ, DSQ and MITC4 elements for N = 4, 8, 16 and 32.
+
+We conﬁrm that DKMQ and DSQ have the same behavior as
+DKQ for L/h > 102. It is also observing that the convergence is uni-
+form and linear for all three elements. Errors are a bit higher for
+MITC4 compared with the other elements. Results of MITC4 are
+in agreement with results presented in [34] and also recently
+[46] using MITC9 as the reference solution [41].
+
+Fig. 9. Clamped square plate (E = 1.7472 (cid:4) 107; t = 0.3; L = 1; fz = (cid:3)1).
+
+Table 3
+Bending and shear energy for clamped square plate using N (cid:4) N = 128 (cid:4) 128 DKMQ elements for different L/h.
+
+L/h
+
+2
+4
+10
+102
+103
+104
+
+kPb
+
+int k2 (%)
+
+3.266 (cid:4) 10(cid:3)8
+3.525 (cid:4) 10(cid:3)7
+3.896 (cid:4) 10(cid:3)6
+3.891 (cid:4) 10(cid:3)3
+3.891 (cid:4) 100
+3.891 (cid:4) 103
+
+39.05%
+70.37%
+93.24%
+99.93%
+100%
+100%
+
+kPs
+
+int k2 (%)
+
+5.097 (cid:4) 10(cid:3)8
+1.063 (cid:4) 10(cid:3)7
+2.823 (cid:4) 10(cid:3)7
+2.791 (cid:4) 10(cid:3)6
+2.209 (cid:4) 10(cid:3)5
+2.181 (cid:4) 10(cid:3)4
+
+60.95%
+29.63%
+6.76%
+0.07%
+0%
+0%
+
+(cid:14)
+(cid:14)
+(cid:14)
+
+PRef
+int
+
+(cid:14)
+(cid:14)
+(cid:14)
+
+2
+
+(%)
+
+8.363 (cid:4) 10(cid:3)8
+3.589 (cid:4) 10(cid:3)7
+4.178 (cid:4) 10(cid:3)6
+3.894 (cid:4) 10(cid:3)3
+3.891 (cid:4) 100
+3.891 (cid:4) 103
+
+100%
+100%
+100%
+100%
+100%
+100%
+
+I. Katili et al. / Computers and Structures 204 (2018) 48–64
+
+57
+
+Fig. 10. Relative error for clamped square plate with uniform and distorted mesh for L/h = 2 and 104.
+
+DKMQ 
+
+-2 -1.5 -1 -0.5 0
+
+0
+
+-0.5
+
+-1
+
+-1.5
+
+-2
+
+DSQ 
+
+-2 -1.5 -1 -0.5 0
+
+0
+
+-0.5
+
+-1
+
+-1.5
+
+-2
+
+MITC4 
+
+-2 -1.5 -1 -0.5 0
+
+0
+
+-0.5
+
+-1
+
+-1.5
+
+-2
+
+-2.5
+
+)
+
+S
+E
+
+-2.5
+
+)
+
+S
+E
+
+-2.5
+
+)
+
+S
+E
+
+(
+
+g
+o
+L
+
+-3
+
+-3.5
+
+-4
+
+-4.5
+
+-5
+
+-5.5
+
+Linear p =1
+
+L/h=2
+
+L/h=10000
+
+Log (Lk)
+
+(
+
+g
+o
+L
+
+-3
+
+-3.5
+
+-4
+
+-4.5
+
+-5
+
+-5.5
+
+Linear p =1
+
+L/h=2
+
+L/h=10000
+
+Log (Lk)
+
+(
+g
+o
+L
+
+-3
+
+-3.5
+
+-4
+
+-4.5
+
+-5
+
+-5.5
+
+Linear p =1
+
+L/h=2
+
+L/h=10000
+
+Log (Lk)
+
+Fig. 11. Convergence behavior for clamped square plate by using s-norm with uniform mesh.
+
+We also consider the effect of distortion (Fig. 12). The distorted
+mesh characteristics are as follows: each length 2L/3 and L/3 on a
+side is successively divided by 2, 4, 8, 16 equal segments.
+
+Fig. 13 shows the convergence behavior of the DKMQ, DSQ and
+MITC4 elements with the distorted mesh presented in Fig. 12 for
+N = 4, 8, 16 and 32.
+
+Similar comments for the distorted meshes can be made com-
+pared to uniform meshes (Fig. 11). Distortion of elements is almost
+insigniﬁcant for this test. Same results for MITC4 are reported in
+[46]. We can observe in Fig. 11 and 13 that the convergence behav-
+ior of MITC4 element in very thin plate (L/h = 104) is not as good as
+it’s behavior in very thick plate (L/h = 2).
+
+ 
+ 
+ 
+ 
+ 
+ 
+58
+
+I. Katili et al. / Computers and Structures 204 (2018) 48–64
+
+Y
+
+D
+
+L
+
+Y
+
+D
+
+2L/3
+
+L/3
+
+C
+
+L
+
+A
+
+4 × 4
+
+X
+
+B
+
+A
+
+8 × 8
+
+Fig. 12. Distorted mesh of square plate.
+
+C
+
+L/3
+
+2L/3
+
+X
+
+B
+
+Fig. 13. Convergence behavior of clamped square plate by using s-norm with distorted mesh.
+
+Fig. 14. Simply supported square plate (E = 1.7472 (cid:4) 107; t = 0.3; L = 1; fz = (cid:3)1).
+
+I. Katili et al. / Computers and Structures 204 (2018) 48–64
+
+59
+
+Table 4
+Bending and shear energy for simply supported square plate and various L/h.
+
+L/h
+
+2
+4
+10
+102
+103
+104
+
+kPb
+
+int k2 (%)
+
+1.362 (cid:4) 10(cid:3)7
+1.090 (cid:4) 10(cid:3)6
+1.702 (cid:4) 10(cid:3)5
+1.702 (cid:4) 10(cid:3)2
+1.702 (cid:4) 101
+1.702 (cid:4) 104
+
+73.07%
+91.56%
+98.55%
+99.99%
+100%
+100%
+
+kPs
+
+int k2 (%)
+
+5.020 (cid:4) 10(cid:3)8
+1.004 (cid:4) 10(cid:3)7
+2.506 (cid:4) 10(cid:3)7
+2.158 (cid:4) 10(cid:3)6
+7.592 (cid:4) 10(cid:3)6
+6.937 (cid:4) 10(cid:3)5
+
+26.93%
+8.44%
+1.45%
+0.01%
+0%
+0%
+
+(cid:14)
+(cid:14)
+PRef
+(cid:14)
+int
+
+(cid:14)
+(cid:14)
+(cid:14)
+
+2
+
+(%)
+
+1.864 (cid:4) 10(cid:3)7
+1.190 (cid:4) 10(cid:3)6
+1.728 (cid:4) 10(cid:3)5
+1.703 (cid:4) 10(cid:3)2
+1.702 (cid:4) 101
+1.702 (cid:4) 104
+
+100%
+100%
+100%
+100%
+100%
+100%
+
+0.016
+0.014
+0.012
+0.010
+0.008
+0.006
+0.004
+0.002
+0.000
+
+s
+E
+
+0.025
+
+0.020
+
+0.015
+
+0.010
+
+0.005
+
+0.000
+
+s
+E
+
+L/h=2
+
+MITC4
+
+DSQ
+
+DKMQ
+
+0.012
+
+0.010
+
+0.008
+
+0.006
+
+s
+E
+
+0.004
+
+0.002
+
+0.000
+
+L/h=104
+
+MITC4
+
+DSQ
+
+DKMQ
+
+0
+
+4
+
+8
+
+12
+
+16
+N
+
+20
+
+24
+
+28
+
+32
+
+0
+
+4
+
+8
+
+12
+
+20
+
+24
+
+28
+
+32
+
+16
+N
+
+(a) Uniform mesh
+
+0.020
+0.018
+0.016
+0.014
+0.012
+0.010
+0.008
+0.006
+0.004
+0.002
+0.000
+
+s
+E
+
+L/h=2
+
+MITC4
+
+DSQ
+
+DKMQ
+
+L/h=104
+
+MITC4
+
+DSQ
+
+DKMQ
+
+0
+
+4
+
+8
+
+12
+
+16
+N
+
+20
+
+24
+
+28
+
+32
+
+0
+
+4
+
+8
+
+12
+
+20
+
+24
+
+28
+
+32
+
+16
+N
+
+Fig. 15. Relative error for simply supported square plate with uniform mesh for L/h = 2 and 104.
+
+(b) Distorted mesh
+
+Fig. 16. Convergence behavior of SS square plate by using s-norm with uniform mesh.
+
+60
+
+I. Katili et al. / Computers and Structures 204 (2018) 48–64
+
+9.2. Simply supported (SS) square plate
+
+A simply supported square plate with hard support conditions
+(w = bs = 0) under uniform loading fz is also studied (Fig. 14). The
+solution using DKMQ elements with N (cid:4) N = 128 (cid:4) 128 is consid-
+ered as reference solution.
+
+Table 4 shows the percentage of bending and shear energy for a
+simply supported square plate using N (cid:4) N = 128 (cid:4) 128 DKMQ ele-
+ments for different L/h. We can see the strong inﬂuence of the
+boundary conditions: the percentage of bending strain energy is
+very important for the SS case compared to the clamped case
+(Table 3) even for very thick plates, (bending strain energy is 73%
+of the total strain energy for L/h = 2). Transverse shear effects
+quickly vanish for L/h > 10.
+
+In Fig. 15 we report the results obtained using the three ele-
+ments in the extreme situations of L/h = 2 and L/h = 104, in a classi-
+cal manner, i.e. ES versus N number of elements between A and B.
+
+For coarse mesh (N = 4) the results are different with an advan-
+tage to DKMQ and DSQ, compared to MITC4, but all elements con-
+verge quickly and the relative errors ES is again very small.
+
+The convergence behavior of DKMQ, DSQ and elements for
+L/h = 2 and 104 is presented in Fig. 16 for uniform mesh and on
+Fig. 17 for distorted mesh for N = 4, 8, 16 and 32 respectively.
+
+For the two cases analyzed, the relative error found by using
+DKMQ and DSQ elements is smaller than for MITC4 element. For
+thin plate problems, DKMQ and DSQ give the same results. We also
+observe in these tests that the behavior of the DKMQ element is
+similar to the DKQ elements when the plate is thin and similar
+to MITC4 element for thick plate situations.
+
+9.3. Clamped circular plate with uniform load
+
+We now consider a clamped circular plate with hard support
+conditions (w = by = bx = 0) under uniform loading fz (Fig. 18).
+
+Fig. 17. Convergence behavior of SS square plate by using s-norm with distorted mesh.
+
+Fig. 18. Clamped circular plate (E = 1.7472 (cid:4) 107; t = 0.3; R = 1; fz = (cid:3)1).
+
+I. Katili et al. / Computers and Structures 204 (2018) 48–64
+
+61
+
+Because of symmetry, only area ABC is evaluated. In this problem
+an analytical solution exists [15,18–19] and we can use the exact
+expression of the total strain energy to evaluate the relative energy
+errors. The convergence analysis of DKMQ, DSQ and MITC4
+elements for R/h = 2 and 104 is proposed using meshes with
+N (cid:4) N (cid:4) 3 = 8 (cid:4) 8 (cid:4) 3, 16 (cid:4) 16 (cid:4) 3, 24 (cid:4) 24 (cid:4) 3, 32 (cid:4) 32 (cid:4) 3 and
+64 (cid:4) 64 (cid:4) 3 (one quarter ABC is divided in 3 zones and for each
+zone we consider N (cid:4) N elements, see Fig. 18).
+
+Exact energy for clamped circular plate [18–19]:
+
+PEx
+
+int ¼ Pb
+
+int þ Ps
+
+int ¼
+
+!
+
+f 2
+z R6u
+384Db
+
+1 þ
+
+Þ2
+4 h=Rð
+j 1 (cid:3) t
+Þ
+ð
+
+u deﬁnes the size of the sector analyzed (u = p/2 for our analysis).
+
+Table 5
+Bending, shear and total exact energy for clamped circular plate and various R/h.
+
+Table 5 shows the percentage of bending and shear energy com-
+pared to the total exact strain energy for the clamped circular plate
+for different R/h. Results are similar compared to the clamped
+square plate (Table 3).
+
+On Fig. 19 we report the results we have obtained using DKMQ,
+DSQ and MITC4 elements for extreme values of R/h, i.e. R/h = 2 and
+104 considering the energy error indicator ER (94).
+
+We observe a good convergence for three elements towards the
+exact solution with a slight advantage for DKMQ and DSQ. Three
+elements are converging from below (large stiffness) in the thick
+plate case whereas from above (smaller stiffness) in the thin plate
+case.
+
+In Fig. 20, we present in the spirit of s-norm tests the results Log
+ER as function of Log Lk, with meshes N (cid:4) N (cid:4) 3 = 8 (cid:4) 8 (cid:4) 3,
+
+R/h
+
+2
+4
+10
+102
+103
+104
+
+kPb
+
+int k2(%)
+2.045 (cid:4) 10(cid:3)8
+1.636 (cid:4) 10(cid:3)7
+2.557 (cid:4) 10(cid:3)6
+2.557 (cid:4) 10(cid:3)3
+2.557 (cid:4) 100
+2.557 (cid:4) 103
+
+36.84%
+70.00%
+93.58%
+99.93%
+100%
+100%
+
+kPs
+
+int k2(%)
+3.506 (cid:4) 10(cid:3)8
+7.012 (cid:4) 10(cid:3)8
+1.753 (cid:4) 10(cid:3)7
+1.753 (cid:4) 10(cid:3)6
+1.753 (cid:4) 10(cid:3)5
+1.753 (cid:4) 10(cid:3)4
+
+63.16%
+30.00%
+6.42%
+0.07%
+0%
+0%
+
+kPEx
+
+int k2(%)
+5.552 (cid:4) 10(cid:3)8
+2.337 (cid:4) 10(cid:3)7
+2.732 (cid:4) 10(cid:3)6
+2.558 (cid:4) 10(cid:3)3
+2.555 (cid:4) 100
+2.557 (cid:4) 103
+
+100%
+100%
+100%
+100%
+100%
+100%
+
+Fig. 19. Convergence of ER for clamped circular plate using DKMQ, DSQ and MITC4 for R/h = 2 and R/h = 104.
+
+Fig. 20. Convergence behavior of clamped circular plate by using Log (|ER|) versus Log (Lk).
+
+ 
+62
+
+I. Katili et al. / Computers and Structures 204 (2018) 48–64
+
+16 (cid:4) 16 (cid:4) 3, 24 (cid:4) 24 (cid:4) 3, 32 (cid:4) 32 (cid:4) 3 and 64 (cid:4) 64 (cid:4) 3. Again we
+observe the uniform linear convergence behavior for all elements.
+
+9.4. Simply supported (SS) circular plate with uniform load
+
+A simply supported circular plate with soft support conditions
+(w = 0) under uniform loading fz (Fig. 21). The convergence behav-
+ior of DKMQ, DSQ and MITC4 elements for R/h = 2 and 104 is stud-
+ied for different meshes.
+
+Exact energy for simply supported (SS) circular plate [18,19]:
+
+PEx
+
+int ¼ Pb
+
+int þ Ps
+
+int ¼
+
+f 2
+z R6u
+384Db
+
+7 þ t
+1 þ t
+
+Þ
+Þ
+
+ð
+ð
+
+þ
+
+!
+
+Þ2
+4 h=Rð
+j 1 (cid:3) t
+Þ
+ð
+
+u deﬁnes the size of the sector analyzed and u = p/2 for our analysis.
+
+Table 6 shows the percentage of bending, shear energy on the
+total exact strain energy for a simply supported of circular plate
+based on exact solution for different R/h.
+
+The percentage of bending strain energy is very important for
+the SS case (Table 6) compared to the clamped case (Table 5) even
+for very thick plates. Hence performing ﬁnite elements to represent
+bending energy is an advantage for the same number of dof for a
+given analysis. On Fig. 22 we report the results we obtain using
+DKMQ, DSQ and MITC4 for extreme values of R/h, i.e. R/h = 2 and
+104. We consider meshes with N (cid:4) N (cid:4) 3 = 8 (cid:4) 8 (cid:4) 3, 16 (cid:4) 16 (cid:4) 3,
+24 (cid:4) 24 (cid:4) 3, 32 (cid:4) 32 (cid:4) 3 and 64 (cid:4) 64 (cid:4) 3. Both elements are
+rapidly converging to the exact solution for both thick and thin
+plates.
+
+In Fig. 23, results using Log ER in terms of Log Lk, are presented
+for meshes N (cid:4) N (cid:4) 3 = 8 (cid:4) 8 (cid:4) 3, 16 (cid:4) 16 (cid:4) 3, 24 (cid:4) 24 (cid:4) 3,
+
+Fig. 21. Simply supported circular plate (E = 1.7472 (cid:4) 107; t = 0.3; R = 1; fz = (cid:3)1).
+
+Table 6
+Bending, shear and total exact energy for simply supported circular plate and various R/h.
+
+R/h
+
+2
+4
+10
+102
+103
+104
+
+kPb
+
+int k2(%)
+1.149 (cid:4) 10(cid:3)8
+9.188 (cid:4) 10(cid:3)7
+1.436 (cid:4) 10(cid:3)5
+1.436 (cid:4) 10(cid:3)2
+1.436 (cid:4) 101
+1.436 (cid:4) 104
+
+76.61%
+92.91%
+98.79%
+99.99%
+100%
+100%
+
+kPs
+
+int k2(%)
+3.506 (cid:4) 10(cid:3)8
+7.012 (cid:4) 10(cid:3)8
+1.753 (cid:4) 10(cid:3)7
+1.753 (cid:4) 10(cid:3)6
+1.753 (cid:4) 10(cid:3)5
+1.753 (cid:4) 10(cid:3)4
+
+23.39%
+7.09%
+1.21%
+0.01%
+0%
+0%
+
+kPEx
+
+int k2(%)
+1.499 (cid:4) 10(cid:3)8
+9.889 (cid:4) 10(cid:3)7
+1.453 (cid:4) 10(cid:3)5
+1.436 (cid:4) 10(cid:3)2
+1.436 (cid:4) 101
+1.436 (cid:4) 104
+
+100%
+100%
+100%
+100%
+100%
+100%
+
+0.0050
+
+0.0040
+
+0.0030
+
+0.0020
+
+0.0010
+
+0.0000
+
+|
+R
+E
+
+|
+
+R/h=2
+
+MITC4
+
+DSQ
+
+DKMQ
+
+0.0050
+
+0.0040
+
+0.0030
+
+0.0020
+
+0.0010
+
+0.0000
+
+|
+R
+E
+
+|
+
+R/h=104
+
+MITC4
+
+DSQ
+
+DKMQ
+
+0
+
+8
+
+16
+
+24
+
+32
+N
+
+40
+
+48
+
+56
+
+64
+
+0
+
+8
+
+16
+
+24
+
+40
+
+48
+
+56
+
+64
+
+32
+N
+
+Fig. 22. Convergence of ER for SS circular plate using DKMQ and MITC4 for R/h = 2 and R/h = 104.
+
+ 
+ 
+        
+ 
+ 
+I. Katili et al. / Computers and Structures 204 (2018) 48–64
+
+63
+
+Fig. 23. Convergence behavior of SS circular plate by using Log (|ER|) versus Log (Lk).
+
+32 (cid:4) 32 (cid:4) 3 and 64 (cid:4) 64 (cid:4) 3. Results one more conﬁrm the
+uniform linear convergence of all elements with minor differences
+on the errors.
+
+10. Concluding remarks
+
+The paper includes detailed formulation aspects of the stiff-
+ness matrix of four quadrilateral plate bending elements with
+3 dof per node, based on the ﬁrst order Reissner-Mindlin the-
+ory. The three elements DKQ, DSQ and DKMQ have been devel-
+oped between 1982 and 1993 by the senior author and former
+students. The fourth element MITC4 has been published in
+1984, as a ﬁrst element of a series of MITC plate and shell ele-
+ments developed by Professor Bathe and collaborators. Even
+though the formulation of the four elements can be found in
+various documents, the present paper is written in order to
+understand the differences and complementarities, using a uni-
+ﬁed notation and similar assumed shear strain constraints on
+element sides. The paper shows that for thin plates DSQ and
+DKMQ should converge to DKQ without shear locking. On the
+other end for extremely thick plates the formulation of DKMQ
+is such that DKMQ (cid:8) MITC4. This last result has never been
+shown before.
+
+S-norm tests have been implemented and new results have
+been obtained and reported in this paper. The results show that
+uniform linear convergence is observed for the four elements
+even if the DKQ, DSQ and DKMQ are based on incomplete
+quadratic interpolation of the rotations. However, the relative
+error in strain energy is slightly smaller in DKQ, DSQ and
+DKMQ compared to MITC4 for square plates, either with uni-
+form or distorted meshes. Due to the simplicity of formulation,
+the DKMQ element is much preferable than DKQ and DSQ since
+it is valid for thin to thick plates (not the case for DKQ) and it
+fully satisﬁes the requirement for a robust and convergent ele-
+ment (satisfying all types of patch tests which is not the case
+for DSQ).
+
+The shear energy representation in DKMQ is also simpler than
+for DSQ. It is also seen that the contribution of the quadratic terms
+of DKMQ can be introduced without much effort to enhance MITC4
+for the bending behavior of thin plates.
+
+Acknowledgements
+
+The ﬁnancial support from the Ministry of Research, Technology
+and Higher Education – Indonesia (RISTEKDIKTI) through the
+World Class Professor program (No. 168.A10/D2/KP/2017) is grate-
+fully acknowledged.
+
+References
+
+[1] Reissner E. The effect of transverse shear deformation on the bending of elastic
+
+plates. J Appl Mech Eng ASME 1945;12:A69–77.
+
+[2] Mindlin RD. Inﬂuence of rotation inertia and shear on ﬂexural motion of
+
+isotropic elastic plates. J Appl Mech 1951;18:31–8.
+
+[3] Zienkiewicz OC, Taylor RL, Too JM. Reduced integration technique in general
+
+analysis of plates and shells. Int J Numer Meth Eng 1971;3(2):275–90.
+
+[4] Pugh EDL, Hinton E, Zienkiewicz OC. A study of quadrilateral plate bending
+J Numer Meth Eng 1978;12
+
+Int
+
+elements with reduced integration.
+(7):1059–79.
+
+[5] Hughes TJR, Cohen M, Haroun M. Reduced and selective integration techniques
+in the ﬁnite element analysis of plates. Nucl Eng Des 1978;46(1):203–22.
+[6] Malkus DS, Hughes TJR. Mixed ﬁnite element methods—reduced and selective
+integration techniques: a uniﬁcation of concepts. Comput Methods Appl Mech
+Eng 1978;15(1):63–81.
+
+[7] Hughes TJR, Tezduyar TE. Finite elements based upon Mindlin plate theory
+with particular reference to the four-node bilinear isoparametric element.
+Trans ASME J Appl Mech 1981;48(3):587–96.
+
+[8] MacNeal RH. Derivation of element stiffness matrices by assumed strain
+
+distributions. Nucl Eng Des 1982;70:3–12.
+
+[9] Dvorkin EN, Bathe KJ. A continuum mechanics based four-node shell element
+
+for general non-linear analysis. Eng Comput 1984;1:77–88.
+
+[10] Bathe KJ, Dvorkin EN. A formulation of general shell elements - the use of
+J Numer Meth Eng
+
+tensorial components.
+
+Int
+
+mixed interpolation of
+1986;22:697–722.
+
+[11] Bathe KJ, Dvorkin EN. A four-node plate bending element based on Mindlin-
+Reissner plate theory and a mixed interpolation. Int J Numer Meth Eng
+1985;21:367–83.
+
+[12] Batoz J-L, Ben Tahar M. Evaluation of a new thin plate quadrilateral element.
+
+Int J Numer Meth Eng 1982;18:1655–78.
+
+[13] Batoz J-L, Bathe KJ, Ho LW. A study of three-node triangular plate bending
+
+elements. Int J Numer Meth Eng 1980;15:1771–812.
+
+[14] Lardeur P. Développement et évaluation de deux nouveaux éléments ﬁnis de
+plaques et coques composites avec inﬂuence du cisaillement transversal.
+Thèse UTC; 1990.
+
+[15] Batoz J-L, Dhatt G. Modélisation des structures par élément ﬁnis. Volume 2:
+
+Poutres et plaques, Hermes, Paris; 1990.
+
+[16] Batoz J-L, Lardeur P. A discrete shear triangular nine dof element for the
+analysis of thick to very thin plates. Int J Numer Meth Eng 1989;28:533–60.
+[17] Lardeur P, Batoz J-L. Composite plate analysis using a new discrete shear
+triangular plate bending element. Int J Numer Meth Eng 1989;27(2):343–60.
+
+64
+
+I. Katili et al. / Computers and Structures 204 (2018) 48–64
+
+[18] Katili I. A new discrete Kirchhoff-Mindlin element based on Mindlin-Reissner
+plate theory and assumed shear strain ﬁelds – part II: An extended DKQ
+J Numer Meth Eng
+element
+1993;36:1885–908.
+
+thick plate bending analysis.
+
+for
+
+Int
+
+[19] Katili I. A new discrete Kirchhoff-Mindlin element based on Mindlin-Reissner
+plate theory and assumed shear strain ﬁelds – part I: An extended DKT
+element
+J Numer Meth Eng
+1993;36:1859–83.
+
+thick-plate bending analysis.
+
+for
+
+Int
+
+[20] Katili I, Maknun IJ, Millet O, Hamdouni A. Application of DKMQ element for
+composite plate bending structures. Compos Struct 2015;132:166–74.
+[21] Mahjudin M, Lardeur P, Druesne F, Katili I. Stochastic ﬁnite element analysis of
+plates with the certain generalized stresses method. Struct Saf 2016;61:12–21.
+[22] Wong FT, Richard A, Katili I. Development of the DKMQ element for buckling
+analysis of shear-deformable plate bending. Procedia Eng 2017;171:805–12.
+[23] Katili I, Batoz J-L, Maknun IJ, Hamdouni A, Millet O. The development of DKMQ
+plate bending element for thick to thin shell analysis based on Naghdi/
+Reissner/Mindlin shell theory. Finite Elem Anal Des 2014;100:12–27.
+
+[24] Maknun IJ, Katili I, Millet O, Hamdouni A. Application of DKMQ element for
+twist of thin-walled beams: comparison with Vlasov theory. Int J Comput
+Methods Eng Sci Mech 2016;17:391–400.
+
+[25] Irpanni H, Katili I, Maknun IJ. Development DKMQ shell element with ﬁve
+degrees of freedom per nodal. Int J Mech Eng Robot Res 2017;6:248–52.
+[26] Katili I, Maknun IJ, Tjahjono E, Alisyahbana I. Error estimation for the DKMQ24
+J Technol
+
+element by using various
+
+recovery methods.
+
+Int
+
+shell
+2017;6:1060–9.
+
+[27] Katili I, Maknun IJ, Batoz J-L, Ibrahimbegovic´ A. Shear deformable shell
+element DKMQ24 for composite structures. Compos Struct 2018;132:166–74.
+[28] Kiendl J, Auricchio F, Hughes TJR, Reali A. Single-variable formulations and
+isogeometric discretization for shear deformable beams. Comput Methods
+Appl Mech Eng 2015;284:988–1004.
+
+[29] Katili I. Uniﬁed and integrated approach in a new Timoshenko beam element.
+
+Eur J Comput Mech 2017;26:282–308.
+
+[31] Thai HT, Nguyen TK, Vo TP, Ngo T. A new simple shear deformation plate
+
+theory. Compos Struct 2017;171:277–85.
+
+[32] Katili I, Aristio R. Isogeometric Galerkin in rectangular plate bending problem
+
+based on UI approach. Eur J Mech A-Solids 2018;67:92–107.
+
+[33] Chapelle D, Bathe KJ. The inf-sup test. Comput Struct 1993;47(4/5):537–45.
+[34] Iosilevich A, Bathe KJ, Brezzi F. On evaluating the inf-sup condition for plate
+
+bending elements. Int J Numer Meth Eng 1997;40:3639–63.
+
+[35] Bucalem ML, Bathe KJ. Finite element analysis of shell structures. Arch Comput
+
+Methods Eng 1997;4:3–61.
+
+[36] Chapelle D, Bathe KJ. Fundamental considerations for the ﬁnite element
+
+analysis of shell structures. Comput Struct 1998;66(19–36):711–2.
+
+[37] Bathe KJ, Iosilevich A, Chapelle D. An evaluation of the MITC shell elements.
+
+Comput Struct 2000;75:1–30.
+
+[38] Bathe KJ, Iosilevich A, Chapelle D. An inf-sup test for shell ﬁnite elements.
+
+Comput Struct 2000;75:439–56.
+
+[39] Chapelle D, Bathe KJ. Optimal consistency errors for general shell elements. C.
+
+R. Acad. Sci. Paris, t. 332; 2001; Serie I: 771–6.
+
+[40] Hiller
+
+JF, Bathe KJ. Measuring convergence of mixed ﬁnite element
+Struct
+shell
+
+application
+
+structures.
+
+Comput
+
+an
+
+to
+
+discretization:
+2003;81:639–54.
+
+[41] Lee PS, Bathe KJ. The quadratic MITC plate and MITC shell elements in plate
+
+bending. Adv Eng Softw 2010;41:712–28.
+
+[42] Bathe KJ, Lee PS. Measuring the convergence behavior of shell analysis
+
+schemes. Comput Struct 2011;89:285–301.
+
+[43] Chapelle D, Bathe KJ. The ﬁnite element analysis of shells - fundamentals,
+Springer, 1st Edition, Springer, 2003. 1st ed. Springer; 2003. 2nd Edition,
+Springer, 2011.
+
+[44] Hughes T. The ﬁnite element method: linear static and dynamic ﬁnite element
+
+analysis. Prentice Hall; 1987.
+
+[45] Zienkiewicz OC, Taylor R, Papadopoulos P, Onate E. Plate bending elements
+with discrete constraints: new triangular elements. Comput Struct 1990;35
+(4):505–22.
+
+[30] Senjanovic´ I, Vladimir N, Tomic´ M. An advanced theory of moderately thick
+
+[46] Ko Y, Lee PS, Bathe KJ. The MITC4+ shell elements and its performance. Comput
+
+plate vibrations. J Sound Vib 2013;332:1868–80.
+
+Struct 2016;169:57–68.
+
+
