@@ -44,7 +44,7 @@ fn batch_ke_mitc3<'py>(
             for i in 0..9 {
                 node_coords[i] = coords_arr[[e, i]];
             }
-            let pre = Mitc3Precomputed::new(&node_coords, constitutive.clone(), thickness, e_mod);
+            let pre = Mitc3Precomputed::new(&node_coords, constitutive.clone(), thickness, e_mod, 1.0);
             let ke = mitc3::compute_ke_global(&pre);
             let mut flat = [0.0f64; 324];
             for i in 0..18 {
@@ -90,7 +90,7 @@ fn batch_me_mitc3<'py>(
             for i in 0..9 {
                 node_coords[i] = coords_arr[[e, i]];
             }
-            let pre = Mitc3Precomputed::new(&node_coords, constitutive.clone(), thickness, e_mod);
+            let pre = Mitc3Precomputed::new(&node_coords, constitutive.clone(), thickness, e_mod, 1.0);
             let me = mitc3::compute_me_global(&pre, rho);
             let mut flat = [0.0f64; 324];
             for i in 0..18 {
@@ -137,7 +137,7 @@ fn batch_kt_mitc3<'py>(
             for i in 0..9 {
                 node_coords[i] = coords_arr[[e, i]];
             }
-            let pre = Mitc3Precomputed::new(&node_coords, constitutive.clone(), thickness, e_mod);
+            let pre = Mitc3Precomputed::new(&node_coords, constitutive.clone(), thickness, e_mod, 1.0);
 
             let mut u = mitc3::Vec18::zeros();
             for i in 0..18 {
@@ -191,7 +191,7 @@ fn batch_fint_mitc3<'py>(
             for i in 0..9 {
                 node_coords[i] = coords_arr[[e, i]];
             }
-            let pre = Mitc3Precomputed::new(&node_coords, constitutive.clone(), thickness, e_mod);
+            let pre = Mitc3Precomputed::new(&node_coords, constitutive.clone(), thickness, e_mod, 1.0);
 
             let mut u = mitc3::Vec18::zeros();
             for i in 0..18 {
@@ -244,7 +244,7 @@ fn batch_ke_mitc4<'py>(
             for i in 0..12 {
                 node_coords[i] = coords_arr[[e, i]];
             }
-            let pre = Mitc4Precomputed::new(&node_coords, constitutive.clone(), thickness, e_mod);
+            let pre = Mitc4Precomputed::new(&node_coords, constitutive.clone(), thickness, e_mod, 1.0);
             let ke = mitc4::compute_ke_global(&pre);
             let mut flat = [0.0f64; 576];
             for i in 0..24 {
@@ -289,7 +289,7 @@ fn batch_me_mitc4<'py>(
             for i in 0..12 {
                 node_coords[i] = coords_arr[[e, i]];
             }
-            let pre = Mitc4Precomputed::new(&node_coords, constitutive.clone(), thickness, e_mod);
+            let pre = Mitc4Precomputed::new(&node_coords, constitutive.clone(), thickness, e_mod, 1.0);
             let me = mitc4::compute_me_global(&pre, rho);
             let mut flat = [0.0f64; 576];
             for i in 0..24 {
@@ -335,7 +335,7 @@ fn batch_kt_mitc4<'py>(
             for i in 0..12 {
                 node_coords[i] = coords_arr[[e, i]];
             }
-            let pre = Mitc4Precomputed::new(&node_coords, constitutive.clone(), thickness, e_mod);
+            let pre = Mitc4Precomputed::new(&node_coords, constitutive.clone(), thickness, e_mod, 1.0);
 
             let mut u = mitc4::Vec24::zeros();
             for i in 0..24 {
@@ -388,7 +388,7 @@ fn batch_fint_mitc4<'py>(
             for i in 0..12 {
                 node_coords[i] = coords_arr[[e, i]];
             }
-            let pre = Mitc4Precomputed::new(&node_coords, constitutive.clone(), thickness, e_mod);
+            let pre = Mitc4Precomputed::new(&node_coords, constitutive.clone(), thickness, e_mod, 1.0);
 
             let mut u = mitc4::Vec24::zeros();
             for i in 0..24 {
@@ -456,7 +456,7 @@ fn batch_ke_mitc3_composite<'py>(
             let e_eq = e_arr[e];
 
             let constitutive = composite_constitutive(&a, &d, &cs, h);
-            let pre = Mitc3Precomputed::new(&node_coords, constitutive, h, e_eq);
+            let pre = Mitc3Precomputed::new(&node_coords, constitutive, h, e_eq, 1.0);
             let ke = mitc3::compute_ke_global(&pre);
             let mut flat = [0.0f64; 324];
             for i in 0..18 {
@@ -505,7 +505,7 @@ fn batch_me_mitc3_composite<'py>(
                 &[1.0, 0.0, 0.0, 1.0],
                 1.0,
             );
-            let pre = Mitc3Precomputed::new(&node_coords, dummy, 1.0, 1.0);
+            let pre = Mitc3Precomputed::new(&node_coords, dummy, 1.0, 1.0, 1.0);
             let me = mitc3::compute_me_composite_global(&pre, m_trans, m_rot);
             let mut flat = [0.0f64; 324];
             for i in 0..18 {
@@ -565,7 +565,7 @@ fn batch_ke_mitc4_composite<'py>(
             let e_eq = e_arr[e];
 
             let constitutive = composite_constitutive(&a, &d, &cs, h);
-            let pre = Mitc4Precomputed::new(&node_coords, constitutive, h, e_eq);
+            let pre = Mitc4Precomputed::new(&node_coords, constitutive, h, e_eq, 1.0);
             let ke = mitc4::compute_ke_global(&pre);
             let mut flat = [0.0f64; 576];
             for i in 0..24 {
@@ -614,7 +614,7 @@ fn batch_me_mitc4_composite<'py>(
                 &[1.0, 0.0, 0.0, 1.0],
                 1.0,
             );
-            let pre = Mitc4Precomputed::new(&node_coords, dummy, 1.0, 1.0);
+            let pre = Mitc4Precomputed::new(&node_coords, dummy, 1.0, 1.0, 1.0);
             let me = mitc4::compute_me_composite_global(&pre, m_trans, m_rot);
             let mut flat = [0.0f64; 576];
             for i in 0..24 {
@@ -1098,7 +1098,7 @@ pub struct PyMeshAssembler {
 
 /// Parse a Python material dict into a `MaterialSpec`.
 ///
-/// Expected keys (isotropic): type="isotropic", e, nu, rho, thickness, shear_correction
+/// Expected keys (isotropic): type="isotropic", e, nu, rho, thickness, shear_correction, drilling_scale(optional)
 /// Expected keys (composite): type="composite", cm=[9], cb=[9], cs=[4],
 ///                            thickness, e_equiv, mass_per_area, rotational_inertia
 /// Expected keys (plane_stress): type="plane_stress", e, nu, rho, thickness
@@ -1119,7 +1119,18 @@ fn parse_material(py: Python, obj: &Py<PyAny>) -> PyResult<MaterialSpec> {
                 .ok()
                 .and_then(|v| v.extract::<f64>().ok())
                 .unwrap_or(5.0 / 6.0);
-            Ok(MaterialSpec::Isotropic { e, nu, rho, thickness, shear_correction })
+            let drilling_scale: f64 = dict.get_item("drilling_scale")
+                .ok()
+                .and_then(|v| v.extract::<f64>().ok())
+                .unwrap_or(1.0);
+            Ok(MaterialSpec::Isotropic {
+                e,
+                nu,
+                rho,
+                thickness,
+                shear_correction,
+                drilling_scale,
+            })
         }
         "composite" => {
             let cm_list: Vec<f64> = dict.get_item("cm")?.extract()?;
@@ -2977,6 +2988,54 @@ impl PyLaminate {
     #[getter] fn is_symmetric(&self) -> bool { self.inner.is_symmetric() }
     #[getter] fn is_balanced(&self) -> bool { self.inner.is_balanced() }
 
+    /// Areal density of the laminate [kg/m²] — sum of (ply density × ply thickness).
+    ///
+    /// Divide by ``total_thickness`` to get the equivalent volumetric density [kg/m³]
+    /// needed for CalculiX *DENSITY cards.
+    #[getter]
+    fn areal_density(&self) -> f64 {
+        self.inner.plies.iter()
+            .map(|p| p.material.density() * p.thickness)
+            .sum()
+    }
+
+    /// List of plies (bottom → top) as dicts.
+    ///
+    /// Each dict has keys: ``thickness``, ``angle``, ``z_bottom``, ``z_top``
+    /// and ``material`` (sub-dict with e1, e2, e3, g12, g23, g13, nu12, nu23, nu31, rho).
+    #[getter]
+    fn plies(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
+        let list = pyo3::types::PyList::empty(py);
+        for ply in &self.inner.plies {
+            let dict = pyo3::types::PyDict::new(py);
+            dict.set_item("thickness", ply.thickness)?;
+            dict.set_item("angle",     ply.angle)?;
+            dict.set_item("z_bottom",  ply.z_bottom)?;
+            dict.set_item("z_top",     ply.z_top)?;
+            let mdict = pyo3::types::PyDict::new(py);
+            mdict.set_item("e1",   ply.material.e1)?;
+            mdict.set_item("e2",   ply.material.e2)?;
+            mdict.set_item("e3",   ply.material.e3)?;
+            mdict.set_item("g12",  ply.material.g12)?;
+            mdict.set_item("g23",  ply.material.g23)?;
+            mdict.set_item("g13",  ply.material.g13)?;
+            mdict.set_item("nu12", ply.material.nu12)?;
+            mdict.set_item("nu23", ply.material.nu23)?;
+            mdict.set_item("nu31", ply.material.nu31)?;
+            mdict.set_item("rho",  ply.material.rho)?;
+            dict.set_item("material", mdict)?;
+            list.append(dict)?;
+        }
+        Ok(list.unbind().into_any())
+    }
+
+    /// Backward/interop helper: explicit method form of ``plies``.
+    ///
+    /// Some call sites can prefer a method instead of a property lookup.
+    fn plies_data(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
+        self.plies(py)
+    }
+
     fn __repr__(&self) -> String {
         let angles: Vec<String> = self.inner.plies.iter()
             .map(|p| format!("{:.0}", p.angle))
@@ -3049,6 +3108,136 @@ fn nonlinear_static_solve_coo<'py>(
     Ok((u_arr, result.iterations, result.residual_norm, result.converged_reason))
 }
 
+// ============================================================================
+// FSI binding — only compiled with feature "fsi"
+// ============================================================================
+
+/// Run a linear-elastic FSI simulation using preCICE for coupling.
+///
+/// This function drives the full partitioned FSI loop:
+/// registers the structural mesh with preCICE, reads forces,
+/// advances the Newmark integrator, writes displacements, and
+/// iterates until the coupling is complete.
+///
+/// The GIL is released for the duration of the coupling loop so that
+/// Python threads can run concurrently (though in practice preCICE is
+/// single-threaded on the structural side).
+///
+/// Args:
+///   k_rows, k_cols, k_vals   – COO stiffness matrix (i32 indices, n_dofs × n_dofs)
+///   m_rows, m_cols, m_vals   – COO mass matrix (same sparsity as K)
+///   c_rows, c_cols, c_vals   – COO damping matrix (same sparsity as K; can be all zeros)
+///   n_dofs                   – number of free DOFs
+///   beta, gamma, dt          – Newmark-β parameters and initial time step
+///   interface_coords         – flat array [x0,y0,z0, x1,y1,z1, …] of interface node coords
+///   interface_dofs           – global DOF indices of interface nodes in the reduced system
+///   mesh_dims                – spatial dimension of the interface (2 or 3)
+///   participant_name         – preCICE participant name
+///   config_file              – path to precice-config.xml
+///   coupling_mesh            – mesh name in preCICE
+///   write_data_name          – displacement data field name written to preCICE
+///   read_data_name           – force data field name read from preCICE
+///   ramp_time                – force ramp-up duration (0.0 = no ramp)
+///   force_max                – optional per-component force cap (None = no cap)
+///
+/// Returns:
+///   (displacement_history, velocity_history, acceleration_history, times)
+///   Each history is a list of lists; times is a flat list.
+#[pyfunction]
+#[cfg(feature = "fsi")]
+#[allow(clippy::too_many_arguments)]
+fn run_linear_elastic_fsi(
+    py: Python<'_>,
+    // Stiffness matrix K (COO)
+    k_rows: PyReadonlyArray1<i32>,
+    k_cols: PyReadonlyArray1<i32>,
+    k_vals: PyReadonlyArray1<f64>,
+    // Mass matrix M (COO)
+    m_rows: PyReadonlyArray1<i32>,
+    m_cols: PyReadonlyArray1<i32>,
+    m_vals: PyReadonlyArray1<f64>,
+    // Damping matrix C (COO)
+    c_rows: PyReadonlyArray1<i32>,
+    c_cols: PyReadonlyArray1<i32>,
+    c_vals: PyReadonlyArray1<f64>,
+    // System size
+    n_dofs: usize,
+    // Newmark parameters
+    beta: f64,
+    gamma: f64,
+    dt: f64,
+    // Interface definition
+    interface_coords: PyReadonlyArray1<f64>,
+    interface_dofs: PyReadonlyArray1<usize>,
+    mesh_dims: usize,
+    // preCICE configuration
+    participant_name: &str,
+    config_file: &str,
+    coupling_mesh: &str,
+    write_data_name: &str,
+    read_data_name: &str,
+    ramp_time: f64,
+    force_max: Option<f64>,
+) -> PyResult<(Vec<Vec<f64>>, Vec<Vec<f64>>, Vec<Vec<f64>>, Vec<f64>)> {
+    use aeroelast_solvers::petsc::elasticity::dynamic_newmark::NewmarkStepper;
+    use aeroelast_solvers::petsc::fsi::linear_elastic::{FsiConfig, LinearElasticFsiSolver};
+    use pyo3::exceptions::PyRuntimeError;
+
+    // Validate and extract array slices
+    let kr = k_rows.as_slice().map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
+    let kc = k_cols.as_slice().map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
+    let kv = k_vals.as_slice().map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
+    let mr = m_rows.as_slice().map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
+    let mc = m_cols.as_slice().map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
+    let mv = m_vals.as_slice().map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
+    let cr = c_rows.as_slice().map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
+    let cc = c_cols.as_slice().map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
+    let cv = c_vals.as_slice().map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
+    let icoords: Vec<f64> = interface_coords.as_slice()
+        .map_err(|e| PyRuntimeError::new_err(e.to_string()))?.to_vec();
+    let idofs: Vec<usize> = interface_dofs.as_slice()
+        .map_err(|e| PyRuntimeError::new_err(e.to_string()))?.to_vec();
+
+    // Owned String copies for the closure (cannot borrow &str across GIL release)
+    let participant_name = participant_name.to_string();
+    let config_file = config_file.to_string();
+    let coupling_mesh = coupling_mesh.to_string();
+    let write_data_name = write_data_name.to_string();
+    let read_data_name = read_data_name.to_string();
+
+    // Build the Newmark stepper — must happen before GIL release (PETSc init)
+    let stepper = NewmarkStepper::new(
+        kr, kc, kv,
+        mr, mc, mv,
+        cr, cc, cv,
+        n_dofs, beta, gamma, dt,
+    )
+    .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
+
+    let config = FsiConfig {
+        participant_name,
+        config_file,
+        coupling_mesh,
+        write_data: write_data_name,
+        read_data: read_data_name,
+        ramp_time,
+        force_max,
+    };
+
+    let mut solver = LinearElasticFsiSolver::new(stepper, config, icoords, idofs, mesh_dims);
+
+    let result = solver
+        .run()
+        .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
+
+    Ok((
+        result.displacement_history,
+        result.velocity_history,
+        result.acceleration_history,
+        result.times,
+    ))
+}
+
 /// Register all aeroelast functions into a PyModule.
 pub fn register_module(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(batch_ke_mitc3, m)?)?;    m.add_function(wrap_pyfunction!(batch_me_mitc3, m)?)?;
@@ -3092,6 +3281,8 @@ pub fn register_module(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(linear_static_solve_coo, m)?)?;
     m.add_function(wrap_pyfunction!(newmark_beta_solve_coo, m)?)?;
     m.add_function(wrap_pyfunction!(nonlinear_static_solve_coo, m)?)?;
+    #[cfg(feature = "fsi")]
+    m.add_function(wrap_pyfunction!(run_linear_elastic_fsi, m)?)?;
     m.add_class::<PyMeshModel>()?;
 
     m.add_class::<PyMeshAssembler>()?;

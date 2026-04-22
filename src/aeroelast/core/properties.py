@@ -24,6 +24,7 @@ class ShellProperty:
 
     material: MaterialType
     thickness: float
+    shear_correction: float = 5.0 / 6.0
 
     @property
     def total_thickness(self) -> float:

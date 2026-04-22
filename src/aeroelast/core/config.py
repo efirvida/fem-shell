@@ -585,6 +585,8 @@ class ElementConfig:
     family: str
     thickness: Optional[float] = None
     span_direction: Optional[list] = None
+    shear_correction: Optional[float] = None
+    drilling_scale: Optional[float] = None
 
     def __post_init__(self):
         valid_families = (
@@ -663,6 +665,11 @@ class SolverConfig:
     rtol: Optional[float] = None  # Relative residual tolerance  (default: 1e-8)
     stol: Optional[float] = None  # Step-length tolerance        (default: 1e-8)
     max_it: Optional[int] = None  # Maximum Newton iterations    (default: 50)
+    # CCX nonlinear static step controls (for export parity/stability)
+    nl_initial_increment: Optional[float] = None
+    nl_min_increment: Optional[float] = None
+    nl_max_increment: Optional[float] = None
+    nl_max_increments: Optional[int] = None
 
     def __post_init__(self):
         valid_types = [s.value for s in SolverType]
@@ -722,6 +729,47 @@ class BodyForceConfig:
     """Body force configuration."""
 
     value: List[float]
+
+
+@dataclass
+class NodalLoadConfig:
+    """Nodal load configuration.
+
+    A force vector applied to a nodeset (distributed equally among all nodes)
+    or to a single node (applied in full).
+
+    Parameters
+    ----------
+    value : List[float]
+        Force vector, e.g. [Fx, Fy, Fz]. Length must match the number of
+        geometric DOFs per node (3 for shells, 2 for plane problems).
+    nodeset : str, optional
+        Name of the node set. The total force is divided equally among all
+        nodes in the set.
+    node : int, optional
+        Single node ID. The full force vector is applied to this node.
+
+    Notes
+    -----
+    Exactly one of ``nodeset`` or ``node`` must be provided.
+    """
+
+    value: List[float]
+    nodeset: Optional[str] = None
+    node: Optional[int] = None
+
+    def __post_init__(self) -> None:
+        if self.nodeset is None and self.node is None:
+            raise ValueError("NodalLoadConfig requires either 'nodeset' or 'node'")
+        if self.nodeset is not None and self.node is not None:
+            raise ValueError("NodalLoadConfig accepts 'nodeset' OR 'node', not both")
+
+
+@dataclass
+class LoadsConfig:
+    """All applied loads (excluding body forces and Dirichlet BCs)."""
+
+    nodal: List[NodalLoadConfig] = field(default_factory=list)
 
 
 @dataclass
@@ -847,6 +895,7 @@ class FSISimulationConfig:
     mesh: MeshConfig
     solver: SolverConfig
     boundary_conditions: BoundaryConditionsConfig
+    loads: LoadsConfig = field(default_factory=LoadsConfig)
     material: Optional[MaterialConfig] = None
     elements: ElementConfig = field(default_factory=lambda: ElementConfig(family="SHELL"))
     coupling: Optional[CouplingConfig] = None
@@ -964,6 +1013,8 @@ class FSISimulationConfig:
             family=elem_data.get("family", "PLANE"),
             thickness=elem_data.get("thickness"),
             span_direction=elem_data.get("span_direction"),
+            shear_correction=elem_data.get("shear_correction"),
+            drilling_scale=elem_data.get("drilling_scale"),
         )
 
         # Parse solver configuration
@@ -996,6 +1047,10 @@ class FSISimulationConfig:
             rtol=solver_data.get("rtol"),
             stol=solver_data.get("stol"),
             max_it=solver_data.get("max_it"),
+            nl_initial_increment=solver_data.get("nl_initial_increment"),
+            nl_min_increment=solver_data.get("nl_min_increment"),
+            nl_max_increment=solver_data.get("nl_max_increment"),
+            nl_max_increments=solver_data.get("nl_max_increments"),
         )
 
         # Parse boundary conditions
@@ -1018,6 +1073,28 @@ class FSISimulationConfig:
             dirichlet=dirichlet_list,
             body_forces=body_forces_list,
         )
+
+        # Parse loads (nodal concentrated forces)
+        loads_data = data.get("loads", {})
+        nodal_loads_list = []
+        for nl in loads_data.get("nodal", []):
+            raw_value = nl.get("value")
+            if raw_value is None:
+                raise ValueError("NodalLoad entry is missing required 'value' field")
+            # value must be a list (force vector)
+            if not isinstance(raw_value, list):
+                raise ValueError(
+                    f"NodalLoad 'value' must be a list (force vector), got {type(raw_value).__name__}. "
+                    "Example: value: [0.0, 0.0, 100000.0]"
+                )
+            nodal_loads_list.append(
+                NodalLoadConfig(
+                    value=raw_value,
+                    nodeset=nl.get("nodeset"),
+                    node=nl.get("node"),
+                )
+            )
+        loads_config = LoadsConfig(nodal=nodal_loads_list)
 
         # Parse coupling configuration (optional for non-FSI solvers)
         coupling_config = None
@@ -1098,6 +1175,7 @@ class FSISimulationConfig:
             elements=element_config,
             solver=solver_config,
             boundary_conditions=bc_config,
+            loads=loads_config,
             coupling=coupling_config,
             output=output_config,
             postprocess=postprocess_config,
@@ -1163,6 +1241,10 @@ class FSISimulationConfig:
         # Add optional configurations
         if self.elements.thickness:
             result["elements"]["thickness"] = self.elements.thickness
+        if self.elements.shear_correction is not None:
+            result["elements"]["shear_correction"] = self.elements.shear_correction
+        if self.elements.drilling_scale is not None:
+            result["elements"]["drilling_scale"] = self.elements.drilling_scale
 
         if self.material.G:
             result["material"]["G"] = self.material.G
