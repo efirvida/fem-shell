@@ -79,6 +79,7 @@ pub struct Mitc3Precomputed {
     pub constitutive: ShellConstitutive,
     /// Drilling stiffness factor
     pub k_drill: f64,
+    pub drilling_scale: f64,
     /// Thickness
     pub thickness: f64,
     /// Precomputed covariant shear at the 6 tying points (extended 20-DOF space)
@@ -158,6 +159,7 @@ impl Mitc3Precomputed {
         constitutive: ShellConstitutive,
         thickness: f64,
         e_modulus: f64,
+        drilling_scale: f64,
     ) -> Self {
         let p1 = Vector3::new(coords[0], coords[1], coords[2]);
         let p2 = Vector3::new(coords[3], coords[4], coords[5]);
@@ -218,7 +220,7 @@ impl Mitc3Precomputed {
         let g_s = Vector2::new(x3 - x1, y3 - y1);
 
         // Drilling stiffness
-        let k_drill = e_modulus * thickness * thickness * 0.15;
+        let k_drill = e_modulus * thickness * thickness * 0.15 * drilling_scale;
 
         // Precompute tying point shear evaluations (extended space)
         let tying_ext_a =
@@ -246,6 +248,7 @@ impl Mitc3Precomputed {
             g_s,
             constitutive,
             k_drill,
+            drilling_scale,
             thickness,
             tying_ext_a,
             tying_ext_b,
@@ -1068,7 +1071,7 @@ mod tests {
         let mat = IsotropicMaterial::new(2.0e11, 0.3, 7800.0);
         let shell = mat.constitutive(thickness, 5.0 / 6.0);
         let node_coords: [f64; 9] = [0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0];
-        Mitc3Precomputed::new(&node_coords, shell, thickness, 2.0e11)
+        Mitc3Precomputed::new(&node_coords, shell, thickness, 2.0e11, 1.0)
     }
 
     #[test]

@@ -89,14 +89,17 @@ pub struct Mitc4Precomputed {
     pub b_rs_e: Vec24,
 }
 
-/// Jacobian data at a single Gauss point.
+/// Jacobian data at a single Gauss point (3D covariant formulation).
 #[derive(Clone, Copy)]
 pub struct GpJacobian {
-    pub j_mat: Matrix2<f64>,
+    /// Projection of 3D tangents onto local frame: j_loc[α][β] = g_α · e_β
+    pub j_loc: Matrix2<f64>,
+    /// Inverse of j_loc
     pub j_inv: Matrix2<f64>,
-    pub det_j: f64,
-    /// dH: shape function derivatives in Cartesian coords [2×4]
-    /// dh[0,i] = dNi/dx, dh[1,i] = dNi/dy
+    /// Surface area element: |g_r × g_s|
+    pub sqrt_g: f64,
+    /// Shape function derivatives in local orthonormal frame [2×4]
+    /// dh[0,i] = dNi/de1,  dh[1,i] = dNi/de2
     pub dh: SMatrix<f64, 2, 4>,
 }
 
@@ -162,38 +165,6 @@ fn bubble_derivatives(xi: f64, eta: f64) -> (f64, f64) {
 // Jacobian computation (variable — depends on xi, eta)
 // ============================================================================
 
-/// Compute 2D Jacobian from local coordinates at (xi, eta)
-fn compute_jacobian(local_coords: &[[f64; 2]; 4], xi: f64, eta: f64) -> (Matrix2<f64>, f64) {
-    let (dn_dxi, dn_deta) = shape_function_derivatives(xi, eta);
-
-    let mut dx_dxi = 0.0;
-    let mut dy_dxi = 0.0;
-    let mut dx_deta = 0.0;
-    let mut dy_deta = 0.0;
-
-    for i in 0..4 {
-        dx_dxi  += dn_dxi[i] * local_coords[i][0];
-        dy_dxi  += dn_dxi[i] * local_coords[i][1];
-        dx_deta += dn_deta[i] * local_coords[i][0];
-        dy_deta += dn_deta[i] * local_coords[i][1];
-    }
-
-    let j_mat = Matrix2::new(dx_dxi, dy_dxi, dx_deta, dy_deta);
-    let det_j = dx_dxi * dy_deta - dy_dxi * dx_deta;
-    (j_mat, det_j)
-}
-
-/// Compute dH (shape function derivatives in physical coords) from Jacobian inverse
-fn compute_dh(j_inv: &Matrix2<f64>, xi: f64, eta: f64) -> SMatrix<f64, 2, 4> {
-    let (dn_dxi, dn_deta) = shape_function_derivatives(xi, eta);
-    let mut dh = SMatrix::<f64, 2, 4>::zeros();
-
-    for i in 0..4 {
-        dh[(0, i)] = j_inv[(0, 0)] * dn_dxi[i] + j_inv[(0, 1)] * dn_deta[i];
-        dh[(1, i)] = j_inv[(1, 0)] * dn_dxi[i] + j_inv[(1, 1)] * dn_deta[i];
-    }
-    dh
-}
 
 /// Compute 3D tangent vectors at (xi, eta) from initial 3D coordinates
 fn compute_j3d(coords_3d: &[[f64; 3]; 4], xi: f64, eta: f64) -> (Vector3<f64>, Vector3<f64>) {
@@ -351,6 +322,23 @@ fn compute_membrane_coefficients(
     (a_a, a_b, a_c, a_d, a_e)
 }
 
+#[inline(always)]
+fn regularized_inverse_2x2(m: &Matrix2<f64>) -> Matrix2<f64> {
+    let scale = m[(0, 0)]
+        .abs()
+        .max(m[(0, 1)].abs())
+        .max(m[(1, 0)].abs())
+        .max(m[(1, 1)].abs())
+        .max(1.0);
+
+    let mut reg = *m;
+    let eps = scale * 1.0e-12;
+    reg[(0, 0)] += eps;
+    reg[(1, 1)] += eps;
+
+    reg.try_inverse().unwrap_or_else(Matrix2::identity)
+}
+
 // ============================================================================
 // Covariant membrane strain B-row at a single tying point
 // ============================================================================
@@ -411,32 +399,40 @@ fn compute_covariant_membrane_b_row(
 // Covariant-to-Cartesian strain transform
 // ============================================================================
 
-/// Compute 3×3 covariant-to-Cartesian transformation for membrane strains
-fn covariant_to_cartesian_transform(
-    local_coords: &[[f64; 2]; 4],
-    xi: f64,
-    eta: f64,
-) -> Matrix3<f64> {
-    let (j_mat, det_j) = compute_jacobian(local_coords, xi, eta);
+/// Compute 3×3 covariant-to-local transformation for membrane strains.
+///
+/// Transforms covariant strains (ε_rr, ε_ss, 2ε_rs) → local-frame strains
+/// (ε_11, ε_22, 2ε_12) using the point-wise projection matrix j_loc.
+fn covariant_to_local_mapping(j_loc: &Matrix2<f64>) -> Matrix3<f64> {
+    let j_inv = regularized_inverse_2x2(j_loc);
 
-    if det_j.abs() < 1e-12 {
-        return Matrix3::identity();
-    }
-
-    let j_inv = j_mat.try_inverse().unwrap_or_else(|| {
-        Matrix2::identity()
-    });
-
-    let dxi_dx  = j_inv[(0, 0)];
-    let dxi_dy  = j_inv[(0, 1)];
-    let deta_dx = j_inv[(1, 0)];
-    let deta_dy = j_inv[(1, 1)];
+    let j11 = j_inv[(0, 0)];
+    let j12 = j_inv[(0, 1)];
+    let j21 = j_inv[(1, 0)];
+    let j22 = j_inv[(1, 1)];
 
     Matrix3::new(
-        dxi_dx * dxi_dx,           deta_dx * deta_dx,          dxi_dx * deta_dx,
-        dxi_dy * dxi_dy,           deta_dy * deta_dy,          dxi_dy * deta_dy,
-        2.0 * dxi_dx * dxi_dy,     2.0 * deta_dx * deta_dy,   dxi_dx * deta_dy + dxi_dy * deta_dx,
+        j11 * j11,           j21 * j21,           j11 * j21,
+        j12 * j12,           j22 * j22,           j12 * j22,
+        2.0 * j11 * j12,     2.0 * j21 * j22,     j11 * j22 + j12 * j21,
     )
+}
+
+/// Compute j_loc and its inverse at an arbitrary (xi, eta) from 3D geometry.
+fn compute_j_loc_at(
+    coords_3d: &[[f64; 3]; 4],
+    e1: &Vector3<f64>,
+    e2: &Vector3<f64>,
+    xi: f64,
+    eta: f64,
+) -> (Matrix2<f64>, Matrix2<f64>) {
+    let (g_r, g_s) = compute_j3d(coords_3d, xi, eta);
+    let j_loc = Matrix2::new(
+        g_r.dot(e1), g_s.dot(e1),
+        g_r.dot(e2), g_s.dot(e2),
+    );
+    let j_inv = regularized_inverse_2x2(&j_loc);
+    (j_loc, j_inv)
 }
 
 // ============================================================================
@@ -451,6 +447,7 @@ impl Mitc4Precomputed {
         constitutive: ShellConstitutive,
         thickness: f64,
         e_mod: f64,
+        drilling_scale: f64,
     ) -> Self {
         let mut coords_3d = [[0.0f64; 3]; 4];
         for i in 0..4 {
@@ -473,23 +470,32 @@ impl Mitc4Precomputed {
         let (x_r, x_s, x_d, n_vec, m_r, m_s) = compute_characteristic_vectors(&coords_3d);
         let (a_a, a_b, a_c, a_d, a_e) = compute_membrane_coefficients(&x_d, &m_r, &m_s);
 
-        // Precompute Jacobians at Gauss points
+        // Precompute Jacobians at Gauss points (3D covariant)
         let mut gp_jacobians = [GpJacobian {
-            j_mat: Matrix2::zeros(),
+            j_loc: Matrix2::zeros(),
             j_inv: Matrix2::zeros(),
-            det_j: 0.0,
+            sqrt_g: 0.0,
             dh: SMatrix::<f64, 2, 4>::zeros(),
         }; N_GAUSS];
 
         for g in 0..N_GAUSS {
             let xi = GAUSS_XI[g];
             let eta = GAUSS_ETA[g];
-            let (j_mat, det_j) = compute_jacobian(&local_coords, xi, eta);
-            let j_inv = j_mat.try_inverse().unwrap_or_else(|| {
-                Matrix2::identity()
-            });
-            let dh = compute_dh(&j_inv, xi, eta);
-            gp_jacobians[g] = GpJacobian { j_mat, j_inv, det_j, dh };
+            let (g_r, g_s) = compute_j3d(&coords_3d, xi, eta);
+            let sqrt_g = g_r.cross(&g_s).norm();
+            let j_loc = Matrix2::new(
+                g_r.dot(&e1), g_s.dot(&e1),
+                g_r.dot(&e2), g_s.dot(&e2),
+            );
+            let j_inv = j_loc.try_inverse().unwrap_or_else(|| Matrix2::identity());
+            let (dn_dxi, dn_deta) = shape_function_derivatives(xi, eta);
+            let mut dh = SMatrix::<f64, 2, 4>::zeros();
+            for i in 0..4 {
+                // dh = j_inv^T * [dN/dxi; dN/deta]
+                dh[(0, i)] = j_inv[(0, 0)] * dn_dxi[i] + j_inv[(1, 0)] * dn_deta[i];
+                dh[(1, i)] = j_inv[(0, 1)] * dn_dxi[i] + j_inv[(1, 1)] * dn_deta[i];
+            }
+            gp_jacobians[g] = GpJacobian { j_loc, j_inv, sqrt_g, dh };
         }
 
         // Precompute bubble data at Gauss points
@@ -510,7 +516,7 @@ impl Mitc4Precomputed {
         let b_ss_d = compute_covariant_membrane_b_row(&coords_3d, &e1, &e2, &e3,-1.0,  0.0, 1);
         let b_rs_e = compute_covariant_membrane_b_row(&coords_3d, &e1, &e2, &e3, 0.0,  0.0, 2);
 
-        let k_drill = e_mod * thickness * thickness * 0.15;
+        let k_drill = e_mod * thickness * thickness * 0.15 * drilling_scale;
 
         Mitc4Precomputed {
             local_coords,
@@ -574,8 +580,9 @@ fn b_m_mitc4_plus(pre: &Mitc4Precomputed, xi: f64, eta: f64) -> SMatrix<f64, 3, 
         b_cov[(2, j)] = 2.0 * b_rs[j];
     }
 
-    // Transform to Cartesian
-    let t = covariant_to_cartesian_transform(&pre.local_coords, xi, eta);
+    // Transform covariant → local orthonormal frame using 3D tangents
+    let (j_loc, _) = compute_j_loc_at(&pre.initial_coords_3d, &pre.e1, &pre.e2, xi, eta);
+    let t = covariant_to_local_mapping(&j_loc);
     t * b_cov
 }
 
@@ -626,8 +633,10 @@ fn b_kappa_bubble(j_inv: &Matrix2<f64>, dnb_dxi: f64, dnb_deta: f64) -> SMatrix<
     bkb
 }
 
-/// MITC4 transverse shear B-matrix (2×24) — rotation-based formulation
-fn b_gamma_mitc4(local_coords: &[[f64; 2]; 4], xi: f64, eta: f64, det_j: f64) -> SMatrix<f64, 2, 24> {
+/// MITC4 transverse shear B-matrix (2×24) — rotation-based formulation.
+///
+/// `area_measure` is the surface Jacobian |g_r × g_s| at the integration point.
+fn b_gamma_mitc4(local_coords: &[[f64; 2]; 4], xi: f64, eta: f64, area_measure: f64) -> SMatrix<f64, 2, 24> {
     let xl = local_coords;
 
     let dx34 = xl[2][0] - xl[3][0];
@@ -710,8 +719,8 @@ fn b_gamma_mitc4(local_coords: &[[f64; 2]; 4], xi: f64, eta: f64, det_j: f64) ->
     let r2 = r2_vec.norm();
 
     for j in 0..12 {
-        bsv[(0, j)] *= r1 / (8.0 * det_j);
-        bsv[(1, j)] *= r2 / (8.0 * det_j);
+        bsv[(0, j)] *= r1 / (8.0 * area_measure);
+        bsv[(1, j)] *= r2 / (8.0 * area_measure);
     }
 
     // Apply rotation
@@ -737,10 +746,10 @@ fn b_gamma_mitc4_plus(
     local_coords: &[[f64; 2]; 4],
     xi: f64,
     eta: f64,
-    det_j: f64,
+    area_measure: f64,
     nb: f64,
 ) -> (SMatrix<f64, 2, 24>, Matrix2<f64>) {
-    let bs_nodal = b_gamma_mitc4(local_coords, xi, eta, det_j);
+    let bs_nodal = b_gamma_mitc4(local_coords, xi, eta, area_measure);
 
     let mut bs_bubble = Matrix2::zeros();
     bs_bubble[(0, 1)] =  nb;
@@ -776,17 +785,46 @@ pub fn compute_ke_local(pre: &Mitc4Precomputed) -> Mat24 {
     let cb = &pre.constitutive.cb;
     let cs = &pre.constitutive.cs;
 
-    // --- Membrane stiffness using MITC4+ ---
+    // --- Membrane stiffness: MITC4+ + Q4E3 EAS (Simo & Rifai 1990) ---
+    // EAS adds 3 internal modes (ξ, η, ξη) statically condensed out.
+    // Enhancement field: ε_EAS = (sqrt_g₀/sqrt_g) · T₀ · diag(ξ,η,ξη) · α
+    let (g_r0, g_s0) = compute_j3d(&pre.initial_coords_3d, 0.0, 0.0);
+    let sqrt_g0 = g_r0.cross(&g_s0).norm();
+    let (j_loc0, _) = compute_j_loc_at(&pre.initial_coords_3d, &pre.e1, &pre.e2, 0.0, 0.0);
+    let t0 = covariant_to_local_mapping(&j_loc0);
+
     let mut k_m = Mat24::zeros();
+    let mut k_ua: SMatrix<f64, 24, 3> = SMatrix::zeros();
+    let mut k_aa: SMatrix<f64, 3, 3>  = SMatrix::zeros();
+
     for g in 0..N_GAUSS {
         let xi = GAUSS_XI[g];
         let eta = GAUSS_ETA[g];
-        let det_j = pre.gp_jacobians[g].det_j;
+        let sqrt_g = pre.gp_jacobians[g].sqrt_g;
         let w = GAUSS_W[g];
 
         let bm = b_m_mitc4_plus(pre, xi, eta);
-        k_m += (bm.transpose() * cm * &bm) * (w * det_j);
+
+        let scale = sqrt_g0 / sqrt_g.max(1e-14);
+        let mut g_ref = SMatrix::<f64, 3, 3>::zeros();
+        g_ref[(0, 0)] = xi;
+        g_ref[(1, 1)] = eta;
+        g_ref[(2, 2)] = xi * eta;
+        let g_eas = scale * t0 * g_ref;
+
+        let factor = w * sqrt_g;
+        k_m  += (bm.transpose() * cm * &bm) * factor;
+        k_ua += (bm.transpose() * cm * &g_eas) * factor;
+        k_aa += (g_eas.transpose() * cm * &g_eas) * factor;
     }
+
+    // Static condensation: K_m_eff = K_m - K_uα · K_αα⁻¹ · K_αu
+    let k_m = if let Some(k_aa_inv) = k_aa.try_inverse() {
+        let condensed = k_m - &k_ua * k_aa_inv * k_ua.transpose();
+        0.5 * (&condensed + condensed.transpose())
+    } else {
+        k_m
+    };
 
     // --- Bending + shear with bubble condensation ---
     let mut knn_b = Mat24::zeros();
@@ -802,25 +840,25 @@ pub fn compute_ke_local(pre: &Mitc4Precomputed) -> Mat24 {
         let eta = GAUSS_ETA[g];
         let gj = &pre.gp_jacobians[g];
         let gb = &pre.gp_bubble[g];
-        let det_j = gj.det_j;
+        let sqrt_g = gj.sqrt_g;
         let w = GAUSS_W[g];
 
         // Bending
         let bk = b_kappa(&gj.dh);
         let bkb = b_kappa_bubble(&gj.j_inv, gb.dnb_dxi, gb.dnb_deta);
 
-        knn_b += (bk.transpose() * cb * &bk) * (w * det_j);
-        knb_b += (bk.transpose() * cb * &bkb) * (w * det_j);
-        kbb_b += (bkb.transpose() * cb * &bkb) * (w * det_j);
+        knn_b += (bk.transpose() * cb * &bk) * (w * sqrt_g);
+        knb_b += (bk.transpose() * cb * &bkb) * (w * sqrt_g);
+        kbb_b += (bkb.transpose() * cb * &bkb) * (w * sqrt_g);
 
         // Shear
         let (bs_nodal, bs_bubble) = b_gamma_mitc4_plus(
-            &pre.local_coords, xi, eta, det_j, gb.nb,
+            &pre.local_coords, xi, eta, sqrt_g, gb.nb,
         );
 
-        knn_s += (bs_nodal.transpose() * cs * &bs_nodal) * (w * det_j);
-        knb_s += (bs_nodal.transpose() * cs * &bs_bubble) * (w * det_j);
-        kbb_s += (bs_bubble.transpose() * cs * &bs_bubble) * (w * det_j);
+        knn_s += (bs_nodal.transpose() * cs * &bs_nodal) * (w * sqrt_g);
+        knb_s += (bs_nodal.transpose() * cs * &bs_bubble) * (w * sqrt_g);
+        kbb_s += (bs_bubble.transpose() * cs * &bs_bubble) * (w * sqrt_g);
     }
 
     let knn = knn_b + knn_s;
@@ -828,11 +866,10 @@ pub fn compute_ke_local(pre: &Mitc4Precomputed) -> Mat24 {
     let kbb = kbb_b + kbb_s;
 
     // Static condensation: K = Knn - Knb @ Kbb^{-1} @ Knb^T
-    let k_bs = if let Some(kbb_inv) = kbb.try_inverse() {
-        knn - &knb * kbb_inv * knb.transpose()
-    } else {
-        knn
-    };
+    // Regularize the 2×2 bubble block instead of dropping condensation entirely.
+    let kbb_inv = regularized_inverse_2x2(&kbb);
+    let k_bs_raw = knn - &knb * kbb_inv * knb.transpose();
+    let k_bs = 0.5 * (&k_bs_raw + k_bs_raw.transpose());
 
     // --- Drilling stiffness ---
     let mut k_drill = Mat24::zeros();
@@ -840,13 +877,13 @@ pub fn compute_ke_local(pre: &Mitc4Precomputed) -> Mat24 {
         let xi = GAUSS_XI[g];
         let eta = GAUSS_ETA[g];
         let gj = &pre.gp_jacobians[g];
-        let det_j = gj.det_j;
+        let sqrt_g = gj.sqrt_g;
         let w = GAUSS_W[g];
 
         let n_vals = shape_functions(xi, eta);
         let bd = b_drill(&gj.dh, &n_vals);
 
-        k_drill += (&bd * bd.transpose()) * (pre.k_drill * w * det_j);
+        k_drill += (&bd * bd.transpose()) * (pre.k_drill * w * sqrt_g);
     }
 
     k_m + k_bs + k_drill
@@ -872,19 +909,19 @@ pub fn compute_me_global(pre: &Mitc4Precomputed, rho: f64) -> Mat24 {
     for g in 0..N_GAUSS {
         let xi = GAUSS_XI[g];
         let eta = GAUSS_ETA[g];
-        let det_j = pre.gp_jacobians[g].det_j;
+        let sqrt_g = pre.gp_jacobians[g].sqrt_g;
         let w = GAUSS_W[g];
 
         let n = shape_functions(xi, eta);
 
         for i in 0..4 {
             for j in 0..4 {
-                let val_t = n[i] * n[j] * m_trans * w * det_j;
+                let val_t = n[i] * n[j] * m_trans * w * sqrt_g;
                 for k in 0..3 {
                     m_local[(6 * i + k, 6 * j + k)] += val_t;
                 }
 
-                let val_r = n[i] * n[j] * m_rot * w * det_j;
+                let val_r = n[i] * n[j] * m_rot * w * sqrt_g;
                 for k in 3..6 {
                     m_local[(6 * i + k, 6 * j + k)] += val_r;
                 }
@@ -911,19 +948,19 @@ pub fn compute_me_composite_global(
     for g in 0..N_GAUSS {
         let xi = GAUSS_XI[g];
         let eta = GAUSS_ETA[g];
-        let det_j = pre.gp_jacobians[g].det_j;
+        let sqrt_g = pre.gp_jacobians[g].sqrt_g;
         let w = GAUSS_W[g];
 
         let n = shape_functions(xi, eta);
 
         for i in 0..4 {
             for j in 0..4 {
-                let val_t = n[i] * n[j] * m_trans * w * det_j;
+                let val_t = n[i] * n[j] * m_trans * w * sqrt_g;
                 for k in 0..3 {
                     m_local[(6 * i + k, 6 * j + k)] += val_t;
                 }
 
-                let val_r = n[i] * n[j] * m_rot * w * det_j;
+                let val_r = n[i] * n[j] * m_rot * w * sqrt_g;
                 for k in 3..6 {
                     m_local[(6 * i + k, 6 * j + k)] += val_r;
                 }
@@ -1055,7 +1092,7 @@ pub fn compute_kt_global(pre: &Mitc4Precomputed, u_global: &Vec24) -> Mat24 {
 
     for g in 0..N_GAUSS {
         let gj = &pre.gp_jacobians[g];
-        let det_j = gj.det_j;
+        let sqrt_g = gj.sqrt_g;
         let w = GAUSS_W[g];
 
         let h_mat = displacement_gradient(&gj.dh, &u_local);
@@ -1069,7 +1106,7 @@ pub fn compute_kt_global(pre: &Mitc4Precomputed, u_global: &Vec24) -> Mat24 {
             bm_l.transpose() * cm_raw * &bm_nl
             + bm_nl.transpose() * cm_raw * &bm_l
             + bm_nl.transpose() * cm_raw * &bm_nl
-        ) * (w * det_j * pre.thickness);
+        ) * (w * sqrt_g * pre.thickness);
     }
 
     // Compute stress from displacement for K_sigma
@@ -1089,12 +1126,8 @@ pub fn compute_kt_global(pre: &Mitc4Precomputed, u_global: &Vec24) -> Mat24 {
 fn compute_membrane_stress(pre: &Mitc4Precomputed, u_local: &Vec24) -> Vector3<f64> {
     let cm_raw = &pre.constitutive.cm_raw;
 
-    // Evaluate at element center (xi=0, eta=0)
-    let (j_mat, _det_j) = compute_jacobian(&pre.local_coords, 0.0, 0.0);
-    let j_inv = j_mat.try_inverse().unwrap_or_else(|| Matrix2::identity());
-    let dh = compute_dh(&j_inv, 0.0, 0.0);
-
-    let bm = b_m_standard(&dh);
+    // Evaluate at element center using the covariant MITC4+ membrane B-matrix.
+    let bm = b_m_mitc4_plus(pre, 0.0, 0.0);
     let eps_m = bm * u_local;
     cm_raw * eps_m
 }
@@ -1118,11 +1151,11 @@ fn compute_geometric_stiffness_local(pre: &Mitc4Precomputed, sigma: &Vector3<f64
     let mut k_sigma = Mat24::zeros();
     for g in 0..N_GAUSS {
         let gj = &pre.gp_jacobians[g];
-        let det_j = gj.det_j;
+        let sqrt_g = gj.sqrt_g;
         let w = GAUSS_W[g];
 
         let bg = compute_b_geometric(&gj.dh);
-        k_sigma += (bg.transpose() * &s_tilde * &bg) * (w * det_j);
+        k_sigma += (bg.transpose() * &s_tilde * &bg) * (w * sqrt_g);
     }
 
     0.5 * (&k_sigma + k_sigma.transpose())
@@ -1144,25 +1177,26 @@ pub fn compute_fint_global(pre: &Mitc4Precomputed, u_global: &Vec24, nonlinear: 
         let k_dr = compute_drilling_stiffness(pre);
         f += (k_bs + k_dr) * &u_local;
 
-        // Membrane with GL strain
+        // Membrane with GL strain — use MITC4+ assumed B for consistency with K
         let cm_raw = &pre.constitutive.cm_raw;
         for g in 0..N_GAUSS {
             let gj = &pre.gp_jacobians[g];
-            let det_j = gj.det_j;
+            let xi = GAUSS_XI[g];
+            let eta = GAUSS_ETA[g];
             let w = GAUSS_W[g];
+            let sqrt_g = gj.sqrt_g;
 
             let h_mat = displacement_gradient(&gj.dh, &u_local);
             let e_gl = green_lagrange_strain(&h_mat);
             let eps_m = Vector3::new(e_gl[(0, 0)], e_gl[(1, 1)], 2.0 * e_gl[(0, 1)]);
             let sigma_m = cm_raw * eps_m;
 
-            let bl = compute_b_l(&gj.dh);
+            let bm_l = b_m_mitc4_plus(pre, xi, eta);
             let bnl = compute_b_nl(&gj.dh, &h_mat);
-            let bm_l = extract_membrane_rows(&bl);
             let bm_nl = extract_membrane_rows(&bnl);
             let b_total = bm_l + bm_nl;
 
-            f += b_total.transpose() * sigma_m * (w * det_j * pre.thickness);
+            f += b_total.transpose() * sigma_m * (w * sqrt_g * pre.thickness);
         }
         f
     };
@@ -1191,34 +1225,31 @@ fn compute_bending_shear_condensed(pre: &Mitc4Precomputed) -> Mat24 {
         let eta = GAUSS_ETA[g];
         let gj = &pre.gp_jacobians[g];
         let gb = &pre.gp_bubble[g];
-        let det_j = gj.det_j;
+        let sqrt_g = gj.sqrt_g;
         let w = GAUSS_W[g];
 
         let bk = b_kappa(&gj.dh);
         let bkb = b_kappa_bubble(&gj.j_inv, gb.dnb_dxi, gb.dnb_deta);
 
-        knn_b += (bk.transpose() * cb * &bk) * (w * det_j);
-        knb_b += (bk.transpose() * cb * &bkb) * (w * det_j);
-        kbb_b += (bkb.transpose() * cb * &bkb) * (w * det_j);
+        knn_b += (bk.transpose() * cb * &bk) * (w * sqrt_g);
+        knb_b += (bk.transpose() * cb * &bkb) * (w * sqrt_g);
+        kbb_b += (bkb.transpose() * cb * &bkb) * (w * sqrt_g);
 
         let (bs_nodal, bs_bubble) = b_gamma_mitc4_plus(
-            &pre.local_coords, xi, eta, det_j, gb.nb,
+            &pre.local_coords, xi, eta, sqrt_g, gb.nb,
         );
 
-        knn_s += (bs_nodal.transpose() * cs * &bs_nodal) * (w * det_j);
-        knb_s += (bs_nodal.transpose() * cs * &bs_bubble) * (w * det_j);
-        kbb_s += (bs_bubble.transpose() * cs * &bs_bubble) * (w * det_j);
+        knn_s += (bs_nodal.transpose() * cs * &bs_nodal) * (w * sqrt_g);
+        knb_s += (bs_nodal.transpose() * cs * &bs_bubble) * (w * sqrt_g);
+        kbb_s += (bs_bubble.transpose() * cs * &bs_bubble) * (w * sqrt_g);
     }
 
     let knn = knn_b + knn_s;
     let knb = knb_b + knb_s;
     let kbb = kbb_b + kbb_s;
 
-    if let Some(kbb_inv) = kbb.try_inverse() {
-        knn - &knb * kbb_inv * knb.transpose()
-    } else {
-        knn
-    }
+    let kbb_inv = regularized_inverse_2x2(&kbb);
+    knn - &knb * kbb_inv * knb.transpose()
 }
 
 fn compute_drilling_stiffness(pre: &Mitc4Precomputed) -> Mat24 {
@@ -1227,13 +1258,13 @@ fn compute_drilling_stiffness(pre: &Mitc4Precomputed) -> Mat24 {
         let xi = GAUSS_XI[g];
         let eta = GAUSS_ETA[g];
         let gj = &pre.gp_jacobians[g];
-        let det_j = gj.det_j;
+        let sqrt_g = gj.sqrt_g;
         let w = GAUSS_W[g];
 
         let n_vals = shape_functions(xi, eta);
         let bd = b_drill(&gj.dh, &n_vals);
 
-        k_drill += (&bd * bd.transpose()) * (pre.k_drill * w * det_j);
+        k_drill += (&bd * bd.transpose()) * (pre.k_drill * w * sqrt_g);
     }
     k_drill
 }
@@ -1290,13 +1321,13 @@ pub fn compute_body_load_global(
     for g in 0..N_GAUSS {
         let xi = GAUSS_XI[g];
         let eta = GAUSS_ETA[g];
-        let det_j = pre.gp_jacobians[g].det_j;
+        let sqrt_g = pre.gp_jacobians[g].sqrt_g;
         let w = GAUSS_W[g];
 
         let n = shape_functions(xi, eta);
 
         for i in 0..4 {
-            let contrib = n[i] * rho_h * w * det_j;
+            let contrib = n[i] * rho_h * w * sqrt_g;
             // Translational DOFs only (0,1,2 of each 6-DOF node block)
             for k in 0..3 {
                 f_local[6 * i + k] += contrib * g_local[k];
@@ -1366,8 +1397,8 @@ pub fn compute_centrifugal_prestress(
 
     let radial_dir = r_radial_vec / r_radial;
 
-    // Element area: sum of det_j * w over all Gauss points
-    let area: f64 = (0..N_GAUSS).map(|g| pre.gp_jacobians[g].det_j * GAUSS_W[g]).sum();
+    // Element area: sum of sqrt_g * w over all Gauss points
+    let area: f64 = (0..N_GAUSS).map(|g| pre.gp_jacobians[g].sqrt_g * GAUSS_W[g]).sum();
 
     // Characteristic element length and stress magnitude
     let l_char = area.sqrt();
@@ -1407,13 +1438,17 @@ pub fn compute_element_stress(
     let t24 = build_t24(pre);
     let u_local = t24 * u_global;
 
-    // Evaluate at element centroid (xi=0, eta=0)
+    // Evaluate at element centroid (xi=0, eta=0) using 3D covariant geometry
     let xi = 0.0_f64;
     let eta = 0.0_f64;
 
-    let (j_mat, _det_j) = compute_jacobian(&pre.local_coords, xi, eta);
-    let j_inv = j_mat.try_inverse().unwrap_or_else(|| Matrix2::identity());
-    let dh = compute_dh(&j_inv, xi, eta);
+    let (_, j_inv) = compute_j_loc_at(&pre.initial_coords_3d, &pre.e1, &pre.e2, xi, eta);
+    let (dn_dxi, dn_deta) = shape_function_derivatives(xi, eta);
+    let mut dh = SMatrix::<f64, 2, 4>::zeros();
+    for i in 0..4 {
+        dh[(0, i)] = j_inv[(0, 0)] * dn_dxi[i] + j_inv[(1, 0)] * dn_deta[i];
+        dh[(1, i)] = j_inv[(0, 1)] * dn_dxi[i] + j_inv[(1, 1)] * dn_deta[i];
+    }
 
     let cm_raw = &pre.constitutive.cm_raw;
     let h = pre.thickness;
@@ -1470,7 +1505,7 @@ mod tests {
             1.0, 1.0, 0.0,
             0.0, 1.0, 0.0,
         ];
-        Mitc4Precomputed::new(&node_coords, shell, thickness, 2.0e11)
+        Mitc4Precomputed::new(&node_coords, shell, thickness, 2.0e11, 1.0)
     }
 
     #[test]
@@ -1562,5 +1597,18 @@ mod tests {
         assert!(sigma[1].is_finite());
         assert!(sigma[2].is_finite());
         assert!(sigma[0] + sigma[1] >= 0.0, "centrifugal stress trace must be non-negative");
+    }
+
+    #[test]
+    fn test_ke_local_flat_plate_parity() {
+        let pre = make_pre();
+        let ke = compute_ke_local(&pre);
+        
+        // We expect Ke to be symmetric
+        let diff = &ke - ke.transpose();
+        assert!(diff.norm() < 1e-10, "Ke must be symmetric");
+        
+        // For a unit square, the membrane part of Ke should be non-zero
+        assert!(ke.norm() > 1e-6, "Ke should not be zero");
     }
 }

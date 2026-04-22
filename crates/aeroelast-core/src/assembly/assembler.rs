@@ -33,6 +33,9 @@ pub enum MaterialSpec {
         thickness: f64,
         /// Shear correction factor (typically 5/6)
         shear_correction: f64,
+        /// Scaling factor for MITC drilling stabilization term.
+        /// 1.0 keeps the baseline 0.15 coefficient used by MITC3/MITC4.
+        drilling_scale: f64,
     },
     /// Composite laminate shell material (ABD matrices from CLT).
     Composite {
@@ -154,15 +157,27 @@ impl MeshAssembler {
                     assert_eq!(coords.len(), 9, "MITC3 needs 3 nodes × 3 coords");
                     let mut c9 = [0.0f64; 9];
                     c9.copy_from_slice(&coords);
-                    let (constitutive, thickness, e_mod) = build_constitutive_mitc3(mat);
-                    PrecomputedElem::Tri(Mitc3Precomputed::new(&c9, constitutive, thickness, e_mod))
+                    let (constitutive, thickness, e_mod, drilling_scale) = build_constitutive_mitc3(mat);
+                    PrecomputedElem::Tri(Mitc3Precomputed::new(
+                        &c9,
+                        constitutive,
+                        thickness,
+                        e_mod,
+                        drilling_scale,
+                    ))
                 }
                 ElemType::Mitc4 | ElemType::Mitc4Composite => {
                     assert_eq!(coords.len(), 12, "MITC4 needs 4 nodes × 3 coords");
                     let mut c12 = [0.0f64; 12];
                     c12.copy_from_slice(&coords);
-                    let (constitutive, thickness, e_mod) = build_constitutive_mitc4(mat);
-                    PrecomputedElem::Quad(Mitc4Precomputed::new(&c12, constitutive, thickness, e_mod))
+                    let (constitutive, thickness, e_mod, drilling_scale) = build_constitutive_mitc4(mat);
+                    PrecomputedElem::Quad(Mitc4Precomputed::new(
+                        &c12,
+                        constitutive,
+                        thickness,
+                        e_mod,
+                        drilling_scale,
+                    ))
                 }
                 ElemType::Quad4 => {
                     assert_eq!(coords.len(), 12, "QUAD4 needs 4 nodes × 3 coords");
@@ -1009,16 +1024,23 @@ impl MeshAssembler {
 
 fn build_constitutive_mitc3(
     mat: &MaterialSpec,
-) -> (crate::materials::ShellConstitutive, f64, f64) {
+) -> (crate::materials::ShellConstitutive, f64, f64, f64) {
     match mat {
-        MaterialSpec::Isotropic { e, nu, rho, thickness, shear_correction } => {
+        MaterialSpec::Isotropic {
+            e,
+            nu,
+            rho,
+            thickness,
+            shear_correction,
+            drilling_scale,
+        } => {
             let iso = IsotropicMaterial::new(*e, *nu, *rho);
             let constitutive = iso.constitutive(*thickness, *shear_correction);
-            (constitutive, *thickness, *e)
+            (constitutive, *thickness, *e, *drilling_scale)
         }
         MaterialSpec::Composite { cm, cb, cs, thickness, e_equiv, .. } => {
             let constitutive = composite_constitutive(cm, cb, cs, *thickness);
-            (constitutive, *thickness, *e_equiv)
+            (constitutive, *thickness, *e_equiv, 1.0)
         }
         _ => panic!("Shell element requires Isotropic or Composite MaterialSpec"),
     }
@@ -1026,7 +1048,7 @@ fn build_constitutive_mitc3(
 
 fn build_constitutive_mitc4(
     mat: &MaterialSpec,
-) -> (crate::materials::ShellConstitutive, f64, f64) {
+) -> (crate::materials::ShellConstitutive, f64, f64, f64) {
     build_constitutive_mitc3(mat) // same signature
 }
 
@@ -1212,6 +1234,7 @@ mod tests {
             rho: 7800.0,
             thickness: 0.01,
             shear_correction: 5.0 / 6.0,
+            drilling_scale: 1.0,
         };
         let materials = vec![mat.clone(), mat];
         MeshAssembler::new(topology, materials)
