@@ -1,187 +1,139 @@
-"""Linear static solver — KSP CG + BoomerAMG preconditioner (PETSc)."""
+"""Linear static solver — PETSc KSP CG + ICC via Rust assembler."""
 
-import os
-from typing import Dict, Iterable, List, Optional
+import logging
+from typing import List, Optional, Tuple
 
-import matplotlib.pyplot as plt
-import meshio
 import numpy as np
-from mpi4py import MPI
-from petsc4py import PETSc
 
-from aeroelast.core.bc import BodyForce, BoundaryConditionManager
 from aeroelast.core.mesh import MeshModel
 from aeroelast.solvers.solver import Solver
+
+_log = logging.getLogger(__name__)
 
 
 class StaticLinearSolver(Solver):
     """
-    High-performance linear static solver using PETSc KSP.
+    Linear static solver using PETSc KSP (CG + ICC) via Rust.
 
-    Solves K·u = F with CG + BoomerAMG for distributed systems.
+    Solves K·u = F where K is the stiffness matrix and F is the load vector.
+    Assembly and the KSP solve run entirely in Rust/PETSc.
 
-    Parameters
-    ----------
-    mesh : MeshModel
-        The computational mesh model.
-    fem_model_properties : dict
-        Dictionary with material and element properties.
-
-    Attributes
-    ----------
-    comm : MPI.Comm
-        MPI communicator for parallel processing.
-    K : PETSc.Mat
-        Distributed stiffness matrix.
-    F : PETSc.Vec
-        Distributed load vector.
-    u : PETSc.Vec
-        Solution displacement vector.
+    YAML solver parameters (all optional)
+    --------------------------------------
+    (no extra parameters; KSP tolerances are fixed: rtol=1e-8, atol=1e-12,
+    max_it=1000.  Override at runtime via -ksp_* PETSc options.)
     """
 
     def __init__(self, mesh: MeshModel, fem_model_properties: dict):
         super().__init__(mesh, fem_model_properties)
-        self.comm = MPI.COMM_WORLD
-        self.K: PETSc.Mat = None
-        self.F: PETSc.Vec = None
-        self.u: PETSc.Vec = None
-        self._solver: PETSc.KSP = None
-        self._prepared = False
-        self._applyed_forces = False
-        self._residual_history = []
+        self.u: Optional[np.ndarray] = None
+        self._extra_forces: List[Tuple[np.ndarray, np.ndarray]] = []
 
-    def add_force_on_dofs(self, dofs: List[int], value: List[float]):
-        """Add concentrated forces to specific DOFs in distributed system.
+    # ------------------------------------------------------------------
+    # Public interface
+    # ------------------------------------------------------------------
+
+    def add_force_on_dofs(self, dofs: List[int], value) -> None:
+        """Add concentrated forces to specific DOFs.
 
         Parameters
         ----------
         dofs : List[int]
-            Lista de grados de libertad a modificar. Puede ser:
-            - Lista plana para asignación individual
-            - Lista agrupada para asignación vectorial
-        value : List[float]
-            Valores a aplicar. La longitud determina el agrupamiento:
-            - len(value) = 1: asigna el mismo valor a todos los dofs
-            - len(value) > 1: agrupa los dofs en bloques de este tamaño
+            DOF indices. Can be a flat list for individual assignment or a
+            grouped list used together with a repeating ``value`` pattern.
+        value : float | List[float]
+            Values to apply. If a sequence, it is tiled to match ``len(dofs)``.
         """
-        if self.F is None:
-            self._initialize_vectors()
-        dofs_np = np.asarray(dofs, dtype=PETSc.IntType)
-        if isinstance(value, Iterable):
-            values_np = np.tile(value, len(dofs) // len(value)).astype(PETSc.ScalarType)
+        dofs_np = np.asarray(dofs, dtype=np.int64)
+        if hasattr(value, "__len__"):
+            vals_np = np.tile(value, len(dofs) // len(value)).astype(np.float64)
         else:
-            values_np = np.tile(value, len(dofs)).astype(PETSc.ScalarType)
+            vals_np = np.full(len(dofs), float(value), dtype=np.float64)
+        self._extra_forces.append((dofs_np, vals_np))
 
-        self.F.setValues(dofs_np, values_np, addv=PETSc.InsertMode.ADD_VALUES)
-        self.F.assemble()
-        self._applyed_forces = True
-
-    def _initialize_vectors(self):
-        """Initialize PETSc vectors with proper parallel layout."""
-        self.F = PETSc.Vec().create(self.comm)
-        self.F.setSizes(self.domain.dofs_count)
-        self.F.setUp()
-        self.F.zeroEntries()
-
-    def _setup_solver(self):
-        """Configure PETSc KSP with CG + GAMG (algebraic multigrid)."""
-        self._solver = PETSc.KSP().create(self.comm)
-        self._residual_history = []
-        self._solver.setType("cg")
-
-        pc = self._solver.getPC()
-        pc.setType("gamg")
-
-        opts = PETSc.Options()
-        opts["pc_gamg_type"] = "agg"
-        opts["pc_gamg_agg_nsmooths"] = 1
-        opts["pc_gamg_threshold"] = 0.05
-        opts["pc_gamg_coarse_eq_limit"] = 1000
-        opts["mg_levels_ksp_type"] = "chebyshev"
-        opts["mg_levels_pc_type"] = "sor"
-        opts["mg_levels_ksp_max_it"] = 2
-
-        self._solver.setMonitor(self._residual_monitor)
-        self._solver.setTolerances(rtol=1e-8, atol=1e-12, max_it=1000)
-        self._solver.setFromOptions()
-
-    def solve(self) -> PETSc.Vec:
+    def solve(self) -> np.ndarray:
         """
-        Solve the linear static FEM problem.
+        Run the linear static solve via KSP.
 
         Returns
         -------
-        PETSc.Vec
-            Distributed solution vector.
+        np.ndarray
+            Full displacement vector (n_dofs,).
+
+        Raises
+        ------
+        RuntimeError
+            If the Rust assembler is not available or KSP does not converge.
         """
-        self.K = self.domain.assemble_stiffness_matrix()
+        import _aeroelast  # noqa: PLC0415 — optional Rust extension
 
-        if not self._applyed_forces:
-            self._initialize_vectors()
-            for force in self.body_forces:
-                fe_vector = self.domain.assemble_load_vector(force)
-                self.F.axpy(1.0, fe_vector)
-            # Apply concentrated nodal loads in a single batched PETSc call
-            if self.nodal_loads:
-                all_dofs = np.concatenate([np.asarray(load.dofs, dtype=PETSc.IntType)
-                                           for load in self.nodal_loads])
-                all_vals = np.concatenate([np.asarray(load.force, dtype=PETSc.ScalarType)
-                                           for load in self.nodal_loads])
-                self.F.setValues(all_dofs, all_vals, addv=PETSc.InsertMode.ADD_VALUES)
-                self.F.assemble()
-                self._applyed_forces = True
+        if self.domain._rust is None:
+            raise RuntimeError(
+                "StaticLinearSolver requires the Rust assembler. "
+                "Make sure _aeroelast is built and the mesh is assembled."
+            )
 
-        bc_manager = BoundaryConditionManager(
-            self.K, self.F, dof_per_node=self.domain.dofs_per_node
+        k_rows, k_cols, k_vals = self.domain._rust.assemble_k()
+        n_dof = self.domain.dofs_count
+
+        f = self._build_f_ext()
+
+        free_dofs = self._compute_free_dofs(n_dof)
+
+        u_arr = _aeroelast.linear_static_solve_coo(
+            k_rows.astype(np.int64),
+            k_cols.astype(np.int64),
+            k_vals.astype(np.float64),
+            f,
+            n_dof,
+            free_dofs,
         )
-        bc_manager.apply_dirichlet(self.dirichlet_conditions)
 
-        K_red, F_red, _ = bc_manager.reduced_system
-
-        if not self._prepared:
-            self._setup_solver()
-            self._solver.setOperators(K_red)
-            self._prepared = True
-
-        u_red = K_red.createVecRight()
-        self._solver.solve(F_red, u_red)
-
-        self.u = bc_manager.expand_solution(u_red)
-
-        K_red.destroy()
-        F_red.destroy()
-        u_red.destroy()
+        self.u = np.asarray(u_arr, dtype=np.float64)
+        _log.info("KSP converged — n_free=%d", len(free_dofs))
 
         return self.u
 
-    def _residual_monitor(self, ksp, iteration, residual):
-        """PETSc callback function for residual monitoring."""
-        if iteration == 0:
-            self._residual_history = []
-        self._residual_history.append(residual)
+    def print_solver_info(self, plot_residuals: bool = True) -> None:
+        """Print linear solver status to stdout."""
+        print("\n--- Linear Solver (KSP / CG + ICC) ---")
+        if self.u is not None:
+            print(f"  Solution DOFs  : {self.u.shape[0]}")
+            print(f"  Max |u|        : {np.abs(self.u).max():.3e}")
+        else:
+            print("  (not solved yet)")
 
-    def print_solver_info(self, plot_residuals=True):
-        """Print solver statistics and optionally plot residuals."""
-        if self.comm.rank == 0 and self._solver:
-            print("\n--- Solver Performance ---")
-            print(f"Converged Reason: {self._solver.getConvergedReason()}")
-            print(f"Iterations: {self._solver.getIterationNumber()}")
-            print(f"Final Residual: {self._solver.getResidualNorm():.3e}")
+    # ------------------------------------------------------------------
+    # Internal helpers
+    # ------------------------------------------------------------------
 
-            if plot_residuals and self._residual_history:
-                try:
-                    plt.figure(figsize=(10, 5))
-                    plt.semilogy(self._residual_history, "bo-")
-                    plt.title("Residual Convergence History")
-                    plt.xlabel("Iteration")
-                    plt.ylabel("Residual Norm (log scale)")
-                    plt.grid(True, which="both")
-                    plt.show()
-                except ImportError:
-                    print("\nResidual History:")
-                    print(
-                        "\n".join(
-                            f"Iter {i:3d}: {r:.3e}"
-                            for i, r in enumerate(self._residual_history)
-                        )
-                    )
+    def _build_f_ext(self) -> np.ndarray:
+        """Assemble the external force vector from body + nodal + extra loads."""
+        n = self.domain.dofs_count
+        f = np.zeros(n, dtype=np.float64)
+
+        for force in self.body_forces:
+            fe = self.domain.assemble_load_vector(force)
+            f += np.asarray(fe.getArray(), dtype=np.float64)
+
+        for load in self.nodal_loads:
+            dofs = np.asarray(load.dofs, dtype=np.int64)
+            vals = np.asarray(load.force, dtype=np.float64)
+            if len(dofs) != len(vals):
+                raise ValueError(
+                    "Nodal load dof/value length mismatch in linear solver: "
+                    f"{len(dofs)} != {len(vals)}"
+                )
+            f[dofs] += vals
+
+        for dofs, vals in self._extra_forces:
+            f[dofs] += vals
+
+        return f
+
+    def _compute_free_dofs(self, n_dof: int) -> np.ndarray:
+        """Return sorted array of unconstrained DOF indices."""
+        constrained: set = set()
+        for bc in self.dirichlet_conditions:
+            constrained.update(bc.dofs)
+        return np.array(sorted(set(range(n_dof)) - constrained), dtype=np.int64)
