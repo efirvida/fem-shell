@@ -72,15 +72,21 @@ pub struct Mitc4Precomputed {
     pub m_s: Vector3<f64>,
     /// Initial 3D node coordinates (for J3D / covariant membrane)
     pub initial_coords_3d: [[f64; 3]; 4],
+    /// Local basis vectors (for projecting 3D tangents)
+    pub e1: Vector3<f64>,
+    pub e2: Vector3<f64>,
+    pub e3: Vector3<f64>,
     /// Precomputed Jacobian data at each Gauss point
     pub gp_jacobians: [GpJacobian; N_GAUSS],
     /// Precomputed bubble cache at each Gauss point
     pub gp_bubble: [GpBubble; N_GAUSS],
-    /// Precomputed covariant membrane B-rows at 5 tying points (each 24-element row)
-    pub b_rr: [Vec24; 5],
-    pub b_ss: [Vec24; 5],
-    pub b_rs: [Vec24; 5],
-
+    /// Precomputed covariant membrane B-rows at 5 tying points
+    /// Order: B_rr_A, B_rr_B, B_ss_C, B_ss_D, B_rs_E (each 24-element row)
+    pub b_rr_a: Vec24,
+    pub b_rr_b: Vec24,
+    pub b_ss_c: Vec24,
+    pub b_ss_d: Vec24,
+    pub b_rs_e: Vec24,
 }
 
 /// Jacobian data at a single Gauss point (3D covariant formulation).
@@ -178,41 +184,63 @@ fn compute_j3d(coords_3d: &[[f64; 3]; 4], xi: f64, eta: f64) -> (Vector3<f64>, V
 // Local coordinate system
 // ============================================================================
 
-/// Compute local orthonormal frame (e1, e2, e3) at (xi, eta)
-fn compute_local_frame_at(coords_3d: &[[f64; 3]; 4], xi: f64, eta: f64) -> (Vector3<f64>, Vector3<f64>, Vector3<f64>) {
-    let (g_r, g_s) = compute_j3d(coords_3d, xi, eta);
-    
-    // e3 is the surface normal
-    let mut e3 = g_r.cross(&g_s);
-    if e3.norm() < 1e-12 {
-        // Fallback for degenerate elements
-        e3 = Vector3::new(0.0, 0.0, 1.0);
-    } else {
+/// Compute local coordinate system and transform initial 3D coords to 2D local.
+/// Returns (local_coords[4][2], e1, e2, e3)
+fn compute_local_coordinate_system(
+    coords_3d: &[[f64; 3]; 4],
+) -> ([[f64; 2]; 4], Vector3<f64>, Vector3<f64>, Vector3<f64>) {
+    let nodes: [Vector3<f64>; 4] = [
+        Vector3::new(coords_3d[0][0], coords_3d[0][1], coords_3d[0][2]),
+        Vector3::new(coords_3d[1][0], coords_3d[1][1], coords_3d[1][2]),
+        Vector3::new(coords_3d[2][0], coords_3d[2][1], coords_3d[2][2]),
+        Vector3::new(coords_3d[3][0], coords_3d[3][1], coords_3d[3][2]),
+    ];
+
+    // Compute average normal from two triangles
+    let v1a = nodes[1] - nodes[0];
+    let v2a = nodes[2] - nodes[0];
+    let n1 = v1a.cross(&v2a);
+
+    let v1b = nodes[2] - nodes[0];
+    let v2b = nodes[3] - nodes[0];
+    let n2 = v1b.cross(&v2b);
+
+    let mut e3 = Vector3::zeros();
+    let mut count = 0;
+    if n1.norm() > 1e-12 {
+        e3 += n1.normalize();
+        count += 1;
+    }
+    if n2.norm() > 1e-12 {
+        e3 += n2.normalize();
+        count += 1;
+    }
+    if count > 0 {
+        e3 /= count as f64;
         e3 = e3.normalize();
+    } else {
+        e3 = Vector3::new(0.0, 0.0, 1.0);
     }
 
-    // e1 is the projection of g_r onto the plane orthogonal to e3
-    let mut e1 = g_r - g_r.dot(&e3) * e3;
+    // e1 from edge 0→1, orthogonalized against e3
+    let mut e1 = nodes[1] - nodes[0];
+    e1 -= e1.dot(&e3) * e3;
     if e1.norm() < 1e-12 {
-        // Fallback: use g_s if g_r is parallel to normal
-        e1 = g_s - g_s.dot(&e3) * e3;
+        e1 = nodes[2] - nodes[0];
+        e1 -= e1.dot(&e3) * e3;
     }
     e1 = e1.normalize();
 
     let e2 = e3.cross(&e1).normalize();
 
-    (e1, e2, e3)
-}
-
-/// Project 3D coords to local 2D using a specific frame
-fn compute_local_coords_centroid(coords_3d: &[[f64; 3]; 4], e1: &Vector3<f64>, e2: &Vector3<f64>) -> [[f64; 2]; 4] {
-    let mut local = [[0.0f64; 2]; 4];
+    // Project to local 2D
+    let mut local_coords = [[0.0f64; 2]; 4];
     for i in 0..4 {
-        let p = Vector3::new(coords_3d[i][0], coords_3d[i][1], coords_3d[i][2]);
-        local[i][0] = p.dot(e1);
-        local[i][1] = p.dot(e2);
+        local_coords[i][0] = nodes[i].dot(&e1);
+        local_coords[i][1] = nodes[i].dot(&e2);
     }
-    local
+
+    (local_coords, e1, e2, e3)
 }
 
 // ============================================================================
@@ -319,9 +347,9 @@ fn regularized_inverse_2x2(m: &Matrix2<f64>) -> Matrix2<f64> {
 /// component: 0 = rr, 1 = ss, 2 = rs
 fn compute_covariant_membrane_b_row(
     coords_3d: &[[f64; 3]; 4],
-    _e1: &Vector3<f64>,
-    _e2: &Vector3<f64>,
-    _e3: &Vector3<f64>,
+    e1: &Vector3<f64>,
+    e2: &Vector3<f64>,
+    e3: &Vector3<f64>,
     xi: f64,
     eta: f64,
     component: usize,
@@ -330,6 +358,10 @@ fn compute_covariant_membrane_b_row(
 
     // 3D tangent vectors
     let (g_r_3d, g_s_3d) = compute_j3d(coords_3d, xi, eta);
+
+    // Project to local coordinate system
+    let g_r_local = Vector3::new(g_r_3d.dot(e1), g_r_3d.dot(e2), g_r_3d.dot(e3));
+    let g_s_local = Vector3::new(g_s_3d.dot(e1), g_s_3d.dot(e2), g_s_3d.dot(e3));
 
     let mut b = Vec24::zeros();
 
@@ -340,22 +372,22 @@ fn compute_covariant_membrane_b_row(
 
         match component {
             0 => {
-                // e_rr = g_r · (∂u/∂r) = Σ (dN_i/dr) (g_r · u_i)
-                b[u_idx] = g_r_3d[0] * dn_dxi[i];
-                b[v_idx] = g_r_3d[1] * dn_dxi[i];
-                b[w_idx] = g_r_3d[2] * dn_dxi[i];
+                // e_rr = g_r · (∂u/∂r)
+                b[u_idx] = g_r_local[0] * dn_dxi[i];
+                b[v_idx] = g_r_local[1] * dn_dxi[i];
+                b[w_idx] = g_r_local[2] * dn_dxi[i];
             }
             1 => {
-                // e_ss = g_s · (∂u/∂s) = Σ (dN_i/ds) (g_s · u_i)
-                b[u_idx] = g_s_3d[0] * dn_deta[i];
-                b[v_idx] = g_s_3d[1] * dn_deta[i];
-                b[w_idx] = g_s_3d[2] * dn_deta[i];
+                // e_ss = g_s · (∂u/∂s)
+                b[u_idx] = g_s_local[0] * dn_deta[i];
+                b[v_idx] = g_s_local[1] * dn_deta[i];
+                b[w_idx] = g_s_local[2] * dn_deta[i];
             }
             _ => {
                 // e_rs = 0.5 * (g_r · (∂u/∂s) + g_s · (∂u/∂r))
-                b[u_idx] = 0.5 * (g_r_3d[0] * dn_deta[i] + g_s_3d[0] * dn_dxi[i]);
-                b[v_idx] = 0.5 * (g_r_3d[1] * dn_deta[i] + g_s_3d[1] * dn_dxi[i]);
-                b[w_idx] = 0.5 * (g_r_3d[2] * dn_deta[i] + g_s_3d[2] * dn_dxi[i]);
+                b[u_idx] = 0.5 * (g_r_local[0] * dn_deta[i] + g_s_local[0] * dn_dxi[i]);
+                b[v_idx] = 0.5 * (g_r_local[1] * dn_deta[i] + g_s_local[1] * dn_dxi[i]);
+                b[w_idx] = 0.5 * (g_r_local[2] * dn_deta[i] + g_s_local[2] * dn_dxi[i]);
             }
         }
     }
@@ -424,96 +456,82 @@ impl Mitc4Precomputed {
             coords_3d[i][2] = node_coords[3 * i + 2];
         }
 
-    // Characteristic vectors & membrane coefficients
-    let (x_r, x_s, x_d, n_vec, m_r, m_s) = compute_characteristic_vectors(&coords_3d);
-    let (a_a, a_b, a_c, a_d, a_e) = compute_membrane_coefficients(&x_d, &m_r, &m_s);
+        // Local coordinate system
+        let (local_coords, e1, e2, e3) = compute_local_coordinate_system(&coords_3d);
 
-    // Precompute Jacobians at Gauss points (3D covariant)
-    let mut gp_jacobians = [GpJacobian {
-        j_loc: Matrix2::zeros(),
-        j_inv: Matrix2::zeros(),
-        sqrt_g: 0.0,
-        dh: SMatrix::<f64, 2, 4>::zeros(),
-    }; N_GAUSS];
-
-    // We need a reference frame for the nodal DOFs (T matrix)
-    // We use the frame at the centroid (xi=0, eta=0)
-    let (e1_ref, e2_ref, e3_ref) = compute_local_frame_at(&coords_3d, 0.0, 0.0);
-    let t3 = Matrix3::new(
-        e1_ref[0], e1_ref[1], e1_ref[2],
-        e2_ref[0], e2_ref[1], e2_ref[2],
-        e3_ref[0], e3_ref[1], e3_ref[2],
-    );
-
-    for g in 0..N_GAUSS {
-        let xi = GAUSS_XI[g];
-        let eta = GAUSS_ETA[g];
-        let (g_r, g_s) = compute_j3d(&coords_3d, xi, eta);
-        let sqrt_g = g_r.cross(&g_s).norm();
-        
-        // Use the frame at this specific point to compute j_loc
-        let (e1, e2, _) = compute_local_frame_at(&coords_3d, xi, eta);
-        let j_loc = Matrix2::new(
-            g_r.dot(&e1), g_s.dot(&e1),
-            g_r.dot(&e2), g_s.dot(&e2),
+        // Transformation matrix
+        let t3 = Matrix3::new(
+            e1[0], e1[1], e1[2],
+            e2[0], e2[1], e2[2],
+            e3[0], e3[1], e3[2],
         );
-        let j_inv = j_loc.try_inverse().unwrap_or_else(|| Matrix2::identity());
-        let (dn_dxi, dn_deta) = shape_function_derivatives(xi, eta);
-        let mut dh = SMatrix::<f64, 2, 4>::zeros();
-        for i in 0..4 {
-            // dh = j_inv^T * [dN/dxi; dN/deta]
-            dh[(0, i)] = j_inv[(0, 0)] * dn_dxi[i] + j_inv[(1, 0)] * dn_deta[i];
-            dh[(1, i)] = j_inv[(0, 1)] * dn_dxi[i] + j_inv[(1, 1)] * dn_deta[i];
+
+        // Characteristic vectors & membrane coefficients
+        let (x_r, x_s, x_d, n_vec, m_r, m_s) = compute_characteristic_vectors(&coords_3d);
+        let (a_a, a_b, a_c, a_d, a_e) = compute_membrane_coefficients(&x_d, &m_r, &m_s);
+
+        // Precompute Jacobians at Gauss points (3D covariant)
+        let mut gp_jacobians = [GpJacobian {
+            j_loc: Matrix2::zeros(),
+            j_inv: Matrix2::zeros(),
+            sqrt_g: 0.0,
+            dh: SMatrix::<f64, 2, 4>::zeros(),
+        }; N_GAUSS];
+
+        for g in 0..N_GAUSS {
+            let xi = GAUSS_XI[g];
+            let eta = GAUSS_ETA[g];
+            let (g_r, g_s) = compute_j3d(&coords_3d, xi, eta);
+            let sqrt_g = g_r.cross(&g_s).norm();
+            let j_loc = Matrix2::new(
+                g_r.dot(&e1), g_s.dot(&e1),
+                g_r.dot(&e2), g_s.dot(&e2),
+            );
+            let j_inv = j_loc.try_inverse().unwrap_or_else(|| Matrix2::identity());
+            let (dn_dxi, dn_deta) = shape_function_derivatives(xi, eta);
+            let mut dh = SMatrix::<f64, 2, 4>::zeros();
+            for i in 0..4 {
+                // dh = j_inv^T * [dN/dxi; dN/deta]
+                dh[(0, i)] = j_inv[(0, 0)] * dn_dxi[i] + j_inv[(1, 0)] * dn_deta[i];
+                dh[(1, i)] = j_inv[(0, 1)] * dn_dxi[i] + j_inv[(1, 1)] * dn_deta[i];
+            }
+            gp_jacobians[g] = GpJacobian { j_loc, j_inv, sqrt_g, dh };
         }
-        gp_jacobians[g] = GpJacobian { j_loc, j_inv, sqrt_g, dh };
-    }
 
-    // Precompute bubble data at Gauss points
-    let mut gp_bubble = [GpBubble { nb: 0.0, dnb_dxi: 0.0, dnb_deta: 0.0 }; N_GAUSS];
-    for g in 0..N_GAUSS {
-        let xi = GAUSS_XI[g];
-        let eta = GAUSS_ETA[g];
-        let nb = bubble_function(xi, eta);
-        let (dnb_dxi, dnb_deta) = bubble_derivatives(xi, eta);
-        gp_bubble[g] = GpBubble { nb, dnb_dxi, dnb_deta };
-    }
+        // Precompute bubble data at Gauss points
+        let mut gp_bubble = [GpBubble { nb: 0.0, dnb_dxi: 0.0, dnb_deta: 0.0 }; N_GAUSS];
+        for g in 0..N_GAUSS {
+            let xi = GAUSS_XI[g];
+            let eta = GAUSS_ETA[g];
+            let nb = bubble_function(xi, eta);
+            let (dnb_dxi, dnb_deta) = bubble_derivatives(xi, eta);
+            gp_bubble[g] = GpBubble { nb, dnb_dxi, dnb_deta };
+        }
 
-    // Precompute covariant membrane B-rows at 5 tying points
-    let tying_points = [
-        (0.0,  1.0, 0), // A
-        (0.0, -1.0, 0), // B
-        (1.0,  0.0, 1), // C
-        (-1.0, 0.0, 1), // D
-        (0.0,  0.0, 2), // E
-    ];
-    let mut b_rr = [Vec24::zeros(); 5];
-    let mut b_ss = [Vec24::zeros(); 5];
-    let mut b_rs = [Vec24::zeros(); 5];
+        // Precompute covariant membrane B-rows at 5 tying points
+        // A(0,+1), B(0,-1), C(+1,0), D(-1,0), E(0,0)
+        let b_rr_a = compute_covariant_membrane_b_row(&coords_3d, &e1, &e2, &e3, 0.0,  1.0, 0);
+        let b_rr_b = compute_covariant_membrane_b_row(&coords_3d, &e1, &e2, &e3, 0.0, -1.0, 0);
+        let b_ss_c = compute_covariant_membrane_b_row(&coords_3d, &e1, &e2, &e3, 1.0,  0.0, 1);
+        let b_ss_d = compute_covariant_membrane_b_row(&coords_3d, &e1, &e2, &e3,-1.0,  0.0, 1);
+        let b_rs_e = compute_covariant_membrane_b_row(&coords_3d, &e1, &e2, &e3, 0.0,  0.0, 2);
 
-    for (i, &(xi, eta, comp)) in tying_points.iter().enumerate() {
-        // We need the row for EACH component at this point
-        b_rr[i] = compute_covariant_membrane_b_row(&coords_3d, &e1_ref, &e2_ref, &e3_ref, xi, eta, 0);
-        b_ss[i] = compute_covariant_membrane_b_row(&coords_3d, &e1_ref, &e2_ref, &e3_ref, xi, eta, 1);
-        b_rs[i] = compute_covariant_membrane_b_row(&coords_3d, &e1_ref, &e2_ref, &e3_ref, xi, eta, 2);
-    }
+        let k_drill = e_mod * thickness * thickness * 0.15 * drilling_scale;
 
-    let k_drill = e_mod * thickness * thickness * 0.15 * drilling_scale;
-
-    Mitc4Precomputed {
-        local_coords: compute_local_coords_centroid(&coords_3d, &e1_ref, &e2_ref),
-        t3,
-        constitutive,
-        k_drill,
-        thickness,
-        a_a, a_b, a_c, a_d, a_e,
-        x_r, x_s, x_d, n_vec, m_r, m_s,
-        initial_coords_3d: coords_3d,
-        gp_jacobians,
-        gp_bubble,
-        b_rr, b_ss, b_rs,
-
-    }
-
+        Mitc4Precomputed {
+            local_coords,
+            t3,
+            constitutive,
+            k_drill,
+            thickness,
+            a_a, a_b, a_c, a_d, a_e,
+            x_r, x_s, x_d, n_vec, m_r, m_s,
+            initial_coords_3d: coords_3d,
+            e1, e2, e3,
+            gp_jacobians,
+            gp_bubble,
+            b_rr_a, b_rr_b, b_ss_c, b_ss_d, b_rs_e,
+        }
     }
 }
 
@@ -522,13 +540,7 @@ impl Mitc4Precomputed {
 // ============================================================================
 
 /// MITC4+ assumed membrane strain B-matrix (3×24) at (xi, eta)
-fn b_m_mitc4_plus(
-    pre: &Mitc4Precomputed,
-    xi: f64,
-    eta: f64,
-    e1: &Vector3<f64>,
-    e2: &Vector3<f64>,
-) -> SMatrix<f64, 3, 24> {
+fn b_m_mitc4_plus(pre: &Mitc4Precomputed, xi: f64, eta: f64) -> SMatrix<f64, 3, 24> {
     let r = xi;
     let s = eta;
 
@@ -539,41 +551,26 @@ fn b_m_mitc4_plus(
     let a_e = pre.a_e;
 
     // Blended covariant B-rows (Ko et al. 2017, Eqs. 27a-c)
-    let w_a = 0.5 * (1.0 - 2.0 * a_a + s + 2.0 * a_a * s * s);
-    let w_b = 0.5 * (1.0 - 2.0 * a_b - s + 2.0 * a_b * s * s);
-    let w_c = a_c * (-1.0 + s * s);
-    let w_d = a_d * (-1.0 + s * s);
-    let w_e = a_e * (-1.0 + s * s);
-    let sum_w = w_a + w_b + w_c + w_d + w_e;
-    let norm = if sum_w.abs() > 1e-12 { 1.0 / sum_w } else { 1.0 };
+    let b_rr =
+          (0.5 * (1.0 - 2.0 * a_a + s + 2.0 * a_a * s * s)) * pre.b_rr_a
+        + (0.5 * (1.0 - 2.0 * a_b - s + 2.0 * a_b * s * s)) * pre.b_rr_b
+        + a_c * (-1.0 + s * s) * pre.b_ss_c
+        + a_d * (-1.0 + s * s) * pre.b_ss_d
+        + a_e * (-1.0 + s * s) * pre.b_rs_e;
 
-    let b_rr = norm * (
-        w_a * pre.b_rr[0] + w_b * pre.b_rr[1] + w_c * pre.b_rr[2] + w_d * pre.b_rr[3] + w_e * pre.b_rr[4]
-    );
+    let b_ss =
+          a_a * (-1.0 + r * r) * pre.b_rr_a
+        + a_b * (-1.0 + r * r) * pre.b_rr_b
+        + (0.5 * (1.0 - 2.0 * a_c + r + 2.0 * a_c * r * r)) * pre.b_ss_c
+        + (0.5 * (1.0 - 2.0 * a_d - r + 2.0 * a_d * r * r)) * pre.b_ss_d
+        + a_e * (-1.0 + r * r) * pre.b_rs_e;
 
-    let w_a_s = a_a * (-1.0 + r * r);
-    let w_b_s = a_b * (-1.0 + r * r);
-    let w_c_s = 0.5 * (1.0 - 2.0 * a_c + r + 2.0 * a_c * r * r);
-    let w_d_s = 0.5 * (1.0 - 2.0 * a_d - r + 2.0 * a_d * r * r);
-    let w_e_s = a_e * (-1.0 + r * r);
-    let sum_w_s = w_a_s + w_b_s + w_c_s + w_d_s + w_e_s;
-    let norm_s = if sum_w_s.abs() > 1e-12 { 1.0 / sum_w_s } else { 1.0 };
-
-    let b_ss = norm_s * (
-        w_a_s * pre.b_ss[0] + w_b_s * pre.b_ss[1] + w_c_s * pre.b_ss[2] + w_d_s * pre.b_ss[3] + w_e_s * pre.b_ss[4]
-    );
-
-    let w_a_rs = 0.25 * (r + 4.0 * a_a * r * s);
-    let w_b_rs = 0.25 * (-r + 4.0 * a_b * r * s);
-    let w_c_rs = 0.25 * (s + 4.0 * a_c * r * s);
-    let w_d_rs = 0.25 * (-s + 4.0 * a_d * r * s);
-    let w_e_rs = (1.0 + a_e * r * s);
-    let sum_w_rs = w_a_rs + w_b_rs + w_c_rs + w_d_rs + w_e_rs;
-    let norm_rs = if sum_w_rs.abs() > 1e-12 { 1.0 / sum_w_rs } else { 1.0 };
-
-    let b_rs = norm_rs * (
-        w_a_rs * pre.b_rs[0] + w_b_rs * pre.b_rs[1] + w_c_rs * pre.b_rs[2] + w_d_rs * pre.b_rs[3] + w_e_rs * pre.b_rs[4]
-    );
+    let b_rs =
+          0.25 * (r + 4.0 * a_a * r * s) * pre.b_rr_a
+        + 0.25 * (-r + 4.0 * a_b * r * s) * pre.b_rr_b
+        + 0.25 * (s + 4.0 * a_c * r * s) * pre.b_ss_c
+        + 0.25 * (-s + 4.0 * a_d * r * s) * pre.b_ss_d
+        + (1.0 + a_e * r * s) * pre.b_rs_e;
 
     // Stack: B_covariant = [B_rr; B_ss; 2*B_rs] (3×24)
     let mut b_cov = SMatrix::<f64, 3, 24>::zeros();
@@ -583,34 +580,25 @@ fn b_m_mitc4_plus(
         b_cov[(2, j)] = 2.0 * b_rs[j];
     }
 
-    // Transform covariant → local orthonormal frame using the PROVIDED frame
-    let (j_loc, _) = compute_j_loc_at(&pre.initial_coords_3d, e1, e2, xi, eta);
+    // Transform covariant → local orthonormal frame using 3D tangents
+    let (j_loc, _) = compute_j_loc_at(&pre.initial_coords_3d, &pre.e1, &pre.e2, xi, eta);
     let t = covariant_to_local_mapping(&j_loc);
     t * b_cov
 }
 
-/// Projected membrane B-matrix (3×24) that maps global displacements to local strains
-fn b_m_projected(dh: &SMatrix<f64, 2, 4>, e1: &Vector3<f64>, e2: &Vector3<f64>) -> SMatrix<f64, 3, 24> {
+/// Standard membrane B-matrix (3×24) at a GP (for stress recovery, nonlinear)
+fn b_m_standard(dh: &SMatrix<f64, 2, 4>) -> SMatrix<f64, 3, 24> {
     let mut bm = SMatrix::<f64, 3, 24>::zeros();
     for i in 0..4 {
         let u_idx = 6 * i;
-        let d_n_dx1 = dh[(0, i)];
-        let d_n_dx2 = dh[(1, i)];
+        let v_idx = 6 * i + 1;
+        let dni_dx = dh[(0, i)];
+        let dni_dy = dh[(1, i)];
 
-        // eps_11 = dN/dx1 * (u . e1)
-        bm[(0, u_idx)]     = d_n_dx1 * e1[0];
-        bm[(0, u_idx + 1)] = d_n_dx1 * e1[1];
-        bm[(0, u_idx + 2)] = d_n_dx1 * e1[2];
-
-        // eps_22 = dN/dx2 * (u . e2)
-        bm[(1, u_idx)]     = d_n_dx2 * e2[0];
-        bm[(1, u_idx + 1)] = d_n_dx2 * e2[1];
-        bm[(1, u_idx + 2)] = d_n_dx2 * e2[2];
-
-        // gamma_12 = dN/dx1 * (u . e2) + dN/dx2 * (u . e1)
-        bm[(2, u_idx)]     = d_n_dx1 * e2[0] + d_n_dx2 * e1[0];
-        bm[(2, u_idx + 1)] = d_n_dx1 * e2[1] + d_n_dx2 * e1[1];
-        bm[(2, u_idx + 2)] = d_n_dx1 * e2[2] + d_n_dx2 * e1[2];
+        bm[(0, u_idx)] = dni_dx;
+        bm[(1, v_idx)] = dni_dy;
+        bm[(2, u_idx)] = dni_dy;
+        bm[(2, v_idx)] = dni_dx;
     }
     bm
 }
@@ -797,19 +785,46 @@ pub fn compute_ke_local(pre: &Mitc4Precomputed) -> Mat24 {
     let cb = &pre.constitutive.cb;
     let cs = &pre.constitutive.cs;
 
-    // --- Membrane stiffness: Projected 3D linear membrane ---
+    // --- Membrane stiffness: MITC4+ + Q4E3 EAS (Simo & Rifai 1990) ---
+    // EAS adds 3 internal modes (ξ, η, ξη) statically condensed out.
+    // Enhancement field: ε_EAS = (sqrt_g₀/sqrt_g) · T₀ · diag(ξ,η,ξη) · α
+    let (g_r0, g_s0) = compute_j3d(&pre.initial_coords_3d, 0.0, 0.0);
+    let sqrt_g0 = g_r0.cross(&g_s0).norm();
+    let (j_loc0, _) = compute_j_loc_at(&pre.initial_coords_3d, &pre.e1, &pre.e2, 0.0, 0.0);
+    let t0 = covariant_to_local_mapping(&j_loc0);
+
     let mut k_m = Mat24::zeros();
+    let mut k_ua: SMatrix<f64, 24, 3> = SMatrix::zeros();
+    let mut k_aa: SMatrix<f64, 3, 3>  = SMatrix::zeros();
+
     for g in 0..N_GAUSS {
         let xi = GAUSS_XI[g];
         let eta = GAUSS_ETA[g];
-        let gj = &pre.gp_jacobians[g];
+        let sqrt_g = pre.gp_jacobians[g].sqrt_g;
         let w = GAUSS_W[g];
 
-        let (e1, e2, _) = compute_local_frame_at(&pre.initial_coords_3d, xi, eta);
-        let bm = b_m_projected(&gj.dh, &e1, &e2);
+        let bm = b_m_mitc4_plus(pre, xi, eta);
 
-        k_m += (bm.transpose() * cm * &bm) * (w * gj.sqrt_g);
+        let scale = sqrt_g0 / sqrt_g.max(1e-14);
+        let mut g_ref = SMatrix::<f64, 3, 3>::zeros();
+        g_ref[(0, 0)] = xi;
+        g_ref[(1, 1)] = eta;
+        g_ref[(2, 2)] = xi * eta;
+        let g_eas = scale * t0 * g_ref;
+
+        let factor = w * sqrt_g;
+        k_m  += (bm.transpose() * cm * &bm) * factor;
+        k_ua += (bm.transpose() * cm * &g_eas) * factor;
+        k_aa += (g_eas.transpose() * cm * &g_eas) * factor;
     }
+
+    // Static condensation: K_m_eff = K_m - K_uα · K_αα⁻¹ · K_αu
+    let k_m = if let Some(k_aa_inv) = k_aa.try_inverse() {
+        let condensed = k_m - &k_ua * k_aa_inv * k_ua.transpose();
+        0.5 * (&condensed + condensed.transpose())
+    } else {
+        k_m
+    };
 
     // --- Bending + shear with bubble condensation ---
     let mut knn_b = Mat24::zeros();
@@ -837,10 +852,8 @@ pub fn compute_ke_local(pre: &Mitc4Precomputed) -> Mat24 {
         kbb_b += (bkb.transpose() * cb * &bkb) * (w * sqrt_g);
 
         // Shear
-        let (e1, e2, _) = compute_local_frame_at(&pre.initial_coords_3d, xi, eta);
-        let local_coords = compute_local_coords_centroid(&pre.initial_coords_3d, &e1, &e2);
         let (bs_nodal, bs_bubble) = b_gamma_mitc4_plus(
-            &local_coords, xi, eta, sqrt_g, gb.nb,
+            &pre.local_coords, xi, eta, sqrt_g, gb.nb,
         );
 
         knn_s += (bs_nodal.transpose() * cs * &bs_nodal) * (w * sqrt_g);
@@ -1114,8 +1127,7 @@ fn compute_membrane_stress(pre: &Mitc4Precomputed, u_local: &Vec24) -> Vector3<f
     let cm_raw = &pre.constitutive.cm_raw;
 
     // Evaluate at element center using the covariant MITC4+ membrane B-matrix.
-    let (e1, e2, _) = compute_local_frame_at(&pre.initial_coords_3d, 0.0, 0.0);
-    let bm = b_m_mitc4_plus(pre, 0.0, 0.0, &e1, &e2);
+    let bm = b_m_mitc4_plus(pre, 0.0, 0.0);
     let eps_m = bm * u_local;
     cm_raw * eps_m
 }
@@ -1179,8 +1191,7 @@ pub fn compute_fint_global(pre: &Mitc4Precomputed, u_global: &Vec24, nonlinear: 
             let eps_m = Vector3::new(e_gl[(0, 0)], e_gl[(1, 1)], 2.0 * e_gl[(0, 1)]);
             let sigma_m = cm_raw * eps_m;
 
-            let (e1, e2, _) = compute_local_frame_at(&pre.initial_coords_3d, xi, eta);
-            let bm_l = b_m_mitc4_plus(pre, xi, eta, &e1, &e2);
+            let bm_l = b_m_mitc4_plus(pre, xi, eta);
             let bnl = compute_b_nl(&gj.dh, &h_mat);
             let bm_nl = extract_membrane_rows(&bnl);
             let b_total = bm_l + bm_nl;
@@ -1430,23 +1441,22 @@ pub fn compute_element_stress(
     // Evaluate at element centroid (xi=0, eta=0) using 3D covariant geometry
     let xi = 0.0_f64;
     let eta = 0.0_f64;
-    let (e1, e2, _) = compute_local_frame_at(&pre.initial_coords_3d, xi, eta);
-    let (_, j_inv) = compute_j_loc_at(&pre.initial_coords_3d, &e1, &e2, xi, eta);
+
+    let (_, j_inv) = compute_j_loc_at(&pre.initial_coords_3d, &pre.e1, &pre.e2, xi, eta);
     let (dn_dxi, dn_deta) = shape_function_derivatives(xi, eta);
     let mut dh = SMatrix::<f64, 2, 4>::zeros();
     for i in 0..4 {
         dh[(0, i)] = j_inv[(0, 0)] * dn_dxi[i] + j_inv[(1, 0)] * dn_deta[i];
         dh[(1, i)] = j_inv[(0, 1)] * dn_dxi[i] + j_inv[(1, 1)] * dn_deta[i];
     }
-    
+
     let cm_raw = &pre.constitutive.cm_raw;
     let h = pre.thickness;
-    
+
     // Membrane
-    let bm = b_m_mitc4_plus(pre, xi, eta, &e1, &e2);
+    let bm = b_m_mitc4_plus(pre, xi, eta);
     let eps_m = bm * &u_local;
     let sig_m = cm_raw * eps_m;
-
 
     // Bending
     let bk = b_kappa(&dh);
