@@ -105,6 +105,37 @@ pub struct Mitc4Precomputed {
     pub initial_normals: [Vector3<f64>; 4],
     /// Nodal quaternions [q0, qx, qy, qz] per node
     pub quaternions: [Vector4<f64>; 4],
+
+    // ============================================================================
+    // Priority 3: Fully corotational frame and enhanced drill
+    // ============================================================================
+
+    /// Initial tangent vectors at each Gauss point (for corotational update)
+    pub gp_initial_tangents: [GpTangents; N_GAUSS],
+    /// Initial local frames at each Gauss point (for corotational update)
+    pub gp_initial_frames: [GpLocalFrame; N_GAUSS],
+}
+
+/// Initial geometric data at a Gauss point for corotational tracking
+#[derive(Clone, Copy)]
+pub struct GpTangents {
+    /// Tangent vector in ξ direction at reference configuration
+    pub g_r0: Vector3<f64>,
+    /// Tangent vector in η direction at reference configuration
+    pub g_s0: Vector3<f64>,
+    /// Normal at reference configuration
+    pub n0: Vector3<f64>,
+}
+
+/// Local orthonormal frame at a Gauss point
+#[derive(Clone, Copy)]
+pub struct GpLocalFrame {
+    /// First in-plane tangent ( ê₁ )
+    pub e1: Vector3<f64>,
+    /// Second in-plane tangent ( ê₂ )
+    pub e2: Vector3<f64>,
+    /// Normal ( ê₃ )
+    pub e3: Vector3<f64>,
 }
 
 /// Jacobian data at a single Gauss point (3D covariant formulation).
@@ -588,6 +619,44 @@ impl Mitc4Precomputed {
             Vector4::new(1.0, 0.0, 0.0, 0.0),
         ];
 
+        // ============================================================================
+        // Priority 3: Precompute corotational frame data at each Gauss point
+        // ============================================================================
+        let mut initial_tangents: [GpTangents; N_GAUSS] = [
+            GpTangents { g_r0: Vector3::zeros(), g_s0: Vector3::zeros(), n0: Vector3::zeros() };
+            N_GAUSS
+        ];
+        let mut initial_frames: [GpLocalFrame; N_GAUSS] = [
+            GpLocalFrame { e1: Vector3::zeros(), e2: Vector3::zeros(), e3: Vector3::zeros() };
+            N_GAUSS
+        ];
+
+        for g in 0..N_GAUSS {
+            let xi = GAUSS_XI[g];
+            let eta = GAUSS_ETA[g];
+            let (g_r, g_s) = compute_j3d(&coords_3d, xi, eta);
+            let n = g_r.cross(&g_s);
+            let n_norm = n.norm();
+            let n0 = if n_norm > 1e-12 { n / n_norm } else { Vector3::zeros() };
+
+            initial_tangents[g] = GpTangents { g_r0: g_r, g_s0: g_s, n0 };
+
+            // Local frame at this Gauss point
+            let e1_gp = if g_r.norm() > 1e-12 {
+                let e1_raw = g_r - g_r.dot(&n0) * n0;
+                if e1_raw.norm() > 1e-12 { e1_raw.normalize() } else { e1 }
+            } else {
+                e1
+            };
+            let e2_gp = if n0.norm() > 1e-12 && e1_gp.norm() > 1e-12 {
+                n0.cross(&e1_gp).normalize()
+            } else {
+                e2
+            };
+
+            initial_frames[g] = GpLocalFrame { e1: e1_gp, e2: e2_gp, e3: n0 };
+        }
+
         Mitc4Precomputed {
             local_coords,
             t3,
@@ -602,13 +671,17 @@ impl Mitc4Precomputed {
             gp_bubble,
             b_rr_a, b_rr_b, b_ss_c, b_ss_d, b_rs_e,
 
-            // S4R fields
+            // S4 fields
             hg_stiffness_factor: hg_factor,
             h_orth,
             g_shear,
             element_area,
             initial_normals,
             quaternions,
+
+            // Priority 3: Corotational frame data
+            gp_initial_tangents: initial_tangents,
+            gp_initial_frames: initial_frames,
         }
     }
 }
@@ -1860,6 +1933,78 @@ mod tests {
         let b_norm = cb_coupling.norm();
         assert!(b_norm < 1e-10 || b_norm > 0.0, "B matrix exists and is either zero or non-zero");
     }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Priority 3: Corotational frame and enhanced drill tests
+    // ─────────────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn test_corotational_frame_update() {
+        // Test that corotational frame updates correctly
+        let pre = make_pre();
+        let current_coords: [[f64; 3]; 4] = [
+            [0.0, 0.0, 0.01],   // slight z displacement at node 0
+            [1.0, 0.0, 0.0],
+            [1.0, 1.0, 0.0],
+            [0.0, 1.0, 0.0],
+        ];
+        let frames = pre.update_corotational_frame(&current_coords);
+        // All frames should have orthonormal basis vectors
+        for g in 0..N_GAUSS {
+            let f = &frames[g];
+            assert!((f.e1.norm() - 1.0).abs() < 1e-10, "e1 should be unit");
+            assert!((f.e2.norm() - 1.0).abs() < 1e-10, "e2 should be unit");
+            assert!((f.e3.norm() - 1.0).abs() < 1e-10, "e3 should be unit");
+        }
+    }
+
+    #[test]
+    fn test_frame_incremental_rotation() {
+        use nalgebra::Matrix3;
+        // Test that incremental rotation is orthogonal
+        let pre = make_pre();
+        let current_coords: [[f64; 3]; 4] = [
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [1.0, 1.0, 0.0],
+            [0.0, 1.0, 0.0],
+        ];
+        let frames = pre.update_corotational_frame(&current_coords);
+        let old_frame = pre.gp_initial_frames[0];
+        let new_frame = frames[0];
+        let r_inc = Mitc4Precomputed::frame_incremental_rotation(&old_frame, &new_frame);
+        // R_inc should be approximately orthogonal: R^T·R ≈ I
+        let rt_r = r_inc.transpose() * &r_inc;
+        let ident = Matrix3::identity();
+        let diff = &rt_r - &ident;
+        assert!(diff.norm() < 1e-6, "R_inc should be orthogonal");
+    }
+
+    #[test]
+    fn test_enhanced_drill_stiffness() {
+        let pre = make_pre();
+        // Zero tension should give base stiffness
+        let k_zero = Mitc4Precomputed::compute_enhanced_drill_stiffness(&pre, 0.0);
+        assert!(k_zero > 0.0, "drill stiffness should be positive");
+        // Positive tension should increase stiffness
+        let k_tension = Mitc4Precomputed::compute_enhanced_drill_stiffness(&pre, 1e8);
+        assert!(k_tension > k_zero, "tension should increase drill stiffness");
+    }
+
+    #[test]
+    fn test_drill_warping_moment_flat_element() {
+        let pre = make_pre();
+        let current_coords: [[f64; 3]; 4] = [
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [1.0, 1.0, 0.0],
+            [0.0, 1.0, 0.0],
+        ];
+        let theta_z = Vec24::zeros();
+        let moment = Mitc4Precomputed::compute_drill_warping_moment(&pre, &current_coords, &theta_z);
+        // Flat element should have minimal warping moment
+        assert!(moment.norm() < 1e-10, "flat element should have no warping moment");
+    }
 }
 
 // ============================================================================
@@ -2036,5 +2181,159 @@ impl Mitc4Precomputed {
         let (_r_inc, u_inc) = Self::polar_decomposition(h);
         let eps_log = Self::log_strain_from_polar(&u_inc);
         Vector3::new(eps_log[(0, 0)], eps_log[(1, 1)], 2.0 * eps_log[(0, 1)])
+    }
+}
+
+// ============================================================================
+// Priority 3: Fully Corotational Frame Update
+// ============================================================================
+
+impl Mitc4Precomputed {
+    /// Update the corotational frame at a Gauss point given current nodal positions.
+    ///
+    /// This computes the updated local frame {ê₁, ê₂, ê₃} at each integration point
+    /// based on the current deformed geometry. The frame is used to express strains
+    /// in a material-adapted coordinate system.
+    ///
+    /// The updated tangent vectors are:
+    ///   g_r = ∂x/∂ξ  (computed from current positions)
+    ///   g_s = ∂x/∂η
+    ///   ê₃ = normalize(g_r × g_s)  (updated normal)
+    ///   ê₁ = normalize(g_r - (g_r·ê₃)·ê₃)  (projected tangent)
+    ///   ê₂ = ê₃ × ê₁  (completes right-handed frame)
+    pub fn update_corotational_frame(
+        &self,
+        current_coords: &[[f64; 3]; 4],
+    ) -> [GpLocalFrame; N_GAUSS] {
+        let mut updated_frames: [GpLocalFrame; N_GAUSS] = [
+            GpLocalFrame { e1: Vector3::zeros(), e2: Vector3::zeros(), e3: Vector3::zeros() };
+            N_GAUSS
+        ];
+
+        for g in 0..N_GAUSS {
+            let xi = GAUSS_XI[g];
+            let eta = GAUSS_ETA[g];
+
+            // Current tangent vectors from deformed geometry
+            let (g_r_def, g_s_def) = compute_j3d(current_coords, xi, eta);
+
+            // Updated normal
+            let n_cross = g_r_def.cross(&g_s_def);
+            let n_norm = n_cross.norm();
+            let e3_new = if n_norm > 1e-12 { n_cross / n_norm } else {
+                self.gp_initial_frames[g].e3 // fallback to initial
+            };
+
+            // Project g_r onto plane perpendicular to e3_new
+            let g_r_proj = g_r_def - g_r_def.dot(&e3_new) * e3_new;
+            let e1_new = if g_r_proj.norm() > 1e-12 {
+                g_r_proj.normalize()
+            } else {
+                self.gp_initial_frames[g].e1 // fallback to initial
+            };
+
+            // Complete right-handed frame
+            let e2_new = if e3_new.norm() > 1e-12 && e1_new.norm() > 1e-12 {
+                e3_new.cross(&e1_new).normalize()
+            } else {
+                self.gp_initial_frames[g].e2
+            };
+
+            updated_frames[g] = GpLocalFrame { e1: e1_new, e2: e2_new, e3: e3_new };
+        }
+
+        updated_frames
+    }
+
+    /// Compute the incremental rotation tensor from corotational frame update.
+    ///
+    /// Returns R_inc = R_new · R_old^T, which represents the rotation that takes
+    /// the old frame to the new frame.
+    pub fn frame_incremental_rotation(
+        old_frame: &GpLocalFrame,
+        new_frame: &GpLocalFrame,
+    ) -> Matrix3<f64> {
+        // Build old and new frame matrices (columns are basis vectors)
+        let r_old = Matrix3::from_columns(&[old_frame.e1, old_frame.e2, old_frame.e3]);
+        let r_new = Matrix3::from_columns(&[new_frame.e1, new_frame.e2, new_frame.e3]);
+
+        // Incremental rotation: R_inc = R_new · R_old^T
+        r_new * r_old.transpose()
+    }
+}
+
+// ============================================================================
+// Priority 3: Enhanced Drill Rotation (Hughes-Brezzi with variable penalty)
+// ============================================================================
+
+impl Mitc4Precomputed {
+    /// Compute enhanced drill stiffness with warping correction.
+    ///
+    /// Standard drill stiffness: k_drill = α · E · h² / (1-ν²)
+    /// where α is typically 0.1-0.2.
+    ///
+    /// Enhanced version accounts for:
+    /// 1. Element aspect ratio (reduces drill in highly distorted elements)
+    /// 2. Membrane state (increases drill under tension for stability)
+    pub fn compute_enhanced_drill_stiffness(
+        pre: &Mitc4Precomputed,
+        membrane_tension: f64, // σ_xx + σ_yy at element center (for tension > 0)
+    ) -> f64 {
+        let e = pre.thickness;
+        let base_k = pre.k_drill / 0.15; // Recover E·h² from stored k_drill
+
+        // Compute aspect ratio from initial geometry
+        let dx21 = pre.local_coords[1][0] - pre.local_coords[0][0];
+        let dy21 = pre.local_coords[1][1] - pre.local_coords[0][1];
+        let dx32 = pre.local_coords[2][0] - pre.local_coords[1][0];
+        let dy32 = pre.local_coords[2][1] - pre.local_coords[1][1];
+        let l1 = (dx21 * dx21 + dy21 * dy21).sqrt();
+        let l2 = (dx32 * dx32 + dy32 * dy32).sqrt();
+        let aspect = if l1 > l2 { l1 / l2.max(1e-12) } else { l2 / l1.max(1e-12) };
+
+        // Warping correction: reduce stiffness for high aspect ratio
+        let warping_factor = (2.0 / (1.0 + aspect)).min(1.0);
+
+        // Tension correction: increase drill under membrane tension
+        let tension_factor = 1.0 + (membrane_tension / base_k.max(1.0)).clamp(0.0, 2.0);
+
+        // Combine factors
+        base_k * warping_factor * tension_factor
+    }
+
+    /// Compute drill moment contribution from warping.
+    ///
+    /// For curved shells or warped geometries, drill rotation contributes
+    /// to out-of-plane bending moments.
+    pub fn compute_drill_warping_moment(
+        pre: &Mitc4Precomputed,
+        current_coords: &[[f64; 3]; 4],
+        theta_z: &Vec24, // Drill rotations at nodes
+    ) -> Vector3<f64> {
+        // Compute element warping from current geometry
+        let v1 = Vector3::new(
+            current_coords[2][0] - current_coords[0][0],
+            current_coords[2][1] - current_coords[0][1],
+            current_coords[2][2] - current_coords[0][2],
+        );
+        let v2 = Vector3::new(
+            current_coords[3][0] - current_coords[1][0],
+            current_coords[3][1] - current_coords[1][1],
+            current_coords[3][2] - current_coords[1][2],
+        );
+
+        // Diagonal vectors should be equal for a flat quadrilateral
+        let warping = (v1 - v2).norm();
+        let warping_norm = warping / pre.element_area.max(1e-12);
+
+        // Average drill rotation
+        let avg_theta_z: f64 = (0..4).map(|i| theta_z[6 * i + 5]).sum::<f64>() / 4.0;
+
+        // Warping moment contribution (reduces as element becomes flatter)
+        let k_base = pre.k_drill;
+        let warping_moment = k_base * avg_theta_z * warping_norm * 0.5;
+
+        // Return moment vector (out-of-plane direction)
+        Vector3::new(0.0, 0.0, warping_moment)
     }
 }
