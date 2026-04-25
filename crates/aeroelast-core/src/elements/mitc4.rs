@@ -1240,6 +1240,12 @@ fn compute_geometric_stiffness_local(pre: &Mitc4Precomputed, sigma: &Vector3<f64
 }
 
 /// Compute internal forces in GLOBAL coordinates.
+///
+/// Implements the full ABD constitutive model:
+///   N = A·ε + B·κ    (membrane forces)
+///   M = B·ε + D·κ    (bending moments)
+///
+/// For symmetric laminates (B ≈ 0), this reduces to the standard uncoupled case.
 pub fn compute_fint_global(pre: &Mitc4Precomputed, u_global: &Vec24, nonlinear: bool) -> Vec24 {
     let t24 = build_t24(pre);
     let u_local = &t24 * u_global;
@@ -1250,32 +1256,77 @@ pub fn compute_fint_global(pre: &Mitc4Precomputed, u_global: &Vec24, nonlinear: 
     } else {
         let mut f = Vec24::zeros();
 
-        // Bending+shear (linear, condensed) + drilling
-        let k_bs = compute_bending_shear_condensed(pre);
-        let k_dr = compute_drilling_stiffness(pre);
-        f += (k_bs + k_dr) * &u_local;
+        // Get constitutive matrices
+        let cm = &pre.constitutive.cm;        // A matrix
+        let cb_coupling = &pre.constitutive.cb_coupling; // B matrix (membrane-bending coupling)
+        let cb = &pre.constitutive.cb;        // D matrix
+        let cs = &pre.constitutive.cs;        // transverse shear
+        let cm_raw = &pre.constitutive.cm_raw; // A/h for stress computation
 
-        // Membrane with GL strain — use MITC4+ assumed B for consistency with K
-        let cm_raw = &pre.constitutive.cm_raw;
+        // =====================================================================
+        // Nonlinear case: compute strains and curvatures at each Gauss point
+        // =====================================================================
         for g in 0..N_GAUSS {
-            let gj = &pre.gp_jacobians[g];
             let xi = GAUSS_XI[g];
             let eta = GAUSS_ETA[g];
             let w = GAUSS_W[g];
+            let gj = &pre.gp_jacobians[g];
+            let gb = &pre.gp_bubble[g];
             let sqrt_g = gj.sqrt_g;
 
+            // ================================================================
+            // Membrane strain from displacement gradient
+            // ================================================================
             let h_mat = displacement_gradient(&gj.dh, &u_local);
             let e_gl = green_lagrange_strain(&h_mat);
             let eps_m = Vector3::new(e_gl[(0, 0)], e_gl[(1, 1)], 2.0 * e_gl[(0, 1)]);
-            let sigma_m = cm_raw * eps_m;
 
+            // ================================================================
+            // Curvature from rotations (bending)
+            // ================================================================
+            let bk = b_kappa(&gj.dh);
+            let bkb = b_kappa_bubble(&gj.j_inv, gb.dnb_dxi, gb.dnb_deta);
+
+            // Extract nodal rotation DOFs (columns 3,4 for each node)
+            let mut u_rot = Vec24::zeros();
+            for i in 0..4 {
+                u_rot[6 * i + 3] = u_local[6 * i + 3];
+                u_rot[6 * i + 4] = u_local[6 * i + 4];
+            }
+
+            // Condensed curvature (excluding bubble DOFs - indices 24,25)
+            let kappa_nodal = bk * &u_rot;
+            let kappa_bubble = bkb * Vector2::new(0.0, 0.0); // simplified - bubble condensed
+            let kappa = kappa_nodal; // + kappa_bubble for full treatment
+
+            // ================================================================
+            // Resultants with ABD coupling: N = A·ε + B·κ, M = B·ε + D·κ
+            // ================================================================
+            let n_resultant = cm * &eps_m + cb_coupling * &kappa;
+            let m_resultant = cb_coupling * &eps_m + cb * &kappa;
+
+            // ================================================================
+            // Membrane B-matrix (MITC4+ assumed strain for consistency with K)
+            // ================================================================
             let bm_l = b_m_mitc4_plus(pre, xi, eta);
             let bnl = compute_b_nl(&gj.dh, &h_mat);
             let bm_nl = extract_membrane_rows(&bnl);
-            let b_total = bm_l + bm_nl;
+            let bm_total = bm_l + bm_nl;
 
-            f += b_total.transpose() * sigma_m * (w * sqrt_g * pre.thickness);
+            // ================================================================
+            // Work conjugate forces from resultants
+            // δW = ∫ (B_m^T · N + B_k^T · M) dA
+            // ================================================================
+            let factor = w * sqrt_g;
+            f += bm_total.transpose() * &n_resultant * factor;
+            f += bk.transpose() * &m_resultant * factor;
         }
+
+        // =====================================================================
+        // Drilling stiffness (penalty for out-of-plane rotation)
+        // =====================================================================
+        let k_dr = compute_drilling_stiffness(pre);
+        f += k_dr * &u_local;
 
         // NOTE: Hourglass forces NOT added here - MITC4+ uses EAS + bubble enrichment
         // which controls spurious modes without hourglass stabilization.

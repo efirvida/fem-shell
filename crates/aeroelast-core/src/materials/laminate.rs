@@ -202,14 +202,36 @@ impl Laminate {
     ///
     /// This is the object the element routines consume.
     pub fn to_shell_constitutive(&self) -> ShellConstitutive {
+        self.to_shell_constitutive_with_offset(0.0)
+    }
+
+    /// Build a `ShellConstitutive` with reference surface offset.
+    ///
+    /// When the reference surface is offset from the laminate midsurface by `z_offset`:
+    /// - A_offset = A (unchanged)
+    /// - B_offset = B - z₀·A
+    /// - D_offset = D - 2·z₀·B + z₀²·A
+    ///
+    /// This affects how membrane strain ε_ref relates to strain at material midplane.
+    /// Positive z_offset moves reference surface toward the top (positive z).
+    ///
+    /// # Arguments
+    /// * `z_offset` - Distance from laminate midsurface to reference surface [m]
+    pub fn to_shell_constitutive_with_offset(&self, z_offset: f64) -> ShellConstitutive {
         let h = self.total_thickness;
         let inv_h = if h.abs() > 1e-30 { 1.0 / h } else { 0.0 };
         let cm_raw = self.a * inv_h;
 
+        // Apply offset transformation to ABD matrices
+        // B_offset = B - z₀·A
+        // D_offset = D - 2·z₀·B + z₀²·A
+        let b_offset = self.b - self.a * z_offset;
+        let d_offset = self.d - 2.0 * z_offset * &self.b + z_offset * z_offset * &self.a;
+
         ShellConstitutive {
             cm: self.a,
-            cb_coupling: self.b, // Membrane-bending coupling matrix
-            cb: self.d,
+            cb_coupling: b_offset, // B matrix with offset applied
+            cb: d_offset,           // D matrix with offset applied
             cs: self.cs,
             cm_raw,
         }
@@ -240,5 +262,102 @@ impl Laminate {
             }
         }
         out
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Create a simple 3-ply symmetric cross-ply laminate for testing
+    /// Layout: [0°/90°/0°] around midsurface
+    fn make_test_laminate() -> Laminate {
+        let mat = OrthotropicMaterial::new(
+            1.0e11, 1.0e10, 1.0e10,  // E1, E2, E3
+            5.0e9, 5.0e9, 5.0e9,    // G12, G23, G13
+            0.3, 0.3, 0.3,          // nu12, nu23, nu31
+            1600.0,                 // rho
+        );
+        let ply1 = Ply::new(mat, 0.002, 0.0);   // bottom
+        let ply2 = Ply::new(mat, 0.002, 90.0);  // middle
+        let ply3 = Ply::new(mat, 0.002, 0.0);   // top
+        Laminate::new(vec![ply1, ply2, ply3], 5.0 / 6.0).unwrap()
+    }
+
+    /// Create a 3-ply asymmetric laminate for coupling tests
+    fn make_asymmetric_laminate() -> Laminate {
+        let mat = OrthotropicMaterial::new(
+            1.0e11, 1.0e10, 1.0e10,
+            5.0e9, 5.0e9, 5.0e9,
+            0.3, 0.3, 0.3,
+            1600.0,
+        );
+        let ply1 = Ply::new(mat, 0.002, 0.0);
+        let ply2 = Ply::new(mat, 0.003, 45.0);
+        let ply3 = Ply::new(mat, 0.001, 0.0);
+        Laminate::new(vec![ply1, ply2, ply3], 5.0 / 6.0).unwrap()
+    }
+
+    #[test]
+    fn test_laminate_symmetric() {
+        let lam = make_test_laminate();
+        assert!(lam.is_symmetric(), "2-ply with ±angle should be symmetric");
+    }
+
+    #[test]
+    fn test_laminate_to_shell_constitutive() {
+        let lam = make_test_laminate();
+        let shell = lam.to_shell_constitutive();
+        // A matrix should be non-zero
+        assert!(shell.cm.norm() > 1e6, "A matrix should be non-zero");
+        // For symmetric laminate, B should be ~0
+        assert!(shell.cb_coupling.norm() < 1e-6, "B matrix should be ~0 for symmetric laminate");
+        // D matrix should be non-zero
+        assert!(shell.cb.norm() > 1e-3, "D matrix should be non-zero");
+    }
+
+    #[test]
+    fn test_z_offset_zero() {
+        // z_offset = 0 should give same result as to_shell_constitutive()
+        let lam = make_test_laminate();
+        let shell_default = lam.to_shell_constitutive();
+        let shell_offset = lam.to_shell_constitutive_with_offset(0.0);
+        let diff_a = &shell_default.cm - &shell_offset.cm;
+        let diff_b = &shell_default.cb_coupling - &shell_offset.cb_coupling;
+        let diff_d = &shell_default.cb - &shell_offset.cb;
+        assert!(diff_a.norm() < 1e-12, "A should be unchanged with z_offset=0");
+        assert!(diff_b.norm() < 1e-12, "B should be unchanged with z_offset=0");
+        assert!(diff_d.norm() < 1e-12, "D should be unchanged with z_offset=0");
+    }
+
+    #[test]
+    fn test_z_offset_transforms_b_d() {
+        // With z_offset, B and D should transform, A should stay same
+        let lam = make_test_laminate();
+        let z_off = 0.001; // 1mm offset
+        let shell = lam.to_shell_constitutive_with_offset(z_off);
+
+        // A unchanged
+        assert!((&shell.cm - &lam.a).norm() < 1e-12, "A should be unchanged");
+
+        // B_offset = B - z₀·A (for symmetric B≈0, B_offset ≈ -z₀·A)
+        // For this symmetric laminate, B should not be exactly zero after offset
+        // because we're applying the transformation
+        let expected_b_offset = &lam.b - &lam.a * z_off;
+        let b_diff = &shell.cb_coupling - &expected_b_offset;
+        assert!(b_diff.norm() < 1e-6, "B offset transformation incorrect");
+
+        // D_offset = D - 2·z₀·B + z₀²·A (for symmetric B≈0, D_offset ≈ D + z₀²·A)
+        let expected_d_offset = &lam.d - 2.0 * z_off * &lam.b + z_off * z_off * &lam.a;
+        let d_diff = &shell.cb - &expected_d_offset;
+        assert!(d_diff.norm() < 1e-6, "D offset transformation incorrect");
+    }
+
+    #[test]
+    fn test_asymmetric_laminate_has_nonzero_b() {
+        let lam = make_asymmetric_laminate();
+        assert!(!lam.is_symmetric(), "asymmetric laminate should have B ≠ 0");
+        let shell = lam.to_shell_constitutive();
+        assert!(shell.cb_coupling.norm() > 1e-6, "B matrix should be non-zero for asymmetric laminate");
     }
 }
