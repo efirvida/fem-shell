@@ -1,0 +1,100 @@
+warning: unused imports: `GAUSS2_PTS as HEXA8_GP_IMPORT`, `LIN2_W`, and `TRI3_W`
+  --> aeroelast-core/src/elements/solid.rs:13:5
+   |
+13 |     GAUSS2_PTS as HEXA8_GP_IMPORT, TETRA4_GP, TETRA4_W, TETRA10_GP, TETRA10_W,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+14 |     TRI3_XI, TRI3_ETA, TRI3_W, LIN2_ZETA, LIN2_W, WEDGE6_W,
+   |                        ^^^^^^             ^^^^^^
+   |
+   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused variable: `gamma_a`
+   --> aeroelast-core/src/elements/shell181.rs:716:13
+    |
+716 |         let gamma_a = dy_a + dx_a_m;
+    |             ^^^^^^^ help: if this is intentional, prefix it with an underscore: `_gamma_a`
+    |
+    = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused variable: `gamma_c`
+   --> aeroelast-core/src/elements/shell181.rs:717:13
+    |
+717 |         let gamma_c = dy_c + dx_c_m;
+    |             ^^^^^^^ help: if this is intentional, prefix it with an underscore: `_gamma_c`
+
+warning: unused variable: `gamma_d`
+   --> aeroelast-core/src/elements/shell181.rs:718:13
+    |
+718 |         let gamma_d = dy_d_val + dx_d;
+    |             ^^^^^^^ help: if this is intentional, prefix it with an underscore: `_gamma_d`
+
+warning: unused variable: `gamma_b`
+   --> aeroelast-core/src/elements/shell181.rs:719:13
+    |
+719 |         let gamma_b = dy_b_val + dx_b;
+    |             ^^^^^^^ help: if this is intentional, prefix it with an underscore: `_gamma_b`
+
+warning: unused variable: `h_apex`
+   --> aeroelast-core/src/elements/solid.rs:981:9
+    |
+981 |     let h_apex    = zeta * (2.0 * zeta - 1.0);
+    |         ^^^^^^ help: if this is intentional, prefix it with an underscore: `_h_apex`
+
+warning: function `build_constitutive_shell181` is never used
+    --> aeroelast-core/src/assembly/assembler.rs:1086:4
+     |
+1086 | fn build_constitutive_shell181(
+     |    ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+     = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: constant `N_GAUSS_MASS` is never used
+  --> aeroelast-core/src/elements/shell181.rs:25:7
+   |
+25 | const N_GAUSS_MASS: usize = 9;
+   |       ^^^^^^^^^^^^
+
+warning: function `b_m_mitc` is never used
+   --> aeroelast-core/src/elements/shell181.rs:673:4
+    |
+673 | fn b_m_mitc(j_inv: &Matrix2<f64>, xi: f64, eta: f64) -> SMatrix<f64, 3, 24> {
+    |    ^^^^^^^^
+
+warning: type alias `Mat8` is never used
+  --> aeroelast-core/src/elements/quad.rs:26:6
+   |
+26 | type Mat8 = SMatrix<f64, 8, 8>;
+   |      ^^^^
+
+warning: type alias `Vec8` is never used
+  --> aeroelast-core/src/elements/quad.rs:27:6
+   |
+27 | type Vec8 = nalgebra::SVector<f64, 8>;
+   |      ^^^^
+
+warning: type alias `Mat16` is never used
+  --> aeroelast-core/src/elements/quad.rs:28:6
+   |
+28 | type Mat16 = SMatrix<f64, 16, 16>;
+   |      ^^^^^
+
+warning: type alias `Vec16` is never used
+  --> aeroelast-core/src/elements/quad.rs:29:6
+   |
+29 | type Vec16 = nalgebra::SVector<f64, 16>;
+   |      ^^^^^
+
+warning: type alias `Mat18` is never used
+  --> aeroelast-core/src/elements/quad.rs:30:6
+   |
+30 | type Mat18 = SMatrix<f64, 18, 18>;
+   |      ^^^^^
+
+warning: type alias `Vec18` is never used
+  --> aeroelast-core/src/elements/quad.rs:31:6
+   |
+31 | type Vec18 = nalgebra::SVector<f64, 18>;
+   |      ^^^^^
+
+warning: `aeroelast-core` (lib) generated 15 warnings (run `cargo fix --lib -p aeroelast-core` to apply 6 suggestions)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 1.02s

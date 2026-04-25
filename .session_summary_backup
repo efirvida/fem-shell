@@ -1,0 +1,13 @@
+## Goal
+Reemplazar el elemento MITC4 por Shell181.
+
+## Accomplished
+- Implementación de Shell181 kernel.
+- Migración de ElemType y Assembler.
+- Corrección de transformación T24 y Jacobiano.
+- Fix de duplicación de función compute_me_composite_global.
+
+## Next Steps
+- Verificar resultados numéricos (Masa total ~65t, Frecuencias).
+- Archivar el cambio.
+
