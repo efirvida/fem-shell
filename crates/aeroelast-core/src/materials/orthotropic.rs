@@ -132,7 +132,13 @@ impl Material for OrthotropicMaterial {
         let cs = cbar_s * (shear_correction * h);
         let cm_raw = if h.abs() > 1e-30 { qbar } else { Matrix3::zeros() };
 
-        ShellConstitutive { cm, cb, cs, cm_raw }
+        ShellConstitutive { 
+            cm, 
+            cb_coupling: Matrix3::zeros(), // Zero for single ply (no membrane-bending coupling)
+            cb, 
+            cs, 
+            cm_raw 
+        }
     }
 
     fn density(&self) -> f64 {

@@ -41,6 +41,9 @@ pub enum MaterialSpec {
     Composite {
         /// A matrix (3×3 membrane stiffness), row-major [N/m]
         cm: [f64; 9],
+        /// B matrix (3×3 coupling stiffness), row-major [N]
+        /// Set to zeros for symmetric laminates
+        cb_coupling: [f64; 9],
         /// D matrix (3×3 bending stiffness), row-major [N·m]
         cb: [f64; 9],
         /// Cs matrix (2×2 shear stiffness), row-major [N/m]
@@ -1038,8 +1041,8 @@ fn build_constitutive_mitc3(
             let constitutive = iso.constitutive(*thickness, *shear_correction);
             (constitutive, *thickness, *e, *drilling_scale)
         }
-        MaterialSpec::Composite { cm, cb, cs, thickness, e_equiv, .. } => {
-            let constitutive = composite_constitutive(cm, cb, cs, *thickness);
+        MaterialSpec::Composite { cm, cb_coupling, cb, cs, thickness, e_equiv, .. } => {
+            let constitutive = composite_constitutive(cm, cb_coupling, cb, cs, *thickness);
             (constitutive, *thickness, *e_equiv, 1.0)
         }
         _ => panic!("Shell element requires Isotropic or Composite MaterialSpec"),

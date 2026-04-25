@@ -68,6 +68,7 @@ impl Material for IsotropicMaterial {
 
         ShellConstitutive {
             cm,
+            cb_coupling: Matrix3::zeros(), // Zero for isotropic (no membrane-bending coupling)
             cb,
             cs,
             cm_raw,

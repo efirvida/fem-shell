@@ -21,6 +21,9 @@ pub enum ElementFamily {
 pub struct ShellConstitutive {
     /// Membrane stiffness (3×3): force-strain [N·h / (1-ν²)] form
     pub cm: Matrix3<f64>,
+    /// Coupling stiffness (3×3): membrane-bending coupling [N] form
+    /// N = A·ε + B·κ, M = B·ε + D·κ
+    pub cb_coupling: Matrix3<f64>,
     /// Bending stiffness (3×3): moment-curvature [N·h³/12 / (1-ν²)] form
     pub cb: Matrix3<f64>,
     /// Transverse shear stiffness (2×2): force-shear strain [k·G·h] form

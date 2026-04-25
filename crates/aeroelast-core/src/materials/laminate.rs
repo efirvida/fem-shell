@@ -208,6 +208,7 @@ impl Laminate {
 
         ShellConstitutive {
             cm: self.a,
+            cb_coupling: self.b, // Membrane-bending coupling matrix
             cb: self.d,
             cs: self.cs,
             cm_raw,
