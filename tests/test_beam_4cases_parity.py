@@ -243,6 +243,7 @@ def _build_beam_mesh(*, nz: int = 10, nx: int = 2, ny: int = 2) -> MeshModel:
     """Build a cantilever beam mesh extending along Z-axis.
 
     Beam is centered at (0,0,0) in XY, extends from z=0 (clamped) to z=L (free).
+    Uses hexahedral solid elements for 3D stress analysis.
     """
     Node._id_counter = 0
     MeshElement._id_counter = 0
@@ -262,7 +263,7 @@ def _build_beam_mesh(*, nz: int = 10, nx: int = 2, ny: int = 2) -> MeshModel:
                 mesh.add_node(node)
                 grid[(i, j, k)] = node
 
-    # Create hexahedral elements
+    # Create solid hexahedral elements (3D stress analysis)
     for k in range(nz):
         for j in range(ny):
             for i in range(nx):
@@ -432,7 +433,7 @@ class TestBeam4CasesParity:
             # AeroElast solution using Rust backend
             node_coords = np.asarray([[n.x, n.y, n.z] for n in mesh.nodes], dtype=float)
             conn = [[mesh.node_id_to_index[nid] for nid in el.node_ids] for el in mesh.elements]
-            elem_types = [208] * len(mesh.elements)  # Hexa8
+            elem_types = [208] * len(mesh.elements)  # HEXA8 (solid 3D)
             mats = [
                 {"type": "solid_3d", "e": MAT_STEEL.E, "nu": MAT_STEEL.nu, "rho": MAT_STEEL.rho}
             ] * len(mesh.elements)
@@ -444,10 +445,10 @@ class TestBeam4CasesParity:
             n = asm.dofs_count
             K = coo_matrix((vals, (rows, cols)), shape=(n, n)).tocsr()
 
-            # Load vector
+            # Load vector (solid: 3 DOFs/node)
             f = np.zeros(n, dtype=float)
             center = next(iter(mesh.get_node_set("free_center").nodes.values()))
-            i0 = mesh.node_id_to_index[center.id] * 3
+            i0 = mesh.node_id_to_index[center.id] * 3  # 3 DOFs per node for solid
             fx, fy, fz = case.load_vector
             if fx != 0:
                 f[i0] = fx
@@ -456,7 +457,7 @@ class TestBeam4CasesParity:
             if fz != 0:
                 f[i0 + 2] = fz
 
-            # Apply boundary conditions
+            # Apply boundary conditions (solid: 3 DOFs/node)
             fixed = _clamped_dofs(mesh, dofs_per_node=3)
             free_mask = np.ones(n, dtype=bool)
             free_mask[fixed] = False
@@ -465,7 +466,7 @@ class TestBeam4CasesParity:
             u = np.zeros(n, dtype=float)
             u[free] = spsolve(K[free][:, free], f[free])
 
-            # Get displacement at free center
+            # Get displacement at free center (solid: 3 DOFs/node)
             dof_map = {"x": 0, "y": 1, "z": 2}
             dof_idx = dof_map[case.analytical_dof]
             ae_disp = float(u[i0 + dof_idx])
@@ -532,10 +533,10 @@ class TestBeam4CasesParity:
         ccx_bin = _ccx_bin_or_skip()
         mesh = _build_beam_mesh()
 
-        # AeroElast modal
+        # AeroElast modal (solid 3D: 3 DOFs/node, HEXA8)
         node_coords = np.asarray([[n.x, n.y, n.z] for n in mesh.nodes], dtype=float)
         conn = [[mesh.node_id_to_index[nid] for nid in el.node_ids] for el in mesh.elements]
-        elem_types = [208] * len(mesh.elements)
+        elem_types = [208] * len(mesh.elements)  # HEXA8 (solid 3D)
         mats = [
             {"type": "solid_3d", "e": MAT_STEEL.E, "nu": MAT_STEEL.nu, "rho": MAT_STEEL.rho}
         ] * len(mesh.elements)
@@ -547,10 +548,10 @@ class TestBeam4CasesParity:
         m_rows, m_cols, m_vals = asm.assemble_m()
         n = asm.dofs_count
 
-        fixed = _clamped_dofs(mesh, dofs_per_node=3)
+        fixed = _clamped_dofs(mesh, dofs_per_node=3)  # solid: 3 DOFs/node
         free = np.array([i for i in range(n) if i not in set(fixed)], dtype=np.int64)
 
-        freqs_ae, _, _ = modal_solve_coo(
+        freqs_ae, _ = modal_solve_coo(
             k_rows.astype(np.int64),
             k_cols.astype(np.int64),
             k_vals.astype(np.float64),

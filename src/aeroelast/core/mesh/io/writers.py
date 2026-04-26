@@ -974,6 +974,7 @@ def _write_ccx_inp_file(
             )
             _write_ccx_sections(
                 f,
+                mesh,
                 properties,
                 span_direction=span_direction,
                 quadratic=quadratic,
@@ -1321,12 +1322,17 @@ def _ccx_orientation_name(angle: float) -> str:
 
 def _write_ccx_sections(
     f,
+    mesh: "MeshModel",
     properties: Dict[str, "ShellPropertyType"],
     span_direction: Optional[tuple] = None,
     quadratic: bool = False,
     angle_bucket_sets: Optional[Dict[str, Dict[int, list[int]]]] = None,
 ) -> None:
-    """Write *SHELL SECTION blocks for each element set.
+    """Write *SHELL SECTION or *SOLID SECTION blocks for each element set.
+
+    Detects element types in the mesh to determine whether to use:
+    - *SOLID SECTION for 3D solid elements (C3D*)
+    - *SHELL SECTION for 2D shell elements (S3/S4/S6/S8R)
 
     When *quadratic* is True, composite laminates use ``*SHELL SECTION,
     COMPOSITE`` with per-ply thickness/material/orientation — requires S8R/S6.
@@ -1347,6 +1353,13 @@ def _write_ccx_sections(
     except ImportError:
         CompositeShellProperty = None
         ShellProperty = None
+
+    # Detect if mesh contains shell or solid elements
+    has_solid_elements = any(
+        el.element_type.name in ("hexahedron", "tetra", "wedge", "pyramid",
+                                  "hexahedron20", "tetra10", "wedge15", "pyramid13")
+        for el in mesh.elements
+    )
 
     f.write("**\n")
     f.write("** ===========================================\n")
@@ -1433,16 +1446,21 @@ def _write_ccx_sections(
                 f.write(f"{t:.6E}\n")
         elif isinstance(prop, dict) and prop.get("type") == "isotropic":
             mat_name = prop.get("name", f"MAT_{set_name}")
-            thickness = prop.get("thickness", 1.0)
-            f.write(
-                f"*SHELL SECTION, ELSET={elset_name}, MATERIAL={mat_name}\n"
-            )
-            f.write(f"{thickness:.6E}\n")
+            if has_solid_elements:
+                # Use *SOLID SECTION for 3D solid elements (C3D*)
+                f.write(f"*SOLID SECTION, ELSET={elset_name}, MATERIAL={mat_name}\n")
+                # No thickness needed for solids - CCX infers from element geometry
+            else:
+                # Use *SHELL SECTION for 2D shell elements (S3/S4/S6/S8R)
+                thickness = prop.get("thickness", 1.0)
+                f.write(f"*SHELL SECTION, ELSET={elset_name}, MATERIAL={mat_name}\n")
+                f.write(f"{thickness:.6E}\n")
         elif ShellProperty is not None and isinstance(prop, ShellProperty):
-            f.write(
-                f"*SHELL SECTION, ELSET={elset_name}, MATERIAL={prop.material.name}\n"
-            )
-            f.write(f"{prop.thickness:.6E}\n")
+            if has_solid_elements:
+                f.write(f"*SOLID SECTION, ELSET={elset_name}, MATERIAL={prop.material.name}\n")
+            else:
+                f.write(f"*SHELL SECTION, ELSET={elset_name}, MATERIAL={prop.material.name}\n")
+                f.write(f"{prop.thickness:.6E}\n")
 
 
 def _write_ccx_modal_step(
