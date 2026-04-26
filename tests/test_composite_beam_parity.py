@@ -368,7 +368,7 @@ class TestCompositeMaterial:
 
 # Test de composite shell - tensión axial
 def test_composite_axial_tension(tmp_path: Path):
-    """Test composite shell under axial tension."""
+    """Test composite shell under axial tension using full ABD matrices."""
     ccx_bin = _ccx_bin_or_skip()
     mesh = _build_composite_plate_mesh()
 
@@ -376,6 +376,20 @@ def test_composite_axial_tension(tmp_path: Path):
     # Mesh is in XY plane: X=width, Y=length (cantilever axis), Z=0
     # For axial tension, load should be along Y (length direction)
     load = (0.0, 1000.0, 0.0)
+
+    # AeroElast solution (MITC4: 6 DOFs/node)
+    node_coords = np.asarray([[n.x, n.y, n.z] for n in mesh.nodes], dtype=float)
+    conn = [[mesh.node_id_to_index[nid] for nid in el.node_ids] for el in mesh.elements]
+    elem_types = [4] * len(mesh.elements)  # MITC4
+
+    # Composite material - pre-computed ABD matrices from CLT
+    mat_dict = _make_laminate_mat(E1, E2, G12, nu12, thickness)
+    mats = [mat_dict] * len(mesh.elements)
+
+    asm = PyMeshAssembler(
+        node_coords=node_coords, connectivity=conn, elem_types=elem_types, materials=mats
+    )
+    # ... rest of test stays the same
 
     # AeroElast solution (MITC4: 6 DOFs/node)
     node_coords = np.asarray([[n.x, n.y, n.z] for n in mesh.nodes], dtype=float)
@@ -448,6 +462,90 @@ def test_composite_axial_tension(tmp_path: Path):
     print(f"Relative error: {rel_error*100:.2f}%")
 
     assert rel_error < 0.1, f"Composite axial: {rel_error*100:.1f}% error (max 10%)"
+
+
+# Test de composite shell - isotrópico equivalente
+def test_composite_isotropic_equiv(tmp_path: Path):
+    """Test composite shell using isotropic equivalent (E_avg) for comparison."""
+    ccx_bin = _ccx_bin_or_skip()
+    mesh = _build_composite_plate_mesh()
+
+    # Load: 1000N in Y direction
+    load = (0.0, 1000.0, 0.0)
+
+    # AeroElast solution with ISOTROPIC equivalent (same as CCX uses)
+    node_coords = np.asarray([[n.x, n.y, n.z] for n in mesh.nodes], dtype=float)
+    conn = [[mesh.node_id_to_index[nid] for nid in el.node_ids] for el in mesh.elements]
+    elem_types = [4] * len(mesh.elements)
+
+    # Isotropic equivalent material (average E, same as CCX)
+    e_equiv = (E1 + E2) / 2
+    mats_iso = [{
+        "type": "isotropic",
+        "e": e_equiv,
+        "nu": nu12,
+        "rho": 0.0,
+        "thickness": thickness,
+    }] * len(mesh.elements)
+
+    asm_iso = PyMeshAssembler(
+        node_coords=node_coords, connectivity=conn, elem_types=elem_types, materials=mats_iso
+    )
+    rows, cols, vals = asm_iso.assemble_k()
+    n = asm_iso.dofs_count
+    K_iso = coo_matrix((vals, (rows, cols)), shape=(n, n)).tocsr()
+
+    # Load vector
+    f = np.zeros(n, dtype=float)
+    center = next(iter(mesh.get_node_set("free_center").nodes.values()))
+    i0 = mesh.node_id_to_index[center.id] * 6
+    f[i0 + 1] = load[1]
+
+    # Boundary conditions
+    clamped = {
+        mesh.node_id_to_index[n.id] * 6 + i
+        for n in mesh.get_node_set("clamped").nodes.values()
+        for i in range(6)
+    }
+    free_mask = np.ones(n, dtype=bool)
+    for dof in clamped:
+        free_mask[dof] = False
+    free = np.where(free_mask)[0]
+
+    K_ff = K_iso[np.ix_(free, free)]
+    f_free = f[free]
+    u_free = spsolve(K_ff, f_free)
+    u = np.zeros(n, dtype=float)
+    u[free] = u_free
+
+    aero_iso_disp = u[i0:i0 + 6]
+
+    # CCX solution
+    inp_path = tmp_path / "composite_iso.inp"
+    _write_composite_ccx_inp(inp_path, mesh, load)
+
+    result = _run_ccx(inp_path, ccx_bin)
+    if result.returncode != 0:
+        pytest.xfail(f"CCX failed: {result.stderr[:200]}")
+
+    frd_path = inp_path.with_suffix(".frd")
+    if not frd_path.exists():
+        pytest.xfail("No FRD output from CCX")
+
+    node_ids = [mesh.node_id_to_index[n.id] + 1 for n in mesh.get_node_set("free_center").nodes.values()]
+    ccx_disp = _parse_frd_disp(frd_path, node_ids)
+    if not ccx_disp:
+        pytest.skip("Could not parse CCX displacements")
+
+    ccx_uy = max(abs(v[1]) for v in ccx_disp.values())
+
+    # Compare
+    aero_uy = abs(aero_iso_disp[1])
+    rel_error = abs(aero_uy - ccx_uy) / max(ccx_uy, 1e-10)
+    print(f"Isotropic equiv UY: {aero_uy*1e6:.2f} um, CCX: {ccx_uy*1e6:.2f} um")
+    print(f"Relative error: {rel_error*100:.2f}%")
+
+    assert rel_error < 0.1, f"Isotropic equiv: {rel_error*100:.1f}% error (max 10%)"
 
 
 # Test de composite shell - bending
