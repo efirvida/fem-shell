@@ -5,7 +5,7 @@
 ///
 /// # Solver configuration (matches Python `LinearStaticSolver`)
 /// - KSP type: CG (Conjugate Gradient — valid for SPD stiffness matrices)
-/// - PC  type: HYPRE BoomerAMG (algebraic multigrid)
+/// - PC  type: GAMG (PETSc algebraic multigrid — robust for large shell problems)
 /// - Tolerances: rtol=1e-8, atol=1e-12, max_it=1000
 ///
 /// # Boundary conditions
@@ -22,15 +22,12 @@ use super::super::infra::vec::PetscVec;
 const KSPCG: &std::ffi::CStr =
     unsafe { std::ffi::CStr::from_bytes_with_nul_unchecked(b"cg\0") };
 
-// ICC (Incomplete Cholesky) — optimal for symmetric positive definite systems.
-// The Python solver used HYPRE BoomerAMG, but this PETSc build was compiled
-// without HYPRE (--download-hypre was not in the configure options).
-// ICC is the correct classical choice for CG on SPD matrices: it exploits
-// symmetry (Cholesky factorization, not ILU) and is always available in PETSc.
-// For large-scale parallel runs, HYPRE or GAMG can be substituted at runtime
-// via -pc_type boomeramg / -pc_type gamg without recompiling.
-const PCICC: &std::ffi::CStr =
-    unsafe { std::ffi::CStr::from_bytes_with_nul_unchecked(b"icc\0") };
+// GAMG (Geometric-Algebraic MultiGrid) — PETSc's built-in AMG.
+// Robust for large, ill-conditioned shell/structural FEM problems where ICC
+// stalls. Always available in PETSc (no external packages needed).
+// Runtime override still possible via -pc_type <type> through KSPSetFromOptions.
+const PCGAMG: &std::ffi::CStr =
+    unsafe { std::ffi::CStr::from_bytes_with_nul_unchecked(b"gamg\0") };
 
 // ── Result type ───────────────────────────────────────────────────────────────
 
@@ -81,14 +78,12 @@ pub fn linear_static_solve(
         // CG — optimal for symmetric positive definite stiffness matrices.
         check(ffi::KSPSetType(ksp, KSPCG.as_ptr()), "KSPSetType(cg)")?;
 
-        // ── Preconditioner: ICC (Incomplete Cholesky) ────────────────────────
-        // ICC exploits symmetry of the stiffness matrix (SPD) — correct choice
-        // for CG. HYPRE BoomerAMG (used in the Python solver) is not compiled
-        // in this PETSc build; it can be substituted at runtime via
-        // -pc_type boomeramg / -pc_type gamg without code changes.
+        // ── Preconditioner: GAMG (algebraic multigrid) ───────────────────────
+        // GAMG handles the ill-conditioning of large shell/structural problems
+        // that ICC cannot. CG + GAMG matches the petsc4py reference solver.
         let mut pc: ffi::PC = std::ptr::null_mut();
         check(ffi::KSPGetPC(ksp, &mut pc), "KSPGetPC")?;
-        check(ffi::PCSetType(pc, PCICC.as_ptr()), "PCSetType(icc)")?;
+        check(ffi::PCSetType(pc, PCGAMG.as_ptr()), "PCSetType(gamg)")?;
 
         // ── Operators ─────────────────────────────────────────────────────────
         // Both Amat (operator) and Pmat (preconditioning matrix) = K.
