@@ -149,16 +149,22 @@ class FSIRunner:
         logger.info("[runner] Step 1: _setup_mesh...")
         _t = time.perf_counter()
         self.mesh = self._setup_mesh()
-        logger.info("[runner] Step 1 done in %.2fs — nodes=%s elements=%s",
-                    time.perf_counter() - _t,
-                    getattr(self.mesh, 'node_count', '?'),
-                    getattr(self.mesh, 'element_count', len(getattr(self.mesh, 'elements', []))))
+        logger.info(
+            "[runner] Step 1 done in %.2fs — nodes=%s elements=%s",
+            time.perf_counter() - _t,
+            getattr(self.mesh, "node_count", "?"),
+            getattr(self.mesh, "element_count", len(getattr(self.mesh, "elements", []))),
+        )
 
         # Step 2: Create material
         logger.info("[runner] Step 2: _create_material...")
         _t = time.perf_counter()
         self._material = self._create_material()
-        logger.info("[runner] Step 2 done in %.2fs — material=%s", time.perf_counter() - _t, type(self._material).__name__)
+        logger.info(
+            "[runner] Step 2 done in %.2fs — material=%s",
+            time.perf_counter() - _t,
+            type(self._material).__name__,
+        )
 
         # Step 3: Build model configuration
         logger.info("[runner] Step 3: _build_model_config...")
@@ -170,7 +176,11 @@ class FSIRunner:
         logger.info("[runner] Step 4: _create_solver... (this builds MeshAssembler)")
         _t = time.perf_counter()
         self.solver = self._create_solver(model_config)
-        logger.info("[runner] Step 4 done in %.2fs — solver=%s", time.perf_counter() - _t, type(self.solver).__name__)
+        logger.info(
+            "[runner] Step 4 done in %.2fs — solver=%s",
+            time.perf_counter() - _t,
+            type(self.solver).__name__,
+        )
 
         # Step 5: Apply boundary conditions (skip for BEM standalone)
         if not self._is_bem:
@@ -197,7 +207,7 @@ class FSIRunner:
             self._print_modal_results(result)
         elif self._is_bem:
             self._print_bem_results(result)
-        elif self.config.solver.type == "LinearStatic":
+        elif self.config.solver.type in ("LinearStatic", "NonlinearStatic"):
             self._print_static_tip_results(result)
             self._run_postprocessing()
         else:
@@ -328,11 +338,7 @@ class FSIRunner:
         content.append("Mesh source:   ", style="bold")
         content.append(f"{self.config.mesh.source}")
         self._console.print()
-        self._console.print(
-            Panel(
-                content, title="AeroElast", border_style="cyan", expand=False
-            )
-        )
+        self._console.print(Panel(content, title="AeroElast", border_style="cyan", expand=False))
 
     def _validate_config(self) -> None:
         """Validate configuration before running."""
@@ -1441,8 +1447,12 @@ class FSIRunner:
         table.add_column("Uz [m]", justify="right")
         table.add_row(
             str(tip_node.id),
-            f"{tip_node.x:.4f}", f"{tip_node.y:.4f}", f"{tip_node.z:.4f}",
-            f"{ux:.6f}", f"{uy:.6f}", f"{uz:.6f}",
+            f"{tip_node.x:.4f}",
+            f"{tip_node.y:.4f}",
+            f"{tip_node.z:.4f}",
+            f"{ux:.6f}",
+            f"{uy:.6f}",
+            f"{uz:.6f}",
         )
         self._console.print()
         self._console.print(table)
