@@ -389,7 +389,7 @@ class TestLinearStaticCantilever:
         u = solver.solve()
         center = get_center_node(mesh, L, b)
         idx = mesh.node_id_to_index[center.id]
-        ux = u.array[idx * dpn + 0]
+        ux = u[idx * dpn + 0]
 
         error = abs(ux - ana) / ana * 100
 
@@ -434,7 +434,7 @@ class TestLinearStaticCantilever:
         u = solver.solve()
         center = get_center_node(mesh, L, b)
         idx = mesh.node_id_to_index[center.id]
-        uy = u.array[idx * dpn + 1]
+        uy = u[idx * dpn + 1]
 
         # Compare with analytical (note: this is a lower bound)
         error_low = abs(uy - ana) / ana * 100
@@ -482,7 +482,7 @@ class TestLinearStaticCantilever:
         u = solver.solve()
         center = get_center_node(mesh, L, b)
         idx = mesh.node_id_to_index[center.id]
-        uz = u.array[idx * dpn + 2]
+        uz = u[idx * dpn + 2]
 
         print(f"\nLinear FZ: FEM={uz:.3e}, Ana(bending only)={ana:.3e}")
 
@@ -521,7 +521,7 @@ class TestLinearStaticCantilever:
         u_x = solver_x.solve()
         center = get_center_node(mesh, L, b)
         idx = mesh.node_id_to_index[center.id]
-        ux = abs(u_x.array[idx * dpn + 0])
+        ux = abs(u_x[idx * dpn + 0])
 
         # UY
         mesh = build_cantilever_mesh(L=L, b=b)
@@ -532,7 +532,7 @@ class TestLinearStaticCantilever:
         apply_edge_load(mesh, solver_y, "free_edge", "y", P)
 
         u_y = solver_y.solve()
-        uy = abs(u_y.array[idx * dpn + 1])
+        uy = abs(u_y[idx * dpn + 1])
 
         ratio = uy / ux
 
@@ -579,7 +579,7 @@ class TestNonlinearStaticCantilever:
         u_lin = solver_lin.solve()
         center = get_center_node(mesh, L, b)
         idx = mesh.node_id_to_index[center.id]
-        dz_lin = u_lin.array[idx * dpn + 2]
+        dz_lin = u_lin[idx * dpn + 2]
 
         # Nonlinear solution
         cfg_nl = {

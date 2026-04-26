@@ -43,6 +43,7 @@ EXPECTED = {
 # EXACT COPY OF WORKING HELPERS FROM CCX PARITY TEST
 # =============================================================================
 
+
 def _build_cantilever_mesh(nx=8, ny=4):
     """Build cantilever mesh - EXACT copy."""
     Node._id_counter = 0
@@ -63,8 +64,7 @@ def _build_cantilever_mesh(nx=8, ny=4):
         for i in range(nx):
             mesh.add_element(
                 MeshElement(
-                    nodes=[grid[(i, j)], grid[(i+1, j)], 
-                           grid[(i+1, j+1)], grid[(i, j+1)]],
+                    nodes=[grid[(i, j)], grid[(i + 1, j)], grid[(i + 1, j + 1)], grid[(i, j + 1)]],
                     element_type=ElementType.quad,
                 )
             )
@@ -113,14 +113,15 @@ def _load_as_nodal(mesh, dofs_per_node, load6):
 # TEST CASES
 # =============================================================================
 
+
 class TestLinearStatic:
     """Linear static analysis tests."""
-    
+
     def test_fx(self):
         """FX in-plane loading."""
         mesh = _build_cantilever_mesh()
         prop = ShellProperty(material=STEEL, thickness=h)
-        
+
         cfg = {
             "solver": {},
             "elements": {
@@ -129,30 +130,28 @@ class TestLinearStatic:
                 "span_direction": (1.0, 0.0, 0.0),
             },
         }
-        
+
         solver = StaticLinearSolver(mesh, cfg)
         dpn = solver.domain.dofs_per_node
-        
-        solver.add_dirichlet_conditions([
-            DirichletCondition(_clamped_dofs(mesh, dpn), 0.0)
-        ])
+
+        solver.add_dirichlet_conditions([DirichletCondition(_clamped_dofs(mesh, dpn), 0.0)])
         solver.add_nodal_loads(_load_as_nodal(mesh, dpn, (600.0, 0.0, 0.0, 0.0, 0.0, 0.0)))
-        
+
         u = solver.solve()
         center = _center_free_edge_node(mesh)
         idx = mesh.node_id_to_index[center.id]
-        ux = abs(u.array[idx * dpn + 0])
-        
-        print(f"\nFX: {ux*1000:.3f} mm (ref: {EXPECTED['ux']*1000:.3f} mm)")
-        
+        ux = abs(u[idx * dpn + 0])
+
+        print(f"\nFX: {ux * 1000:.3f} mm (ref: {EXPECTED['ux'] * 1000:.3f} mm)")
+
         error = abs(ux - EXPECTED["ux"]) / EXPECTED["ux"] * 100
         assert error < 5.0
-    
+
     def test_fy(self):
         """FY in-plane loading."""
         mesh = _build_cantilever_mesh()
         prop = ShellProperty(material=STEEL, thickness=h)
-        
+
         cfg = {
             "solver": {},
             "elements": {
@@ -161,30 +160,28 @@ class TestLinearStatic:
                 "span_direction": (1.0, 0.0, 0.0),
             },
         }
-        
+
         solver = StaticLinearSolver(mesh, cfg)
         dpn = solver.domain.dofs_per_node
-        
-        solver.add_dirichlet_conditions([
-            DirichletCondition(_clamped_dofs(mesh, dpn), 0.0)
-        ])
+
+        solver.add_dirichlet_conditions([DirichletCondition(_clamped_dofs(mesh, dpn), 0.0)])
         solver.add_nodal_loads(_load_as_nodal(mesh, dpn, (0.0, 600.0, 0.0, 0.0, 0.0, 0.0)))
-        
+
         u = solver.solve()
         center = _center_free_edge_node(mesh)
         idx = mesh.node_id_to_index[center.id]
-        uy = abs(u.array[idx * dpn + 1])
-        
-        print(f"\nFY: {uy*1000:.3f} mm (ref: {EXPECTED['uy']*1000:.3f} mm)")
-        
+        uy = abs(u[idx * dpn + 1])
+
+        print(f"\nFY: {uy * 1000:.3f} mm (ref: {EXPECTED['uy'] * 1000:.3f} mm)")
+
         error = abs(uy - EXPECTED["uy"]) / EXPECTED["uy"] * 100
         assert error < 5.0
-    
+
     def test_fz(self):
         """FZ out-of-plane loading."""
         mesh = _build_cantilever_mesh()
         prop = ShellProperty(material=STEEL, thickness=h)
-        
+
         cfg = {
             "solver": {},
             "elements": {
@@ -193,29 +190,27 @@ class TestLinearStatic:
                 "span_direction": (1.0, 0.0, 0.0),
             },
         }
-        
+
         solver = StaticLinearSolver(mesh, cfg)
         dpn = solver.domain.dofs_per_node
-        
-        solver.add_dirichlet_conditions([
-            DirichletCondition(_clamped_dofs(mesh, dpn), 0.0)
-        ])
+
+        solver.add_dirichlet_conditions([DirichletCondition(_clamped_dofs(mesh, dpn), 0.0)])
         solver.add_nodal_loads(_load_as_nodal(mesh, dpn, (0.0, 0.0, 600.0, 0.0, 0.0, 0.0)))
-        
+
         u = solver.solve()
         center = _center_free_edge_node(mesh)
         idx = mesh.node_id_to_index[center.id]
-        uz = abs(u.array[idx * dpn + 2])
-        
-        print(f"\nFZ: {uz*1000:.3f} mm (ref: {EXPECTED['uz']*1000:.3f} mm)")
-        
+        uz = abs(u[idx * dpn + 2])
+
+        print(f"\nFZ: {uz * 1000:.3f} mm (ref: {EXPECTED['uz'] * 1000:.3f} mm)")
+
         error = abs(uz - EXPECTED["uz"]) / EXPECTED["uz"] * 100
         assert error < 5.0
-    
+
     def test_ratio_physical(self):
         """KEY: Physical ratio uY/uX."""
         prop = ShellProperty(material=STEEL, thickness=h)
-        
+
         cfg = {
             "solver": {},
             "elements": {
@@ -224,48 +219,44 @@ class TestLinearStatic:
                 "span_direction": (1.0, 0.0, 0.0),
             },
         }
-        
+
         # UX
         mesh = _build_cantilever_mesh()
         solver = StaticLinearSolver(mesh, cfg)
         dpn = solver.domain.dofs_per_node
-        solver.add_dirichlet_conditions([
-            DirichletCondition(_clamped_dofs(mesh, dpn), 0.0)
-        ])
+        solver.add_dirichlet_conditions([DirichletCondition(_clamped_dofs(mesh, dpn), 0.0)])
         solver.add_nodal_loads(_load_as_nodal(mesh, dpn, (600.0, 0.0, 0.0, 0.0, 0.0, 0.0)))
         u = solver.solve()
         center = _center_free_edge_node(mesh)
         idx = mesh.node_id_to_index[center.id]
-        ux = abs(u.array[idx * dpn + 0])
-        
+        ux = abs(u[idx * dpn + 0])
+
         # UY
         mesh = _build_cantilever_mesh()
         solver = StaticLinearSolver(mesh, cfg)
-        solver.add_dirichlet_conditions([
-            DirichletCondition(_clamped_dofs(mesh, dpn), 0.0)
-        ])
+        solver.add_dirichlet_conditions([DirichletCondition(_clamped_dofs(mesh, dpn), 0.0)])
         solver.add_nodal_loads(_load_as_nodal(mesh, dpn, (0.0, 600.0, 0.0, 0.0, 0.0, 0.0)))
         u = solver.solve()
         idx = mesh.node_id_to_index[center.id]
-        uy = abs(u.array[idx * dpn + 1])
-        
+        uy = abs(u[idx * dpn + 1])
+
         ratio = uy / ux
-        
+
         print(f"\nPhysical ratio: uY/uX = {ratio:.2f}")
         print(f"Expected: 1.3 - 1.8")
-        
+
         # This is the KEY validation
         assert 1.3 <= ratio <= 1.8, f"Ratio {ratio:.2f} outside physical range"
 
 
 class TestNonlinearStatic:
     """Nonlinear static tests."""
-    
+
     def test_geometric_nonlinearity(self):
         """Check geometric nonlinearity effect."""
         mesh = _build_cantilever_mesh()
         prop = ShellProperty(material=STEEL, thickness=h)
-        
+
         # Linear solution
         cfg_lin = {
             "solver": {},
@@ -275,19 +266,17 @@ class TestNonlinearStatic:
                 "span_direction": (1.0, 0.0, 0.0),
             },
         }
-        
+
         solver_lin = StaticLinearSolver(mesh, cfg_lin)
         dpn = solver_lin.domain.dofs_per_node
-        solver_lin.add_dirichlet_conditions([
-            DirichletCondition(_clamped_dofs(mesh, dpn), 0.0)
-        ])
+        solver_lin.add_dirichlet_conditions([DirichletCondition(_clamped_dofs(mesh, dpn), 0.0)])
         solver_lin.add_nodal_loads(_load_as_nodal(mesh, dpn, (0.0, 0.0, 600.0, 0.0, 0.0, 0.0)))
-        
+
         u_lin = solver_lin.solve()
         center = _center_free_edge_node(mesh)
         idx = mesh.node_id_to_index[center.id]
-        dz_lin = abs(u_lin.array[idx * dpn + 2])
-        
+        dz_lin = abs(u_lin[idx * dpn + 2])
+
         # Nonlinear
         cfg_nl = {
             "solver": {
@@ -300,33 +289,31 @@ class TestNonlinearStatic:
                 "span_direction": (1.0, 0.0, 0.0),
             },
         }
-        
+
         mesh = _build_cantilever_mesh()
         solver_nl = StaticNonlinearSolver(mesh, cfg_nl)
-        solver_nl.add_dirichlet_conditions([
-            DirichletCondition(_clamped_dofs(mesh, dpn), 0.0)
-        ])
+        solver_nl.add_dirichlet_conditions([DirichletCondition(_clamped_dofs(mesh, dpn), 0.0)])
         solver_nl.add_nodal_loads(_load_as_nodal(mesh, dpn, (0.0, 0.0, 600.0, 0.0, 0.0, 0.0)))
-        
+
         u_nl = solver_nl.solve()
         idx = mesh.node_id_to_index[center.id]
         dz_nl = abs(u_nl[idx * dpn + 2])
-        
+
         ratio = dz_nl / dz_lin
-        
+
         print(f"\nNonlinear ratio: {ratio:.3f} (expected ~1.0-1.3)")
-        
+
         assert 0.9 <= ratio <= 1.3
 
 
 class TestModal:
     """Modal tests."""
-    
+
     def test_first_mode(self):
         """First modal frequency."""
         mesh = _build_cantilever_mesh()
         prop = ShellProperty(material=STEEL, thickness=h)
-        
+
         cfg = {
             "solver": {"num_modes": 3},
             "elements": {
@@ -335,31 +322,29 @@ class TestModal:
                 "span_direction": (1.0, 0.0, 0.0),
             },
         }
-        
+
         solver = ModalSolver(mesh, cfg)
         dpn = solver.domain.dofs_per_node
-        solver.add_dirichlet_conditions([
-            DirichletCondition(_clamped_dofs(mesh, dpn), 0.0)
-        ])
-        
+        solver.add_dirichlet_conditions([DirichletCondition(_clamped_dofs(mesh, dpn), 0.0)])
+
         freqs, _ = solver.solve()
         f1 = freqs[0]
-        
+
         print(f"\nModal mode 1: {f1:.3f} Hz (ref: {EXPECTED['modal_1']:.3f} Hz)")
-        
+
         error = abs(f1 - EXPECTED["modal_1"]) / EXPECTED["modal_1"] * 100
         assert error < 2.0
 
 
 if __name__ == "__main__":
-    print("="*60)
+    print("=" * 60)
     print("SHELL VALIDATION TESTS")
-    print("="*60)
-    
+    print("=" * 60)
+
     for cls in [TestLinearStatic, TestNonlinearStatic, TestModal]:
         print(f"\n{cls.__name__}")
-        print("-"*40)
-        
+        print("-" * 40)
+
         instance = cls()
         for m in dir(instance):
             if m.startswith("test_"):

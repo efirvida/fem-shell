@@ -105,17 +105,19 @@ def build_shell_mesh(*, nz: int = 10, nx: int = 2) -> MeshModel:
 # ============================================================================
 
 
-def analytical_tip_displacement(L: float, b: float, t: float, E: float, nu: float, F: float) -> float:
+def analytical_tip_displacement(
+    L: float, b: float, t: float, E: float, nu: float, F: float
+) -> float:
     """Bending tip displacement for cantilever Mindlin plate.
-    
+
     Using classical beam formula with shear correction.
     """
     I = b * t**3 / 12  # Moment of inertia
     k = 5 / 6  # Shear correction factor (rectangular cross-section)
-    
+
     # Bending + shear
     delta = F * L**3 / (3 * E * I) + F * L / (k * G * b * t)
-    
+
     return delta
 
 
@@ -144,7 +146,7 @@ def write_ccx_inp(
     )
     lines.append("*NSET, NSET=NCLAMPED")
     for i in range(0, len(c_ids), 16):
-        lines.append(",".join(str(x) for x in c_ids[i:i + 16]))
+        lines.append(",".join(str(x) for x in c_ids[i : i + 16]))
 
     # Free center node
     center_node = next(iter(mesh.get_node_set("free_center").nodes.values()))
@@ -209,11 +211,11 @@ class TestIsotropicShellParity:
 
         mesh = build_shell_mesh(nz=10, nx=2)
         print(f"Mesh built: {len(mesh.nodes)} nodes, {len(mesh.elements)} elements")
-        
+
         # === AeroElast ===
         node_coords = np.asarray([[n.x, n.y, n.z] for n in mesh.nodes], dtype=float)
         conn = [[mesh.node_id_to_index[nid] for nid in el.node_ids] for el in mesh.elements]
-        
+
         # MITC4 = element type 4 (or similar quad shell)
         elem_types = [4] * len(mesh.elements)
         mats = [
@@ -257,7 +259,7 @@ class TestIsotropicShellParity:
 
         disp_ae = u_ae[i_center + 1]
 
-# === CalculiX ===
+        # === CalculiX ===
         case_dir = tmp_path / "isotropic_shell"
         case_dir.mkdir(exist_ok=True)
         inp = case_dir / "shell.inp"
@@ -283,11 +285,11 @@ class TestIsotropicShellParity:
             load_vector=(0.0, FORCE, 0.0),  # Fy
         )
         print(f"Wrote CCX input via aeroelast")
-        
+
         # Run CCX
         stem = "shell"
         print(f"Running CCX: {ccx_bin} {stem}")
-        
+
         # Run ccx with just the stem, same as test_beam_4cases_parity.py
         proc = subprocess.run(
             [str(ccx_bin), stem],
@@ -305,13 +307,13 @@ class TestIsotropicShellParity:
         # Parse FRD - file is named after the stem
         frd = case_dir / f"{stem}.frd"
         print(f"FRD exists: {frd.exists()}")
-        
+
         if not frd.exists():
             pytest.skip(f"FRD not generated at {frd}")
 
         # Parse FRD file - use same parser as test_beam_4cases_parity.py
         center_node_ccx_id = mesh.node_id_to_index[center.id] + 1  # CCX is 1-based
-        
+
         disp_ccx = None
         in_disp = False
         for line in frd.read_text().splitlines():
@@ -337,7 +339,7 @@ class TestIsotropicShellParity:
         if disp_ccx is None:
             pytest.skip("Could not parse CCX displacement")
         ratio = disp_ccx / disp_ae
-        
+
         print(f"\n[Isotropic Shell Parity]")
         print(f"  AeroElast (MITC4): {disp_ae:.6f} m")
         print(f"  CalculiX (S4):    {disp_ccx:.6f} m")

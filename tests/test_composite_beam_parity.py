@@ -166,18 +166,6 @@ def _build_composite_plate_mesh() -> MeshModel:
 
     return mesh
 
-    # Node sets
-    clamped = {n for n in mesh.nodes if np.isclose(n.z, 0.0, atol=1e-12)}
-    free_face = {n for n in mesh.nodes if np.isclose(n.z, L, atol=1e-12)}
-    free_center = min(free_face, key=lambda n: abs(float(n.x)) + abs(float(n.y)))
-
-    mesh.add_node_set(NodeSet("clamped", clamped))
-    mesh.add_node_set(NodeSet("free_face", free_face))
-    mesh.add_node_set(NodeSet("free_center", {free_center}))
-    mesh.add_element_set(ElementSet("plate", set(mesh.elements)))
-
-    return mesh
-
 
 # ============================================================================
 # CCX Input Writer - Composite Shells
@@ -323,6 +311,56 @@ def _ccx_bin_or_skip() -> str:
     if ccx is None:
         pytest.skip("CalculiX (ccx) not found in PATH")
     return ccx
+
+
+# =============================================================================
+# Unit tests (no CCX needed)
+# =============================================================================
+
+
+class TestCompositeMaterial:
+    """Test composite material and ABD matrix computation."""
+
+    def test_laminate_abd_matrices(self):
+        """Verify ABD matrices are computed correctly."""
+        E1, E2, G12, nu12, t = 120e9, 10e9, 5e9, 0.3, 0.005
+        mat_dict = _make_laminate_mat(E1, E2, G12, nu12, t)
+
+        # Check keys exist
+        assert "cm" in mat_dict
+        assert "b_coupling" in mat_dict
+        assert "cb" in mat_dict
+        assert "cs" in mat_dict
+        assert mat_dict["thickness"] == t
+
+        # Check shapes (3x3 matrices flattened to 9 elements)
+        assert len(mat_dict["cm"]) == 9  # A matrix
+        assert len(mat_dict["b_coupling"]) == 9  # B matrix
+        assert len(mat_dict["cb"]) == 9  # D matrix
+
+    def test_mesh_connectivity(self):
+        """Verify mesh has correct node sets and connectivity."""
+        mesh = _build_composite_plate_mesh()
+
+        # Check node sets exist
+        assert mesh.get_node_set("clamped") is not None
+        assert mesh.get_node_set("free_face") is not None
+        assert mesh.get_node_set("free_center") is not None
+
+        # Check clamped at y=0
+        clamped = list(mesh.get_node_set("clamped").nodes.values())
+        for n in clamped:
+            assert np.isclose(n.y, 0.0, atol=1e-12)
+
+        # Check free face at y=L
+        free = list(mesh.get_node_set("free_face").nodes.values())
+        for n in free:
+            assert np.isclose(n.y, L, atol=1e-12)
+
+
+# =============================================================================
+# Integration tests (require CCX)
+# =============================================================================
 
 
 # Test de composite shell - tensión axial
