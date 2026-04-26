@@ -1,4 +1,5 @@
 use numpy::ndarray::{Array1, Array2};
+use nalgebra::{Matrix2, Matrix3};
 use numpy::{IntoPyArray, PyArray1, PyArray2, PyReadonlyArray1, PyReadonlyArray2};
 use pyo3::prelude::*;
 use pyo3::types::PyCapsule;
@@ -422,6 +423,7 @@ fn batch_ke_mitc3_composite<'py>(
     py: Python<'py>,
     coords: PyReadonlyArray2<'py, f64>,
     cm_flat: PyReadonlyArray2<'py, f64>,
+    b_coupling_flat: PyReadonlyArray2<'py, f64>,  // ADDED
     cb_flat: PyReadonlyArray2<'py, f64>,
     cs_flat: PyReadonlyArray2<'py, f64>,
     thickness: PyReadonlyArray1<'py, f64>,
@@ -429,6 +431,7 @@ fn batch_ke_mitc3_composite<'py>(
 ) -> Bound<'py, PyArray1<f64>> {
     let coords_arr = coords.as_array();
     let cm_arr = cm_flat.as_array();
+    let b_arr = b_coupling_flat.as_array();  // ADDED
     let cb_arr = cb_flat.as_array();
     let cs_arr = cs_flat.as_array();
     let h_arr = thickness.as_array();
@@ -443,10 +446,12 @@ fn batch_ke_mitc3_composite<'py>(
                 node_coords[i] = coords_arr[[e, i]];
             }
             let mut a = [0.0f64; 9];
+            let mut b = [0.0f64; 9];
             let mut d = [0.0f64; 9];
             let mut cs = [0.0f64; 4];
             for i in 0..9 {
                 a[i] = cm_arr[[e, i]];
+                b[i] = b_arr[[e, i]];
                 d[i] = cb_arr[[e, i]];
             }
             for i in 0..4 {
@@ -455,7 +460,7 @@ fn batch_ke_mitc3_composite<'py>(
             let h = h_arr[e];
             let e_eq = e_arr[e];
 
-            let constitutive = composite_constitutive(&a, &d, &cs, h);
+            let constitutive = composite_constitutive(&a, &b, &d, &cs, h);
             let pre = Mitc3Precomputed::new(&node_coords, constitutive, h, e_eq, 1.0);
             let ke = mitc3::compute_ke_global(&pre);
             let mut flat = [0.0f64; 324];
@@ -499,12 +504,14 @@ fn batch_me_mitc3_composite<'py>(
             let m_trans = mpa_arr[e];
             let m_rot = ri_arr[e];
 
-            let dummy = composite_constitutive(
-                &[1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0],
-                &[1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0],
-                &[1.0, 0.0, 0.0, 1.0],
-                1.0,
-            );
+            // Dummy constitutive for mass matrix (not used for stress computation)
+            let dummy = aeroelast_core::materials::ShellConstitutive {
+                cm: nalgebra::Matrix3::identity(),
+                cb_coupling: nalgebra::Matrix3::zeros(),
+                cb: nalgebra::Matrix3::identity(),
+                cs: nalgebra::Matrix2::identity(),
+                cm_raw: nalgebra::Matrix3::identity(),
+            };
             let pre = Mitc3Precomputed::new(&node_coords, dummy, 1.0, 1.0, 1.0);
             let me = mitc3::compute_me_composite_global(&pre, m_trans, m_rot);
             let mut flat = [0.0f64; 324];
@@ -531,6 +538,7 @@ fn batch_ke_mitc4_composite<'py>(
     py: Python<'py>,
     coords: PyReadonlyArray2<'py, f64>,
     cm_flat: PyReadonlyArray2<'py, f64>,
+    b_coupling_flat: PyReadonlyArray2<'py, f64>,  // ADDED
     cb_flat: PyReadonlyArray2<'py, f64>,
     cs_flat: PyReadonlyArray2<'py, f64>,
     thickness: PyReadonlyArray1<'py, f64>,
@@ -538,6 +546,7 @@ fn batch_ke_mitc4_composite<'py>(
 ) -> Bound<'py, PyArray1<f64>> {
     let coords_arr = coords.as_array();
     let cm_arr = cm_flat.as_array();
+    let b_arr = b_coupling_flat.as_array();  // ADDED
     let cb_arr = cb_flat.as_array();
     let cs_arr = cs_flat.as_array();
     let h_arr = thickness.as_array();
@@ -552,10 +561,12 @@ fn batch_ke_mitc4_composite<'py>(
                 node_coords[i] = coords_arr[[e, i]];
             }
             let mut a = [0.0f64; 9];
+            let mut b = [0.0f64; 9];  // ADDED
             let mut d = [0.0f64; 9];
             let mut cs = [0.0f64; 4];
             for i in 0..9 {
                 a[i] = cm_arr[[e, i]];
+                b[i] = b_arr[[e, i]];  // ADDED
                 d[i] = cb_arr[[e, i]];
             }
             for i in 0..4 {
@@ -564,7 +575,7 @@ fn batch_ke_mitc4_composite<'py>(
             let h = h_arr[e];
             let e_eq = e_arr[e];
 
-            let constitutive = composite_constitutive(&a, &d, &cs, h);
+            let constitutive = composite_constitutive(&a, &b, &d, &cs, h);
             let pre = Mitc4Precomputed::new(&node_coords, constitutive, h, e_eq, 1.0);
             let ke = mitc4::compute_ke_global(&pre);
             let mut flat = [0.0f64; 576];
@@ -608,12 +619,14 @@ fn batch_me_mitc4_composite<'py>(
             let m_trans = mpa_arr[e];
             let m_rot = ri_arr[e];
 
-            let dummy = composite_constitutive(
-                &[1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0],
-                &[1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0],
-                &[1.0, 0.0, 0.0, 1.0],
-                1.0,
-            );
+            // Dummy constitutive for mass matrix (not used for stress computation)
+            let dummy = aeroelast_core::materials::ShellConstitutive {
+                cm: nalgebra::Matrix3::identity(),
+                cb_coupling: nalgebra::Matrix3::zeros(),
+                cb: nalgebra::Matrix3::identity(),
+                cs: nalgebra::Matrix2::identity(),
+                cm_raw: nalgebra::Matrix3::identity(),
+            };
             let pre = Mitc4Precomputed::new(&node_coords, dummy, 1.0, 1.0, 1.0);
             let me = mitc4::compute_me_composite_global(&pre, m_trans, m_rot);
             let mut flat = [0.0f64; 576];
@@ -1136,24 +1149,27 @@ fn parse_material(py: Python, obj: &Py<PyAny>) -> PyResult<MaterialSpec> {
             let cm_list: Vec<f64> = dict.get_item("cm")?.extract()?;
             let cb_list: Vec<f64> = dict.get_item("cb")?.extract()?;
             let cs_list: Vec<f64> = dict.get_item("cs")?.extract()?;
+            let b_list: Vec<f64> = dict.get_item("b_coupling")?.extract()?;  // ADDED
             let thickness: f64 = dict.get_item("thickness")?.extract()?;
             let e_equiv: f64 = dict.get_item("e_equiv")?.extract()?;
             let mass_per_area: f64 = dict.get_item("mass_per_area")?.extract()?;
             let rotational_inertia: f64 = dict.get_item("rotational_inertia")?.extract()?;
 
-            if cm_list.len() != 9 || cb_list.len() != 9 || cs_list.len() != 4 {
+            if cm_list.len() != 9 || cb_list.len() != 9 || cs_list.len() != 4 || b_list.len() != 9 {
                 return Err(pyo3::exceptions::PyValueError::new_err(
-                    "composite material: cm must have 9 elements, cb 9, cs 4"
+                    "composite material: cm must have 9 elements, b_coupling 9, cb 9, cs 4"
                 ));
             }
             let mut cm = [0.0f64; 9];
+            let mut cb_coupling = [0.0f64; 9];  // ADDED
             let mut cb = [0.0f64; 9];
             let mut cs = [0.0f64; 4];
             cm.copy_from_slice(&cm_list);
+            cb_coupling.copy_from_slice(&b_list);  // ADDED
             cb.copy_from_slice(&cb_list);
             cs.copy_from_slice(&cs_list);
 
-            Ok(MaterialSpec::Composite { cm, cb, cs, thickness, e_equiv, mass_per_area, rotational_inertia })
+            Ok(MaterialSpec::Composite { cm, cb_coupling, cb, cs, thickness, e_equiv, mass_per_area, rotational_inertia })
         }
         "plane_stress" => {
             let e: f64 = dict.get_item("e")?.extract()?;
@@ -1458,10 +1474,12 @@ impl PyMeshAssembler {
                 .sum();
 
             let mut cm = [0.0f64; 9];
+            let mut cb_coupling = [0.0f64; 9];  // ADDED
             let mut cb = [0.0f64; 9];
             let mut cs = [0.0f64; 4];
             for ii in 0..3 { for jj in 0..3 {
                 cm[ii*3+jj] = corrected_lam.a[(ii, jj)];
+                cb_coupling[ii*3+jj] = corrected_lam.b[(ii, jj)];  // ADDED
                 cb[ii*3+jj] = corrected_lam.d[(ii, jj)];
             }}
             cs[0] = corrected_lam.cs[(0,0)];
@@ -1469,7 +1487,7 @@ impl PyMeshAssembler {
             cs[2] = corrected_lam.cs[(1,0)];
             cs[3] = corrected_lam.cs[(1,1)];
 
-            Ok(MaterialSpec::Composite { cm, cb, cs, thickness: h, e_equiv, mass_per_area, rotational_inertia })
+            Ok(MaterialSpec::Composite { cm, cb_coupling, cb, cs, thickness: h, e_equiv, mass_per_area, rotational_inertia })
         };
 
         // Enum to distinguish composite vs isotropic without PyO3 objects in hot path

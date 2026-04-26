@@ -29,6 +29,7 @@ dependencies = [
  "aeroelast-core",
  "aeroelast-mesh",
  "aeroelast-solvers",
+ "nalgebra",
  "numpy",
  "pyo3",
  "rayon",
