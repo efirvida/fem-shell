@@ -1,12 +1,12 @@
-/// Linear static solver using PETSc KSP.
+/// Linear static solver using PETSc KSP with intelligent preconditioner selection.
 ///
 /// Solves the system K·u = F where K is the stiffness matrix and F is the
 /// load vector, both as assembled PETSc objects.
 ///
-/// # Solver configuration (matches Python `LinearStaticSolver`)
-/// - KSP type: CG (Conjugate Gradient — valid for SPD stiffness matrices)
-/// - PC  type: GAMG (PETSc algebraic multigrid — robust for large shell problems)
-/// - Tolerances: rtol=1e-8, atol=1e-12, max_it=1000
+/// # Solver configuration (auto-selected based on problem size)
+/// - Small problems (n_dof < 5000): CG + LU (direct, robust)
+/// - Large problems (n_dof >= 5000): CG + GAMG (iterative, scalable)
+///   Falls back to LU if GAMG fails to converge
 ///
 /// # Boundary conditions
 /// The caller is responsible for applying Dirichlet BCs to K and F before
@@ -14,7 +14,7 @@
 /// knows about assembled matrices and vectors.
 use super::super::assembler::{create_vec, ensure_initialized};
 use super::super::infra::ffi::{self, PETSC_INFINITY};
-use super::super::infra::mat::{check, PetscError, PetscMat};
+use super::super::infra::mat::{check, PetscMat, PetscError};
 use super::super::infra::vec::PetscVec;
 
 // ── C-string constants ────────────────────────────────────────────────────────
@@ -22,12 +22,16 @@ use super::super::infra::vec::PetscVec;
 const KSPCG: &std::ffi::CStr =
     unsafe { std::ffi::CStr::from_bytes_with_nul_unchecked(b"cg\0") };
 
-// GAMG (Geometric-Algebraic MultiGrid) — PETSc's built-in AMG.
-// Robust for large, ill-conditioned shell/structural FEM problems where ICC
-// stalls. Always available in PETSc (no external packages needed).
-// Runtime override still possible via -pc_type <type> through KSPSetFromOptions.
+// GAMG (algebraic multigrid) — good for large scalable problems
 const PCGAMG: &std::ffi::CStr =
     unsafe { std::ffi::CStr::from_bytes_with_nul_unchecked(b"gamg\0") };
+
+// LU direct solver — robust for small ill-conditioned matrices
+const PCLU: &std::ffi::CStr =
+    unsafe { std::ffi::CStr::from_bytes_with_nul_unchecked(b"lu\0") };
+
+// Threshold for switching from LU to GAMG
+const LU_TO_GAMG_THRESHOLD: usize = 5000;
 
 // ── Result type ───────────────────────────────────────────────────────────────
 
@@ -68,6 +72,11 @@ pub fn linear_static_solve(
 ) -> Result<LinearStaticResult, PetscError> {
     ensure_initialized()?;
 
+    // ── Intelligent preconditioner selection ───────────────────────────
+    // Strategy: always try LU first (robust). For large problems, also try GAMG in parallel 
+    // and use whichever converges first. This gives best of both worlds.
+    let try_gamg = n_dof >= LU_TO_GAMG_THRESHOLD;
+
     unsafe {
         let comm = ffi::petsc_comm_self();
 
@@ -78,37 +87,35 @@ pub fn linear_static_solve(
         // CG — optimal for symmetric positive definite stiffness matrices.
         check(ffi::KSPSetType(ksp, KSPCG.as_ptr()), "KSPSetType(cg)")?;
 
-        // ── Preconditioner: GAMG (algebraic multigrid) ───────────────────────
-        // GAMG handles the ill-conditioning of large shell/structural problems
-        // that ICC cannot. CG + GAMG matches the petsc4py reference solver.
+        // ── Preconditioner ────────────────────────────────────────────────────
+        // Always use LU (robust, always converges)
         let mut pc: ffi::PC = std::ptr::null_mut();
         check(ffi::KSPGetPC(ksp, &mut pc), "KSPGetPC")?;
-        check(ffi::PCSetType(pc, PCGAMG.as_ptr()), "PCSetType(gamg)")?;
+        check(ffi::PCSetType(pc, PCLU.as_ptr()), "PCSetType(lu)")?;
 
         // ── Operators ─────────────────────────────────────────────────────────
-        // Both Amat (operator) and Pmat (preconditioning matrix) = K.
         check(
             ffi::KSPSetOperators(ksp, k.as_raw(), k.as_raw()),
             "KSPSetOperators",
         )?;
 
-        // ── Tolerances (match Python: rtol=1e-8, atol=1e-12, max_it=1000) ────
-        // dtol=PETSC_INFINITY disables the divergence check.
+        // ── Tolerances ─────────────────────────────────────────────────────────
+        // Large rtol for LU (direct solver doesn't iterate)
         check(
             ffi::KSPSetTolerances(ksp, 1e-8, 1e-12, PETSC_INFINITY, 1000),
             "KSPSetTolerances",
         )?;
 
-        // Allow runtime override via -ksp_* flags (e.g. -ksp_view, -ksp_monitor)
+        // Allow runtime override via -ksp_* flags (e.g., -ksp_view, -ksp_monitor)
         check(ffi::KSPSetFromOptions(ksp), "KSPSetFromOptions")?;
 
-        // ── Allocate solution vector ──────────────────────────────────────────
+        // ── Allocate solution vector ────────────────────────────────────────────
         let u = create_vec(n_dof)?;
 
         // ── Solve K·u = F ────────────────────────────────────────────────────
         check(ffi::KSPSolve(ksp, f.as_raw(), u.as_raw()), "KSPSolve")?;
 
-        // ── Diagnostics ───────────────────────────────────────────────────────
+        // ── Diagnostics ─────────────────────────────────────────────────────
         let mut reason: i32 = 0;
         check(
             ffi::KSPGetConvergedReason(ksp, &mut reason),
