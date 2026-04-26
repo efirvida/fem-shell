@@ -31,11 +31,12 @@ pytest.importorskip("_aeroelast", reason="Rust backend not available")
 from _aeroelast import PyMeshAssembler, modal_solve_coo
 
 from aeroelast.core.bc import DirichletCondition, NodalLoad
-from aeroelast.core.material import IsotropicMaterial, OrthotropicMaterial
+from aeroelast.core.laminate import create_laminate_from_angles
+from aeroelast.core.material import IsotropicMaterial, Material, OrthotropicMaterial
 from aeroelast.core.mesh.entities import ElementSet, ElementType, MeshElement, Node, NodeSet
 from aeroelast.core.mesh.io.writers import write_ccx_mesh
 from aeroelast.core.mesh.model import MeshModel
-from aeroelast.core.properties import CompositeShellProperty, LaminatePly, ShellProperty
+from aeroelast.core.properties import CompositeShellProperty, ShellProperty
 from aeroelast.elements import ElementFamily
 from aeroelast.solvers.elasticity.static_linear import StaticLinearSolver
 
@@ -109,40 +110,61 @@ def _run_ccx(inp_path: Path, ccx_bin: str) -> subprocess.CompletedProcess:
 
 
 def _build_composite_plate_mesh() -> MeshModel:
-    """Build cantilever plate mesh for composite shell test."""
+    """Build cantilever plate mesh for composite shell test.
+
+    The mesh is a proper 2D shell cantilever in the XY plane:
+    - X: width direction (-B/2 to +B/2)
+    - Y: length direction (0 to L, cantilever axis)
+    - Z = 0: mid-surface of the shell
+    - Elements span X and Y, Z is fixed
+
+    This matches the CCX *SHELL SECTION setup where the shell lies in
+    the XY plane and deforms out-of-plane (Z displacement).
+    """
     nx = 4  # elements along X
-    ny = 2  # elements along Y  
-    nz = 10  # elements along Z (length)
+    ny = 10  # elements along Y (length)
+    h_shell = thickness  # shell thickness (for reference, not a 3D mesh)
 
     mesh = MeshModel()
 
-    # Create node grid
+    # Create node grid in XY plane (Z=0 everywhere)
     xs = np.linspace(0, B, nx + 1)
-    ys = np.linspace(-0.05, 0.05, ny + 1)
-    zs = np.linspace(0, L, nz + 1)
+    ys = np.linspace(0, L, ny + 1)
+    # Z is fixed at 0 (mid-surface)
+    # We use a 2D grid (X, Y) — one node per (i, j) pair
+    grid: dict[tuple[int, int], Node] = {}
+    for j, y in enumerate(ys):
+        for i, x in enumerate(xs):
+            node = Node([float(x), float(y), 0.0], geometric_node=False)
+            mesh.add_node(node)
+            grid[(i, j)] = node
 
-    grid: dict[tuple[int, int, int], Node] = {}
-    for k, z in enumerate(zs):
-        for j, y in enumerate(ys):
-            for i, x in enumerate(xs):
-                node = Node([float(x), float(y), float(z)], geometric_node=False)
-                mesh.add_node(node)
-                grid[(i, j, k)] = node
-
-    # Create quadrilateral shell elements
-    for k in range(nz):
-        for j in range(ny):
-            for i in range(nx):
-                n00 = grid[(i, j, k)]
-                n10 = grid[(i + 1, j, k)]
-                n11 = grid[(i + 1, j + 1, k)]
-                n01 = grid[(i, j + 1, k)]
-                mesh.add_element(
-                    MeshElement(
-                        nodes=[n00, n10, n11, n01],
-                        element_type=ElementType.quad,
-                    )
+    # Create quadrilateral shell elements in the XY plane.
+    # Nodes are numbered consecutively: node_id = j * (nx + 1) + i
+    for j in range(ny):
+        for i in range(nx):
+            n00 = grid[(i, j)]
+            n10 = grid[(i + 1, j)]
+            n11 = grid[(i + 1, j + 1)]
+            n01 = grid[(i, j + 1)]
+            mesh.add_element(
+                MeshElement(
+                    nodes=[n00, n10, n11, n01],
+                    element_type=ElementType.quad,
                 )
+            )
+
+    # Node sets
+    clamped = {n for n in mesh.nodes if np.isclose(n.y, 0.0, atol=1e-12)}
+    free_face = {n for n in mesh.nodes if np.isclose(n.y, L, atol=1e-12)}
+    free_center = min(free_face, key=lambda n: abs(float(n.x) - B / 2))
+
+    mesh.add_node_set(NodeSet("clamped", clamped))
+    mesh.add_node_set(NodeSet("free_face", free_face))
+    mesh.add_node_set(NodeSet("free_center", {free_center}))
+    mesh.add_element_set(ElementSet("plate", set(mesh.elements)))
+
+    return mesh
 
     # Node sets
     clamped = {n for n in mesh.nodes if np.isclose(n.z, 0.0, atol=1e-12)}
@@ -192,7 +214,7 @@ def _write_composite_ccx_inp(
     # Elements - S4 shell
     lines.append("*ELEMENT, TYPE=S4, ELSET=EGLOBAL")
     for i, el in enumerate(mesh.elements):
-        nids = [mesh.node_id_to_index[n.id] + 1 for n in el.node_ids]
+        nids = [mesh.node_id_to_index[nid] + 1 for nid in el.node_ids]
         lines.append(f"{i + 1},{nids[0]},{nids[1]},{nids[2]},{nids[3]}")
 
     # Material - Orthotropic
@@ -232,6 +254,63 @@ def _write_composite_ccx_inp(
 
 
 # ============================================================================
+# Laminate Material Helpers
+# ============================================================================
+
+
+def _make_laminate_mat(
+    E1: float, E2: float, G12: float, nu12: float, thickness: float
+) -> dict:
+    """Compute ABD matrices and return a material dict for PyMeshAssembler.
+
+    Uses the Python CLT to build the 8-ply symmetric [0/90/45/-45]s layup,
+    then exposes the result in the flat format expected by the Rust binding.
+    """
+    # Engineering constants -> orthotropic material
+    mat = Material(
+        name="comp",
+        E=(E1, E2, E2),
+        G=(G12, G12, G12),
+        nu=(nu12, nu12, 0.0),
+        rho=0.0,
+    )
+
+    # 8-ply symmetric: [0/90/45/-45/-45/45/90/0]
+    ply_t = thickness / 8
+    angles = [0.0, 90.0, 45.0, -45.0, -45.0, 45.0, 90.0, 0.0]
+    laminate = create_laminate_from_angles(mat, ply_t, angles)
+
+    ABD = laminate.get_ABD_matrix()  # 6x6 [[A,B],[B,D]]
+    A = ABD[:3, :3]
+    B = ABD[:3, 3:]
+    D = ABD[3:, 3:]
+    Cs = laminate.Cs
+
+    # Flatten for Rust binding: row-major
+    cm = A.ravel()              # 9 elements
+    cb_coupling = B.ravel()     # 9 elements
+    cb = D.ravel()              # 9 elements
+    cs = Cs.ravel()             # 4 elements
+
+    h = laminate.total_thickness
+    rho_eq = 0.0  # no density needed for stiffness test
+    mass_per_area = rho_eq * h
+    rotational_inertia = rho_eq * h**3 / 12.0
+
+    return {
+        "type": "composite",
+        "cm": cm.tolist(),
+        "b_coupling": cb_coupling.tolist(),
+        "cb": cb.tolist(),
+        "cs": cs.tolist(),
+        "thickness": h,
+        "e_equiv": A[0, 0] / h,
+        "mass_per_area": mass_per_area,
+        "rotational_inertia": rotational_inertia,
+    }
+
+
+# ============================================================================
 # Tests
 # ============================================================================
 
@@ -255,28 +334,14 @@ def test_composite_axial_tension(tmp_path: Path):
     # Load: 1000N in Z direction
     load = (0.0, 0.0, 1000.0)
 
-    # AeroElast solution
+    # AeroElast solution (MITC4: 6 DOFs/node)
     node_coords = np.asarray([[n.x, n.y, n.z] for n in mesh.nodes], dtype=float)
     conn = [[mesh.node_id_to_index[nid] for nid in el.node_ids] for el in mesh.elements]
-    elem_types = [4] * len(mesh.elements)  # S4
+    elem_types = [4] * len(mesh.elements)  # MITC4
 
-    # Multiple materials - one per element with composite properties
-    mats = []
-    for _ in mesh.elements:
-        mats.append({
-            "type": "shell_composite",
-            "E1": E1,
-            "E2": E2,
-            "nu12": nu12,
-            "G12": G12,
-            "thickness": thickness,
-            "plies": [
-                {"t": thickness / 8, "theta": 0, "E1": E1, "E2": E2, "G12": G12, "nu12": nu12},
-                {"t": thickness / 8, "theta": 90, "E1": E1, "E2": E2, "G12": G12, "nu12": nu12},
-                {"t": thickness / 8, "theta": 45, "E1": E1, "E2": E2, "G12": G12, "nu12": nu12},
-                {"t": thickness / 8, "theta": -45, "E1": E1, "E2": E2, "G12": G12, "nu12": nu12},
-            ]
-        })
+    # Composite material - pre-computed ABD matrices from CLT
+    mat_dict = _make_laminate_mat(E1, E2, G12, nu12, thickness)
+    mats = [mat_dict] * len(mesh.elements)
 
     asm = PyMeshAssembler(
         node_coords=node_coords, connectivity=conn, elem_types=elem_types, materials=mats
@@ -285,17 +350,17 @@ def test_composite_axial_tension(tmp_path: Path):
     n = asm.dofs_count
     K = coo_matrix((vals, (rows, cols)), shape=(n, n)).tocsr()
 
-    # Load vector
+    # Load vector (MITC4: 6 DOFs/node)
     f = np.zeros(n, dtype=float)
     center = next(iter(mesh.get_node_set("free_center").nodes.values()))
-    i0 = mesh.node_id_to_index[center.id] * 3
+    i0 = mesh.node_id_to_index[center.id] * 6  # 6 DOFs per node for MITC4
     f[i0 + 2] = load[2]  # Z direction
 
-    # Boundary conditions
+    # Boundary conditions (MITC4: 6 DOFs/node)
     clamped = {
-        mesh.node_id_to_index[n.id] * 3 + i
+        mesh.node_id_to_index[n.id] * 6 + i
         for n in mesh.get_node_set("clamped").nodes.values()
-        for i in range(3)
+        for i in range(6)
     }
     free_mask = np.ones(n, dtype=bool)
     for dof in clamped:
@@ -309,7 +374,7 @@ def test_composite_axial_tension(tmp_path: Path):
     u = np.zeros(n, dtype=float)
     u[free] = u_free
 
-    aero_disp = u[i0:i0 + 3]
+    aero_disp = u[i0:i0 + 6]
 
     # CCX solution
     inp_path = tmp_path / "composite_axial.inp"
@@ -320,19 +385,19 @@ def test_composite_axial_tension(tmp_path: Path):
 
     result = _run_ccx(inp_path, ccx_bin)
     if result.returncode != 0:
-        pytest.skip(f"CCX failed: {result.stderr}")
+        pytest.xfail(f"CCX failed (may be version/system issue): {result.stderr[:200]}")
 
     frd_path = inp_path.with_suffix(".frd")
     if not frd_path.exists():
-        pytest.skip("No FRD output from CCX")
+        pytest.xfail("No FRD output from CCX")
 
     ccx_disp = _parse_frd_disp(frd_path, node_ids)
     if not ccx_disp:
-        pytest.skip("Could not parse CCX displacements")
+        pytest.xfail("Could not parse CCX displacements")
 
     ccx_vals = list(ccx_disp.values())[0]
 
-    # Compare - axial displacement should be similar
+    # Compare - axial displacement should be similar (CCX has 3 DOFs, MITC4 has 6)
     rel_error = abs(aero_disp[2] - ccx_vals[2]) / max(abs(ccx_vals[2]), 1e-10)
     print(f"AeroElast axial: {aero_disp[2]*1e6:.2f} um, CCX: {ccx_vals[2]*1e6:.2f} um")
     print(f"Relative error: {rel_error*100:.2f}%")
@@ -349,27 +414,14 @@ def test_composite_bending(tmp_path: Path):
     # Load: 100N in X direction at free end
     load = (100.0, 0.0, 0.0)
 
-    # AeroElast solution
+    # AeroElast solution (MITC4: 6 DOFs/node)
     node_coords = np.asarray([[n.x, n.y, n.z] for n in mesh.nodes], dtype=float)
     conn = [[mesh.node_id_to_index[nid] for nid in el.node_ids] for el in mesh.elements]
     elem_types = [4] * len(mesh.elements)
 
-    mats = []
-    for _ in mesh.elements:
-        mats.append({
-            "type": "shell_composite",
-            "E1": E1,
-            "E2": E2,
-            "nu12": nu12,
-            "G12": G12,
-            "thickness": thickness,
-            "plies": [
-                {"t": thickness / 8, "theta": 0, "E1": E1, "E2": E2, "G12": G12, "nu12": nu12},
-                {"t": thickness / 8, "theta": 90, "E1": E1, "E2": E2, "G12": G12, "nu12": nu12},
-                {"t": thickness / 8, "theta": 45, "E1": E1, "E2": E2, "G12": G12, "nu12": nu12},
-                {"t": thickness / 8, "theta": -45, "E1": E1, "E2": E2, "G12": G12, "nu12": nu12},
-            ]
-        })
+    # Composite material - pre-computed ABD matrices from CLT
+    mat_dict = _make_laminate_mat(E1, E2, G12, nu12, thickness)
+    mats = [mat_dict] * len(mesh.elements)
 
     asm = PyMeshAssembler(
         node_coords=node_coords, connectivity=conn, elem_types=elem_types, materials=mats
@@ -378,17 +430,17 @@ def test_composite_bending(tmp_path: Path):
     n = asm.dofs_count
     K = coo_matrix((vals, (rows, cols)), shape=(n, n)).tocsr()
 
-    # Load vector
+    # Load vector (MITC4: 6 DOFs/node)
     f = np.zeros(n, dtype=float)
     center = next(iter(mesh.get_node_set("free_center").nodes.values()))
-    i0 = mesh.node_id_to_index[center.id] * 3
+    i0 = mesh.node_id_to_index[center.id] * 6  # 6 DOFs per node for MITC4
     f[i0] = load[0]  # X direction
 
-    # Boundary conditions
+    # Boundary conditions (MITC4: 6 DOFs/node)
     clamped = {
-        mesh.node_id_to_index[n.id] * 3 + i
+        mesh.node_id_to_index[n.id] * 6 + i
         for n in mesh.get_node_set("clamped").nodes.values()
-        for i in range(3)
+        for i in range(6)
     }
     free_mask = np.ones(n, dtype=bool)
     for dof in clamped:
@@ -402,7 +454,7 @@ def test_composite_bending(tmp_path: Path):
     u = np.zeros(n, dtype=float)
     u[free] = u_free
 
-    aero_disp = u[i0:i0 + 3]
+    aero_disp = u[i0:i0 + 6]
 
     # CCX solution
     inp_path = tmp_path / "composite_bending.inp"
@@ -412,19 +464,19 @@ def test_composite_bending(tmp_path: Path):
 
     result = _run_ccx(inp_path, ccx_bin)
     if result.returncode != 0:
-        pytest.skip(f"CCX failed: {result.stderr}")
+        pytest.xfail(f"CCX failed (may be version/system issue): {result.stderr[:200]}")
 
     frd_path = inp_path.with_suffix(".frd")
     if not frd_path.exists():
-        pytest.skip("No FRD output from CCX")
+        pytest.xfail("No FRD output from CCX")
 
     ccx_disp = _parse_frd_disp(frd_path, node_ids)
     if not ccx_disp:
-        pytest.skip("Could not parse CCX displacements")
+        pytest.xfail("Could not parse CCX displacements")
 
     ccx_vals = list(ccx_disp.values())[0]
 
-    # Compare
+    # Compare (CCX has 3 DOFs, MITC4 has 6)
     rel_error = abs(aero_disp[0] - ccx_vals[0]) / max(abs(ccx_vals[0]), 1e-10)
     print(f"AeroElast X: {aero_disp[0]*1e6:.2f} um, CCX: {ccx_vals[0]*1e6:.2f} um")
     print(f"Relative error: {rel_error*100:.2f}%")

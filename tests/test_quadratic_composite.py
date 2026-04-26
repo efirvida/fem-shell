@@ -154,6 +154,7 @@ def test_quadratic_composite_shell(tmp_path: Path):
 
     # Pass ABD directly
     cm = lam.A.ravel().tolist()
+    b_coupling = lam.B.ravel().tolist()
     cb = lam.D.ravel().tolist()
     cs = lam.Cs.ravel().tolist()
     h = lam.total_thickness
@@ -165,6 +166,7 @@ def test_quadratic_composite_shell(tmp_path: Path):
         {
             "type": "composite",
             "cm": cm,
+            "b_coupling": b_coupling,
             "cb": cb,
             "cs": cs,
             "thickness": h,

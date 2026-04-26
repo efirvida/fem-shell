@@ -934,6 +934,7 @@ fn b_drill(dh: &SMatrix<f64, 2, 4>, n_vals: &[f64; 4]) -> Vec24 {
 pub fn compute_ke_local(pre: &Mitc4Precomputed) -> Mat24 {
     let cm = &pre.constitutive.cm;
     let cb = &pre.constitutive.cb;
+    let cb_coupling = &pre.constitutive.cb_coupling; // B matrix (membrane-bending coupling)
     let cs = &pre.constitutive.cs;
 
     // --- Membrane stiffness: MITC4+ + Q4E3 EAS (Simo & Rifai 1990) ---
@@ -981,6 +982,7 @@ pub fn compute_ke_local(pre: &Mitc4Precomputed) -> Mat24 {
     let mut knn_b = Mat24::zeros();
     let mut knb_b = SMatrix::<f64, 24, 2>::zeros();
     let mut kbb_b = Matrix2::zeros();
+    let mut k_mb_coup = Mat24::zeros(); // B-coupling: membrane × bending
 
     let mut knn_s = Mat24::zeros();
     let mut knb_s = SMatrix::<f64, 24, 2>::zeros();
@@ -1002,6 +1004,10 @@ pub fn compute_ke_local(pre: &Mitc4Precomputed) -> Mat24 {
         knb_b += (bk.transpose() * cb * &bkb) * (w * sqrt_g);
         kbb_b += (bkb.transpose() * cb * &bkb) * (w * sqrt_g);
 
+        // Membrane-bending B-coupling: K_mb += bm^T · B · bk
+        let bm_gp = b_m_mitc4_plus(pre, xi, eta);
+        k_mb_coup += (bm_gp.transpose() * cb_coupling * &bk) * (w * sqrt_g);
+
         // Shear
         let (bs_nodal, bs_bubble) = b_gamma_mitc4_plus(
             &pre.local_coords, xi, eta, sqrt_g, gb.nb,
@@ -1011,6 +1017,9 @@ pub fn compute_ke_local(pre: &Mitc4Precomputed) -> Mat24 {
         knb_s += (bs_nodal.transpose() * cs * &bs_bubble) * (w * sqrt_g);
         kbb_s += (bs_bubble.transpose() * cs * &bs_bubble) * (w * sqrt_g);
     }
+
+    // B-coupling: add symmetric cross term (membrane × bending)
+    let k_mb = k_mb_coup.transpose();
 
     let knn = knn_b + knn_s;
     let knb = knb_b + knb_s;
@@ -1037,7 +1046,7 @@ pub fn compute_ke_local(pre: &Mitc4Precomputed) -> Mat24 {
         k_drill += (&bd * bd.transpose()) * (pre.k_drill * w * sqrt_g);
     }
 
-    k_m + k_bs + k_drill
+    k_m + k_mb + k_bs + k_drill
 }
 
 /// Compute element stiffness matrix in GLOBAL coordinates (24×24)

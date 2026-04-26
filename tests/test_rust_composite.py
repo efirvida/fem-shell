@@ -109,9 +109,9 @@ def quad_coords_3d():
 
 def _rust_ke_mitc3(coords, laminate):
     """Compute MITC3 composite stiffness via Rust batch function."""
-    n = 1
-    coords_flat = coords.ravel()[np.newaxis, :]  # (1, 9)
-    cm = laminate.A.ravel()[np.newaxis, :]        # (1, 9)
+    coords_flat = coords.ravel()[np.newaxis, :]
+    cm = laminate.A.ravel()[np.newaxis, :]
+    b_coupling = laminate.B.ravel()[np.newaxis, :]
     cb = laminate.D.ravel()[np.newaxis, :]
     cs = laminate.Cs.ravel()[np.newaxis, :]
     h = laminate.total_thickness
@@ -119,7 +119,7 @@ def _rust_ke_mitc3(coords, laminate):
     e_equiv = a_trace / (3.0 * h)
 
     ke_flat = fsc.batch_ke_mitc3_composite(
-        coords_flat, cm, cb, cs,
+        coords_flat, cm, b_coupling, cb, cs,
         np.array([h]), np.array([e_equiv]),
     )
     return np.asarray(ke_flat).reshape(18, 18)
@@ -143,6 +143,7 @@ def _rust_ke_mitc4(coords, laminate):
     """Compute MITC4 composite stiffness via Rust batch function."""
     coords_flat = coords.ravel()[np.newaxis, :]
     cm = laminate.A.ravel()[np.newaxis, :]
+    b_coupling = laminate.B.ravel()[np.newaxis, :]
     cb = laminate.D.ravel()[np.newaxis, :]
     cs = laminate.Cs.ravel()[np.newaxis, :]
     h = laminate.total_thickness
@@ -150,7 +151,7 @@ def _rust_ke_mitc4(coords, laminate):
     e_equiv = a_trace / (3.0 * h)
 
     ke_flat = fsc.batch_ke_mitc4_composite(
-        coords_flat, cm, cb, cs,
+        coords_flat, cm, b_coupling, cb, cs,
         np.array([h]), np.array([e_equiv]),
     )
     return np.asarray(ke_flat).reshape(24, 24)
@@ -195,6 +196,7 @@ def _laminate_to_mat_dict(laminate) -> dict:
     return {
         "type": "composite",
         "cm": laminate.A.ravel().tolist(),
+        "b_coupling": laminate.B.ravel().tolist(),
         "cb": laminate.D.ravel().tolist(),
         "cs": laminate.Cs.ravel().tolist(),
         "thickness": h,
@@ -337,13 +339,14 @@ class TestBatchComposite:
         n = len(coords_list)
         coords_batch = np.array([c.ravel() for c in coords_list])
         cm = np.tile(laminate.A.ravel(), (n, 1))
+        b_coupling = np.tile(laminate.B.ravel(), (n, 1))
         cb = np.tile(laminate.D.ravel(), (n, 1))
         cs = np.tile(laminate.Cs.ravel(), (n, 1))
         h = laminate.total_thickness
         e_equiv = np.trace(laminate.A) / (3.0 * h)
 
         ke_flat = fsc.batch_ke_mitc3_composite(
-            coords_batch, cm, cb, cs,
+            coords_batch, cm, b_coupling, cb, cs,
             np.full(n, h), np.full(n, e_equiv),
         )
         ke_batch = np.asarray(ke_flat).reshape(n, 18, 18)
@@ -367,13 +370,14 @@ class TestBatchComposite:
         n = len(coords_list)
         coords_batch = np.array([c.ravel() for c in coords_list])
         cm = np.tile(laminate.A.ravel(), (n, 1))
+        b_coupling = np.tile(laminate.B.ravel(), (n, 1))
         cb = np.tile(laminate.D.ravel(), (n, 1))
         cs = np.tile(laminate.Cs.ravel(), (n, 1))
         h = laminate.total_thickness
         e_equiv = np.trace(laminate.A) / (3.0 * h)
 
         ke_flat = fsc.batch_ke_mitc4_composite(
-            coords_batch, cm, cb, cs,
+            coords_batch, cm, b_coupling, cb, cs,
             np.full(n, h), np.full(n, e_equiv),
         )
         ke_batch = np.asarray(ke_flat).reshape(n, 24, 24)
