@@ -90,7 +90,8 @@ def build_shell_mesh(*, nz: int = 10, nx: int = 2) -> MeshModel:
     # Node sets
     clamped = {n for n in mesh.nodes if np.isclose(n.z, 0.0, atol=1e-12)}
     free_face = {n for n in mesh.nodes if np.isclose(n.z, L, atol=1e-12)}
-    free_center = min(free_face, key=lambda n: abs(float(n.x)))
+    # Pick middle node (x~B/2), not corner
+    free_center = min(free_face, key=lambda n: abs(float(n.x) - B/2))
 
     mesh.add_node_set(NodeSet("clamped", clamped))
     mesh.add_node_set(NodeSet("free_face", free_face))
