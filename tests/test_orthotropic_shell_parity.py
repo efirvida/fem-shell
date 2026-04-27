@@ -37,9 +37,9 @@ thickness = 0.005  # Shell thickness
 
 # Orthotropic material (simpler than full composite)
 E1 = 120e9  # Longitudinal modulus
-E2 = 10e9    # Transverse modulus  
-G12 = 5e9    # Shear modulus
-nu12 = 0.3    # Poisson ratio
+E2 = 10e9  # Transverse modulus
+G12 = 5e9  # Shear modulus
+nu12 = 0.3  # Poisson ratio
 
 
 # ============================================================================
@@ -50,14 +50,15 @@ nu12 = 0.3    # Poisson ratio
 def _parse_ccx_frd(frd_file: Path, node_ids: list[int]) -> dict[int, np.ndarray]:
     """Parse displacement from CCX FRD file - find max transverse displacement (like isotropic test)."""
     import re
+
     max_v = 0.0
     max_nid = None
     max_u = 0.0
     max_w = 0.0
-    
+
     with open(frd_file) as f:
         content = f.read()
-    
+
     # Look for lines after -4 DISP section (same as isotropic test)
     for line in content.splitlines():
         if "-4" in line and "DISP" in line:
@@ -67,8 +68,7 @@ def _parse_ccx_frd(frd_file: Path, node_ids: list[int]) -> dict[int, np.ndarray]
         if line.startswith(" -1"):
             # Try pattern with separated numbers
             matches = re.findall(
-                r'-1\s+(\d+)\s+([0-9.eE+-]+)\s+([0-9.eE+-]+)\s+([0-9.eE+-]+)',
-                line
+                r"-1\s+(\d+)\s+([0-9.eE+-]+)\s+([0-9.eE+-]+)\s+([0-9.eE+-]+)", line
             )
             if matches:
                 for nid_str, u_str, v_str, w_str in matches:
@@ -83,7 +83,7 @@ def _parse_ccx_frd(frd_file: Path, node_ids: list[int]) -> dict[int, np.ndarray]
                         continue
             else:
                 # Try concatenated pattern
-                matches2 = re.findall(r'-1\s+(\d+)([0-9.eE+-]{10,})', line)
+                matches2 = re.findall(r"-1\s+(\d+)([0-9.eE+-]{10,})", line)
                 for nid_str, rest in matches2:
                     try:
                         nid = int(nid_str)
@@ -94,7 +94,7 @@ def _parse_ccx_frd(frd_file: Path, node_ids: list[int]) -> dict[int, np.ndarray]
                                 max_nid = nid
                     except (ValueError, IndexError):
                         continue
-    
+
     if max_nid is not None:
         return {max_nid: np.array([max_u, max_v, max_w])}
     return {}
@@ -102,6 +102,7 @@ def _parse_ccx_frd(frd_file: Path, node_ids: list[int]) -> dict[int, np.ndarray]
 
 def _ccx_or_skip() -> str:
     import shutil
+
     ccx = shutil.which("ccx") or shutil.which("CalculiX")
     if ccx is None:
         pytest.skip("CalculiX not found")
@@ -135,13 +136,11 @@ def _build_plate() -> MeshModel:
             n10 = grid[(i + 1, k)]
             n11 = grid[(i + 1, k + 1)]
             n01 = grid[(i, k + 1)]
-            mesh.add_element(
-                MeshElement(nodes=[n00, n10, n11, n01], element_type=ElementType.quad)
-            )
+            mesh.add_element(MeshElement(nodes=[n00, n10, n11, n01], element_type=ElementType.quad))
 
     clamped = {n for n in mesh.nodes if np.isclose(n.z, 0.0, atol=1e-12)}
     free = {n for n in mesh.nodes if np.isclose(n.z, L, atol=1e-12)}
-    center = min(free, key=lambda n: abs(float(n.x) - B/2))
+    center = min(free, key=lambda n: abs(float(n.x) - B / 2))
 
     mesh.add_node_set(NodeSet("clamped", clamped))
     mesh.add_node_set(NodeSet("free_center", {center}))
@@ -153,7 +152,7 @@ def _build_plate() -> MeshModel:
 def _write_ccx_inp(inp: Path, mesh: MeshModel, load: tuple[float, float, float]) -> None:
     """Write CCX input using aeroelast writer."""
     from aeroelast.core.mesh.io.writers import write_ccx_mesh
-    
+
     e_equiv = (E1 + E2) / 2
     props = {
         "plate": {
@@ -164,19 +163,22 @@ def _write_ccx_inp(inp: Path, mesh: MeshModel, load: tuple[float, float, float])
             "thickness": thickness,
         }
     }
-    
+
     # Build loads - apply to center node
     center_node = mesh.get_node_set("free_center")
     fx, fy, fz = load
     load_nodeset = "free_center"
     load_vector = [fx, fy, fz]
-    
+
     # IMPORTANT: Use LinearStatic solver, not Modal
-    write_ccx_mesh(mesh, str(inp), 
-                 properties=props,
-                 load_nodeset=load_nodeset,
-                 load_vector=load_vector,
-                 solver_type="LinearStatic")
+    write_ccx_mesh(
+        mesh,
+        str(inp),
+        properties=props,
+        load_nodeset=load_nodeset,
+        load_vector=load_vector,
+        solver_type="LinearStatic",
+    )
 
 
 def test_orthotropic_axial(tmp_path: Path):
@@ -184,67 +186,75 @@ def test_orthotropic_axial(tmp_path: Path):
     ccx_bin = _ccx_or_skip()
     mesh = _build_plate()
     load = (0.0, 100.0, 0.0)  # 100N in Y (transverse)
-    
+
     # AeroElast: orthotropic shell
     node_coords = np.asarray([[n.x, n.y, n.z] for n in mesh.nodes], dtype=float)
     conn = [[mesh.node_id_to_index[nid] for nid in el.node_ids] for el in mesh.elements]
     elem_types = [4] * len(mesh.elements)
-    
+
     # Isotropic average (same as CCX will use)
     e_equiv = (E1 + E2) / 2
-    mats = [{
-        "type": "isotropic",
-        "e": e_equiv,
-        "nu": nu12,
-        "rho": 1000.0,
-        "thickness": thickness,
-    }] * len(mesh.elements)
-    
+    mats = [
+        {
+            "type": "isotropic",
+            "e": e_equiv,
+            "nu": nu12,
+            "rho": 1000.0,
+            "thickness": thickness,
+        }
+    ] * len(mesh.elements)
+
     asm = PyMeshAssembler(node_coords, conn, elem_types, mats)
     rows, cols, vals = asm.assemble_k()
     n = asm.dofs_count
     K = coo_matrix((vals, (rows, cols)), shape=(n, n)).tocsr()
-    
+
     f = np.zeros(n, dtype=float)
     center = next(iter(mesh.get_node_set("free_center").nodes.values()))
     i0 = mesh.node_id_to_index[center.id] * 3
     f[i0 + 1] = load[1]  # Y direction
-    
-    clamped = {mesh.node_id_to_index[n.id]*3 + i for n in mesh.get_node_set("clamped").nodes.values() for i in range(3)}
+
+    clamped = {
+        mesh.node_id_to_index[n.id] * 3 + i
+        for n in mesh.get_node_set("clamped").nodes.values()
+        for i in range(3)
+    }
     free = np.array([i for i in range(asm.dofs_count) if i not in clamped])
-    
+
     u = spsolve(K[np.ix_(free, free)], f[free])
     aero_disp = np.zeros(asm.dofs_count)
     aero_disp[free] = u
-    
-    print(f"AeroElast Uy: {aero_disp[i0+1]*1e6:.2f} um")
-    
+
+    print(f"AeroElast Uy: {aero_disp[i0 + 1] * 1e6:.2f} um")
+
     # CCX
     inp_path = tmp_path / "axial.inp"
     _write_ccx_inp(inp_path, mesh, load)
-    
+
     os.chdir(tmp_path)
     result = subprocess.run([ccx_bin, inp_path.stem], capture_output=True, text=True)
-    
+
     if result.returncode != 0:
         pytest.skip(f"CCX failed")
-    
+
     frd = inp_path.with_suffix(".frd")
     if not frd.exists():
         pytest.skip("No FRD")
-    
-    node_ids = [mesh.node_id_to_index[n.id]+1 for n in mesh.get_node_set("free_center").nodes.values()]
+
+    node_ids = [
+        mesh.node_id_to_index[n.id] + 1 for n in mesh.get_node_set("free_center").nodes.values()
+    ]
     ccx_disp = _parse_ccx_frd(frd, node_ids)
     if not ccx_disp:
         pytest.skip("Parse fail")
-    
+
     ccx_uy = list(ccx_disp.values())[0][1]
-    print(f"CCX Uy: {ccx_uy*1e6:.2f} um")
-    
-    rel_error = abs(aero_disp[i0+1] - ccx_uy) / max(abs(ccx_uy), 1e-12)
-    print(f"Error: {rel_error*100:.2f}%")
-    
-    assert rel_error < 0.15, f"Ortho transverse: {rel_error*100:.1f}% > 15%"
+    print(f"CCX Uy: {ccx_uy * 1e6:.2f} um")
+
+    rel_error = abs(aero_disp[i0 + 1] - ccx_uy) / max(abs(ccx_uy), 1e-12)
+    print(f"Error: {rel_error * 100:.2f}%")
+
+    assert rel_error < 0.15, f"Ortho transverse: {rel_error * 100:.1f}% > 15%"
 
 
 def test_orthotropic_bending(tmp_path: Path):
@@ -252,61 +262,69 @@ def test_orthotropic_bending(tmp_path: Path):
     ccx_bin = _ccx_or_skip()
     mesh = _build_plate()
     load = (100.0, 0.0, 0.0)  # 100N in X
-    
+
     node_coords = np.asarray([[n.x, n.y, n.z] for n in mesh.nodes], dtype=float)
     conn = [[mesh.node_id_to_index[nid] for nid in el.node_ids] for el in mesh.elements]
     elem_types = [4] * len(mesh.elements)
-    
+
     e_equiv = (E1 + E2) / 2
-    mats = [{
-        "type": "isotropic",
-        "e": e_equiv,
-        "nu": nu12,
-        "rho": 1000.0,
-        "thickness": thickness,
-    }] * len(mesh.elements)
-    
+    mats = [
+        {
+            "type": "isotropic",
+            "e": e_equiv,
+            "nu": nu12,
+            "rho": 1000.0,
+            "thickness": thickness,
+        }
+    ] * len(mesh.elements)
+
     asm = PyMeshAssembler(node_coords, conn, elem_types, mats)
     rows, cols, vals = asm.assemble_k()
     n = asm.dofs_count
     K = coo_matrix((vals, (rows, cols)), shape=(n, n)).tocsr()
-    
+
     f = np.zeros(n, dtype=float)
     center = next(iter(mesh.get_node_set("free_center").nodes.values()))
     i0 = mesh.node_id_to_index[center.id] * 3
     f[i0] = load[0]
-    
-    clamped = {mesh.node_id_to_index[n.id]*3 + i for n in mesh.get_node_set("clamped").nodes.values() for i in range(3)}
+
+    clamped = {
+        mesh.node_id_to_index[n.id] * 3 + i
+        for n in mesh.get_node_set("clamped").nodes.values()
+        for i in range(3)
+    }
     free = np.array([i for i in range(asm.dofs_count) if i not in clamped])
-    
+
     u = spsolve(K[np.ix_(free, free)], f[free])
     aero_disp = np.zeros(asm.dofs_count)
     aero_disp[free] = u
-    
-    print(f"AeroElast Ux: {aero_disp[i0]*1e6:.2f} um")
-    
+
+    print(f"AeroElast Ux: {aero_disp[i0] * 1e6:.2f} um")
+
     inp_path = tmp_path / "bending.inp"
     _write_ccx_inp(inp_path, mesh, load)
-    
+
     os.chdir(tmp_path)
     result = subprocess.run([ccx_bin, inp_path.stem], capture_output=True, text=True)
-    
+
     if result.returncode != 0:
         pytest.skip(f"CCX failed")
-    
+
     frd = inp_path.with_suffix(".frd")
     if not frd.exists():
         pytest.skip("No FRD")
-    
-    node_ids = [mesh.node_id_to_index[n.id]+1 for n in mesh.get_node_set("free_center").nodes.values()]
+
+    node_ids = [
+        mesh.node_id_to_index[n.id] + 1 for n in mesh.get_node_set("free_center").nodes.values()
+    ]
     ccx_disp = _parse_ccx_frd(frd, node_ids)
     if not ccx_disp:
         pytest.skip("Parse fail")
-    
+
     ccx_ux = list(ccx_disp.values())[0][0]
-    print(f"CCX Ux: {ccx_ux*1e6:.2f} um")
-    
+    print(f"CCX Ux: {ccx_ux * 1e6:.2f} um")
+
     rel_error = abs(aero_disp[i0] - ccx_ux) / max(abs(ccx_ux), 1e-12)
-    print(f"Error: {rel_error*100:.2f}%")
-    
-    assert rel_error < 0.15, f"Ortho bending: {rel_error*100:.1f}% > 15%"
+    print(f"Error: {rel_error * 100:.2f}%")
+
+    assert rel_error < 0.15, f"Ortho bending: {rel_error * 100:.1f}% > 15%"

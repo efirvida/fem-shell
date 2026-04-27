@@ -321,13 +321,6 @@ def _clamped_dofs(mesh: MeshModel, dofs_per_node: int = 3) -> list:
     return sorted(set(dofs))
 
 
-def _write_chunks(file, ids, per_line: int) -> None:
-    """Write list of ids in chunks of per_line per line."""
-    for i in range(0, len(ids), per_line):
-        chunk = ids[i : i + per_line]
-        file.write(", ".join(str(i) for i in chunk) + "\n")
-
-
 def _run_ccx(ccx_bin: str, workdir: Path, stem: str) -> None:
     # Ensure only necessary input files exist to avoid duplicate loading of residual mesh files
     for f in workdir.glob("*"):
@@ -346,71 +339,6 @@ def _run_ccx(ccx_bin: str, workdir: Path, stem: str) -> None:
             f"CCX run failed for {stem} (code={proc.returncode})\n"
             f"STDOUT:\n{proc.stdout}\nSTDERR:\n{proc.stderr}"
         )
-
-
-def _write_beam_ccx_inp(
-    inp: Path,
-    *,
-    mesh: MeshModel,
-    stem: str,
-    solver_type: str,
-    load_case: BeamLoadCase | None,
-) -> None:
-    """Write a minimal, strictly formatted CCX input file."""
-    lines = []
-    lines.append("*NODE, NSET=NALL")
-    for i, node in enumerate(mesh.nodes):
-        lines.append(f"{i + 1},{node.x:.6f},{node.y:.6f},{node.z:.6f}")
-    lines.append("*NSET, NSET=NCLAMPED")
-    c_ids = sorted(
-        mesh.node_id_to_index[n.id] + 1 for n in mesh.get_node_set("clamped").nodes.values()
-    )
-    for i in range(0, len(c_ids), 16):
-        lines.append(",".join(str(x) for x in c_ids[i : i + 16]))
-    lines.append("*NSET, NSET=NFREE_FACE")
-    f_ids = sorted(
-        mesh.node_id_to_index[n.id] + 1 for n in mesh.get_node_set("free_face").nodes.values()
-    )
-    for i in range(0, len(f_ids), 16):
-        lines.append(",".join(str(x) for x in f_ids[i : i + 16]))
-    lines.append("*NSET, NSET=NCENTER")
-    center_node = next(iter(mesh.get_node_set("free_center").nodes.values()))
-    lines.append(f"{mesh.node_id_to_index[center_node.id] + 1}")
-    lines.append("*ELEMENT, TYPE=C3D8, ELSET=EBEAM")
-    for i, el in enumerate(mesh.elements):
-        conn = ",".join(str(int(nid) + 1) for nid in el.node_ids)
-        lines.append(f"{i + 1},{conn}")
-    lines.append("*MATERIAL, NAME=STEEL")
-    lines.append("*ELASTIC")
-    lines.append(f"{MAT_STEEL.E:.6E},{MAT_STEEL.nu:.6f}")
-    lines.append("*DENSITY")
-    lines.append(f"{MAT_STEEL.rho:.6E}")
-    lines.append("*SOLID SECTION, ELSET=EBEAM, MATERIAL=STEEL")
-    lines.append("*BOUNDARY")
-    lines.append("NCLAMPED,1,3,0.0")
-    lines.append("*STEP, INC=10000")
-    if solver_type == "modal":
-        lines.append("*FREQUENCY")
-        lines.append("5")
-    elif solver_type == "linear":
-        lines.append("*STATIC")
-        if load_case:
-            lines.append("*CLOAD")
-            center_idx = mesh.node_id_to_index[center_node.id] + 1
-            fx, fy, fz = load_case.load_vector
-            if fx != 0.0:
-                lines.append(f"{center_idx},1,{fx:.6E}")
-            if fy != 0.0:
-                lines.append(f"{center_idx},2,{fy:.6E}")
-            if fz != 0.0:
-                lines.append(f"{center_idx},3,{fz:.6E}")
-    lines.append("*NODE FILE")
-    lines.append("U")
-    if solver_type == "modal":
-        lines.append("*EL FILE")
-        lines.append("S")
-    lines.append("*END STEP")
-    inp.write_text("\n".join(lines) + "\n")
 
 
 # ============================================================================

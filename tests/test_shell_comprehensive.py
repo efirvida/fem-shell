@@ -396,7 +396,7 @@ class TestLinearStaticCantilever:
         print(f"\nLinear FX: FEM={ux:.3e}, Ana={ana:.3e}, Error={error:.1f}%")
 
         # Should match within 10%
-        assert error < 15.0, f"FX error {error:.1f}% too large"
+        assert error < 5.0, f"FX error {error:.1f}% too large"
 
     def test_fy_in_plane(self):
         """FY: In-plane loading (shear/membrane combination)."""
@@ -437,14 +437,11 @@ class TestLinearStaticCantilever:
         uy = u[idx * dpn + 1]
 
         # Compare with analytical (note: this is a lower bound)
-        error_low = abs(uy - ana) / ana * 100
+        error = abs(uy - ana) / ana * 100
 
         print(f"\nLinear FY: FEM={uy:.3e}, Ana={ana:.3e}")
 
-        # For FY, analytical is often lower than FEM because
-        # of coupled membrane-bending effects in shells
-        # The key is the ratio with UX
-        # Check uY/uX ratio instead
+        assert error < 5.0, f"FX error {error:.1f}% too large"
 
     def test_fz_out_of_plane(self):
         """FZ: Out-of-plane bending - compare with beam theory."""
@@ -486,8 +483,10 @@ class TestLinearStaticCantilever:
 
         print(f"\nLinear FZ: FEM={uz:.3e}, Ana(bending only)={ana:.3e}")
 
-        # Beam theory is often different from shell
-        # Just verify it's in a reasonable range
+        # Compare with analytical (note: this is a lower bound)
+        error = abs(uz - ana) / ana * 100
+
+        assert error < 5.0, f"FX error {error:.1f}% too large"
 
     def test_in_plane_ratio_constraint(self):
         """KEY: Physical ratio constraint uY/uX."""

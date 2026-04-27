@@ -137,10 +137,12 @@ extern "C" {
         cols: *const PetscInt,
     ) -> PetscErrorCode;
     pub fn MatSetValuesCOO(mat: Mat, vals: *const PetscScalar, mode: i32) -> PetscErrorCode;
+    pub fn MatSetValues(mat: Mat, ir: PetscInt, is: PetscInt, ic: PetscInt, ie: PetscInt, v: *const PetscScalar, addv: i32) -> PetscErrorCode;
 
     // Assembly
     pub fn MatAssemblyBegin(mat: Mat, type_: i32) -> PetscErrorCode;
     pub fn MatAssemblyEnd(mat: Mat, type_: i32) -> PetscErrorCode;
+    pub fn MatZeroEntries(mat: Mat) -> PetscErrorCode;
 
     // Options
     /// MatSetOption(mat, opt, flag) — set matrix property flags.

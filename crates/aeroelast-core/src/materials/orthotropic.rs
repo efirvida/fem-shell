@@ -44,10 +44,16 @@ impl OrthotropicMaterial {
         let nu21 = self.nu12 * self.e2 / self.e1;
         let denom = 1.0 - self.nu12 * nu21;
 
+        if denom.abs() < 1e-6 {
+            println!("[OrthotropicMaterial] WARNING: Very small denominator in compute_q: {:.4e}", denom);
+        }
+
         let q11 = self.e1 / denom;
         let q22 = self.e2 / denom;
         let q12 = self.nu12 * self.e2 / denom;
         let q66 = self.g12;
+
+        println!("[OrthotropicMaterial] Q matrix: denom={:.4e}, q11={:.4e}, q22={:.4e}", denom, q11, q22);
 
         Matrix3::new(
             q11, q12, 0.0,

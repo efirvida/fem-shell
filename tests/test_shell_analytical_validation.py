@@ -316,23 +316,23 @@ class TestBeamBending:
         L, b, h = 1.0, 0.1, 0.01
         P = 100.0  # N
         E = material_steel.E
-        
+
         # Euler-Bernoulli beam theory
         I = b * h**3 / 12
         delta_analytical = P * L**3 / (3 * E * I)
-        
+
         # Build mesh
         mesh = MeshModel()
         xs = np.linspace(0, L, nx + 1)
         ys = np.linspace(0, b, ny + 1)
-        
+
         nodes = {}
         for j, y in enumerate(ys):
             for i, x in enumerate(xs):
                 n = Node([float(x), float(y), 0.0])
                 mesh.add_node(n)
                 nodes[(i, j)] = n
-        
+
         for j in range(ny):
             for i in range(nx):
                 mesh.add_element(
@@ -346,40 +346,40 @@ class TestBeamBending:
                         element_type=ElementType.quad,
                     )
                 )
-        
+
         fem_properties["elements"]["material"] = material_steel
         fem_properties["elements"]["thickness"] = h
-        
+
         solver = StaticLinearSolver(mesh, fem_properties)
-        
+
         # Clamped at x=0
         fixed = [n for n in mesh.nodes if np.isclose(n.x, 0.0, atol=1e-12)]
         mesh.add_node_set(NodeSet("fixed", set(fixed)))
         fixed_dofs = solver.get_dofs_by_nodeset_name("fixed")
         solver.add_dirichlet_conditions([DirichletCondition(fixed_dofs, 0.0)])
-        
+
         # Tip load
         free = [n for n in mesh.nodes if np.isclose(n.x, L, atol=1e-12)]
         for node in free:
             node_idx = mesh.nodes.index(node)
             node_dofs = [node_idx * solver.domain.dofs_per_node + d for d in range(6)]
             solver.add_nodal_loads([NodalLoad(node_dofs, [0.0, 0.0, P / len(free), 0.0, 0.0, 0.0])])
-        
+
         u_vec = solver.solve()
         u = u_vec.reshape(-1, solver.domain.dofs_per_node)
-        
+
         # Tip node (corner)
         tip = max(free, key=lambda n: n.y)
         u_tip = u[mesh.nodes.index(tip)]
         delta_numerical = abs(u_tip[2])
-        
+
         rel_error = abs(delta_numerical - delta_analytical) / delta_analytical
-        
+
         # Finer mesh = smaller error
         tol = 0.15 if nx >= 8 else 0.20
         assert rel_error < tol, (
             f"Bending: numerical={delta_numerical:.6e}, "
-            f"analytical={delta_analytical:.6e}, error={rel_error*100:.1f}%"
+            f"analytical={delta_analytical:.6e}, error={rel_error * 100:.1f}%"
         )
 
 

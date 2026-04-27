@@ -429,6 +429,7 @@ mod tests {
             rho: 7800.0,
             thickness: 0.01,
             shear_correction: 5.0 / 6.0,
+            drilling_scale: 1.0,
         }];
 
         MeshAssembler::new(topology, materials)

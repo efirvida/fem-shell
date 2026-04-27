@@ -91,7 +91,7 @@ def build_shell_mesh(*, nz: int = 10, nx: int = 2) -> MeshModel:
     clamped = {n for n in mesh.nodes if np.isclose(n.z, 0.0, atol=1e-12)}
     free_face = {n for n in mesh.nodes if np.isclose(n.z, L, atol=1e-12)}
     # Pick middle node (x~B/2), not corner
-    free_center = min(free_face, key=lambda n: abs(float(n.x) - B/2))
+    free_center = min(free_face, key=lambda n: abs(float(n.x) - B / 2))
 
     mesh.add_node_set(NodeSet("clamped", clamped))
     mesh.add_node_set(NodeSet("free_face", free_face))
@@ -320,13 +320,13 @@ class TestIsotropicShellParity:
 
         # Read and parse FRD - look for displacement values
         frd_content = frd_path.read_text()
-        
+
         # Find the displacement block and extract max V (Y) displacement
         # CCX outputs displacements in format: -1 <node> <U> <V> <W>
         # But format may vary, so use regex to find all displacement values
         disp_ccx = None
         max_v = 0.0
-        
+
         # Look for lines after -4 DISP section
         in_disp = False
         for line in frd_content.splitlines():
@@ -340,8 +340,11 @@ class TestIsotropicShellParity:
                     # Try to extract displacement values - format varies
                     # Try common patterns
                     import re
+
                     # Pattern 1: -1 <id> <U> <V> <W>
-                    matches = re.findall(r'-1\s+(\d+)\s+([0-9.eE+-]+)\s+([0-9.eE+-]+)\s+([0-9.eE+-]+)', line)
+                    matches = re.findall(
+                        r"-1\s+(\d+)\s+([0-9.eE+-]+)\s+([0-9.eE+-]+)\s+([0-9.eE+-]+)", line
+                    )
                     if matches:
                         for nid, u, v, w in matches:
                             try:
@@ -352,7 +355,7 @@ class TestIsotropicShellParity:
                                 pass
                     # Try alternative pattern where numbers may not be separated
                     # Pattern 2: no spaces between sign and number
-                    matches2 = re.findall(r'-1\s+(\d+)([0-9.eE+-]{10,})', line)
+                    matches2 = re.findall(r"-1\s+(\d+)([0-9.eE+-]{10,})", line)
                     for nid, rest in matches2:
                         # The remaining part contains U, V, W concatenated
                         # Try to parse last part as V displacement
@@ -362,11 +365,11 @@ class TestIsotropicShellParity:
                                 max_v = v_val
                         except:
                             pass
-        
+
         if max_v == 0.0:
             # Could not find any displacement
             pytest.skip("Could not parse CCX displacement from FRD")
-        
+
         disp_ccx = max_v
         ratio = disp_ccx / disp_ae
 
