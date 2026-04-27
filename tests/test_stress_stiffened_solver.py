@@ -27,8 +27,9 @@ from petsc4py import PETSc  # noqa: E402
 from aeroelast.core.assembler import MeshAssembler
 from aeroelast.core.bc import BoundaryConditionManager, DirichletCondition
 from aeroelast.core.material import IsotropicMaterial
-from aeroelast.core.mesh.entities import ElementType, MeshElement, Node
+from aeroelast.core.mesh.entities import ElementSet, ElementType, MeshElement, Node
 from aeroelast.core.mesh.model import MeshModel
+from aeroelast.core.properties import ShellProperty
 from aeroelast.elements import ElementFamily
 from aeroelast.postprocess.stress_recovery import StressLocation, StressRecovery, StressType
 from aeroelast.solvers.fsi.time_integration import NewmarkCoefficients
@@ -74,30 +75,31 @@ def _build_plate_mesh(nx: int = 4, ny: int = 4, L: float = 1.0) -> MeshModel:
                     element_type=ElementType.quad,
                 )
             )
+    mesh.add_element_set(ElementSet("plate", set(mesh.elements)))
     return mesh
 
 
-_MODEL_CFG_TEMPLATE = {
-    "elements": {
-        "element_family": ElementFamily.SHELL,
-        "thickness": 0.01,
-    },
-    "solver": {
-        "type": "StressStiffenedDynamicFSI",
-        "time_step": 0.01,
-        "total_time": 1.0,
-        "beta": 0.25,
-        "gamma": 0.5,
-        "geometric_stiffness": {"update_interval": 1},
-    },
+_SOLVER_CFG = {
+    "type": "StressStiffenedDynamicFSI",
+    "time_step": 0.01,
+    "total_time": 1.0,
+    "beta": 0.25,
+    "gamma": 0.5,
+    "geometric_stiffness": {"update_interval": 1},
 }
+
+_STEEL = IsotropicMaterial(name="steel", E=210e9, nu=0.3, rho=7800.0)
+_PROP = ShellProperty(material=_STEEL, thickness=0.01)
 
 
 def _model_cfg() -> dict:
-    cfg = {k: dict(v) for k, v in _MODEL_CFG_TEMPLATE.items()}
-    cfg["elements"] = dict(_MODEL_CFG_TEMPLATE["elements"])
-    cfg["elements"]["material"] = IsotropicMaterial(name="steel", E=210e9, nu=0.3, rho=7800.0)
-    return cfg
+    return {
+        "elements": {
+            "element_family": ElementFamily.SHELL,
+            "properties": {"plate": _PROP},
+        },
+        "solver": dict(_SOLVER_CFG),
+    }
 
 
 def _build_domain(mesh: MeshModel) -> MeshAssembler:

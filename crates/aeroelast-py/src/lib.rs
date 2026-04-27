@@ -1767,6 +1767,22 @@ impl PyMeshAssembler {
         Ok(Array1::from(f).into_pyarray(py))
     }
 
+    /// Update the reference (undeformed) configuration for Updated-Lagrangian
+    /// incremental nonlinear analysis.
+    ///
+    /// Call after each converged load step. `u_inc` is the incremental
+    /// displacement vector (length = dofs_count). Only the translational DOFs
+    /// (indices 0,1,2 of each 6-DOF node block) update the node coordinates;
+    /// the precomputed element data is rebuilt from the new geometry.
+    pub fn update_reference(
+        &mut self,
+        u_inc: PyReadonlyArray1<f64>,
+    ) -> PyResult<()> {
+        let u_slice = u_inc.as_slice()?;
+        self.inner.update_reference(u_slice);
+        Ok(())
+    }
+
     /// NNZ per row for PETSc preallocation.
     ///
     /// Returns np.ndarray of length dofs_count (int64).

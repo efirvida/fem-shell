@@ -293,20 +293,21 @@ fn eval_covariant_shear_ext(
         b_ert[w_idx] = dhi_dr;
         b_est[w_idx] = dhi_ds;
 
-        // Rotations use enriched interpolation
-        b_ert[thy_idx] = f[i] * g_r[0];
-        b_ert[thx_idx] = -f[i] * g_r[1];
+        // Rotation contribution: from V3 ≈ e3 − θy·e1 + θx·e2
+        // e_rt = dw/dr + V3·g_r = dw/dr − θy·g_r[0] + θx·g_r[1]
+        b_ert[thy_idx] = -f[i] * g_r[0];
+        b_ert[thx_idx] =  f[i] * g_r[1];
 
-        b_est[thy_idx] = f[i] * g_s[0];
-        b_est[thx_idx] = -f[i] * g_s[1];
+        b_est[thy_idx] = -f[i] * g_s[0];
+        b_est[thx_idx] =  f[i] * g_s[1];
     }
 
     // Bubble rotations (indices 18, 19)
-    b_ert[19] = f[3] * g_r[0]; // thy4
-    b_ert[18] = -f[3] * g_r[1]; // thx4
+    b_ert[19] = -f[3] * g_r[0]; // thy4
+    b_ert[18] =  f[3] * g_r[1]; // thx4
 
-    b_est[19] = f[3] * g_s[0];
-    b_est[18] = -f[3] * g_s[1];
+    b_est[19] = -f[3] * g_s[0];
+    b_est[18] =  f[3] * g_s[1];
 
     (b_ert, b_est)
 }
@@ -386,7 +387,9 @@ fn b_gamma_ext(
     let b_ert = b_ert_const + b_ert_linear;
     let b_est = b_est_const + b_est_linear;
 
-    // Transform to Cartesian shear
+    // Transform covariant → Cartesian shear: γ = J^{-1} · e_cov
+    // Derivation: e_cov = J · γ_cart (e_rt = g_r·γ, e_st = g_s·γ)
+    // so γ_xz = J^{-1}[0,·]·e_cov,  γ_yz = J^{-1}[1,·]·e_cov
     let j_inv = &pre.j_inv;
     let b_xz = j_inv[(0, 0)] * &b_ert + j_inv[(0, 1)] * &b_est;
     let b_yz = j_inv[(1, 0)] * &b_ert + j_inv[(1, 1)] * &b_est;
