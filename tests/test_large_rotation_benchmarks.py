@@ -41,6 +41,7 @@ _aeroelast = pytest.importorskip("_aeroelast", reason="_aeroelast Rust extension
 # Analytical references
 # ─────────────────────────────────────────────────────────────────────────────
 
+
 def _analytical_tip(lam: float, L: float = 10.0):
     """Return (u_tip, w_tip) for load parameter λ = M·L/EI."""
     if abs(lam) < 1e-12:
@@ -53,16 +54,17 @@ def _analytical_tip(lam: float, L: float = 10.0):
 
 # Tabulated control points (λ, u_tip_ref, w_tip_ref) — exact elastic curve
 REFERENCE_TABLE = [
-    (math.pi / 2,       -3.6338,  6.3662),   # quarter circle
-    (math.pi,           -10.000,  6.3662),    # half circle
-    (3 * math.pi / 2,   -12.122,  2.1221),    # three-quarter
-    (2 * math.pi,       -10.000,  0.0000),    # full circle
+    (math.pi / 2, -3.6338, 6.3662),  # quarter circle
+    (math.pi, -10.000, 6.3662),  # half circle
+    (3 * math.pi / 2, -12.122, 2.1221),  # three-quarter
+    (2 * math.pi, -10.000, 0.0000),  # full circle
 ]
 
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Mesh helpers
 # ─────────────────────────────────────────────────────────────────────────────
+
 
 def cantilever_mitc4_mesh(n_elem: int, L: float, b: float):
     """
@@ -87,30 +89,30 @@ def cantilever_mitc4_mesh(n_elem: int, L: float, b: float):
     node_coords = np.zeros((n_nodes, 3))
     for i in range(n_elem + 1):
         x = L * i / n_elem
-        node_coords[2 * i]     = [x, 0.0, 0.0]
-        node_coords[2 * i + 1] = [x, b,   0.0]
+        node_coords[2 * i] = [x, 0.0, 0.0]
+        node_coords[2 * i + 1] = [x, b, 0.0]
 
-    connectivity = [[2*i, 2*i+2, 2*i+3, 2*i+1] for i in range(n_elem)]
-    elem_types   = [4] * n_elem   # 4 = MITC4
+    connectivity = [[2 * i, 2 * i + 2, 2 * i + 3, 2 * i + 1] for i in range(n_elem)]
+    elem_types = [4] * n_elem  # 4 = MITC4
 
     dofs_per_node = 6
-    clamped_dofs  = [n * dofs_per_node + d for n in (0, 1) for d in range(dofs_per_node)]
-    n_dof         = n_nodes * dofs_per_node
-    tip_nodes     = [2 * n_elem, 2 * n_elem + 1]
+    clamped_dofs = [n * dofs_per_node + d for n in (0, 1) for d in range(dofs_per_node)]
+    n_dof = n_nodes * dofs_per_node
+    tip_nodes = [2 * n_elem, 2 * n_elem + 1]
 
     return node_coords, connectivity, elem_types, clamped_dofs, n_dof, tip_nodes
 
 
-def make_assembler(node_coords, connectivity, elem_types, E, nu, rho, thickness,
-                   shear_corr=5.0/6.0):
+def make_assembler(
+    node_coords, connectivity, elem_types, E, nu, rho, thickness, shear_corr=5.0 / 6.0
+):
     """Construct a PyMeshAssembler with a uniform isotropic material."""
-    n_nodes = len(node_coords)
     prop = {
         "type": "isotropic",
-        "e":    E,              # lowercase — required by parse_material
-        "nu":   nu,
-        "rho":  rho,
-        "thickness":        thickness,
+        "e": E,  # lowercase — required by parse_material
+        "nu": nu,
+        "rho": rho,
+        "thickness": thickness,
         "shear_correction": shear_corr,
     }
     return _aeroelast.PyMeshAssembler(
@@ -125,8 +127,19 @@ def make_assembler(node_coords, connectivity, elem_types, E, nu, rho, thickness,
 # Incremental solver
 # ─────────────────────────────────────────────────────────────────────────────
 
-def incremental_solve(assembler, f_total, clamped_dofs, n_steps,
-                      atol=1e-8, rtol=1e-6, max_it=60):
+
+def incremental_solve(
+    node_coords,
+    connectivity,
+    elem_types,
+    f_total,
+    clamped_dofs,
+    n_steps,
+    atol=1e-8,
+    rtol=1e-6,
+    max_it=60,
+    max_subdivisions=8,
+):
     """
     Updated-Lagrangian incremental Newton solve.
 
@@ -137,22 +150,48 @@ def incremental_solve(assembler, f_total, clamped_dofs, n_steps,
     Returns the accumulated displacement from the *original* configuration:
         u_total = Σ u_inc_k  = final_coords − initial_coords
     """
-    f_inc    = np.asarray(f_total, dtype=np.float64) / n_steps
     dirichlet = np.array(clamped_dofs, dtype=np.int64)
-    u_total  = np.zeros(len(f_total), dtype=np.float64)
+    current_coords = np.asarray(node_coords, dtype=np.float64).copy()
+    assembler = make_assembler(current_coords, connectivity, elem_types, E, NU, RHO, H)
+    u_total = np.zeros(len(f_total), dtype=np.float64)
 
-    for step in range(n_steps):
+    # Adaptive continuation: if one increment diverges, bisect it locally
+    # instead of failing the whole benchmark immediately.
+    increments = [(np.asarray(f_total, dtype=np.float64) / n_steps, 0)] * n_steps
+
+    while increments:
+        f_inc, level = increments.pop(0)
+
         u_inc, iters, res_norm, reason = _aeroelast.nonlinear_static_solve_coo(
-            assembler, f_inc, dirichlet,
-            atol=atol, rtol=rtol, stol=1e-8, max_it=max_it,
+            assembler,
+            f_inc,
+            dirichlet,
+            atol=atol,
+            rtol=rtol,
+            stol=1e-8,
+            max_it=max_it,
         )
         u_inc = np.asarray(u_inc, dtype=np.float64)
+
         if reason <= 0:
-            raise RuntimeError(
-                f"SNES diverged at step {step+1}/{n_steps}: "
-                f"reason={reason}, |R|={res_norm:.3e}"
-            )
-        assembler.update_reference(u_inc)
+            if level >= max_subdivisions:
+                raise RuntimeError(
+                    f"SNES diverged after adaptive refinement: level={level}, "
+                    f"reason={reason}, |R|={res_norm:.3e}"
+                )
+
+            half = 0.5 * f_inc
+            increments.insert(0, (half, level + 1))
+            increments.insert(1, (half, level + 1))
+            continue
+
+        current_coords = current_coords.copy()
+        for node_id in range(current_coords.shape[0]):
+            current_coords[node_id, 0] += u_inc[6 * node_id + 0]
+            current_coords[node_id, 1] += u_inc[6 * node_id + 1]
+            current_coords[node_id, 2] += u_inc[6 * node_id + 2]
+
+        assembler = make_assembler(current_coords, connectivity, elem_types, E, NU, RHO, H)
         u_total += u_inc
 
     return u_total
@@ -160,8 +199,8 @@ def incremental_solve(assembler, f_total, clamped_dofs, n_steps,
 
 def tip_displacement(u_total, tip_nodes):
     """Return mean (u_x, w_z) of the given tip nodes."""
-    u = np.mean([u_total[6*n + 0] for n in tip_nodes])
-    w = np.mean([u_total[6*n + 2] for n in tip_nodes])
+    u = np.mean([u_total[6 * n + 0] for n in tip_nodes])
+    w = np.mean([u_total[6 * n + 2] for n in tip_nodes])
     return u, w
 
 
@@ -169,12 +208,12 @@ def tip_displacement(u_total, tip_nodes):
 # Beam parameters (shared by all nonlinear tests)
 # ─────────────────────────────────────────────────────────────────────────────
 
-L    = 10.0
-B    = 1.0    # width
-H    = 0.1    # thickness
-E    = 1.2e6
-NU   = 0.0
-RHO  = 1.0
+L = 10.0
+B = 1.0  # width
+H = 0.1  # thickness
+E = 1.2e6
+NU = 0.0
+RHO = 1.0
 
 # Second moment of area: I = b·h³/12
 I_beam = B * H**3 / 12.0
@@ -186,13 +225,16 @@ def _moment_load(lam, tip_nodes, n_dof):
     f_ext = np.zeros(n_dof)
     m_per_node = M_total / len(tip_nodes)
     for n in tip_nodes:
-        f_ext[6*n + 4] = m_per_node   # θy — moment about global Y
+        # In this element convention, positive analytical λ requires
+        # negative generalized moment on θy to bend toward +w.
+        f_ext[6 * n + 4] = -m_per_node  # θy — moment about global Y
     return f_ext
 
 
 # ─────────────────────────────────────────────────────────────────────────────
 # 0. Linear sanity check — Euler-Bernoulli tip deflection
 # ─────────────────────────────────────────────────────────────────────────────
+
 
 def test_linear_tip_deflection_euler_bernoulli():
     """
@@ -203,39 +245,45 @@ def test_linear_tip_deflection_euler_bernoulli():
     elements and expects ≤2 % error vs. Euler-Bernoulli.
     """
     n_elem = 10
-    node_coords, connectivity, elem_types, clamped_dofs, n_dof, tip_nodes = \
-        cantilever_mitc4_mesh(n_elem, L, B)
+    node_coords, connectivity, elem_types, clamped_dofs, n_dof, tip_nodes = cantilever_mitc4_mesh(
+        n_elem, L, B
+    )
 
     assembler = make_assembler(node_coords, connectivity, elem_types, E, NU, RHO, H)
 
     # P chosen so δ/L < 0.1%  →  δ = P·L³/(3EI) ≤ 0.001·L
     # EI = 1.2e6 * (1*0.1³/12) = 100  →  P_max = 0.001·L·3EI/L³ = 0.003 N
-    P = 0.001   # [N];  δ ≈ 3.3e-3 m  (δ/L ≈ 3.3e-4)
+    P = 0.001  # [N];  δ ≈ 3.3e-3 m  (δ/L ≈ 3.3e-4)
     f_ext = np.zeros(n_dof)
     for n in tip_nodes:
-        f_ext[6*n + 2] = P / len(tip_nodes)   # z-direction (w)
+        f_ext[6 * n + 2] = P / len(tip_nodes)  # z-direction (w)
 
     dirichlet = np.array(clamped_dofs, dtype=np.int64)
     u, _iters, _res, reason = _aeroelast.nonlinear_static_solve_coo(
-        assembler, f_ext, dirichlet,
-        atol=1e-10, rtol=1e-8, stol=1e-10, max_it=30,
+        assembler,
+        f_ext,
+        dirichlet,
+        atol=1e-10,
+        rtol=1e-8,
+        stol=1e-10,
+        max_it=30,
     )
     assert reason > 0, f"Solver diverged: reason={reason}"
 
     u = np.asarray(u)
-    w_tip = np.mean([u[6*n + 2] for n in tip_nodes])
-    w_ref  = P * L**3 / (3.0 * E * I_beam)
+    w_tip = np.mean([u[6 * n + 2] for n in tip_nodes])
+    w_ref = P * L**3 / (3.0 * E * I_beam)
 
     rel_err = abs(w_tip - w_ref) / w_ref
     assert rel_err < 0.02, (
-        f"EB tip deflection: w_tip={w_tip:.6e}, reference={w_ref:.6e}, "
-        f"rel error={rel_err:.2%}"
+        f"EB tip deflection: w_tip={w_tip:.6e}, reference={w_ref:.6e}, rel error={rel_err:.2%}"
     )
 
 
 # ─────────────────────────────────────────────────────────────────────────────
 # 1. Half-circle (λ = π): Simo & Vu-Quoc Table 1
 # ─────────────────────────────────────────────────────────────────────────────
+
 
 @pytest.mark.parametrize("n_elem", [10])
 def test_cantilever_large_rotation_half_circle(n_elem):
@@ -247,25 +295,22 @@ def test_cantilever_large_rotation_half_circle(n_elem):
         z_tip = L · (1−cos(π))/π = 2L/π ≈ 6.366  →  w_tip ≈ 6.366
     """
     node_coords, conn, et, clamped, n_dof, tips = cantilever_mitc4_mesh(n_elem, L, B)
-    assembler = make_assembler(node_coords, conn, et, E, NU, RHO, H)
-
     f_ext = _moment_load(math.pi, tips, n_dof)
-    u_total = incremental_solve(assembler, f_ext, clamped, n_steps=20)
+    u_total = incremental_solve(node_coords, conn, et, f_ext, clamped, n_steps=20)
 
     u_tip, w_tip = tip_displacement(u_total, tips)
 
-    u_ref, w_ref = _analytical_tip(math.pi, L)   # (−10.0, 6.366)
-    tol = 0.05   # 5 % relative
+    u_ref, w_ref = _analytical_tip(math.pi, L)  # (−10.0, 6.366)
+    tol = 0.05  # 5 % relative
 
-    assert abs(u_tip - u_ref) / abs(u_ref) < tol, (
-        f"u_tip={u_tip:.4f}, ref={u_ref:.4f}")
-    assert abs(w_tip - w_ref) / abs(w_ref) < tol, (
-        f"w_tip={w_tip:.4f}, ref={w_ref:.4f}")
+    assert abs(u_tip - u_ref) / abs(u_ref) < tol, f"u_tip={u_tip:.4f}, ref={u_ref:.4f}"
+    assert abs(w_tip - w_ref) / abs(w_ref) < tol, f"w_tip={w_tip:.4f}, ref={w_ref:.4f}"
 
 
 # ─────────────────────────────────────────────────────────────────────────────
 # 2. Full equilibrium path — four control points
 # ─────────────────────────────────────────────────────────────────────────────
+
 
 @pytest.mark.parametrize("lam,u_ref,w_ref", REFERENCE_TABLE)
 def test_equilibrium_path(lam, u_ref, w_ref):
@@ -277,31 +322,29 @@ def test_equilibrium_path(lam, u_ref, w_ref):
     per step stays ≤ 9°.  Tolerance is 5 % relative (or 0.5 m absolute
     when the reference is near zero).
     """
-    n_elem  = 10
-    n_steps = max(20, int(math.ceil(lam / (math.pi / 20))))   # ≤9° per step
+    n_elem = 10
+    n_steps = max(20, int(math.ceil(lam / (math.pi / 20))))  # ≤9° per step
 
     node_coords, conn, et, clamped, n_dof, tips = cantilever_mitc4_mesh(n_elem, L, B)
-    assembler = make_assembler(node_coords, conn, et, E, NU, RHO, H)
-
-    f_ext   = _moment_load(lam, tips, n_dof)
-    u_total = incremental_solve(assembler, f_ext, clamped, n_steps=n_steps)
+    f_ext = _moment_load(lam, tips, n_dof)
+    u_total = incremental_solve(node_coords, conn, et, f_ext, clamped, n_steps=n_steps)
 
     u_tip, w_tip = tip_displacement(u_total, tips)
 
     tol_rel = 0.05
-    tol_abs = 0.5   # [m] — used when |ref| < 1
+    tol_abs = 0.5  # [m] — used when |ref| < 1
 
     def _check(val, ref, label):
         if abs(ref) >= 1.0:
             err = abs(val - ref) / abs(ref)
             assert err < tol_rel, (
-                f"λ={lam/math.pi:.2f}π  {label}: computed={val:.4f}, "
+                f"λ={lam / math.pi:.2f}π  {label}: computed={val:.4f}, "
                 f"ref={ref:.4f}, rel err={err:.2%}"
             )
         else:
             err = abs(val - ref)
             assert err < tol_abs, (
-                f"λ={lam/math.pi:.2f}π  {label}: computed={val:.4f}, "
+                f"λ={lam / math.pi:.2f}π  {label}: computed={val:.4f}, "
                 f"ref={ref:.4f}, abs err={err:.4f}"
             )
 
@@ -312,6 +355,7 @@ def test_equilibrium_path(lam, u_ref, w_ref):
 # ─────────────────────────────────────────────────────────────────────────────
 # 3. Simo–Vu-Quoc 360° rollup (dedicated, explicit assertions)
 # ─────────────────────────────────────────────────────────────────────────────
+
 
 @pytest.mark.parametrize("n_elem", [10])
 def test_simo_vu_quoc_rollup_360(n_elem):
@@ -326,21 +370,22 @@ def test_simo_vu_quoc_rollup_360(n_elem):
     Reference: Simo & Vu-Quoc (1986), CMAME 58, Fig. 9 / Table 1 (N=10).
     """
     node_coords, conn, et, clamped, n_dof, tips = cantilever_mitc4_mesh(n_elem, L, B)
-    assembler = make_assembler(node_coords, conn, et, E, NU, RHO, H)
 
-    lam   = 2.0 * math.pi
+    lam = 2.0 * math.pi
     f_ext = _moment_load(lam, tips, n_dof)
 
-    u_total = incremental_solve(assembler, f_ext, clamped, n_steps=40)
+    u_total = incremental_solve(node_coords, conn, et, f_ext, clamped, n_steps=40)
     u_tip, w_tip = tip_displacement(u_total, tips)
 
     # Exact targets from the elastic-curve formula
-    u_ref, w_ref = _analytical_tip(lam, L)   # (−10.0, 0.0)
+    u_ref, w_ref = _analytical_tip(lam, L)  # (−10.0, 0.0)
 
-    tol_rel = 0.05   # 5 %
-    tol_abs = 0.5    # 0.5 m absolute (for w_tip ≈ 0)
+    tol_rel = 0.05  # 5 %
+    tol_abs = 0.5  # 0.5 m absolute (for w_tip ≈ 0)
 
     assert abs(u_tip - u_ref) / abs(u_ref) < tol_rel, (
-        f"Full circle u_tip={u_tip:.4f}, expected {u_ref:.4f} (= −L)")
+        f"Full circle u_tip={u_tip:.4f}, expected {u_ref:.4f} (= −L)"
+    )
     assert abs(w_tip - w_ref) < tol_abs, (
-        f"Full circle w_tip={w_tip:.4f}, expected {w_ref:.4f} (≈ 0)")
+        f"Full circle w_tip={w_tip:.4f}, expected {w_ref:.4f} (≈ 0)"
+    )
