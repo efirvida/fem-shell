@@ -57,27 +57,21 @@ PAPER_REFS = {
     # Table 1 & 2: Clamped Square Plate (w at center, pressure load)
     # w_ref_3D = -2.2137e-1, E=1, nu=0.3, L=1
     "clamped_square_plate": -2.2137e-1,
-    
     # Table 3: Simply Supported Square Plate
     # w_ref_3D = -7.0971e-1, E=1, nu=0.3, L=1
     "ss_square_plate": -7.0971e-1,
-    
     # Table 6: Clamped Circular Plate
     # w_ref_3D = -2.1328e-2, R=5, E=1, nu=0.3
     "clamped_circular_plate": -2.1328e-2,
-    
     # Table 7: Simply Supported Circular Plate
     # w_ref_3D = -8.6953e-2, R=5, E=1, nu=0.3
     "ss_circular_plate": -8.6953e-2,
-    
     # Table 8 & 9: Pinched Cylinder (point loads at 4 points)
     # w_ref_3D = 1.8248e-5 (mesh 1), 1.8249e-5 (mesh 2)
     "pinched_cylinder": 1.8248e-5,
-    
     # Table 10 & 11: Scordelis-Lo Roof
     # w_ref_3D = 3.0240e-1 (mesh 1), 3.0244e-1 (mesh 2)
     "scordelis_lo": 3.0240e-1,
-    
     # Table 12 & 13: Twisted Beam (90° twist, N=16 mesh)
     # w_ref_3D depends on thickness and load direction
     # In-plane: 5.256e-3 (thin), 5.424e-3 (thick)
@@ -86,21 +80,17 @@ PAPER_REFS = {
     "twisted_beam_thick_outplane": 1.754e-3,
     "twisted_beam_thin_inplane": 5.256e-3,
     "twisted_beam_thin_outplane": 1.294e-3,
-    
     # Table 14: Raasch Hook
     # w_ref_3D = 4.82482e+0 (tip deflection)
-    "raasch_hook": 4.82482e+0,
-    
+    "raasch_hook": 4.82482e0,
     # Table 15 & 16: Hemisphere with Cutout
     # w_ref_3D at N=16, thick: 9.3e-2, thin: 9.3e-2
     "hemisphere_thick": 9.3e-2,
     "hemisphere_thin": 9.3e-2,
-    
     # Table 17: Full Hemisphere
     # w_ref_3D, thick: 9.24e-2, thin: 9.24e-2
     "full_hemisphere_thick": 9.24e-2,
     "full_hemisphere_thin": 9.24e-2,
-    
     # Table 18 & 19: Hyperbolic Paraboloid
     # w_ref_3D depends on thickness
     "hyperbolic_paraboloid_thick": 2.878e-4,
@@ -113,7 +103,22 @@ OUTPUT_DIR = Path(__file__).parent.parent.parent / "output"
 
 
 def assert_relative_error(value, reference, tol, name=""):
+    """Assert relative error is within tolerance and fails if error > 5%.
+
+    This function enforces a hard 5% threshold to ensure formulation improvements
+    are tracked. Any error exceeding 5% indicates the need for formulaton refinement.
+    """
     rel = abs(value - reference) / abs(reference)
+
+    # Hard limit: fail if error exceeds 5% (0.05)
+    if rel > 0.05:
+        pytest.fail(
+            f"{name}: rel error = {rel:.3%} exceeds 5% threshold. "
+            f"value={value:.6e}, reference={reference:.6e}. "
+            f"This formulation needs improvement."
+        )
+
+    # Also check against specified tolerance (softer check for documentation)
     assert rel < tol, f"{name}: rel error = {rel:.3e} > {tol:.3e}"
 
 
@@ -441,7 +446,9 @@ def _material_dict(material: IsotropicMaterial, thickness: float) -> dict[str, f
     }
 
 
-def _assemble_global(mesh: MeshModel, material: IsotropicMaterial, thickness: float) -> tuple[coo_matrix, dict[int, int]]:
+def _assemble_global(
+    mesh: MeshModel, material: IsotropicMaterial, thickness: float
+) -> tuple[coo_matrix, dict[int, int]]:
     nodes_sorted = sorted(mesh.nodes, key=lambda n: n.id)
     node_id_to_idx = {n.id: i for i, n in enumerate(nodes_sorted)}
     ndof = len(nodes_sorted) * DOF
@@ -457,7 +464,12 @@ def _assemble_global(mesh: MeshModel, material: IsotropicMaterial, thickness: fl
         mats.append(_material_dict(material, thickness))
 
     node_coords_arr = np.asarray([n.coords[:3] for n in nodes_sorted], dtype=float)
-    asm = PyMeshAssembler(node_coords=node_coords_arr, connectivity=connectivity, elem_types=elem_types, materials=mats)
+    asm = PyMeshAssembler(
+        node_coords=node_coords_arr,
+        connectivity=connectivity,
+        elem_types=elem_types,
+        materials=mats,
+    )
     rows, cols, vals = asm.assemble_k()
     K = coo_matrix((vals, (rows, cols)), shape=(ndof, ndof)).tocsr()
 
@@ -645,15 +657,19 @@ def _run_case(case: _Case) -> float:
 
     # Normalize to Kirchhoff analytical solution (main comparison)
     norm = abs(float(disp)) / float(case.wref) if case.wref != 0 else float(disp)
-    print(f"  Norm vs Kirchhoff: {norm:.4f} (expected: {case.expected_normalized:.4f}, error: {abs(norm - case.expected_normalized) / case.expected_normalized * 100:.2f}%)")
-    
+    print(
+        f"  Norm vs Kirchhoff: {norm:.4f} (expected: {case.expected_normalized:.4f}, error: {abs(norm - case.expected_normalized) / case.expected_normalized * 100:.2f}%)"
+    )
+
     # Paper 3D reference comparison (informational only)
     if case.wref_paper is not None and case.expected_paper is not None:
         norm_paper = abs(float(disp)) / float(case.wref_paper)
         error_paper = abs(norm_paper - case.expected_paper) / case.expected_paper * 100
         status = "✓" if error_paper < 5.0 else "✗"
-        print(f"  [{status}] Norm vs Paper 3D: {norm_paper:.4f} (expected: {case.expected_paper:.4f}, error: {error_paper:.2f}%)")
-    
+        print(
+            f"  [{status}] Norm vs Paper 3D: {norm_paper:.4f} (expected: {case.expected_paper:.4f}, error: {error_paper:.2f}%)"
+        )
+
     return norm
 
 
@@ -758,7 +774,7 @@ def test_3_1_square_plate_tables_2_to_5(
     wref_ss = _wref_square_plate_simply_supported(
         p=pressure, L=L_PLATE, t=thickness, E=MAT_PLATE.E, nu=MAT_PLATE.nu
     )
-    
+
     # Paper 3D reference is for p=1. Scale to our load conditions.
     # The paper normalizes w_FEM / w_3D. Our test normalizes w_FEM / w_Kirchhoff.
     # To compare with paper, we scale w_ref_3D by (pressure / 1).
@@ -1303,10 +1319,10 @@ def _twisted_beam_fixed(mesh: MeshModel, m: dict[int, int], *, tol: float = 1e-6
 # stiffness is large enough to dominate the parasitic contribution.
 _TWISTED_BEAM_CASES = [
     # (t_over_L, load_case, P_val, uref_in, uref_out, expected, tol, xfail_reason)
-    (0.02667,  "In-plane",     1.0,    5.4240e-3, 1.7540e-3, 1.02, 0.10, None),
-    (0.02667,  "Out-of-plane", 1.0,    5.4240e-3, 1.7540e-3, 0.99, 0.05, None),
+    (0.02667, "In-plane", 1.0, 5.4240e-3, 1.7540e-3, 1.02, 0.10, None),
+    (0.02667, "Out-of-plane", 1.0, 5.4240e-3, 1.7540e-3, 0.99, 0.05, None),
     # Thin cases: MITC4+ achieves ~91% of reference (within 5% tolerance)
-    (0.0002667, "In-plane",    1.0e-6, 5.2560e-3, 1.2940e-3, 0.92, 0.05, None),
+    (0.0002667, "In-plane", 1.0e-6, 5.2560e-3, 1.2940e-3, 0.92, 0.05, None),
     (0.0002667, "Out-of-plane", 1.0e-6, 5.2560e-3, 1.2940e-3, 0.92, 0.05, None),
 ]
 

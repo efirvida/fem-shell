@@ -212,12 +212,12 @@ def _parse_ccx_frequencies(dat_path: Path, n_modes: int = 5) -> np.ndarray:
 
 
 def _compare_modal_frequencies(
-    freqs_ae: np.ndarray, freqs_ccx: np.ndarray, tol: float = 0.08
+    freqs_ae: np.ndarray, freqs_ccx: np.ndarray, tol: float = 0.05
 ) -> None:
     """Compare modal frequencies between AeroElast and CCX.
 
     Prints both frequency arrays and relative errors, then fails via pytest if any
-    error exceeds the tolerance.
+    error exceeds 5% (hard limit for formulation improvements tracking).
     """
     print(f"\n[Modal Comparison]")
     print(f"  AeroElast frequencies: {freqs_ae}")
@@ -228,9 +228,10 @@ def _compare_modal_frequencies(
 
     if np.any(rel > tol):
         pytest.fail(
-            f"Modal parity exceeded tolerance: "
+            f"Modal parity exceeded 5% threshold: "
             f"ae={freqs_ae.tolist()} ccx={freqs_ccx.tolist()} "
-            f"rel={rel.tolist()} tol={tol}"
+            f"rel={rel.tolist()} tol={tol}. "
+            f"Formulation needs improvement."
         )
 
 
@@ -522,5 +523,5 @@ class TestBeam4CasesParity:
         dat = modal_dir / f"{stem}.dat"
         freqs_ccx = _parse_ccx_frequencies(dat, n_modes=5)
 
-        # Compare using helper (tolerance = 8%)
-        _compare_modal_frequencies(freqs_ae, freqs_ccx, tol=0.08)
+        # Compare using helper (tolerance = 5%)
+        _compare_modal_frequencies(freqs_ae, freqs_ccx, tol=0.05)

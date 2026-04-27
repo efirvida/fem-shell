@@ -629,12 +629,12 @@ class DampingConfig:
 
     # Auto-computation parameters (used when enabled=True and manual
     # coefficients are not provided)
-    zeta: float = 0.02          # Target damping ratio at reference modes
+    zeta: float = 0.02  # Target damping ratio at reference modes
     zeta_1: Optional[float] = None  # ζ at mode_i  (overrides zeta when set)
     zeta_2: Optional[float] = None  # ζ at mode_j  (overrides zeta when set)
-    mode_i: int = 1             # First reference mode index (1-based)
-    mode_j: int = 2             # Second reference mode index (1-based)
-    num_modes: int = 6          # Total modes to compute in modal solve
+    mode_i: int = 1  # First reference mode index (1-based)
+    mode_j: int = 2  # Second reference mode index (1-based)
+    num_modes: int = 6  # Total modes to compute in modal solve
 
 
 @dataclass
@@ -665,6 +665,11 @@ class SolverConfig:
     rtol: Optional[float] = None  # Relative residual tolerance  (default: 1e-8)
     stol: Optional[float] = None  # Step-length tolerance        (default: 1e-8)
     max_it: Optional[int] = None  # Maximum Newton iterations    (default: 50)
+    continuation: Optional[bool] = None
+    continuation_steps: Optional[int] = None
+    continuation_max_steps: Optional[int] = None
+    diagnostics: Optional[bool] = None
+    diagnostics_every: Optional[int] = None
     # CCX nonlinear static step controls (for export parity/stability)
     nl_initial_increment: Optional[float] = None
     nl_min_increment: Optional[float] = None
@@ -1047,6 +1052,11 @@ class FSISimulationConfig:
             rtol=solver_data.get("rtol"),
             stol=solver_data.get("stol"),
             max_it=solver_data.get("max_it"),
+            continuation=solver_data.get("continuation"),
+            continuation_steps=solver_data.get("continuation_steps"),
+            continuation_max_steps=solver_data.get("continuation_max_steps"),
+            diagnostics=solver_data.get("diagnostics"),
+            diagnostics_every=solver_data.get("diagnostics_every"),
             nl_initial_increment=solver_data.get("nl_initial_increment"),
             nl_min_increment=solver_data.get("nl_min_increment"),
             nl_max_increment=solver_data.get("nl_max_increment"),
@@ -1266,14 +1276,12 @@ class FSISimulationConfig:
                 result["solver"]["damping"] = damping_dict
             else:
                 # Include auto-computation parameters
-                damping_dict.update(
-                    {
-                        "zeta": d.zeta,
-                        "mode_i": d.mode_i,
-                        "mode_j": d.mode_j,
-                        "num_modes": d.num_modes,
-                    }
-                )
+                damping_dict.update({
+                    "zeta": d.zeta,
+                    "mode_i": d.mode_i,
+                    "mode_j": d.mode_j,
+                    "num_modes": d.num_modes,
+                })
                 if d.zeta_1 is not None:
                     damping_dict["zeta_1"] = d.zeta_1
                 if d.zeta_2 is not None:
@@ -1376,21 +1384,17 @@ class FSISimulationConfig:
             lines.append(f"  Generator: {self.mesh.generator.type}")
 
         if self.material is not None:
-            lines.extend(
-                [
-                    f"Material: {self.material.type} ({self.material.name})",
-                    f"  E={self.material.E}, nu={self.material.nu}, rho={self.material.rho}",
-                ]
-            )
+            lines.extend([
+                f"Material: {self.material.type} ({self.material.name})",
+                f"  E={self.material.E}, nu={self.material.nu}, rho={self.material.rho}",
+            ])
         else:
             lines.append("Material: from blade/rotor YAML (composite)")
 
-        lines.extend(
-            [
-                f"Elements: {self.elements.family}",
-                f"Solver: {self.solver.type}",
-            ]
-        )
+        lines.extend([
+            f"Elements: {self.elements.family}",
+            f"Solver: {self.solver.type}",
+        ])
 
         # Handle optional time parameters
         if self.solver.type == SolverType.MODAL.value:

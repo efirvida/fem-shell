@@ -195,7 +195,7 @@ class TestCantileverBeam:
         # Error
         rel_error = abs(delta_numerical - delta_analytical) / delta_analytical
 
-        assert rel_error < 0.10, (
+        assert rel_error < 0.05, (
             f"Cantilever beam: numerical={delta_numerical:.6e}, "
             f"analytical={delta_analytical:.6e}, error={rel_error * 100:.1f}%"
         )
@@ -296,7 +296,7 @@ class TestSimplySupportedBeam:
 
         rel_error = abs(delta_numerical - delta_analytical) / delta_analytical
 
-        assert rel_error < 0.15, (
+        assert rel_error < 0.05, (
             f"SS beam: numerical={delta_numerical:.6e}, "
             f"analytical={delta_analytical:.6e}, error={rel_error * 100:.1f}%"
         )
@@ -376,7 +376,7 @@ class TestBeamBending:
         rel_error = abs(delta_numerical - delta_analytical) / delta_analytical
 
         # Finer mesh = smaller error
-        tol = 0.15 if nx >= 8 else 0.20
+        tol = 0.05
         assert rel_error < tol, (
             f"Bending: numerical={delta_numerical:.6e}, "
             f"analytical={delta_analytical:.6e}, error={rel_error * 100:.1f}%"
@@ -602,8 +602,8 @@ class TestShearLocking:
         ratio = delta_numerical / delta_beam
 
         # As plate gets thinner, should approach 1.0
-        # Allow 20% tolerance for very thin plates
-        tol = 0.20 if thickness_ratio < 0.01 else 0.15
+        # Enforce strict max tolerance of 5%
+        tol = 0.05 if thickness_ratio < 0.01 else 0.05
 
         assert ratio > (1 - tol), (
             f"Shear locking: ratio={ratio:.3f} (should → 1.0), h/L={thickness_ratio}"

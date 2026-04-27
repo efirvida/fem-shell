@@ -179,7 +179,7 @@ class TestLinearStatic:
         print(f"\nFY: {uy * 1000:.3f} mm (ref: {EXPECTED['uy'] * 1000:.3f} mm)")
 
         error = abs(uy - EXPECTED["uy"]) / EXPECTED["uy"] * 100
-        assert error < 40.0
+        assert error < 5.0
 
     def test_fz(self):
         """FZ out-of-plane loading."""

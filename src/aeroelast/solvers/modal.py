@@ -37,27 +37,54 @@ class ModalSolver(Solver):
         _t = time.perf_counter()
         k_rows, k_cols, k_vals = self.domain._rust.assemble_k()
         n_dof_total = self.domain.dofs_count
-        logger.info("[modal] K assembled in %.2fs — nnz=%d, n_dof=%d",
-                    time.perf_counter() - _t, len(k_vals), n_dof_total)
+        logger.info(
+            "[modal] K assembled in %.2fs — nnz=%d, n_dof=%d",
+            time.perf_counter() - _t,
+            len(k_vals),
+            n_dof_total,
+        )
 
         logger.info("[modal] assembling M (COO)...")
         _t = time.perf_counter()
         m_rows, m_cols, m_vals = self.domain._rust.assemble_m()
         logger.info("[modal] M assembled in %.2fs — nnz=%d", time.perf_counter() - _t, len(m_vals))
 
-        # Mass sanity check using COO diagonal
+        # ── Mass sanity check ──────────────────────────────────────────────
+        # Method 1 (geometry): sum of ρ·h·A per element from material props.
+        # Exact for any element type; independent of the assembled M.
         try:
-            diag_mask = k_rows == k_cols
-            m_trace = m_vals[m_rows == m_cols].sum()
-            dofs_per_node = self.domain.dofs_per_node
-            trans_fraction = 3.0 / dofs_per_node if dofs_per_node > 0 else 0.5
-            total_mass_estimate = m_trace * trans_fraction * (9.0 / 4.0) / 3.0
-            logger.info(
-                "[modal] mass sanity check: tr(M)=%.1f, estimated total mass=%.1f kg",
-                m_trace, total_mass_estimate,
-            )
+            m_elemental = self.domain._rust.total_elemental_mass()
         except Exception as exc:
-            logger.warning("[modal] mass sanity check failed: %s", exc)
+            m_elemental = float("nan")
+            logger.warning("[modal] total_elemental_mass() failed: %s", exc)
+
+        # Method 2 (matrix): sum of ALL entries in the x-direction block of M.
+        # Uses the partition-of-unity identity: Σ_ij (Me_x)_ij = m_elem,
+        # which means sum(M_vals where both row and col are x-DOFs) = m_total.
+        # This is EXACT for both lumped and consistent mass matrices.
+        # For shell (6 DOF/node): x-DOF indices satisfy  dof_idx % 6 == 0.
+        # For solid (3 DOF/node): x-DOF indices satisfy  dof_idx % 3 == 0.
+        try:
+            dofs_per_node = self.domain.dofs_per_node
+            x_mask = (m_rows % dofs_per_node == 0) & (m_cols % dofs_per_node == 0)
+            m_from_matrix = float(m_vals[x_mask].sum())
+        except Exception as exc:
+            m_from_matrix = float("nan")
+            logger.warning("[modal] mass-from-matrix check failed: %s", exc)
+
+        logger.info(
+            "[modal] mass check — elemental (geometry): %.1f kg | from M matrix: %.1f kg",
+            m_elemental,
+            m_from_matrix,
+        )
+        if not (
+            m_elemental != m_elemental or m_from_matrix != m_from_matrix  # either NaN
+        ):
+            ratio = m_from_matrix / m_elemental if m_elemental > 0 else float("nan")
+            logger.info(
+                "[modal] mass retention in M: %.4f  (ratio matrix/elemental; 1.0 = no loss)",
+                ratio,
+            )
 
         # ── Compute free DOFs via BoundaryConditionManager ────────────────────
         # We still use BoundaryConditionManager to get free_dofs — it only needs
@@ -66,6 +93,7 @@ class ModalSolver(Solver):
         logger.info("[modal] computing free DOFs from BCs...")
         _t = time.perf_counter()
         from petsc4py import PETSc
+
         K_petsc = self.domain.assemble_stiffness_matrix()
         F_petsc = K_petsc.createVecRight()
         F_petsc.set(0.0)
@@ -76,21 +104,32 @@ class ModalSolver(Solver):
         free_dofs = np.array(sorted(self.bc_applier.free_dofs), dtype=np.int64)
         K_petsc.destroy()
         F_petsc.destroy()
-        logger.info("[modal] free DOFs: %d of %d (%.2fs)",
-                    len(free_dofs), n_dof_total, time.perf_counter() - _t)
+        logger.info(
+            "[modal] free DOFs: %d of %d (%.2fs)",
+            len(free_dofs),
+            n_dof_total,
+            time.perf_counter() - _t,
+        )
 
         # ── Rust eigenvalue solve ─────────────────────────────────────────────
         logger.info("[modal] calling Rust modal_solve_coo — n_modes=%d", self.num_modes)
         _t = time.perf_counter()
         frequencies_hz, modes_flat = modal_solve_coo(
-            k_rows.astype(np.int64), k_cols.astype(np.int64), k_vals.astype(np.float64),
-            m_rows.astype(np.int64), m_cols.astype(np.int64), m_vals.astype(np.float64),
+            k_rows.astype(np.int64),
+            k_cols.astype(np.int64),
+            k_vals.astype(np.float64),
+            m_rows.astype(np.int64),
+            m_cols.astype(np.int64),
+            m_vals.astype(np.float64),
             n_dof_total,
             free_dofs,
             self.num_modes,
         )
-        logger.info("[modal] Rust solve done in %.2fs — %d modes converged",
-                    time.perf_counter() - _t, len(frequencies_hz))
+        logger.info(
+            "[modal] Rust solve done in %.2fs — %d modes converged",
+            time.perf_counter() - _t,
+            len(frequencies_hz),
+        )
 
         if len(frequencies_hz) < self.num_modes:
             raise RuntimeError(
@@ -107,8 +146,13 @@ class ModalSolver(Solver):
 
         # ── Participation factors (NumPy, uses M COO → dense diagonal approx) ─
         self.participation_factors = self._compute_participation_factors_coo(
-            eigvals, eigvecs_red, free_dofs,
-            m_rows, m_cols, m_vals, n_dof_total,
+            eigvals,
+            eigvecs_red,
+            free_dofs,
+            m_rows,
+            m_cols,
+            m_vals,
+            n_dof_total,
         )
 
         logger.info("[modal] total solve time: %.2fs", time.perf_counter() - _t0)
@@ -245,7 +289,7 @@ class ModalSolver(Solver):
             U = mode_shapes[:, mode_idx].reshape(-1, dpn)
 
             # Normalize so max translational displacement = 1.0
-            trans = U[:, :min(dpn, 3)]
+            trans = U[:, : min(dpn, 3)]
             mag = np.linalg.norm(trans, axis=1)
             max_mag = mag.max()
             if max_mag > 1e-30:
@@ -258,15 +302,13 @@ class ModalSolver(Solver):
                     point_data[comp] = U[:, i]
 
             for vec_name, components in vector_form.items():
-                arr = np.column_stack(
-                    [point_data[c] for c in components if c in point_data]
-                )
+                arr = np.column_stack([point_data[c] for c in components if c in point_data])
                 if arr.shape[1] == 2:
                     arr = np.column_stack([arr, np.zeros(arr.shape[0])])
                 point_data[vec_name] = arr
 
             # Displacement magnitude scalar
-            trans_norm = U[:, :min(dpn, 3)]
+            trans_norm = U[:, : min(dpn, 3)]
             point_data["UMAG"] = np.linalg.norm(trans_norm, axis=1)
 
             fname = f"mode_{mode_idx + 1:02d}.vtu"

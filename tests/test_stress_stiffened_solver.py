@@ -53,6 +53,7 @@ _skip_fsi = pytest.mark.skipif(not _HAS_FSI, reason="preCICE shared library not 
 def _build_plate_mesh(nx: int = 4, ny: int = 4, L: float = 1.0) -> MeshModel:
     """Build a flat MITC4 square plate mesh (nx × ny quads) in the XY plane."""
     Node._id_counter = 0
+    MeshElement._id_counter = 0
     mesh = MeshModel()
     xs = np.linspace(0.0, L, nx + 1)
     ys = np.linspace(0.0, L, ny + 1)
@@ -112,10 +113,10 @@ def _build_bc_manager(domain: MeshAssembler, mesh: MeshModel) -> BoundaryConditi
 
     bc_mgr = BoundaryConditionManager(stiffness=K, load=F, mass=M_c,
                                       dof_per_node=domain.dofs_per_node)
-    pinned_nodes = [n for n in mesh.nodes if abs(n.coords[0]) < 1e-12]
+    pinned_nodes = [n for n in domain.nodes if abs(n.coords[0]) < 1e-12]
     dofs: list[int] = []
     for node in pinned_nodes:
-        idx = mesh.node_id_to_index[node.id]
+        idx = domain.node_id_to_index[node.id]
         for d in range(domain.dofs_per_node):
             dofs.append(idx * domain.dofs_per_node + d)
     bc_mgr.apply_dirichlet([DirichletCondition(dofs=dofs, value=0.0)])
@@ -161,8 +162,8 @@ class TestKGAssemblyPipeline:
         """assembler.assemble_geometric_stiffness(stress_field=…) must return a PETSc.Mat."""
         mesh, domain, bc_mgr = plate_setup
         stress_field = {
-            eid: np.array([1e6, 5e5, 0.0])
-            for eid in domain._element_map
+            e.id: np.array([1e6, 5e5, 0.0])
+            for e in domain.elements
         }
         K_G = domain.assemble_geometric_stiffness(stress_field=stress_field)
         assert isinstance(K_G, PETSc.Mat)
@@ -171,7 +172,7 @@ class TestKGAssemblyPipeline:
     def test_K_G_symmetry(self, plate_setup):
         """K_G assembled from a uniform stress field must be symmetric."""
         mesh, domain, bc_mgr = plate_setup
-        stress_field = {eid: np.array([1e6, 0.0, 0.0]) for eid in domain._element_map}
+        stress_field = {e.id: np.array([1e6, 0.0, 0.0]) for e in domain.elements}
         K_G = domain.assemble_geometric_stiffness(stress_field=stress_field)
 
         # Compare K_G - K_G^T (should be zero up to floating-point)
@@ -186,7 +187,7 @@ class TestKGAssemblyPipeline:
     def test_K_G_is_positive_semidefinite(self, plate_setup):
         """K_G from tensile stress must be positive semidefinite."""
         mesh, domain, bc_mgr = plate_setup
-        stress_field = {eid: np.array([1e6, 1e6, 0.0]) for eid in domain._element_map}
+        stress_field = {e.id: np.array([1e6, 1e6, 0.0]) for e in domain.elements}
         K_G = domain.assemble_geometric_stiffness(stress_field=stress_field)
         K_G_red = bc_mgr.reduce_matrix(K_G)
 
@@ -209,9 +210,8 @@ class TestKGAssemblyPipeline:
 
         # Build a non-zero displacement (unit membrane stretch in x)
         u_full = np.zeros(domain.dofs_count)
-        n_nodes = len(list(mesh.nodes))
-        for node in mesh.nodes:
-            idx = mesh.node_id_to_index[node.id]
+        for node in domain.nodes:
+            idx = domain.node_id_to_index[node.id]
             u_full[idx * domain.dofs_per_node + 0] = node.coords[0] * 1e-3  # u = ε·x
 
         sr = StressRecovery(domain, u_full)
@@ -220,15 +220,15 @@ class TestKGAssemblyPipeline:
             stress_type=StressType.MEMBRANE,
         )
         assert result.sigma_xx is not None
-        assert len(result.sigma_xx) == len(domain._element_map)
+        assert len(result.sigma_xx) == len(list(domain.elements))
 
     def test_stress_field_dict_from_recovery(self, plate_setup):
         """Build stress_field dict from StressRecovery and assemble K_G."""
         mesh, domain, bc_mgr = plate_setup
 
         u_full = np.zeros(domain.dofs_count)
-        for node in mesh.nodes:
-            idx = mesh.node_id_to_index[node.id]
+        for node in domain.nodes:
+            idx = domain.node_id_to_index[node.id]
             u_full[idx * domain.dofs_per_node + 0] = node.coords[0] * 5e-3
 
         sr = StressRecovery(domain, u_full)
@@ -238,14 +238,14 @@ class TestKGAssemblyPipeline:
         )
 
         stress_field: dict[int, np.ndarray] = {}
-        for elem_id in domain._element_map:
+        for i, elem in enumerate(domain.elements):
             sigma = np.array([
-                elem_result.sigma_xx[elem_id],
-                elem_result.sigma_yy[elem_id],
-                elem_result.sigma_xy[elem_id],
+                elem_result.sigma_xx[i],
+                elem_result.sigma_yy[i],
+                elem_result.sigma_xy[i],
             ])
             if np.max(np.abs(sigma)) > 1e-20:
-                stress_field[elem_id] = sigma
+                stress_field[elem.id] = sigma
 
         assert len(stress_field) > 0, "Expected non-zero stresses for membrane displacement."
 
@@ -264,7 +264,7 @@ class TestKGAssemblyPipeline:
         diag_base = K_eff_base.getDiagonal().getArray().copy()
 
         # K_G from a uniform biaxial tensile stress
-        stress_field = {eid: np.array([1e7, 1e7, 0.0]) for eid in domain._element_map}
+        stress_field = {e.id: np.array([1e7, 1e7, 0.0]) for e in domain.elements}
         K_G = domain.assemble_geometric_stiffness(stress_field=stress_field)
         K_G_red = bc_mgr.reduce_matrix(K_G)
 
@@ -400,5 +400,3 @@ class TestStressStiffenedConfig:
         domain = _build_domain(mesh)
         solver = _make_solver(mesh, domain, update_interval=10)
         assert solver._kg_update_interval == 10
-
-

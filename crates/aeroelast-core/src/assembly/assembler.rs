@@ -4,6 +4,7 @@
 /// any sparse solver. No PETSc dependency here.
 
 use nalgebra::Vector3;
+use rayon::prelude::*;
 
 use crate::assembly::topology::{ElemType, MeshTopology};
 use crate::elements::mitc3::{self, Mitc3Precomputed};
@@ -448,6 +449,128 @@ impl MeshAssembler {
     }
 
     // -----------------------------------------------------------------------
+    // total_elemental_mass: sum of per-element masses from material properties
+    // -----------------------------------------------------------------------
+
+    /// Compute the total model mass by summing individual element masses.
+    ///
+    /// For shell elements (MITC3/MITC4) the mass is computed from the
+    /// precomputed element area:
+    ///   - Isotropic:  `ρ · h · A`
+    ///   - Composite:  `mass_per_area · A`
+    ///
+    /// For plane and solid elements the identity
+    /// `Σ_ij (Me_x)_ij = m_elem` (partition of unity on shape functions)
+    /// is used, which is exact for any consistent mass matrix.
+    ///
+    /// This value is independent of the assembled global M and serves as the
+    /// ground-truth reference for mass sanity checks.
+    pub fn total_elemental_mass(&self) -> f64 {
+        (0..self.topology.n_elems)
+            .map(|e| {
+                match (&self.precomputed[e], &self.materials[e]) {
+                    // MITC3 — element area is precomputed
+                    (PrecomputedElem::Tri(pre), MaterialSpec::Isotropic { rho, thickness, .. }) =>
+                        rho * thickness * pre.area,
+                    (PrecomputedElem::Tri(pre), MaterialSpec::Composite { mass_per_area, .. }) =>
+                        mass_per_area * pre.area,
+                    // MITC4 — element area is precomputed
+                    (PrecomputedElem::Quad(pre), MaterialSpec::Isotropic { rho, thickness, .. }) =>
+                        rho * thickness * pre.element_area,
+                    (PrecomputedElem::Quad(pre), MaterialSpec::Composite { mass_per_area, .. }) =>
+                        mass_per_area * pre.element_area,
+                    // Plane and solid — use Me x-block sum (partition of unity)
+                    _ => {
+                        let me_flat = self.elem_me_flat(e);
+                        let n_dof = (me_flat.len() as f64).sqrt() as usize;
+                        let dpn = self.topology.elem_types[e].dofs_per_node();
+                        let mut m = 0.0f64;
+                        let mut i = 0;
+                        while i < n_dof {
+                            let mut j = 0;
+                            while j < n_dof {
+                                m += me_flat[i * n_dof + j];
+                                j += dpn;
+                            }
+                            i += dpn;
+                        }
+                        m
+                    }
+                }
+            })
+            .sum()
+    }
+
+    /// Build the element mass matrix as a flat Vec<f64> (row-major, n_dof×n_dof).
+    /// Used as fallback for plane and solid elements in `total_elemental_mass`.
+    fn elem_me_flat(&self, e: usize) -> Vec<f64> {
+        match &self.precomputed[e] {
+            PrecomputedElem::Tri(pre) => {
+                let me = match &self.materials[e] {
+                    MaterialSpec::Isotropic { rho, .. } => mitc3::compute_me_global(pre, *rho),
+                    MaterialSpec::Composite { mass_per_area, rotational_inertia, .. } =>
+                        mitc3::compute_me_composite_global(pre, *mass_per_area, *rotational_inertia),
+                    _ => panic!("MITC3 requires Isotropic or Composite material"),
+                };
+                me.as_slice().to_vec()
+            }
+            PrecomputedElem::Quad(pre) => {
+                let me = match &self.materials[e] {
+                    MaterialSpec::Isotropic { rho, .. } => mitc4::compute_me_global(pre, *rho),
+                    MaterialSpec::Composite { mass_per_area, rotational_inertia, .. } =>
+                        mitc4::compute_me_composite_global(pre, *mass_per_area, *rotational_inertia),
+                    _ => panic!("MITC4 requires Isotropic or Composite material"),
+                };
+                me.as_slice().to_vec()
+            }
+            PrecomputedElem::Plane4(c) => {
+                let (rho, _) = plane_stress_rho_h(&self.materials[e]);
+                Quad4Precomputed::new(c).compute_me_global(rho).to_vec()
+            }
+            PrecomputedElem::Plane8(c) => {
+                let (rho, _) = plane_stress_rho_h(&self.materials[e]);
+                Quad8Precomputed::new(c).compute_me_global(rho).to_vec()
+            }
+            PrecomputedElem::Plane9(c) => {
+                let (rho, _) = plane_stress_rho_h(&self.materials[e]);
+                Quad9Precomputed::new(c).compute_me_global(rho).to_vec()
+            }
+            PrecomputedElem::Hexa8(c) => {
+                let rho = solid3d_rho(&self.materials[e]);
+                solid::hexa8_me(c, rho).as_slice().to_vec()
+            }
+            PrecomputedElem::Hexa20(c) => {
+                let rho = solid3d_rho(&self.materials[e]);
+                solid::hexa20_me(c, rho).as_slice().to_vec()
+            }
+            PrecomputedElem::Tetra4(c) => {
+                let rho = solid3d_rho(&self.materials[e]);
+                solid::tetra4_me(c, rho).as_slice().to_vec()
+            }
+            PrecomputedElem::Tetra10(c) => {
+                let rho = solid3d_rho(&self.materials[e]);
+                solid::tetra10_me(c, rho).as_slice().to_vec()
+            }
+            PrecomputedElem::Wedge6(c) => {
+                let rho = solid3d_rho(&self.materials[e]);
+                solid::wedge6_me(c, rho).as_slice().to_vec()
+            }
+            PrecomputedElem::Wedge15(c) => {
+                let rho = solid3d_rho(&self.materials[e]);
+                solid::wedge15_me(c, rho).as_slice().to_vec()
+            }
+            PrecomputedElem::Pyramid5(c) => {
+                let rho = solid3d_rho(&self.materials[e]);
+                solid::pyramid5_me(c, rho).as_slice().to_vec()
+            }
+            PrecomputedElem::Pyramid13(c) => {
+                let rho = solid3d_rho(&self.materials[e]);
+                solid::pyramid13_me(c, rho).as_slice().to_vec()
+            }
+        }
+    }
+
+    // -----------------------------------------------------------------------
     // assemble_f_body: global body load vector
     // -----------------------------------------------------------------------
 
@@ -565,71 +688,84 @@ impl MeshAssembler {
     pub fn assemble_kt(&self, u: &[f64]) -> (Vec<i64>, Vec<i64>, Vec<f64>) {
         assert_eq!(u.len(), self.dofs_count, "displacement vector length mismatch");
 
-        let mut rows = Vec::new();
-        let mut cols = Vec::new();
-        let mut vals = Vec::new();
+        // Compute per-element (rows, cols, vals) in parallel, then flatten.
+        let per_elem: Vec<(Vec<i64>, Vec<i64>, Vec<f64>)> = (0..self.topology.n_elems)
+            .into_par_iter()
+            .map(|e| {
+                let dofs = &self.dof_connectivity[e];
+                let kt_flat: Vec<f64> = match &self.precomputed[e] {
+                    PrecomputedElem::Tri(pre) => {
+                        let ue = extract_elem_disp_18(u, dofs);
+                        let kt = mitc3::compute_kt_global(pre, &ue);
+                        kt.as_slice().to_vec()
+                    }
+                    PrecomputedElem::Quad(pre) => {
+                        let ue = extract_elem_disp_24(u, dofs);
+                        let kt = mitc4::compute_kt_global(pre, &ue);
+                        kt.as_slice().to_vec()
+                    }
+                    // For plane/solid elements: K_T = K_e (linear only)
+                    PrecomputedElem::Plane4(c) => {
+                        let (e_mod, nu) = plane_stress_en(&self.materials[e]);
+                        Quad4Precomputed::new(c).compute_ke_global(e_mod, nu).to_vec()
+                    }
+                    PrecomputedElem::Plane8(c) => {
+                        let (e_mod, nu) = plane_stress_en(&self.materials[e]);
+                        Quad8Precomputed::new(c).compute_ke_global(e_mod, nu).to_vec()
+                    }
+                    PrecomputedElem::Plane9(c) => {
+                        let (e_mod, nu) = plane_stress_en(&self.materials[e]);
+                        Quad9Precomputed::new(c).compute_ke_global(e_mod, nu).to_vec()
+                    }
+                    PrecomputedElem::Hexa8(c) => {
+                        let (e_mod, nu) = solid3d_en(&self.materials[e]);
+                        solid::hexa8_ke(c, e_mod, nu).as_slice().to_vec()
+                    }
+                    PrecomputedElem::Hexa20(c) => {
+                        let (e_mod, nu) = solid3d_en(&self.materials[e]);
+                        solid::hexa20_ke(c, e_mod, nu).as_slice().to_vec()
+                    }
+                    PrecomputedElem::Tetra4(c) => {
+                        let (e_mod, nu) = solid3d_en(&self.materials[e]);
+                        solid::tetra4_ke(c, e_mod, nu).as_slice().to_vec()
+                    }
+                    PrecomputedElem::Tetra10(c) => {
+                        let (e_mod, nu) = solid3d_en(&self.materials[e]);
+                        solid::tetra10_ke(c, e_mod, nu).as_slice().to_vec()
+                    }
+                    PrecomputedElem::Wedge6(c) => {
+                        let (e_mod, nu) = solid3d_en(&self.materials[e]);
+                        solid::wedge6_ke(c, e_mod, nu).as_slice().to_vec()
+                    }
+                    PrecomputedElem::Wedge15(c) => {
+                        let (e_mod, nu) = solid3d_en(&self.materials[e]);
+                        solid::wedge15_ke(c, e_mod, nu).as_slice().to_vec()
+                    }
+                    PrecomputedElem::Pyramid5(c) => {
+                        let (e_mod, nu) = solid3d_en(&self.materials[e]);
+                        solid::pyramid5_ke(c, e_mod, nu).as_slice().to_vec()
+                    }
+                    PrecomputedElem::Pyramid13(c) => {
+                        let (e_mod, nu) = solid3d_en(&self.materials[e]);
+                        solid::pyramid13_ke(c, e_mod, nu).as_slice().to_vec()
+                    }
+                };
+                let mut r = Vec::new();
+                let mut c_idx = Vec::new();
+                let mut v = Vec::new();
+                scatter_elem_matrix(dofs, &kt_flat, &mut r, &mut c_idx, &mut v);
+                (r, c_idx, v)
+            })
+            .collect();
 
-        for e in 0..self.topology.n_elems {
-            let dofs = &self.dof_connectivity[e];
-            let kt_flat: Vec<f64> = match &self.precomputed[e] {
-                PrecomputedElem::Tri(pre) => {
-                    let ue = extract_elem_disp_18(u, dofs);
-                    let kt = mitc3::compute_kt_global(pre, &ue);
-                    kt.as_slice().to_vec()
-                }
-                PrecomputedElem::Quad(pre) => {
-                    let ue = extract_elem_disp_24(u, dofs);
-                    let kt = mitc4::compute_kt_global(pre, &ue);
-                    kt.as_slice().to_vec()
-                }
-                // For plane/solid elements: K_T = K_e (linear only)
-                PrecomputedElem::Plane4(c) => {
-                    let (e_mod, nu) = plane_stress_en(&self.materials[e]);
-                    Quad4Precomputed::new(c).compute_ke_global(e_mod, nu).to_vec()
-                }
-                PrecomputedElem::Plane8(c) => {
-                    let (e_mod, nu) = plane_stress_en(&self.materials[e]);
-                    Quad8Precomputed::new(c).compute_ke_global(e_mod, nu).to_vec()
-                }
-                PrecomputedElem::Plane9(c) => {
-                    let (e_mod, nu) = plane_stress_en(&self.materials[e]);
-                    Quad9Precomputed::new(c).compute_ke_global(e_mod, nu).to_vec()
-                }
-                PrecomputedElem::Hexa8(c) => {
-                    let (e_mod, nu) = solid3d_en(&self.materials[e]);
-                    solid::hexa8_ke(c, e_mod, nu).as_slice().to_vec()
-                }
-                PrecomputedElem::Hexa20(c) => {
-                    let (e_mod, nu) = solid3d_en(&self.materials[e]);
-                    solid::hexa20_ke(c, e_mod, nu).as_slice().to_vec()
-                }
-                PrecomputedElem::Tetra4(c) => {
-                    let (e_mod, nu) = solid3d_en(&self.materials[e]);
-                    solid::tetra4_ke(c, e_mod, nu).as_slice().to_vec()
-                }
-                PrecomputedElem::Tetra10(c) => {
-                    let (e_mod, nu) = solid3d_en(&self.materials[e]);
-                    solid::tetra10_ke(c, e_mod, nu).as_slice().to_vec()
-                }
-                PrecomputedElem::Wedge6(c) => {
-                    let (e_mod, nu) = solid3d_en(&self.materials[e]);
-                    solid::wedge6_ke(c, e_mod, nu).as_slice().to_vec()
-                }
-                PrecomputedElem::Wedge15(c) => {
-                    let (e_mod, nu) = solid3d_en(&self.materials[e]);
-                    solid::wedge15_ke(c, e_mod, nu).as_slice().to_vec()
-                }
-                PrecomputedElem::Pyramid5(c) => {
-                    let (e_mod, nu) = solid3d_en(&self.materials[e]);
-                    solid::pyramid5_ke(c, e_mod, nu).as_slice().to_vec()
-                }
-                PrecomputedElem::Pyramid13(c) => {
-                    let (e_mod, nu) = solid3d_en(&self.materials[e]);
-                    solid::pyramid13_ke(c, e_mod, nu).as_slice().to_vec()
-                }
-            };
-
-            scatter_elem_matrix(dofs, &kt_flat, &mut rows, &mut cols, &mut vals);
+        let total_nnz: usize = per_elem.iter().map(|(r, _, _)| r.len()).sum();
+        let mut rows = Vec::with_capacity(total_nnz);
+        let mut cols = Vec::with_capacity(total_nnz);
+        let mut vals = Vec::with_capacity(total_nnz);
+        for (r, c, v) in per_elem {
+            rows.extend(r);
+            cols.extend(c);
+            vals.extend(v);
         }
 
         (rows, cols, vals)
@@ -649,96 +785,108 @@ impl MeshAssembler {
     pub fn assemble_fint(&self, u: &[f64], nonlinear: bool) -> Vec<f64> {
         assert_eq!(u.len(), self.dofs_count, "displacement vector length mismatch");
 
-        let mut f = vec![0.0f64; self.dofs_count];
+        let dofs_count = self.dofs_count;
 
-        for e in 0..self.topology.n_elems {
-            let dofs = &self.dof_connectivity[e];
-            let fe: Vec<f64> = match &self.precomputed[e] {
-                PrecomputedElem::Tri(pre) => {
-                    let ue = extract_elem_disp_18(u, dofs);
-                    let fvec = mitc3::compute_fint_global(pre, &ue, nonlinear);
-                    fvec.as_slice().to_vec()
-                }
-                PrecomputedElem::Quad(pre) => {
-                    let ue = extract_elem_disp_24(u, dofs);
-                    let fvec = mitc4::compute_fint_global(pre, &ue, nonlinear);
-                    fvec.as_slice().to_vec()
-                }
-                // For plane/solid: f_int = K · u_e (linear only)
-                PrecomputedElem::Plane4(c) => {
-                    let (e_mod, nu) = plane_stress_en(&self.materials[e]);
-                    let ke = Quad4Precomputed::new(c).compute_ke_global(e_mod, nu);
-                    let ue: Vec<f64> = dofs.iter().map(|&d| u[d]).collect();
-                    ke_times_ue(&ke, &ue)
-                }
-                PrecomputedElem::Plane8(c) => {
-                    let (e_mod, nu) = plane_stress_en(&self.materials[e]);
-                    let ke = Quad8Precomputed::new(c).compute_ke_global(e_mod, nu);
-                    let ue: Vec<f64> = dofs.iter().map(|&d| u[d]).collect();
-                    ke_times_ue(&ke, &ue)
-                }
-                PrecomputedElem::Plane9(c) => {
-                    let (e_mod, nu) = plane_stress_en(&self.materials[e]);
-                    let ke = Quad9Precomputed::new(c).compute_ke_global(e_mod, nu);
-                    let ue: Vec<f64> = dofs.iter().map(|&d| u[d]).collect();
-                    ke_times_ue(&ke, &ue)
-                }
-                PrecomputedElem::Hexa8(c) => {
-                    let (e_mod, nu) = solid3d_en(&self.materials[e]);
-                    let ke = solid::hexa8_ke(c, e_mod, nu);
-                    let ue: Vec<f64> = dofs.iter().map(|&d| u[d]).collect();
-                    ke_times_ue(ke.as_slice(), &ue)
-                }
-                PrecomputedElem::Hexa20(c) => {
-                    let (e_mod, nu) = solid3d_en(&self.materials[e]);
-                    let ke = solid::hexa20_ke(c, e_mod, nu);
-                    let ue: Vec<f64> = dofs.iter().map(|&d| u[d]).collect();
-                    ke_times_ue(ke.as_slice(), &ue)
-                }
-                PrecomputedElem::Tetra4(c) => {
-                    let (e_mod, nu) = solid3d_en(&self.materials[e]);
-                    let ke = solid::tetra4_ke(c, e_mod, nu);
-                    let ue: Vec<f64> = dofs.iter().map(|&d| u[d]).collect();
-                    ke_times_ue(ke.as_slice(), &ue)
-                }
-                PrecomputedElem::Tetra10(c) => {
-                    let (e_mod, nu) = solid3d_en(&self.materials[e]);
-                    let ke = solid::tetra10_ke(c, e_mod, nu);
-                    let ue: Vec<f64> = dofs.iter().map(|&d| u[d]).collect();
-                    ke_times_ue(ke.as_slice(), &ue)
-                }
-                PrecomputedElem::Wedge6(c) => {
-                    let (e_mod, nu) = solid3d_en(&self.materials[e]);
-                    let ke = solid::wedge6_ke(c, e_mod, nu);
-                    let ue: Vec<f64> = dofs.iter().map(|&d| u[d]).collect();
-                    ke_times_ue(ke.as_slice(), &ue)
-                }
-                PrecomputedElem::Wedge15(c) => {
-                    let (e_mod, nu) = solid3d_en(&self.materials[e]);
-                    let ke = solid::wedge15_ke(c, e_mod, nu);
-                    let ue: Vec<f64> = dofs.iter().map(|&d| u[d]).collect();
-                    ke_times_ue(ke.as_slice(), &ue)
-                }
-                PrecomputedElem::Pyramid5(c) => {
-                    let (e_mod, nu) = solid3d_en(&self.materials[e]);
-                    let ke = solid::pyramid5_ke(c, e_mod, nu);
-                    let ue: Vec<f64> = dofs.iter().map(|&d| u[d]).collect();
-                    ke_times_ue(ke.as_slice(), &ue)
-                }
-                PrecomputedElem::Pyramid13(c) => {
-                    let (e_mod, nu) = solid3d_en(&self.materials[e]);
-                    let ke = solid::pyramid13_ke(c, e_mod, nu);
-                    let ue: Vec<f64> = dofs.iter().map(|&d| u[d]).collect();
-                    ke_times_ue(ke.as_slice(), &ue)
-                }
-            };
-
-            for (local_i, &global_i) in dofs.iter().enumerate() {
-                f[global_i] += fe[local_i];
-            }
-        }
-
-        f
+        // Parallel fold+reduce: each thread accumulates into a local f,
+        // then we sum the thread-local vectors. This avoids any write conflicts.
+        (0..self.topology.n_elems)
+            .into_par_iter()
+            .fold(
+                || vec![0.0f64; dofs_count],
+                |mut local_f, e| {
+                    let dofs = &self.dof_connectivity[e];
+                    let fe: Vec<f64> = match &self.precomputed[e] {
+                        PrecomputedElem::Tri(pre) => {
+                            let ue = extract_elem_disp_18(u, dofs);
+                            let fvec = mitc3::compute_fint_global(pre, &ue, nonlinear);
+                            fvec.as_slice().to_vec()
+                        }
+                        PrecomputedElem::Quad(pre) => {
+                            let ue = extract_elem_disp_24(u, dofs);
+                            let fvec = mitc4::compute_fint_global(pre, &ue, nonlinear);
+                            fvec.as_slice().to_vec()
+                        }
+                        // For plane/solid: f_int = K · u_e (linear only)
+                        PrecomputedElem::Plane4(c) => {
+                            let (e_mod, nu) = plane_stress_en(&self.materials[e]);
+                            let ke = Quad4Precomputed::new(c).compute_ke_global(e_mod, nu);
+                            let ue: Vec<f64> = dofs.iter().map(|&d| u[d]).collect();
+                            ke_times_ue(&ke, &ue)
+                        }
+                        PrecomputedElem::Plane8(c) => {
+                            let (e_mod, nu) = plane_stress_en(&self.materials[e]);
+                            let ke = Quad8Precomputed::new(c).compute_ke_global(e_mod, nu);
+                            let ue: Vec<f64> = dofs.iter().map(|&d| u[d]).collect();
+                            ke_times_ue(&ke, &ue)
+                        }
+                        PrecomputedElem::Plane9(c) => {
+                            let (e_mod, nu) = plane_stress_en(&self.materials[e]);
+                            let ke = Quad9Precomputed::new(c).compute_ke_global(e_mod, nu);
+                            let ue: Vec<f64> = dofs.iter().map(|&d| u[d]).collect();
+                            ke_times_ue(&ke, &ue)
+                        }
+                        PrecomputedElem::Hexa8(c) => {
+                            let (e_mod, nu) = solid3d_en(&self.materials[e]);
+                            let ke = solid::hexa8_ke(c, e_mod, nu);
+                            let ue: Vec<f64> = dofs.iter().map(|&d| u[d]).collect();
+                            ke_times_ue(ke.as_slice(), &ue)
+                        }
+                        PrecomputedElem::Hexa20(c) => {
+                            let (e_mod, nu) = solid3d_en(&self.materials[e]);
+                            let ke = solid::hexa20_ke(c, e_mod, nu);
+                            let ue: Vec<f64> = dofs.iter().map(|&d| u[d]).collect();
+                            ke_times_ue(ke.as_slice(), &ue)
+                        }
+                        PrecomputedElem::Tetra4(c) => {
+                            let (e_mod, nu) = solid3d_en(&self.materials[e]);
+                            let ke = solid::tetra4_ke(c, e_mod, nu);
+                            let ue: Vec<f64> = dofs.iter().map(|&d| u[d]).collect();
+                            ke_times_ue(ke.as_slice(), &ue)
+                        }
+                        PrecomputedElem::Tetra10(c) => {
+                            let (e_mod, nu) = solid3d_en(&self.materials[e]);
+                            let ke = solid::tetra10_ke(c, e_mod, nu);
+                            let ue: Vec<f64> = dofs.iter().map(|&d| u[d]).collect();
+                            ke_times_ue(ke.as_slice(), &ue)
+                        }
+                        PrecomputedElem::Wedge6(c) => {
+                            let (e_mod, nu) = solid3d_en(&self.materials[e]);
+                            let ke = solid::wedge6_ke(c, e_mod, nu);
+                            let ue: Vec<f64> = dofs.iter().map(|&d| u[d]).collect();
+                            ke_times_ue(ke.as_slice(), &ue)
+                        }
+                        PrecomputedElem::Wedge15(c) => {
+                            let (e_mod, nu) = solid3d_en(&self.materials[e]);
+                            let ke = solid::wedge15_ke(c, e_mod, nu);
+                            let ue: Vec<f64> = dofs.iter().map(|&d| u[d]).collect();
+                            ke_times_ue(ke.as_slice(), &ue)
+                        }
+                        PrecomputedElem::Pyramid5(c) => {
+                            let (e_mod, nu) = solid3d_en(&self.materials[e]);
+                            let ke = solid::pyramid5_ke(c, e_mod, nu);
+                            let ue: Vec<f64> = dofs.iter().map(|&d| u[d]).collect();
+                            ke_times_ue(ke.as_slice(), &ue)
+                        }
+                        PrecomputedElem::Pyramid13(c) => {
+                            let (e_mod, nu) = solid3d_en(&self.materials[e]);
+                            let ke = solid::pyramid13_ke(c, e_mod, nu);
+                            let ue: Vec<f64> = dofs.iter().map(|&d| u[d]).collect();
+                            ke_times_ue(ke.as_slice(), &ue)
+                        }
+                    };
+                    for (local_i, &global_i) in dofs.iter().enumerate() {
+                        local_f[global_i] += fe[local_i];
+                    }
+                    local_f
+                },
+            )
+            .reduce(
+                || vec![0.0f64; dofs_count],
+                |mut a, b| {
+                    a.iter_mut().zip(b).for_each(|(ai, bi)| *ai += bi);
+                    a
+                },
+            )
     }
 
     // -----------------------------------------------------------------------

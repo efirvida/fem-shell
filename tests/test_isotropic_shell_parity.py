@@ -323,7 +323,9 @@ class TestIsotropicShellParity:
 
         # Find the displacement block and extract max V (Y) displacement
         # CCX outputs displacements in format: -1 <node> <U> <V> <W>
-        # But format may vary, so use regex to find all displacement values
+        # Format may have no spaces when numbers are negative: -1 <id>-1.2E-14 2.0E-03-1.1E-14
+        import re
+
         disp_ccx = None
         max_v = 0.0
 
@@ -337,37 +339,22 @@ class TestIsotropicShellParity:
                 if line.startswith(" -3"):
                     break
                 if line.startswith(" -1"):
-                    # Try to extract displacement values - format varies
-                    # Try common patterns
-                    import re
+                    # Extract numbers from line (all scientific notation values)
+                    # Pattern: any sequence of digits, dots, eE signs that starts with digit or minus
+                    numbers = re.findall(r"[-+]?[0-9]{1,}\.[0-9]{5}E[+-][0-9]{2}", line)
 
-                    # Pattern 1: -1 <id> <U> <V> <W>
-                    matches = re.findall(
-                        r"-1\s+(\d+)\s+([0-9.eE+-]+)\s+([0-9.eE+-]+)\s+([0-9.eE+-]+)", line
-                    )
-                    if matches:
-                        for nid, u, v, w in matches:
-                            try:
-                                v_val = float(v)
-                                if abs(v_val) > abs(max_v):
-                                    max_v = v_val
-                            except:
-                                pass
-                    # Try alternative pattern where numbers may not be separated
-                    # Pattern 2: no spaces between sign and number
-                    matches2 = re.findall(r"-1\s+(\d+)([0-9.eE+-]{10,})", line)
-                    for nid, rest in matches2:
-                        # The remaining part contains U, V, W concatenated
-                        # Try to parse last part as V displacement
+                    # Should have at least 3 values (U, V, W), skip first (node ID area)
+                    if len(numbers) >= 3:
                         try:
-                            v_val = float(rest[-12:])  # Last 12 chars might be V
+                            # Second value is V (Y displacement)
+                            v_val = float(numbers[1])
                             if abs(v_val) > abs(max_v):
                                 max_v = v_val
-                        except:
+                        except (ValueError, IndexError):
                             pass
 
         if max_v == 0.0:
-            # Could not find any displacement
+            # Could not find any meaningful displacement
             pytest.skip("Could not parse CCX displacement from FRD")
 
         disp_ccx = max_v
@@ -380,7 +367,7 @@ class TestIsotropicShellParity:
         print(f"  Difference:        {abs(disp_ccx - disp_ae):.6f} m ({abs(ratio - 1) * 100:.1f}%)")
 
         # Allow 10% tolerance
-        tol = 0.10
+        tol = 0.05
         if abs(ratio - 1) > tol:
             pytest.fail(
                 f"Isotropic shell mismatch: AE={disp_ae:.4f}, CCX={disp_ccx:.4f}, "

@@ -1,8 +1,24 @@
 """Shared pytest fixtures for the fem-shell test suite."""
 
+import ctypes
 import os
 
 import pytest
+
+# ---------------------------------------------------------------------------
+# GLU library — required by gmsh (equivalent to `module load glu`)
+# ---------------------------------------------------------------------------
+_GLU_LIB_PATH = "/scratch/app/glu/9.0.2_gnu/lib"
+
+try:
+    ctypes.CDLL("libGLU.so.1")
+except OSError:
+    # Not on LD_LIBRARY_PATH yet; prepend the HPC module path and retry.
+    os.environ["LD_LIBRARY_PATH"] = _GLU_LIB_PATH + ":" + os.environ.get("LD_LIBRARY_PATH", "")
+    try:
+        ctypes.CDLL(os.path.join(_GLU_LIB_PATH, "libGLU.so.1"))
+    except OSError:
+        pass  # gmsh tests will fail with a clear error if still missing
 
 # ---------------------------------------------------------------------------
 # Blade YAML fixture
@@ -13,17 +29,33 @@ import pytest
 _BLADE_YAML_CANDIDATES = [
     # Inside repo (preferred when present)
     os.path.join(
-        os.path.dirname(__file__), "..", "examples", "reference_turbines", "yamls",
+        os.path.dirname(__file__),
+        "..",
+        "examples",
+        "reference_turbines",
+        "yamls",
         "IEA-15-240-RWT.yaml",
     ),
     # Sibling simulations directory (dev environment)
     os.path.join(
-        os.path.dirname(__file__), "..", "..", "simulations", "blade", "solid",
+        os.path.dirname(__file__),
+        "..",
+        "..",
+        "simulations",
+        "blade",
+        "solid",
         "IEA-15-240-RWT.yaml",
     ),
     os.path.join(
-        os.path.dirname(__file__), "..", "..", "simulations", "IEA-15-240-RWT", "fsi",
-        "NoTower", "solid", "IEA-15-240-RWT.yaml",
+        os.path.dirname(__file__),
+        "..",
+        "..",
+        "simulations",
+        "IEA-15-240-RWT",
+        "fsi",
+        "NoTower",
+        "solid",
+        "IEA-15-240-RWT.yaml",
     ),
 ]
 

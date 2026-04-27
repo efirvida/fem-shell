@@ -216,9 +216,9 @@ class TestElementMassVsTotalMass:
                 f"analytical={analytical_mass:.1f}"
             )
 
-            # Allow larger tolerance for coarse meshes
+            # Enforce strict max tolerance of 5%
             error = abs(physical_mass - analytical_mass) / analytical_mass
-            assert error < 0.20, f"Mass error: {error * 100:.1f}%"
+            assert error < 0.05, f"Mass error: {error * 100:.1f}%"
 
         except ImportError:
             pytest.skip("scipy not available")
@@ -303,8 +303,8 @@ class TestLumpedMassMatrix:
             f"error: {error * 100:.1f}%"
         )
 
-        # Allow 20% tolerance for consistent mass -> physical mass conversion
-        assert error < 0.20, f"Lumped mass error: {error * 100:.1f}%"
+        # Enforce strict max tolerance of 5%
+        assert error < 0.05, f"Lumped mass error: {error * 100:.1f}%"
 
 
 # =============================================================================
@@ -384,8 +384,8 @@ class TestModalMassConvergence:
                 f"error={error * 100:.1f}%"
             )
 
-            # Coarser meshes have larger error — use relaxed tolerance
-            tol = 0.30 if nx <= 2 else 0.20
+            # Enforce strict max tolerance of 5%
+            tol = 0.05 if nx <= 2 else 0.05
             assert error < tol, f"Frequency error: {error * 100:.1f}% (tol {tol * 100:.0f}%)"
 
         except AssertionError:
@@ -467,7 +467,7 @@ class TestMassMatrixTrace:
 
         # Check: mass should be close to analytical
         error = abs(physical_mass - m_total) / m_total
-        assert error < 0.15, f"Trace mass error: {error * 100:.1f}%"
+        assert error < 0.05, f"Trace mass error: {error * 100:.1f}%"
 
 
 # =============================================================================

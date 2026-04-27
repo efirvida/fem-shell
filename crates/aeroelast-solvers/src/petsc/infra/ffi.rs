@@ -232,8 +232,10 @@ extern "C" {
     pub fn KSPGetResidualNorm(ksp: KSP, rnorm: *mut PetscReal) -> PetscErrorCode;
     pub fn KSPDestroy(ksp: *mut KSP) -> PetscErrorCode;
     pub fn KSPGetPC(ksp: KSP, pc: *mut PC) -> PetscErrorCode;
+    pub fn KSPGMRESSetRestart(ksp: KSP, restart: PetscInt) -> PetscErrorCode;
     pub fn PCSetType(pc: PC, type_: *const i8) -> PetscErrorCode;
     pub fn PCFactorSetMatSolverType(pc: PC, stype: *const i8) -> PetscErrorCode;
+    pub fn PCFactorSetLevels(pc: PC, levels: PetscInt) -> PetscErrorCode;
     pub fn MatGetSize(mat: Mat, m: *mut PetscInt, n: *mut PetscInt) -> PetscErrorCode;
     pub fn MatMult(mat: Mat, x: Vec, y: Vec) -> PetscErrorCode;
     pub fn VecDuplicate(v: Vec, newv: *mut Vec) -> PetscErrorCode;
@@ -304,6 +306,8 @@ extern "C" {
     pub fn SNESGetConvergedReason(snes: SNES, reason: *mut i32) -> PetscErrorCode;
     pub fn SNESGetIterationNumber(snes: SNES, its: *mut PetscInt) -> PetscErrorCode;
     pub fn SNESGetFunctionNorm(snes: SNES, fnorm: *mut PetscReal) -> PetscErrorCode;
+    pub fn SNESGetLinearSolveIterations(snes: SNES, lits: *mut PetscInt) -> PetscErrorCode;
+    pub fn SNESGetNumberFunctionEvals(snes: SNES, nfuncs: *mut PetscInt) -> PetscErrorCode;
     pub fn SNESSetApplicationContext(snes: SNES, usrP: *mut c_void) -> PetscErrorCode;
     pub fn SNESGetApplicationContext(snes: SNES, usrP: *mut *mut c_void) -> PetscErrorCode;
     pub fn SNESDestroy(snes: *mut SNES) -> PetscErrorCode;

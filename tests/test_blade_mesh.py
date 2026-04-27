@@ -2,7 +2,8 @@ import os
 
 import pytest
 
-from aeroelast.models.blade.model import Blade, MeshElement, Node
+from aeroelast.core.mesh.entities import MeshElement, Node
+from aeroelast.models.blade.model import Blade
 
 # Path to the reference directory
 blades_path = os.path.join(

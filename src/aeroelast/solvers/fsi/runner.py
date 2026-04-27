@@ -1037,6 +1037,11 @@ class FSIRunner:
                 "rtol": self.config.solver.rtol,
                 "stol": self.config.solver.stol,
                 "max_it": self.config.solver.max_it,
+                "continuation": self.config.solver.continuation,
+                "continuation_steps": self.config.solver.continuation_steps,
+                "continuation_max_steps": self.config.solver.continuation_max_steps,
+                "diagnostics": self.config.solver.diagnostics,
+                "diagnostics_every": self.config.solver.diagnostics_every,
             },
             "elements": {
                 "element_family": elem_family,
@@ -1464,6 +1469,25 @@ class FSIRunner:
             writer.writerow(["node_id", "x", "y", "z", "ux", "uy", "uz"])
             writer.writerow([tip_node.id, tip_node.x, tip_node.y, tip_node.z, ux, uy, uz])
         self._console.print(f"      Saved: {csv_path}")
+
+        # --- save full results HDF5 (node coords + displacement vector) ---
+        output_folder = self.config.output.folder if self.config.output else "results"
+        h5_path = f"{output_folder}.h5"
+        try:
+            import h5py  # noqa: PLC0415
+
+            coords = np.array([[n.x, n.y, n.z] for n in nodes], dtype=np.float64)
+            with h5py.File(h5_path, "w") as hf:
+                hf.attrs["format_version"] = "1.0"
+                hf.attrs["solver"] = type(self.solver).__name__
+                hf.attrs["n_dofs"] = int(len(u_array))
+                hf.attrs["converged_reason"] = 1
+                hf.attrs["iterations"] = 0
+                hf.create_dataset("nodes", data=coords, compression="gzip")
+                hf.create_dataset("displacements", data=u_array, compression="gzip")
+            self._console.print(f"      Saved: {h5_path}")
+        except Exception as _e:  # noqa: BLE001
+            self._console.print(f"      [yellow]Warning:[/yellow] Could not save {h5_path}: {_e}")
 
     def _run_postprocessing(self) -> None:
         """Run post-processing if configured."""

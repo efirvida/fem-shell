@@ -1658,6 +1658,20 @@ impl PyMeshAssembler {
         )
     }
 
+    /// Compute the total model mass from material properties and geometry.
+    ///
+    /// For shell elements (MITC3/MITC4) uses the precomputed element area.
+    /// For plane/solid elements uses the partition-of-unity property of the
+    /// consistent mass matrix: ``Σ_ij (Me_x)_ij = m_elem``.
+    ///
+    /// Returns
+    /// -------
+    /// float
+    ///     Total mass in kg (or consistent units of the model).
+    pub fn total_elemental_mass(&self) -> f64 {
+        self.inner.total_elemental_mass()
+    }
+
     /// Assemble the global body load vector.
     ///
     /// Parameters
@@ -3086,11 +3100,12 @@ impl PyLaminate {
 ///   rtol:            Relative residual tolerance (default 1e-8)
 ///   stol:            Step-length tolerance (default 1e-8)
 ///   max_it:          Maximum Newton iterations (default 50)
+///   x0:              Optional initial guess displacement vector (length = n_dof)
 ///
 /// Returns:
 ///   Tuple ``(displacements, iterations, residual_norm, converged_reason)``
 #[pyfunction]
-#[pyo3(signature = (assembler, f_ext, dirichlet_dofs, atol=1e-10, rtol=1e-8, stol=1e-8, max_it=50))]
+#[pyo3(signature = (assembler, f_ext, dirichlet_dofs, atol=1e-10, rtol=1e-8, stol=1e-8, max_it=50, x0=None, diagnostics=false, diagnostics_every=1))]
 #[allow(clippy::too_many_arguments)]
 fn nonlinear_static_solve_coo<'py>(
     py: Python<'py>,
@@ -3101,10 +3116,19 @@ fn nonlinear_static_solve_coo<'py>(
     rtol: f64,
     stol: f64,
     max_it: i32,
+    x0: Option<PyReadonlyArray1<'py, f64>>,
+    diagnostics: bool,
+    diagnostics_every: i32,
 ) -> PyResult<(Bound<'py, PyArray1<f64>>, i32, f64, i32)> {
     let f_ext_slice = f_ext.as_slice()?;
     let dofs_i64 = dirichlet_dofs.as_slice()?;
     let dofs_usize: Vec<usize> = dofs_i64.iter().map(|&d| d as usize).collect();
+    // Own optional x0 to keep memory alive across the Rust solver call.
+    let x0_owned: Option<Vec<f64>> = match x0 {
+        Some(arr) => Some(arr.as_slice()?.to_vec()),
+        None => None,
+    };
+    let x0_slice: Option<&[f64]> = x0_owned.as_deref();
 
     let config = aeroelast_solvers::petsc::elasticity::static_nonlinear::NonlinearConfig {
         atol,
@@ -3112,12 +3136,15 @@ fn nonlinear_static_solve_coo<'py>(
         stol,
         max_it,
         max_funcs: -1,
+        diagnostics,
+        diagnostics_every,
     };
 
-    let result = aeroelast_solvers::petsc::elasticity::static_nonlinear::nonlinear_static_solve(
+    let result = aeroelast_solvers::petsc::elasticity::static_nonlinear::nonlinear_static_solve_with_guess(
         assembler.inner(),
         f_ext_slice,
         &dofs_usize,
+        x0_slice,
         &config,
     )
     .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))?;

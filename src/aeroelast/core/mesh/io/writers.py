@@ -28,6 +28,7 @@ from aeroelast.core.mesh.entities import ElementType
 # Property duck-typing helpers — support both Rust-native and Python types
 # ============================================================================
 
+
 def _prop_is_composite(prop) -> bool:
     """Return True if *prop* represents a composite (multi-ply) shell property.
 
@@ -36,12 +37,14 @@ def _prop_is_composite(prop) -> bool:
     """
     try:
         from _aeroelast import Laminate as _RL  # noqa: PLC0415
+
         if isinstance(prop, _RL):
             return True
     except ImportError:
         pass
     try:
         from aeroelast.core.properties import CompositeShellProperty as _CSP  # noqa: PLC0415
+
         if isinstance(prop, _CSP):
             return True
     except ImportError:
@@ -55,6 +58,7 @@ def _prop_is_isotropic(prop) -> bool:
         return True
     try:
         from aeroelast.core.properties import ShellProperty as _SP  # noqa: PLC0415
+
         if isinstance(prop, _SP):
             return True
     except ImportError:
@@ -179,6 +183,7 @@ def _prop_plies(prop):
     """
     try:
         from _aeroelast import Laminate as _RL  # noqa: PLC0415
+
         if isinstance(prop, _RL):
             # Prefer direct property when available.
             plies = getattr(prop, "plies", None)
@@ -190,9 +195,15 @@ def _prop_plies(prop):
                     m = ply["material"]
                     yield (
                         f"PLY_{i}",
-                        m["e1"], m["e2"], m["e3"],
-                        m["g12"], m["g23"], m["g13"],
-                        m["nu12"], m["nu23"], m["nu31"],
+                        m["e1"],
+                        m["e2"],
+                        m["e3"],
+                        m["g12"],
+                        m["g23"],
+                        m["g13"],
+                        m["nu12"],
+                        m["nu23"],
+                        m["nu31"],
                         m["rho"],
                         ply["thickness"],
                         ply["angle"],
@@ -202,14 +213,21 @@ def _prop_plies(prop):
         pass
     try:
         from aeroelast.core.properties import CompositeShellProperty as _CSP  # noqa: PLC0415
+
         if isinstance(prop, _CSP):
             for ply in prop.laminate.plies:
                 m = ply.material
                 yield (
                     m.name,
-                    m.E[0], m.E[1], m.E[2],
-                    m.G[0], m.G[1], m.G[2],
-                    m.nu[0], m.nu[1], m.nu[2],
+                    m.E[0],
+                    m.E[1],
+                    m.E[2],
+                    m.G[0],
+                    m.G[1],
+                    m.G[2],
+                    m.nu[0],
+                    m.nu[1],
+                    m.nu[2],
                     m.rho,
                     ply.thickness,
                     ply.angle,
@@ -226,6 +244,7 @@ def _prop_isotropic_data(prop) -> dict:
         return prop
     try:
         from aeroelast.core.properties import ShellProperty as _SP  # noqa: PLC0415
+
         if isinstance(prop, _SP):
             return {
                 "name": getattr(prop.material, "name", "MAT"),
@@ -463,10 +482,21 @@ def write_meshio(mesh: "MeshModel", filename: str, close_tip: bool = None, **kwa
     if ext == ".stl":
         # Check if mesh has volume elements
         has_volume = any(
-            el.element_type.name in ('tetra', 'tetra10', 'hexahedron', 'hexahedron20', 'hexahedron27', 'wedge', 'wedge15', 'pyramid', 'pyramid13')
+            el.element_type.name
+            in (
+                "tetra",
+                "tetra10",
+                "hexahedron",
+                "hexahedron20",
+                "hexahedron27",
+                "wedge",
+                "wedge15",
+                "pyramid",
+                "pyramid13",
+            )
             for el in mesh.elements
         )
-        
+
         if has_volume:
             face_count = defaultdict(int)
             for element in mesh.elements:
@@ -476,7 +506,7 @@ def write_meshio(mesh: "MeshModel", filename: str, close_tip: bool = None, **kwa
                 for face in faces:
                     face_key = tuple(sorted(face))
                     face_count[face_key] += 1
-            
+
             boundary_faces = []
             for element in mesh.elements:
                 faces = mesh._get_element_faces(element)
@@ -493,7 +523,7 @@ def write_meshio(mesh: "MeshModel", filename: str, close_tip: bool = None, **kwa
                             # Triangulate quad
                             boundary_faces.append([indices[0], indices[1], indices[2]])
                             boundary_faces.append([indices[0], indices[2], indices[3]])
-            
+
             if boundary_faces:
                 cells = [("triangle", np.array(boundary_faces))]
         else:
@@ -521,9 +551,7 @@ def write_meshio(mesh: "MeshModel", filename: str, close_tip: bool = None, **kwa
                     tip_loop_idx = int(np.argmax(loop_avg_z))
                     tip_loop = loops[tip_loop_idx]
 
-                    cap_tris, centroid = _cap_tip_loop(
-                        tip_loop, points, id_to_idx
-                    )
+                    cap_tris, centroid = _cap_tip_loop(tip_loop, points, id_to_idx)
                     # Append centroid to points array
                     points = np.vstack([points, centroid.reshape(1, 3)])
                     triangles.extend(cap_tris)
@@ -670,8 +698,10 @@ def write_ccx_mesh(
     quadratic_data = None
     if quadratic:
         quadratic_data = _build_quadratic_mesh_data(mesh)
-        print(f"  Converted to quadratic: {quadratic_data['n_nodes']} nodes "
-              f"({quadratic_data['n_midside']} midside nodes added)")
+        print(
+            f"  Converted to quadratic: {quadratic_data['n_nodes']} nodes "
+            f"({quadratic_data['n_midside']} midside nodes added)"
+        )
 
     # Write files
     _write_ccx_msh_file(mesh, msh_file, quadratic_data=quadratic_data)
@@ -684,7 +714,10 @@ def write_ccx_mesh(
     )
     has_surfaces = _write_ccx_sur_file(mesh, sur_file, split_list)
     _write_ccx_inp_file(
-        mesh, inp_file, base_name, has_surfaces,
+        mesh,
+        inp_file,
+        base_name,
+        has_surfaces,
         properties=properties,
         boundary_nodeset=boundary_nodeset,
         num_modes=num_modes,
@@ -757,8 +790,7 @@ def _build_quadratic_mesh_data(mesh: "MeshModel") -> Dict:
             m20 = _get_midside(nids[2], nids[0])
             elements.append((
                 "S6",
-                [nids[0]+1, nids[1]+1, nids[2]+1,
-                 m01+1, m12+1, m20+1],
+                [nids[0] + 1, nids[1] + 1, nids[2] + 1, m01 + 1, m12 + 1, m20 + 1],
             ))
         elif etype == "quad":
             m01 = _get_midside(nids[0], nids[1])
@@ -767,8 +799,16 @@ def _build_quadratic_mesh_data(mesh: "MeshModel") -> Dict:
             m30 = _get_midside(nids[3], nids[0])
             elements.append((
                 "S8R",
-                [nids[0]+1, nids[1]+1, nids[2]+1, nids[3]+1,
-                 m01+1, m12+1, m23+1, m30+1],
+                [
+                    nids[0] + 1,
+                    nids[1] + 1,
+                    nids[2] + 1,
+                    nids[3] + 1,
+                    m01 + 1,
+                    m12 + 1,
+                    m23 + 1,
+                    m30 + 1,
+                ],
             ))
         else:
             ccx_type = ELEMENTS_TO_CALCULIX.get(etype, etype)
@@ -796,7 +836,8 @@ def _build_quadratic_mesh_data(mesh: "MeshModel") -> Dict:
 
 
 def _write_ccx_msh_file(
-    mesh: "MeshModel", filename: str,
+    mesh: "MeshModel",
+    filename: str,
     quadratic_data: Optional[Dict] = None,
 ) -> None:
     """Write the .msh file containing nodes and elements."""
@@ -841,7 +882,9 @@ def _write_ccx_msh_file(
 
 
 def _write_ccx_nam_file(
-    mesh: "MeshModel", filename: str, split_func,
+    mesh: "MeshModel",
+    filename: str,
+    split_func,
     quadratic_data: Optional[Dict] = None,
     angle_bucket_sets: Optional[Dict[str, Dict[int, list[int]]]] = None,
 ) -> None:
@@ -990,12 +1033,20 @@ def _write_ccx_inp_file(
                 n_load_nodes = 1
             if solver_type == "LinearStatic":
                 _write_ccx_static_step(
-                    f, mesh, boundary_nodeset, load_nodeset, load_vector,
+                    f,
+                    mesh,
+                    boundary_nodeset,
+                    load_nodeset,
+                    load_vector,
                     n_load_nodes=n_load_nodes,
                 )
             elif solver_type == "NonlinearStatic":
                 _write_ccx_nonlinear_static_step(
-                    f, mesh, boundary_nodeset, load_nodeset, load_vector,
+                    f,
+                    mesh,
+                    boundary_nodeset,
+                    load_nodeset,
+                    load_vector,
                     n_load_nodes=n_load_nodes,
                     initial_increment=nl_initial_increment,
                     min_increment=nl_min_increment,
@@ -1004,7 +1055,13 @@ def _write_ccx_inp_file(
                 )
             elif solver_type == "LinearDynamic":
                 _write_ccx_dynamic_step(
-                    f, mesh, boundary_nodeset, load_nodeset, load_vector, dt, t_end,
+                    f,
+                    mesh,
+                    boundary_nodeset,
+                    load_nodeset,
+                    load_vector,
+                    dt,
+                    t_end,
                     n_load_nodes=n_load_nodes,
                 )
             else:
@@ -1018,12 +1075,14 @@ def _write_ccx_materials(f, properties: Dict) -> None:
     """Write *MATERIAL blocks for every unique material found in properties."""
     try:
         from _aeroelast import Laminate as _RL, OrthotropicMaterial as _RMat  # noqa: PLC0415
+
         _has_rust = True
     except ImportError:
         _has_rust = False
     try:
         from aeroelast.core.material import IsotropicMaterial, OrthotropicMaterial as PyOrtho  # noqa: PLC0415
         from aeroelast.core.properties import CompositeShellProperty, ShellProperty  # noqa: PLC0415
+
         _has_py = True
     except ImportError:
         _has_py = False
@@ -1055,9 +1114,15 @@ def _write_ccx_materials(f, properties: Dict) -> None:
                 # avoid float noise).  Using 4 significant figures is enough
                 # to distinguish physically different materials.
                 key = (
-                    round(m["e1"], -3), round(m["e2"], -3), round(m["e3"], -3),
-                    round(m["g12"], -3), round(m["g23"], -3), round(m["g13"], -3),
-                    round(m["nu12"], 4), round(m["nu23"], 4), round(m["nu31"], 4),
+                    round(m["e1"], -3),
+                    round(m["e2"], -3),
+                    round(m["e3"], -3),
+                    round(m["g12"], -3),
+                    round(m["g23"], -3),
+                    round(m["g13"], -3),
+                    round(m["nu12"], 4),
+                    round(m["nu23"], 4),
+                    round(m["nu31"], 4),
                     round(m["rho"], 2),
                 )
                 mat_name = f"MAT_{set_name}_P{i}"
@@ -1067,6 +1132,11 @@ def _write_ccx_materials(f, properties: Dict) -> None:
                 mat_key = (set_name, i)
                 if mat_key not in materials_out:
                     materials_out[mat_key] = ("rust_ply", m, mat_name, ply["thickness"])
+            # Also register the equivalent laminate material MAT_{set_name} for
+            # non-quadratic sections that reference MATERIAL=MAT_{set_name}.
+            equiv_name = f"MAT_{set_name}"
+            if equiv_name not in materials_out:
+                materials_out[equiv_name] = ("rust_laminate_equiv", prop)
         elif _has_py and isinstance(prop, CompositeShellProperty):
             # Keep per-ply materials for COMPOSITE sections (quadratic shells)
             for ply in prop.laminate.plies:
@@ -1095,7 +1165,11 @@ def _write_ccx_materials(f, properties: Dict) -> None:
 
     for mat_key, entry in materials_out.items():
         kind = entry[0]
-        mat_name = entry[2] if kind == "rust_ply" else (mat_key if isinstance(mat_key, str) else f"MAT_{mat_key}")
+        mat_name = (
+            entry[2]
+            if kind == "rust_ply"
+            else (mat_key if isinstance(mat_key, str) else f"MAT_{mat_key}")
+        )
         f.write("**\n")
         f.write(f"*MATERIAL, NAME={mat_name}\n")
         if kind == "rust_ply":
@@ -1117,14 +1191,19 @@ def _write_ccx_materials(f, properties: Dict) -> None:
             t = prop.total_thickness
             a = prop.abd_matrix()
             import numpy as np  # noqa: PLC0415
-            D = np.array([[float(a[3, 3]), float(a[3, 4]), float(a[3, 5])],
-                          [float(a[4, 3]), float(a[4, 4]), float(a[4, 5])],
-                          [float(a[5, 3]), float(a[5, 4]), float(a[5, 5])]])
-            A = np.array([[float(a[0, 0]), float(a[0, 1]), float(a[0, 2])],
-                          [float(a[1, 0]), float(a[1, 1]), float(a[1, 2])],
-                          [float(a[2, 0]), float(a[2, 1]), float(a[2, 2])]])
+
+            D = np.array([
+                [float(a[3, 3]), float(a[3, 4]), float(a[3, 5])],
+                [float(a[4, 3]), float(a[4, 4]), float(a[4, 5])],
+                [float(a[5, 3]), float(a[5, 4]), float(a[5, 5])],
+            ])
+            A = np.array([
+                [float(a[0, 0]), float(a[0, 1]), float(a[0, 2])],
+                [float(a[1, 0]), float(a[1, 1]), float(a[1, 2])],
+                [float(a[2, 0]), float(a[2, 1]), float(a[2, 2])],
+            ])
             if t > 0 and abs(np.linalg.det(D)) > 1e-30:
-                S_D = np.linalg.inv(D) * (t ** 3 / 12.0)
+                S_D = np.linalg.inv(D) * (t**3 / 12.0)
                 E1 = 1.0 / S_D[0, 0]
                 E2 = 1.0 / S_D[1, 1]
                 nu12 = -S_D[0, 1] * E1
@@ -1145,7 +1224,9 @@ def _write_ccx_materials(f, properties: Dict) -> None:
             nu13 = nu12
             nu23 = max(-0.99, min(0.99, float(a[1, 1]) / max(float(a[0, 0]), 1e-30) * nu12))
             f.write("*ELASTIC, TYPE=ENGINEERING CONSTANTS\n")
-            f.write(f"{E1:.6E}, {E2:.6E}, {E3:.6E}, {nu12:.6f}, {nu13:.6f}, {nu23:.6f}, {G12:.6E}, {G13:.6E}\n")
+            f.write(
+                f"{E1:.6E}, {E2:.6E}, {E3:.6E}, {nu12:.6f}, {nu13:.6f}, {nu23:.6f}, {G12:.6E}, {G13:.6E}\n"
+            )
             f.write(f"{G23:.6E}\n")
             t_eff = prop.total_thickness if prop.total_thickness > 0.0 else 1.0
             rho_equiv = prop.areal_density / t_eff
@@ -1267,10 +1348,10 @@ def _write_ccx_orientations(
     if span_direction is not None:
         # Normalise the span vector to use as the orientation 1-axis.
         sd = span_direction
-        sd_len = (sd[0]**2 + sd[1]**2 + sd[2]**2) ** 0.5
+        sd_len = (sd[0] ** 2 + sd[1] ** 2 + sd[2] ** 2) ** 0.5
         if sd_len < 1e-12:
             raise ValueError("span_direction must be a non-zero vector")
-        s1, s2, s3 = sd[0]/sd_len, sd[1]/sd_len, sd[2]/sd_len
+        s1, s2, s3 = sd[0] / sd_len, sd[1] / sd_len, sd[2] / sd_len
         # Choose a second-axis reference that defines the 1-2 plane.
         # Default keeps current behavior (axis with smallest span component).
         if orientation_reference_axis is not None:
@@ -1356,8 +1437,17 @@ def _write_ccx_sections(
 
     # Detect if mesh contains shell or solid elements
     has_solid_elements = any(
-        el.element_type.name in ("hexahedron", "tetra", "wedge", "pyramid",
-                                  "hexahedron20", "tetra10", "wedge15", "pyramid13")
+        el.element_type.name
+        in (
+            "hexahedron",
+            "tetra",
+            "wedge",
+            "pyramid",
+            "hexahedron20",
+            "tetra10",
+            "wedge15",
+            "pyramid13",
+        )
         for el in mesh.elements
     )
 
@@ -1373,7 +1463,9 @@ def _write_ccx_sections(
         if _RL is not None and isinstance(prop, _RL):
             mat_name = f"MAT_{set_name}"
             t = prop.total_thickness
-            buckets_for_set = (angle_bucket_sets or {}).get(set_name, {}) if span_direction is not None else {}
+            buckets_for_set = (
+                (angle_bucket_sets or {}).get(set_name, {}) if span_direction is not None else {}
+            )
 
             if quadratic:
                 # S8R/S6 — *SHELL SECTION, COMPOSITE with per-ply real data.
@@ -1420,13 +1512,19 @@ def _write_ccx_sections(
                 else:
                     if span_direction is not None:
                         ori_name = _ccx_orientation_name(0.0)
-                        f.write(f"*SHELL SECTION, ELSET={elset_name}, MATERIAL={mat_name}, ORIENTATION={ori_name}\n")
+                        f.write(
+                            f"*SHELL SECTION, ELSET={elset_name}, MATERIAL={mat_name}, ORIENTATION={ori_name}\n"
+                        )
                     else:
                         f.write(f"*SHELL SECTION, ELSET={elset_name}, MATERIAL={mat_name}\n")
                     f.write(f"{t:.6E}\n")
         elif CompositeShellProperty is not None and isinstance(prop, CompositeShellProperty):
             mat_name = f"MAT_{set_name}"
-            t = prop.laminate.total_thickness if hasattr(prop.laminate, 'total_thickness') else sum(p.thickness for p in prop.laminate.plies)
+            t = (
+                prop.laminate.total_thickness
+                if hasattr(prop.laminate, "total_thickness")
+                else sum(p.thickness for p in prop.laminate.plies)
+            )
             if quadratic:
                 # S8R/S6 — *SHELL SECTION, COMPOSITE with per-ply detail
                 f.write(f"*SHELL SECTION, ELSET={elset_name}, COMPOSITE\n")
@@ -1440,7 +1538,9 @@ def _write_ccx_sections(
                 # S4/S3 — *SHELL SECTION, MATERIAL= with orthotropic equivalent
                 if span_direction is not None:
                     ori_name = _ccx_orientation_name(0.0)
-                    f.write(f"*SHELL SECTION, ELSET={elset_name}, MATERIAL={mat_name}, ORIENTATION={ori_name}\n")
+                    f.write(
+                        f"*SHELL SECTION, ELSET={elset_name}, MATERIAL={mat_name}, ORIENTATION={ori_name}\n"
+                    )
                 else:
                     f.write(f"*SHELL SECTION, ELSET={elset_name}, MATERIAL={mat_name}\n")
                 f.write(f"{t:.6E}\n")
@@ -1493,9 +1593,9 @@ def _write_ccx_modal_step(
     f.write("*FREQUENCY\n")
     f.write(f"{num_modes}\n")
     f.write("**\n")
-    f.write("*NODE FILE\n")
+    f.write("*NODE FILE, OUTPUT=2D\n")
     f.write("U\n")
-    f.write("*EL FILE\n")
+    f.write("*EL FILE, OUTPUT=2D\n")
     f.write("S, E\n")
     f.write("**\n")
     f.write("*END STEP\n")
@@ -1563,9 +1663,9 @@ def _write_ccx_static_step(
 
     _write_ccx_cload(f, load_nodeset, load_vector, n_nodes=n_load_nodes)
 
-    f.write("*NODE FILE\n")
+    f.write("*NODE FILE, OUTPUT=2D\n")
     f.write("U, RF\n")
-    f.write("*EL FILE\n")
+    f.write("*EL FILE, OUTPUT=2D\n")
     f.write("S, E\n")
     f.write("**\n")
     f.write("*END STEP\n")
@@ -1649,9 +1749,9 @@ def _write_ccx_nonlinear_static_step(
 
     _write_ccx_cload(f, load_nodeset, load_vector, n_nodes=n_load_nodes)
 
-    f.write("*NODE FILE\n")
+    f.write("*NODE FILE, OUTPUT=2D\n")
     f.write("U, RF\n")
-    f.write("*EL FILE\n")
+    f.write("*EL FILE, OUTPUT=2D\n")
     f.write("S, E\n")
     f.write("**\n")
     f.write("*END STEP\n")
@@ -1869,13 +1969,11 @@ def write_gmsh_mesh(mesh: "MeshModel", filename: str) -> None:
                 for el_type, elements in elements_by_type.items():
                     gmsh_type = ELEMENT_TYPE_TO_GMSH.get(el_type)
                     if gmsh_type:
-                        element_blocks.append(
-                            {
-                                "entity_tag": elset_entity_tags[name],
-                                "gmsh_type": gmsh_type,
-                                "elements": elements,
-                            }
-                        )
+                        element_blocks.append({
+                            "entity_tag": elset_entity_tags[name],
+                            "gmsh_type": gmsh_type,
+                            "elements": elements,
+                        })
 
             elements_in_sets = set()
             for el_set in mesh.element_sets.values():
@@ -1892,13 +1990,11 @@ def write_gmsh_mesh(mesh: "MeshModel", filename: str) -> None:
                 for el_type, elements in elements_by_type.items():
                     gmsh_type = ELEMENT_TYPE_TO_GMSH.get(el_type)
                     if gmsh_type:
-                        element_blocks.append(
-                            {
-                                "entity_tag": 1,
-                                "gmsh_type": gmsh_type,
-                                "elements": elements,
-                            }
-                        )
+                        element_blocks.append({
+                            "entity_tag": 1,
+                            "gmsh_type": gmsh_type,
+                            "elements": elements,
+                        })
         else:
             elements_by_type = {}
             for el in mesh.elements:
@@ -1909,13 +2005,11 @@ def write_gmsh_mesh(mesh: "MeshModel", filename: str) -> None:
             for el_type, elements in elements_by_type.items():
                 gmsh_type = ELEMENT_TYPE_TO_GMSH.get(el_type)
                 if gmsh_type:
-                    element_blocks.append(
-                        {
-                            "entity_tag": 1,
-                            "gmsh_type": gmsh_type,
-                            "elements": elements,
-                        }
-                    )
+                    element_blocks.append({
+                        "entity_tag": 1,
+                        "gmsh_type": gmsh_type,
+                        "elements": elements,
+                    })
 
         total_elements = sum(len(block["elements"]) for block in element_blocks)
         f.write(f"{len(element_blocks)} {total_elements} 1 {total_elements}\n")

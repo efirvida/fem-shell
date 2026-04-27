@@ -739,6 +739,98 @@ fn b_m_mitc4_plus(pre: &Mitc4Precomputed, xi: f64, eta: f64) -> SMatrix<f64, 3, 
     t * b_cov
 }
 
+/// Simplified fictitious midside derivatives used by the MITC4+/D
+/// drill-membrane enhancement.
+///
+/// Return order is edges [bottom, right, top, left]. The simplified form keeps
+/// only the dominant derivative on each edge, matching the paper's reduced
+/// interpolation strategy to preserve patch tests without increasing the
+/// numerical integration order.
+#[inline(always)]
+fn drill_midside_shape_derivatives(xi: f64, eta: f64) -> [(f64, f64); 4] {
+    // Ko et al. 2025, Eq (11) — "curl" (simplified) derivatives of midside shape functions.
+    // The zeros are DELIBERATE: they avoid higher-order integration than the base element.
+    // [h̃5,r  h̃6,r  h̃7,r  h̃8,r] = [0,  -r(1+s),  0,  -r(1-s)]
+    // [h̃5,s  h̃6,s  h̃7,s  h̃8,s] = [-s(1+r),  0,  -s(1-r),  0]
+    // Edge ordering: edge0=bottom(h5,r=-1..1,s=-1), edge1=right(h6,r=1,s=-1..1),
+    //                edge2=top(h7,r=-1..1,s=1),     edge3=left(h8,r=-1,s=-1..1)
+    [
+        (0.0,               -eta * (1.0 + xi)),  // h5: h̃r=0, h̃s=-s(1+r)
+        (-xi * (1.0 + eta), 0.0              ),  // h6: h̃r=-r(1+s), h̃s=0
+        (0.0,               -eta * (1.0 - xi)),  // h7: h̃r=0, h̃s=-s(1-r)
+        (-xi * (1.0 - eta), 0.0              ),  // h8: h̃r=-r(1-s), h̃s=0
+    ]
+}
+
+/// MITC4+/D-inspired drill-induced membrane strain operator.
+///
+/// The current production code already contains MITC4+ membrane/shear fields
+/// plus a standalone drill penalty. This operator adds the missing membrane
+/// strain contribution driven by drill-rotation differences along the four
+/// element edges, following the fictitious midside-node construction of the
+/// MITC4+/D formulation.
+fn b_md_mitc4_plus(pre: &Mitc4Precomputed, xi: f64, eta: f64) -> SMatrix<f64, 3, 24> {
+    let mut b_cov = SMatrix::<f64, 3, 24>::zeros();
+
+    let (g_r0, g_s0) = compute_j3d(&pre.initial_coords_3d, 0.0, 0.0);
+    let sqrt_g0 = g_r0.cross(&g_s0).norm().max(1e-14);
+    let (g_r, g_s) = compute_j3d(&pre.initial_coords_3d, xi, eta);
+    let sqrt_g = g_r.cross(&g_s).norm().max(1e-14);
+    let jac_ratio = sqrt_g0 / sqrt_g;
+
+    let vd = if pre.e3.norm() > 1e-14 {
+        pre.e3 / pre.e3.norm()
+    } else {
+        Vector3::new(0.0, 0.0, 1.0)
+    };
+
+    let edge_midpoints = [(0.0, -1.0), (1.0, 0.0), (0.0, 1.0), (-1.0, 0.0)];
+    let dh_mid = drill_midside_shape_derivatives(xi, eta);
+
+    for edge in 0..4 {
+        let i = edge;
+        let j = (edge + 1) % 4;
+        let theta_i = 6 * i + 5;
+        let theta_j = 6 * j + 5;
+
+        let node_i = Vector3::new(
+            pre.initial_coords_3d[i][0],
+            pre.initial_coords_3d[i][1],
+            pre.initial_coords_3d[i][2],
+        );
+        let node_j = Vector3::new(
+            pre.initial_coords_3d[j][0],
+            pre.initial_coords_3d[j][1],
+            pre.initial_coords_3d[j][2],
+        );
+        let x_m = node_j - node_i;
+
+        let (xi_e, eta_e) = edge_midpoints[edge];
+        let (x_r_e, x_s_e) = compute_j3d(&pre.initial_coords_3d, xi_e, eta_e);
+        let (h_r, h_s) = dh_mid[edge];
+
+        let coeff_rr = jac_ratio * h_r * x_m.dot(&(-(x_r_e.cross(&vd))));
+        let coeff_ss = -jac_ratio * h_s * x_m.dot(&(x_s_e.cross(&vd)));
+        let coeff_rs = 0.5
+            * jac_ratio
+            * (h_s * x_m.dot(&(-(x_r_e.cross(&vd))))
+                - h_r * x_m.dot(&(x_s_e.cross(&vd))));
+
+        b_cov[(0, theta_i)] -= coeff_rr;
+        b_cov[(0, theta_j)] += coeff_rr;
+        b_cov[(1, theta_i)] -= coeff_ss;
+        b_cov[(1, theta_j)] += coeff_ss;
+        b_cov[(2, theta_i)] -= 2.0 * coeff_rs;
+        b_cov[(2, theta_j)] += 2.0 * coeff_rs;
+    }
+
+    // Per Ko et al. 2025 Eq (21): the covariant→local transformation for the
+    // drill-membrane strain uses the CONSTANT element-center metric g_i(0,0,0).
+    let (j_loc0, _) = compute_j_loc_at(&pre.initial_coords_3d, &pre.e1, &pre.e2, 0.0, 0.0);
+    let t = covariant_to_local_mapping(&j_loc0);
+    t * b_cov
+}
+
 /// Standard membrane B-matrix (3×24) at a GP (for stress recovery, nonlinear)
 fn b_m_standard(dh: &SMatrix<f64, 2, 4>) -> SMatrix<f64, 3, 24> {
     let mut bm = SMatrix::<f64, 3, 24>::zeros();
@@ -939,46 +1031,57 @@ pub fn compute_ke_local(pre: &Mitc4Precomputed) -> Mat24 {
     let cb_coupling = &pre.constitutive.cb_coupling; // B matrix (membrane-bending coupling)
     let cs = &pre.constitutive.cs;
 
-    // --- Membrane stiffness: MITC4+ + Q4E3 EAS (Simo & Rifai 1990) ---
-    // EAS adds 3 internal modes (ξ, η, ξη) statically condensed out.
-    // Enhancement field: ε_EAS = (sqrt_g₀/sqrt_g) · T₀ · diag(ξ,η,ξη) · α
-    let (g_r0, g_s0) = compute_j3d(&pre.initial_coords_3d, 0.0, 0.0);
-    let sqrt_g0 = g_r0.cross(&g_s0).norm();
-    let (j_loc0, _) = compute_j_loc_at(&pre.initial_coords_3d, &pre.e1, &pre.e2, 0.0, 0.0);
-    let t0 = covariant_to_local_mapping(&j_loc0);
+    // --- Membrane stiffness: MITC4+ blending + Selective Reduced Integration ---
+    //
+    // Bilinear Q4 with full 2×2 Gauss integration locks for in-plane bending
+    // ("parasitic shear locking"): the element generates spurious in-plane shear
+    // strains γ₁₂ ~ ξ when bending in the η-direction, and vice versa, which
+    // resist the deformation and produce excessive stiffness.
+    //
+    // Selective Reduced Integration (SRI) eliminates this locking by evaluating
+    // the IN-PLANE SHEAR stiffness contribution at a single centre point (ξ=η=0)
+    // where the parasitic shear vanishes for any symmetric bending mode, while
+    // the normal (axial) stiffness components are integrated with the full 2×2
+    // scheme for accuracy.
+    //
+    // The MITC4+ assumed covariant field is used for both integration rules so
+    // that the curved-shell membrane anti-locking (already in b_m_mitc4_plus) is
+    // preserved unchanged.
+    //
+    // References:
+    //   Hughes, Taylor & Kanoknukulchai (1977) — SRI for Q4 membrane element.
+    //   Ko, Lee & Bathe (2017), C&S 182:404–418 — MITC4+ blending.
+    //   CalculiX S4 element — uses analogous SRI for in-plane membrane.
 
+    // Split constitutive: normal/coupling (rows/cols 0-1) vs in-plane shear (2,2).
+    let mut cm_normal = *cm;
+    cm_normal[(0, 2)] = 0.0; cm_normal[(1, 2)] = 0.0;
+    cm_normal[(2, 0)] = 0.0; cm_normal[(2, 1)] = 0.0;
+    cm_normal[(2, 2)] = 0.0;
+    let c_shear = cm[(2, 2)]; // G-effective (may include anisotropic coupling)
+
+    // Full 2×2 integration for normal components.
     let mut k_m = Mat24::zeros();
-    let mut k_ua: SMatrix<f64, 24, 3> = SMatrix::zeros();
-    let mut k_aa: SMatrix<f64, 3, 3>  = SMatrix::zeros();
-
     for g in 0..N_GAUSS {
-        let xi = GAUSS_XI[g];
+        let xi  = GAUSS_XI[g];
         let eta = GAUSS_ETA[g];
         let sqrt_g = pre.gp_jacobians[g].sqrt_g;
         let w = GAUSS_W[g];
-
         let bm = b_m_mitc4_plus(pre, xi, eta);
-
-        let scale = sqrt_g0 / sqrt_g.max(1e-14);
-        let mut g_ref = SMatrix::<f64, 3, 3>::zeros();
-        g_ref[(0, 0)] = xi;
-        g_ref[(1, 1)] = eta;
-        g_ref[(2, 2)] = xi * eta;
-        let g_eas = scale * t0 * g_ref;
-
-        let factor = w * sqrt_g;
-        k_m  += (bm.transpose() * cm * &bm) * factor;
-        k_ua += (bm.transpose() * cm * &g_eas) * factor;
-        k_aa += (g_eas.transpose() * cm * &g_eas) * factor;
+        k_m += (bm.transpose() * &cm_normal * &bm) * (w * sqrt_g);
     }
 
-    // Static condensation: K_m_eff = K_m - K_uα · K_αα⁻¹ · K_αu
-    let k_m = if let Some(k_aa_inv) = k_aa.try_inverse() {
-        let condensed = k_m - &k_ua * k_aa_inv * k_ua.transpose();
-        0.5 * (&condensed + condensed.transpose())
-    } else {
-        k_m
-    };
+    // 1-point integration at (0, 0) for in-plane shear component.
+    {
+        let (g_r_c, g_s_c) = compute_j3d(&pre.initial_coords_3d, 0.0, 0.0);
+        let sqrt_g_c = g_r_c.cross(&g_s_c).norm();
+        let bm_c = b_m_mitc4_plus(pre, 0.0, 0.0);
+        // Extract shear row (row 2: 2ε₁₂) and integrate with weight 4
+        // (single point quadrature exact for constant integrands over [-1,1]²).
+        let b_shear: SMatrix<f64, 1, 24> = bm_c.fixed_rows::<1>(2).into();
+        k_m += b_shear.transpose() * c_shear * b_shear * (4.0 * sqrt_g_c);
+    }
+    let k_m = 0.5 * (&k_m + k_m.transpose());
 
     // --- Bending + shear with bubble condensation ---
     let mut knn_b = Mat24::zeros();
@@ -1048,14 +1151,7 @@ pub fn compute_ke_local(pre: &Mitc4Precomputed) -> Mat24 {
         k_drill += (&bd * bd.transpose()) * (pre.k_drill * w * sqrt_g);
     }
 
-    // return k_m + k_mb + k_bs + k_drill;
-    let final_k = k_m + k_mb_coup + k_mb + k_bs + k_drill;
-    for i in 0..24 {
-        if final_k[(i, i)] < 0.0 {
-            println!("K_local is indefinite! Negative diagonal at index {}: {}", i, final_k[(i, i)]);
-        }
-    }
-    final_k
+    k_m + k_mb_coup + k_mb + k_bs + k_drill
 }
 
 /// Compute element stiffness matrix in GLOBAL coordinates (24×24)
@@ -1246,13 +1342,6 @@ fn extract_membrane_rows(b6: &SMatrix<f64, 6, 24>) -> SMatrix<f64, 3, 24> {
 ///
 /// K_T = K_0 + K_L + K_sigma  (Total Lagrangian)
 pub fn compute_kt_global(pre: &Mitc4Precomputed, u_global: &Vec24) -> Mat24 {
-    // DEBUG: Force linear path for u=0 to isolate PETSc vs Formulation issues
-    if u_global.norm() < 1e-12 {
-        let k_local = compute_ke_local(pre);
-        let t24 = build_t24(pre);
-        return t24.transpose() * &k_local * &t24;
-    }
-
     // Transform displacements to local
     let t24 = build_t24(pre);
     let u_local = &t24 * u_global;
@@ -1292,15 +1381,6 @@ pub fn compute_kt_global(pre: &Mitc4Precomputed, u_global: &Vec24) -> Mat24 {
     let k_sigma = compute_geometric_stiffness_local(pre, &u_local);
 
     let k_t = k0 + k_l + k_sigma;
-
-    // DEBUG: Check for NaNs/Infs in final tangent matrix
-    for i in 0..24 {
-        for j in 0..24 {
-            if k_t[(i, j)].is_nan() || k_t[(i, j)].is_infinite() {
-                panic!("NaN/Inf detected in compute_kt_global at [{}, {}]: value={}", i, j, k_t[(i, j)]);
-            }
-        }
-    }
 
     // Symmetrize & transform
     let k_t_sym = 0.5 * (&k_t + k_t.transpose());
@@ -1401,6 +1481,44 @@ pub fn compute_fint_global(pre: &Mitc4Precomputed, u_global: &Vec24, nonlinear: 
         // =====================================================================
         // Nonlinear f_int: full MITC4+ ABD formulation with bubble condensation
         // =====================================================================
+        // Recover condensed membrane EAS internal DOFs (Q4E4) so the nonlinear
+        // residual is consistent with the membrane stiffness condensation path.
+        let (g_r0, g_s0) = compute_j3d(&pre.initial_coords_3d, 0.0, 0.0);
+        let sqrt_g0 = g_r0.cross(&g_s0).norm();
+        let (j_loc0, _) = compute_j_loc_at(&pre.initial_coords_3d, &pre.e1, &pre.e2, 0.0, 0.0);
+        let t0 = covariant_to_local_mapping(&j_loc0);
+
+        let mut k_ua: SMatrix<f64, 24, 4> = SMatrix::zeros();
+        let mut k_aa: SMatrix<f64, 4, 4> = SMatrix::zeros();
+        let mut g_eas_gp: [SMatrix<f64, 3, 4>; N_GAUSS] = [SMatrix::<f64, 3, 4>::zeros(); N_GAUSS];
+
+        for g in 0..N_GAUSS {
+            let xi = GAUSS_XI[g];
+            let eta = GAUSS_ETA[g];
+            let sqrt_g = pre.gp_jacobians[g].sqrt_g;
+            let w = GAUSS_W[g];
+
+            let scale = sqrt_g0 / sqrt_g.max(1e-14);
+            let mut m_eas: SMatrix<f64, 3, 4> = SMatrix::zeros();
+            m_eas[(0, 0)] = xi;
+            m_eas[(1, 1)] = eta;
+            m_eas[(2, 2)] = xi * eta;
+            m_eas[(1, 3)] = xi;
+            let g_eas = scale * t0 * m_eas;
+            g_eas_gp[g] = g_eas;
+
+            let bm = b_m_mitc4_plus(pre, xi, eta);
+            let factor = w * sqrt_g;
+            k_ua += (bm.transpose() * cm * &g_eas) * factor;
+            k_aa += (g_eas.transpose() * cm * &g_eas) * factor;
+        }
+
+        let alpha_eas: SVector<f64, 4> = if let Some(k_aa_inv) = k_aa.try_inverse() {
+            -k_aa_inv * k_ua.transpose() * u_local
+        } else {
+            SVector::<f64, 4>::zeros()
+        };
+
         // Pre-loop: build bubble condensation operator (bending + shear combined)
         // u_b = bubble_op · u_local   where bubble_op = -kbb_inv · knb^T
         // knb = K_nb^b + K_nb^s, kbb = K_bb^b + K_bb^s
@@ -1455,13 +1573,16 @@ pub fn compute_fint_global(pre: &Mitc4Precomputed, u_global: &Vec24, nonlinear: 
             let bm_l = b_m_mitc4_plus(pre, xi, eta);
             let eps_m_linear = bm_l * &u_local;
 
+            // Condensed membrane EAS enhancement: G(ξ,η) · ᾱ
+            let eps_m_eas = g_eas_gp[g] * alpha_eas;
+
             // Nonlinear Green-Lagrange correction: ε_NL = ½·(H^T·H)_Voigt
             let eps_m_nl = Vector3::new(
                 0.5 * (h_mat[(0, 0)].powi(2) + h_mat[(1, 0)].powi(2) + h_mat[(2, 0)].powi(2)),
                 0.5 * (h_mat[(0, 1)].powi(2) + h_mat[(1, 1)].powi(2) + h_mat[(2, 1)].powi(2)),
                 h_mat[(0, 0)] * h_mat[(0, 1)] + h_mat[(1, 0)] * h_mat[(1, 1)] + h_mat[(2, 0)] * h_mat[(2, 1)],
             );
-            let eps_m = eps_m_linear + eps_m_nl;
+            let eps_m = eps_m_linear + eps_m_eas + eps_m_nl;
 
             // B_NL for virtual work: B_total = B_mitc4+ + B_NL
             let bnl = compute_b_nl(&gj.dh, &h_mat);
@@ -1498,12 +1619,6 @@ pub fn compute_fint_global(pre: &Mitc4Precomputed, u_global: &Vec24, nonlinear: 
         f += bk.transpose() * &m_resultant * factor;
         f += bs_nodal.transpose() * &q_resultant * factor;
 
-        // DEBUG: Check for NaNs in internal force contribution
-        for i in 0..24 {
-            if f[i].is_nan() || f[i].is_infinite() {
-                panic!("NaN/Inf detected in compute_fint_global loop at node/dof {}: value={}", i, f[i]);
-            }
-        }
     }
 
         // =====================================================================
@@ -2332,6 +2447,40 @@ mod tests {
         assert!(
             rel_err < 0.05,
             "K_T·δu ≈ f_int(u+δu) - f_int(u) for rotational DOFs: rel_err = {rel_err:.2e} (want < 5e-2)"
+        );
+    }
+
+    #[test]
+    fn test_drill_membrane_operator_zero_for_uniform_drill() {
+        let pre = make_pre();
+        let bm_d = b_md_mitc4_plus(&pre, 0.0, 0.0);
+
+        let mut u = Vec24::zeros();
+        for i in 0..4 {
+            u[6 * i + 5] = 1.0e-3;
+        }
+
+        let eps = bm_d * u;
+        assert!(
+            eps.norm() < 1.0e-12,
+            "uniform drill rotation must not create membrane strain, got {:?}",
+            eps
+        );
+    }
+
+    #[test]
+    fn test_drill_membrane_operator_detects_drill_gradient() {
+        let pre = make_pre();
+        let bm_d = b_md_mitc4_plus(&pre, 0.0, 0.0);
+
+        let mut u = Vec24::zeros();
+        u[5] = -1.0e-3;
+        u[11] = 1.0e-3;
+
+        let eps = bm_d * u;
+        assert!(
+            eps.norm() > 1.0e-12,
+            "drill gradient should create membrane strain contribution"
         );
     }
 

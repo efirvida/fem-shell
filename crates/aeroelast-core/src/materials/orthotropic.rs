@@ -53,7 +53,7 @@ impl OrthotropicMaterial {
         let q12 = self.nu12 * self.e2 / denom;
         let q66 = self.g12;
 
-        println!("[OrthotropicMaterial] Q matrix: denom={:.4e}, q11={:.4e}, q22={:.4e}", denom, q11, q22);
+        // println!("[OrthotropicMaterial] Q matrix: denom={:.4e}, q11={:.4e}, q22={:.4e}", denom, q11, q22);
 
         Matrix3::new(
             q11, q12, 0.0,

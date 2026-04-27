@@ -396,7 +396,7 @@ class TestLinearStaticCantilever:
         print(f"\nLinear FX: FEM={ux:.3e}, Ana={ana:.3e}, Error={error:.1f}%")
 
         # Should match within 10%
-        assert error < 40.0, f"FY error {error:.1f}% too large"
+        assert error < 5.0, f"FY error {error:.1f}% too large"
 
     def test_fy_in_plane(self):
         """FY: In-plane loading (shear/membrane combination)."""
@@ -441,7 +441,7 @@ class TestLinearStaticCantilever:
 
         print(f"\nLinear FY: FEM={uy:.3e}, Ana={ana:.3e}")
 
-        assert error < 40.0, f"FY error {error:.1f}% too large"
+        assert error < 5.0, f"FY error {error:.1f}% too large"
 
     def test_fz_out_of_plane(self):
         """FZ: Out-of-plane bending - compare with beam theory."""
