@@ -10,9 +10,9 @@
 /// At runtime this can be switched to arc-length via `-snes_type newtonal`
 /// (e.g. from the simulation YAML under `solver_options`).
 ///
-/// The inner KSP uses CG + ICC (same as the linear static solver) — ICC is
-/// the correct preconditioner for the symmetric-positive-definite tangent
-/// stiffness K_T that arises in structural FEM.
+/// The inner KSP uses a direct solve by default (`preonly + lu`). The nonlinear
+/// shell tangent can become indefinite during early Newton iterations, so SPD-
+/// only iterative choices such as `cg + icc` are not robust here.
 ///
 /// # Boundary conditions
 /// Dirichlet DOFs are enforced in both the residual and the Jacobian:
@@ -26,16 +26,17 @@ use std::ffi::c_void;
 use aeroelast_core::assembly::MeshAssembler;
 
 use super::super::assembler::{assemble_seq_aij, create_vec, ensure_initialized};
-use super::super::infra::ffi::{self, PETSC_DEFAULT, PETSC_INFINITY};
-use super::super::infra::mat::{check, PetscError, PetscMat};
-use super::static_linear::build_vec_from_slice;
+use super::super::infra::ffi::{self, PETSC_INFINITY};
+use super::super::infra::mat::{check, PetscError};
 
 // ── C-string constants ────────────────────────────────────────────────────────
 
-const KSPCG: &std::ffi::CStr =
-    unsafe { std::ffi::CStr::from_bytes_with_nul_unchecked(b"cg\0") };
-const PCICC: &std::ffi::CStr =
-    unsafe { std::ffi::CStr::from_bytes_with_nul_unchecked(b"icc\0") };
+const KSPPREONLY: &std::ffi::CStr =
+    unsafe { std::ffi::CStr::from_bytes_with_nul_unchecked(b"preonly\0") };
+const PCLU: &std::ffi::CStr =
+    unsafe { std::ffi::CStr::from_bytes_with_nul_unchecked(b"lu\0") };
+const SNESLINESEARCHBT: &std::ffi::CStr =
+    unsafe { std::ffi::CStr::from_bytes_with_nul_unchecked(b"bt\0") };
 
 // ── Configuration ─────────────────────────────────────────────────────────────
 
@@ -328,16 +329,33 @@ pub fn nonlinear_static_solve(
             "SNESSetTolerances",
         )?;
 
-        // ── Inner KSP: CG + ICC (same as linear static solver) ───────────
+        // ── Inner KSP: direct solve by default for non-SPD tangents ───────
         let mut ksp: ffi::KSP = std::ptr::null_mut();
         check(ffi::SNESGetKSP(snes, &mut ksp), "SNESGetKSP")?;
-        check(ffi::KSPSetType(ksp, KSPCG.as_ptr()), "KSPSetType(cg)")?;
+        check(
+            ffi::KSPSetType(ksp, KSPPREONLY.as_ptr()),
+            "KSPSetType(preonly)",
+        )?;
         let mut pc: ffi::PC = std::ptr::null_mut();
         check(ffi::KSPGetPC(ksp, &mut pc), "KSPGetPC")?;
-        check(ffi::PCSetType(pc, PCICC.as_ptr()), "PCSetType(icc)")?;
+        check(ffi::PCSetType(pc, PCLU.as_ptr()), "PCSetType(lu)")?;
         check(
             ffi::KSPSetTolerances(ksp, 1e-8, 1e-12, PETSC_INFINITY, 1000),
             "KSPSetTolerances",
+        )?;
+
+        // Explicitly use a backtracking line search. The default implicit
+        // choice is too opaque while debugging shell nonlinear solves, and
+        // pure end-moment loading is sensitive to step acceptance.
+        let mut linesearch: ffi::SNESLineSearch = std::ptr::null_mut();
+        check(ffi::SNESGetLineSearch(snes, &mut linesearch), "SNESGetLineSearch")?;
+        check(
+            ffi::SNESLineSearchSetType(linesearch, SNESLINESEARCHBT.as_ptr()),
+            "SNESLineSearchSetType(bt)",
+        )?;
+        check(
+            ffi::SNESLineSearchSetDamping(linesearch, 1.0),
+            "SNESLineSearchSetDamping",
         )?;
 
         // ── Allow runtime overrides ───────────────────────────────────────
@@ -370,6 +388,22 @@ pub fn nonlinear_static_solve(
             ffi::SNESGetFunctionNorm(snes, &mut fnorm),
             "SNESGetFunctionNorm",
         )?;
+
+        let mut linear_reason: i32 = 0;
+        check(
+            ffi::KSPGetConvergedReason(ksp, &mut linear_reason),
+            "KSPGetConvergedReason",
+        )?;
+
+        if reason <= 0 {
+            eprintln!(
+                "[nonlinear_static_solve] SNES diverged: snes_reason={}, ksp_reason={}, iterations={}, |R|={:.3e}",
+                reason,
+                linear_reason,
+                its,
+                fnorm,
+            );
+        }
 
         // ── Cleanup ───────────────────────────────────────────────────────
         check(ffi::SNESDestroy(&mut snes), "SNESDestroy")?;

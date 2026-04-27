@@ -210,6 +210,9 @@ pub type KSP = *mut c_void;
 /// Opaque PC handle.
 pub type PC = *mut c_void;
 
+/// Opaque PETSc SNES line search handle.
+pub type SNESLineSearch = *mut c_void;
+
 #[link(name = "petsc")]
 extern "C" {
     pub fn KSPCreate(comm: MPI_Comm, ksp: *mut KSP) -> PetscErrorCode;
@@ -305,6 +308,15 @@ extern "C" {
     pub fn SNESGetApplicationContext(snes: SNES, usrP: *mut *mut c_void) -> PetscErrorCode;
     pub fn SNESDestroy(snes: *mut SNES) -> PetscErrorCode;
     pub fn SNESGetKSP(snes: SNES, ksp: *mut KSP) -> PetscErrorCode;
+    pub fn SNESGetLineSearch(snes: SNES, linesearch: *mut SNESLineSearch) -> PetscErrorCode;
+    pub fn SNESLineSearchSetType(
+        linesearch: SNESLineSearch,
+        type_: *const i8,
+    ) -> PetscErrorCode;
+    pub fn SNESLineSearchSetDamping(
+        linesearch: SNESLineSearch,
+        damping: PetscReal,
+    ) -> PetscErrorCode;
 }
 
 #[link(name = "petsc")]

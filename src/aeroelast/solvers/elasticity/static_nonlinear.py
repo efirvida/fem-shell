@@ -103,6 +103,12 @@ class StaticNonlinearSolver(Solver):
             conv_reason,
         )
 
+        if conv_reason <= 0:
+            raise RuntimeError(
+                "SNES diverged in StaticNonlinearSolver: "
+                f"reason={conv_reason}, iterations={iters}, residual={res_norm:.3e}"
+            )
+
         return self.u
 
     def print_solver_info(self) -> None:

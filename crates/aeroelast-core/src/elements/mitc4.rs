@@ -2289,6 +2289,52 @@ mod tests {
         );
     }
 
+    /// Same directional-derivative check, but exciting rotational DOFs.
+    /// The large-rotation cantilever benchmark loads theta_y directly, so a
+    /// translational-only Jacobian test can miss the actual inconsistency.
+    #[test]
+    fn test_kt_fint_directional_derivative_rotations() {
+        let pre = make_pre();
+
+        // Base state with mixed translations and rotations.
+        let mut u_base = Vec24::zeros();
+        for i in 0..4 {
+            u_base[6 * i] = 2.0e-4 * (i as f64 + 1.0);
+            u_base[6 * i + 2] = -1.0e-4 * (i as f64 + 1.0);
+            u_base[6 * i + 4] = 3.0e-4;
+        }
+
+        let k_t = compute_kt_global(&pre, &u_base);
+
+        let delta = 1.0e-6_f64;
+        let mut du = Vec24::zeros();
+        // theta_x / theta_y perturbations in an antisymmetric pattern so the
+        // increment is not projected onto a trivial rigid rotation mode.
+        du[3] = delta;
+        du[4] = delta;
+        du[9] = -delta;
+        du[10] = delta;
+        du[15] = delta;
+        du[16] = -delta;
+        du[21] = -delta;
+        du[22] = -delta;
+
+        let k_t_du = &k_t * &du;
+
+        let f_plus = compute_fint_global(&pre, &(&u_base + &du), true);
+        let f_base = compute_fint_global(&pre, &u_base, true);
+        let f_diff = &f_plus - &f_base;
+
+        let num = (&k_t_du - &f_diff).norm();
+        let denom = f_diff.norm().max(1.0);
+        let rel_err = if denom > 1e-30 { num / denom } else { 0.0 };
+
+        assert!(
+            rel_err < 0.05,
+            "K_T·δu ≈ f_int(u+δu) - f_int(u) for rotational DOFs: rel_err = {rel_err:.2e} (want < 5e-2)"
+        );
+    }
+
     #[test]
     fn test_kt_zero_matches_ke() {
         // Verification: K_T(u=0) must be exactly equal to K_linear
