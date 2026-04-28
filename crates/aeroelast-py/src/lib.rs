@@ -3299,6 +3299,527 @@ fn run_linear_elastic_fsi(
     ))
 }
 
+/// High-level FSI entry point — Rust internalises setup.
+///
+/// Unlike `run_linear_elastic_fsi`, this binding accepts the **global** (not
+/// already-reduced) stiffness and mass matrices, plus a `free_dofs` array.
+/// Rust performs:
+///   1. BC reduction (extract free-DOF sub-system from global COO)
+///   2. Row-sum mass lumping
+///   3. Rayleigh damping  C = η_k · K_red + η_m · M_lump
+///   4. Interface DOF remapping from global to reduced indices
+///   5. Full preCICE coupling loop via [`LinearElasticFsiSolver`]
+///
+/// # Arguments
+///
+///   k_rows / k_cols / k_vals  – global stiffness K (COO)
+///   m_rows / m_cols / m_vals  – global consistent mass M (COO)
+///   free_dofs                 – sorted free (unconstrained) global DOF indices
+///   eta_k                     – stiffness-proportional Rayleigh coefficient
+///   eta_m                     – mass-proportional Rayleigh coefficient
+///   beta / gamma / dt         – Newmark-β parameters
+///   interface_coords          – flat coupling-mesh node coordinates
+///   interface_dofs_global     – DOF indices in the **global** system
+///   mesh_dims                 – spatial dimension of coupling mesh (2 or 3)
+///   participant_name / config_file / coupling_mesh / write_data / read_data
+///                             – preCICE configuration
+///   ramp_time                 – force ramp-up duration (0.0 = no ramp)
+///   force_max                 – optional per-node force cap (None = no cap)
+///   u0 / v0 / a0              – optional initial displacement / velocity /
+///                               acceleration in the **reduced** DOF space
+///                               (pass None for a cold start)
+///   t0                        – simulation start time (0.0 for cold start)
+///
+/// # Returns
+///   (displacement_history, velocity_history, acceleration_history, times)
+#[pyfunction]
+#[cfg(feature = "fsi")]
+#[allow(clippy::too_many_arguments)]
+fn run_fsi_solver(
+    py: Python<'_>,
+    // Global stiffness K (COO)
+    k_rows: PyReadonlyArray1<i32>,
+    k_cols: PyReadonlyArray1<i32>,
+    k_vals: PyReadonlyArray1<f64>,
+    // Global consistent mass M (COO)
+    m_rows: PyReadonlyArray1<i32>,
+    m_cols: PyReadonlyArray1<i32>,
+    m_vals: PyReadonlyArray1<f64>,
+    // BC reduction
+    free_dofs: PyReadonlyArray1<i32>,
+    // Rayleigh damping
+    eta_k: f64,
+    eta_m: f64,
+    // Newmark parameters
+    beta: f64,
+    gamma: f64,
+    dt: f64,
+    // Interface definition (global DOF numbering)
+    interface_coords: PyReadonlyArray1<f64>,
+    interface_dofs_global: PyReadonlyArray1<usize>,
+    mesh_dims: usize,
+    // preCICE configuration
+    participant_name: &str,
+    config_file: &str,
+    coupling_mesh: &str,
+    write_data_name: &str,
+    read_data_name: &str,
+    ramp_time: f64,
+    force_max: Option<f64>,
+    // Optional restart state (reduced DOF space)
+    u0: Option<PyReadonlyArray1<f64>>,
+    v0: Option<PyReadonlyArray1<f64>>,
+    a0: Option<PyReadonlyArray1<f64>>,
+    t0: f64,
+    // Optional per-step callback: callable(t, time_step, dt, u_red, v_red, a_red)
+    step_callback: Option<Py<PyAny>>,
+) -> PyResult<(Vec<Vec<f64>>, Vec<Vec<f64>>, Vec<Vec<f64>>, Vec<f64>)> {
+    use aeroelast_solvers::petsc::elasticity::dynamic_newmark::NewmarkStepper;
+    use aeroelast_solvers::petsc::fsi::linear_elastic::{
+        FsiConfig, FsiInitialState, LinearElasticFsiSolver,
+    };
+    use aeroelast_solvers::petsc::fsi::setup;
+    use pyo3::exceptions::PyRuntimeError;
+
+    // Extract input slices.
+    let kr = k_rows.as_slice().map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
+    let kc = k_cols.as_slice().map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
+    let kv = k_vals.as_slice().map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
+    let mr = m_rows.as_slice().map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
+    let mc = m_cols.as_slice().map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
+    let mv = m_vals.as_slice().map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
+    let fd = free_dofs.as_slice().map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
+    let icoords: Vec<f64> = interface_coords
+        .as_slice()
+        .map_err(|e| PyRuntimeError::new_err(e.to_string()))?
+        .to_vec();
+    let idofs_global: Vec<usize> = interface_dofs_global
+        .as_slice()
+        .map_err(|e| PyRuntimeError::new_err(e.to_string()))?
+        .to_vec();
+
+    // ── 1. BC reduction ───────────────────────────────────────────────────────
+    let (kr_red, kc_red, kv_red) = setup::reduce_coo(kr, kc, kv, fd);
+    let (_, _, mv_red) = setup::reduce_coo(mr, mc, mv, fd);
+    let n_free = fd.len();
+
+    // ── 2. Extract lumped diagonal from the reduced M ─────────────────────────
+    // Python always passes M already row-sum lumped (diagonal COO).
+    // After reduce_coo the diagonal entries are preserved.  We collect
+    // them into a plain f64 vector indexed by reduced DOF.
+    let mut m_diag = vec![0.0f64; n_free];
+    for (row, &v) in (0..).zip(mv_red.iter()) {
+        // The reduced M diagonal has exactly n_free entries in sorted order.
+        if row < n_free {
+            m_diag[row] += v.abs();
+        }
+    }
+
+    // ── 3. Expand diagonal M into K's sparsity (NewmarkStepper requirement) ───
+    // NewmarkStepper requires K, M, C to share the SAME sparsity pattern.
+    // Expanding M_lump (diagonal) to K's full sparsity inserts zeros at
+    // off-diagonal positions, which is semantically correct for lumped M.
+    let mv_expanded = setup::expand_diag_to_sparsity(&m_diag, &kr_red, &kc_red);
+
+    // ── 4. Rayleigh damping C = η_k·K + η_m·M (in K's sparsity) ─────────────
+    let cv_red: Vec<f64> = kv_red
+        .iter()
+        .zip(mv_expanded.iter())
+        .map(|(&k, &m)| eta_k * k + eta_m * m)
+        .collect();
+
+    // ── 5. Interface DOF remapping (global → reduced) ─────────────────────────
+    let idofs_red: Vec<usize> = setup::remap_interface_dofs(&idofs_global, fd);
+
+    // ── 6. Owned String copies (cannot borrow &str across potential GIL ops) ──
+    let participant_name = participant_name.to_string();
+    let config_file = config_file.to_string();
+    let coupling_mesh = coupling_mesh.to_string();
+    let write_data_name = write_data_name.to_string();
+    let read_data_name = read_data_name.to_string();
+
+    // ── 7. Build Newmark stepper ──────────────────────────────────────────────
+    // K, M_expanded, and C all share the same sparsity (kr_red/kc_red).
+    let stepper = NewmarkStepper::new(
+        &kr_red, &kc_red, &kv_red,
+        &kr_red, &kc_red, &mv_expanded,
+        &kr_red, &kc_red, &cv_red,
+        n_free, beta, gamma, dt,
+    )
+    .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
+
+    let config = FsiConfig {
+        participant_name,
+        config_file,
+        coupling_mesh,
+        write_data: write_data_name,
+        read_data: read_data_name,
+        ramp_time,
+        force_max,
+    };
+
+    // ── 8. Optionally extract initial state for restart ───────────────────────
+    let initial_state = if let (Some(u_arr), Some(v_arr), Some(a_arr)) = (u0, v0, a0) {
+        let u = u_arr
+            .as_slice()
+            .map_err(|e| PyRuntimeError::new_err(e.to_string()))?
+            .to_vec();
+        let v = v_arr
+            .as_slice()
+            .map_err(|e| PyRuntimeError::new_err(e.to_string()))?
+            .to_vec();
+        let a = a_arr
+            .as_slice()
+            .map_err(|e| PyRuntimeError::new_err(e.to_string()))?
+            .to_vec();
+        Some(FsiInitialState { u, v, a, t: t0 })
+    } else {
+        None
+    };
+
+    // ── 9. Run solver ─────────────────────────────────────────────────────────
+    let mut solver = {
+        let s = LinearElasticFsiSolver::new(stepper, config, icoords, idofs_red, mesh_dims);
+        let s = if let Some(state) = initial_state {
+            s.with_initial_state(state)
+        } else {
+            s
+        };
+        if let Some(py_cb) = step_callback {
+            s.with_step_callback(move |t, time_step, dt, u, v, a, force_mag, forces_iface| {
+                Python::attach(|py| {
+                    let u_arr = Array1::from(u.to_vec()).into_pyarray(py);
+                    let v_arr = Array1::from(v.to_vec()).into_pyarray(py);
+                    let a_arr = Array1::from(a.to_vec()).into_pyarray(py);
+                    let fi_arr = Array1::from(forces_iface.to_vec()).into_pyarray(py);
+                    py_cb
+                        .call1(py, (t, time_step as u64, dt, u_arr, v_arr, a_arr, force_mag, fi_arr))
+                        .map(|_| ())
+                        .map_err(|e| {
+                            aeroelast_solvers::petsc::fsi::linear_elastic::FsiError::CallbackError(
+                                e.to_string(),
+                            )
+                        })
+                })
+            })
+        } else {
+            s
+        }
+    };
+
+    let _ = py; // GIL is held; preCICE may release internally via C
+    let result = solver
+        .run()
+        .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
+
+    Ok((
+        result.displacement_history,
+        result.velocity_history,
+        result.acceleration_history,
+        result.times,
+    ))
+}
+
+// ── run_stress_stiffened_fsi_solver ───────────────────────────────────────────
+/// Identical to `run_fsi_solver` but uses `StressStiffenedFsiSolver` which rebuilds
+/// the geometric stiffness K_G every `kg_update_interval` converged steps.
+///
+/// Extra arguments compared to `run_fsi_solver`:
+///   assembler          – `PyMeshAssembler` instance (for stress recovery and K_G assembly)
+///   n_full_dofs        – total DOF count in the unreduced system
+///   kg_update_interval – rebuild K_G every N converged steps (1 = every step)
+#[pyfunction]
+#[cfg(feature = "fsi")]
+#[allow(clippy::too_many_arguments)]
+fn run_stress_stiffened_fsi_solver(
+    py: Python<'_>,
+    // Stress-stiffening extras
+    assembler: &PyMeshAssembler,
+    n_full_dofs: usize,
+    kg_update_interval: usize,
+    // Global stiffness K (COO)
+    k_rows: PyReadonlyArray1<i32>,
+    k_cols: PyReadonlyArray1<i32>,
+    k_vals: PyReadonlyArray1<f64>,
+    // Global consistent mass M (COO)
+    m_rows: PyReadonlyArray1<i32>,
+    m_cols: PyReadonlyArray1<i32>,
+    m_vals: PyReadonlyArray1<f64>,
+    // BC reduction
+    free_dofs: PyReadonlyArray1<i32>,
+    // Rayleigh damping
+    eta_k: f64,
+    eta_m: f64,
+    // Newmark parameters
+    beta: f64,
+    gamma: f64,
+    dt: f64,
+    // Interface definition (global DOF numbering)
+    interface_coords: PyReadonlyArray1<f64>,
+    interface_dofs_global: PyReadonlyArray1<usize>,
+    mesh_dims: usize,
+    // preCICE configuration
+    participant_name: &str,
+    config_file: &str,
+    coupling_mesh: &str,
+    write_data_name: &str,
+    read_data_name: &str,
+    ramp_time: f64,
+    force_max: Option<f64>,
+    // Optional restart state (reduced DOF space)
+    u0: Option<PyReadonlyArray1<f64>>,
+    v0: Option<PyReadonlyArray1<f64>>,
+    a0: Option<PyReadonlyArray1<f64>>,
+    t0: f64,
+    // Optional per-step callback
+    step_callback: Option<Py<PyAny>>,
+) -> PyResult<(Vec<Vec<f64>>, Vec<Vec<f64>>, Vec<Vec<f64>>, Vec<f64>)> {
+    use aeroelast_solvers::petsc::elasticity::dynamic_newmark::NewmarkStepper;
+    use aeroelast_solvers::petsc::fsi::linear_elastic::{FsiConfig, FsiInitialState};
+    use aeroelast_solvers::petsc::fsi::stress_stiffened::StressStiffenedFsiSolver;
+    use aeroelast_solvers::petsc::fsi::setup;
+    use pyo3::exceptions::PyRuntimeError;
+
+    let kr = k_rows.as_slice().map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
+    let kc = k_cols.as_slice().map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
+    let kv = k_vals.as_slice().map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
+    let mr = m_rows.as_slice().map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
+    let mc = m_cols.as_slice().map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
+    let mv = m_vals.as_slice().map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
+    let fd = free_dofs.as_slice().map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
+    let icoords: Vec<f64> = interface_coords
+        .as_slice()
+        .map_err(|e| PyRuntimeError::new_err(e.to_string()))?
+        .to_vec();
+    let idofs_global: Vec<usize> = interface_dofs_global
+        .as_slice()
+        .map_err(|e| PyRuntimeError::new_err(e.to_string()))?
+        .to_vec();
+
+    // ── BC reduction ──────────────────────────────────────────────────────────
+    let (kr_red, kc_red, kv_red) = setup::reduce_coo(kr, kc, kv, fd);
+    let (_, _, mv_red) = setup::reduce_coo(mr, mc, mv, fd);
+    let n_free = fd.len();
+
+    let mut m_diag = vec![0.0f64; n_free];
+    for (row, &v) in (0..).zip(mv_red.iter()) {
+        if row < n_free {
+            m_diag[row] += v.abs();
+        }
+    }
+    let mv_expanded = setup::expand_diag_to_sparsity(&m_diag, &kr_red, &kc_red);
+
+    let cv_red: Vec<f64> = kv_red
+        .iter()
+        .zip(mv_expanded.iter())
+        .map(|(&k, &m)| eta_k * k + eta_m * m)
+        .collect();
+
+    let idofs_red: Vec<usize> = setup::remap_interface_dofs(&idofs_global, fd);
+
+    let participant_name = participant_name.to_string();
+    let config_file = config_file.to_string();
+    let coupling_mesh = coupling_mesh.to_string();
+    let write_data_name = write_data_name.to_string();
+    let read_data_name = read_data_name.to_string();
+
+    let stepper = NewmarkStepper::new(
+        &kr_red, &kc_red, &kv_red,
+        &kr_red, &kc_red, &mv_expanded,
+        &kr_red, &kc_red, &cv_red,
+        n_free, beta, gamma, dt,
+    )
+    .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
+
+    let config = FsiConfig {
+        participant_name,
+        config_file,
+        coupling_mesh,
+        write_data: write_data_name,
+        read_data: read_data_name,
+        ramp_time,
+        force_max,
+    };
+
+    let initial_state = if let (Some(u_arr), Some(v_arr), Some(a_arr)) = (u0, v0, a0) {
+        let u = u_arr.as_slice().map_err(|e| PyRuntimeError::new_err(e.to_string()))?.to_vec();
+        let v = v_arr.as_slice().map_err(|e| PyRuntimeError::new_err(e.to_string()))?.to_vec();
+        let a = a_arr.as_slice().map_err(|e| PyRuntimeError::new_err(e.to_string()))?.to_vec();
+        Some(FsiInitialState { u, v, a, t: t0 })
+    } else {
+        None
+    };
+
+    // Clone the inner assembler (MeshAssembler: Clone) for the Rust solver.
+    let rust_assembler = assembler.inner().clone();
+
+    let mut solver = {
+        let s = StressStiffenedFsiSolver::new(
+            stepper,
+            config,
+            icoords,
+            idofs_red,
+            mesh_dims,
+            rust_assembler,
+            fd.to_vec(),
+            n_full_dofs,
+            kg_update_interval,
+        );
+        let s = if let Some(state) = initial_state { s.with_initial_state(state) } else { s };
+        if let Some(py_cb) = step_callback {
+            s.with_step_callback(move |t, time_step, dt, u, v, a, force_mag, forces_iface| {
+                Python::attach(|py| {
+                    let u_arr = Array1::from(u.to_vec()).into_pyarray(py);
+                    let v_arr = Array1::from(v.to_vec()).into_pyarray(py);
+                    let a_arr = Array1::from(a.to_vec()).into_pyarray(py);
+                    let fi_arr = Array1::from(forces_iface.to_vec()).into_pyarray(py);
+                    py_cb
+                        .call1(py, (t, time_step as u64, dt, u_arr, v_arr, a_arr, force_mag, fi_arr))
+                        .map(|_| ())
+                        .map_err(|e| {
+                            aeroelast_solvers::petsc::fsi::linear_elastic::FsiError::CallbackError(
+                                e.to_string(),
+                            )
+                        })
+                })
+            })
+        } else {
+            s
+        }
+    };
+
+    let _ = py;
+    let result = solver
+        .run()
+        .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
+
+    Ok((
+        result.displacement_history,
+        result.velocity_history,
+        result.acceleration_history,
+        result.times,
+    ))
+}
+
+// ── compute_rayleigh_auto ─────────────────────────────────────────────────────
+/// Compute Rayleigh damping coefficients (η_k, η_m) from the global stiffness
+/// and mass COO matrices using the two-point formula.
+///
+/// Reduces K and M by the `free_dofs` mask, assembles PETSc matrices, runs a
+/// SLEPc modal analysis via the Rust `modal_solve` function, then applies:
+///
+///   η_k = 2 (ζ_i·ω_i − ζ_j·ω_j) / (ω_i² − ω_j²)  
+///   η_m = 2·ω_i·ω_j·(ζ_j·ω_i − ζ_i·ω_j) / (ω_i² − ω_j²)
+///
+/// This replaces the Python SLEPc boilerplate in `_compute_rayleigh_auto` and
+/// re-uses the same `modal.rs` solver that is used by the Rust modal analysis.
+///
+/// # Arguments
+/// * `k_rows`, `k_cols`, `k_vals` — global stiffness COO (full system)
+/// * `m_rows`, `m_cols`, `m_vals` — global consistent mass COO (full system)
+/// * `free_dofs`                   — sorted free (unconstrained) DOF indices
+/// * `num_modes`                   — number of modes to request from SLEPc
+/// * `mode_i`, `mode_j`            — 1-based mode indices for the two-point formula
+/// * `zeta_i`, `zeta_j`            — target damping ratios for modes i and j
+///
+/// # Returns
+/// `(eta_k, eta_m)` — stiffness-proportional and mass-proportional Rayleigh coefficients.
+#[pyfunction]
+fn compute_rayleigh_auto(
+    k_rows: PyReadonlyArray1<i32>,
+    k_cols: PyReadonlyArray1<i32>,
+    k_vals: PyReadonlyArray1<f64>,
+    m_rows: PyReadonlyArray1<i32>,
+    m_cols: PyReadonlyArray1<i32>,
+    m_vals: PyReadonlyArray1<f64>,
+    free_dofs: PyReadonlyArray1<i32>,
+    num_modes: usize,
+    mode_i: usize,
+    mode_j: usize,
+    zeta_i: f64,
+    zeta_j: f64,
+) -> PyResult<(f64, f64)> {
+    use aeroelast_solvers::petsc::fsi::setup;
+    use aeroelast_solvers::petsc::assembler::assemble_seq_aij;
+    use aeroelast_solvers::petsc::elasticity::modal::modal_solve;
+    use pyo3::exceptions::PyRuntimeError;
+    use pyo3::exceptions::PyValueError;
+
+    let kr = k_rows.as_slice().map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
+    let kc = k_cols.as_slice().map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
+    let kv = k_vals.as_slice().map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
+    let mr = m_rows.as_slice().map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
+    let mc = m_cols.as_slice().map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
+    let mv = m_vals.as_slice().map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
+    let fd = free_dofs.as_slice().map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
+
+    if mode_i == 0 || mode_j == 0 || mode_i == mode_j {
+        return Err(PyValueError::new_err(
+            "mode_i and mode_j must be distinct 1-based mode indices",
+        ));
+    }
+
+    let n_free = fd.len();
+
+    // ── Reduce K (and M sharing K's sparsity pattern) ─────────────────────
+    let (kr_red, kc_red, kv_red) = setup::reduce_coo(kr, kc, kv, fd);
+    let (_, _, mv_red)            = setup::reduce_coo(mr, mc, mv, fd);
+
+    // Lump mass diagonal from the reduced consistent mass
+    let mut m_diag = vec![0.0f64; n_free];
+    for (&row, &val) in kr_red.iter().zip(mv_red.iter()) {
+        if row >= 0 && (row as usize) < n_free {
+            m_diag[row as usize] += val.abs();
+        }
+    }
+    // Distribute diagonal values onto K's sparsity for PETSc assembly
+    let mv_expanded = setup::expand_diag_to_sparsity(&m_diag, &kr_red, &kc_red);
+
+    // ── Assemble PETSc matrices ────────────────────────────────────────────
+    let k_mat = assemble_seq_aij(&kr_red, &kc_red, &kv_red, n_free)
+        .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
+    let m_mat = assemble_seq_aij(&kr_red, &kc_red, &mv_expanded, n_free)
+        .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
+
+    // ── Modal analysis ─────────────────────────────────────────────────────
+    let result = modal_solve(&k_mat, &m_mat, num_modes)
+        .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
+
+    // Keep only positive eigenvalues (λ = ω²) — rigid body modes are near zero.
+    let pos_eigs: Vec<f64> = result
+        .eigenvalues
+        .iter()
+        .copied()
+        .filter(|&v| v > 1e-8)
+        .collect();
+
+    let max_mode = mode_i.max(mode_j);
+    if pos_eigs.len() < max_mode {
+        return Err(PyValueError::new_err(format!(
+            "Only {} positive modes converged, but mode {} was requested. \
+             Increase num_modes or check the model.",
+            pos_eigs.len(),
+            max_mode
+        )));
+    }
+
+    // ── Two-point Rayleigh formula ─────────────────────────────────────────
+    let omega_i = pos_eigs[mode_i - 1].sqrt();
+    let omega_j = pos_eigs[mode_j - 1].sqrt();
+    let denom = omega_i * omega_i - omega_j * omega_j;
+
+    if denom.abs() < 1e-16 {
+        return Err(PyValueError::new_err(
+            "modes i and j have identical frequencies; cannot compute Rayleigh coefficients",
+        ));
+    }
+
+    let eta_k = 2.0 * (zeta_i * omega_i - zeta_j * omega_j) / denom;
+    let eta_m = 2.0 * omega_i * omega_j * (zeta_j * omega_i - zeta_i * omega_j) / denom;
+
+    Ok((eta_k, eta_m))
+}
+
 /// Register all aeroelast functions into a PyModule.
 pub fn register_module(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(batch_ke_mitc3, m)?)?;    m.add_function(wrap_pyfunction!(batch_me_mitc3, m)?)?;
@@ -3344,6 +3865,11 @@ pub fn register_module(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(nonlinear_static_solve_coo, m)?)?;
     #[cfg(feature = "fsi")]
     m.add_function(wrap_pyfunction!(run_linear_elastic_fsi, m)?)?;
+    #[cfg(feature = "fsi")]
+    m.add_function(wrap_pyfunction!(run_fsi_solver, m)?)?;
+    #[cfg(feature = "fsi")]
+    m.add_function(wrap_pyfunction!(run_stress_stiffened_fsi_solver, m)?)?;
+    m.add_function(wrap_pyfunction!(compute_rayleigh_auto, m)?)?;
     m.add_class::<PyMeshModel>()?;
 
     m.add_class::<PyMeshAssembler>()?;
