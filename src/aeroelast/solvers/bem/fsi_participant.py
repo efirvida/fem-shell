@@ -599,9 +599,20 @@ class BEMFSIParticipant:
             _, _, Vt = np.linalg.svd(offsets_plane, full_matrices=False)
             chord_dir = Vt[0]
 
-            # Consistent orientation with the global normal direction
-            if np.dot(chord_dir, self._normal_dir) < 0:
-                chord_dir = -chord_dir
+            # Orient consistently using the most-aligned reference direction.
+            # For tip sections the chord is nearly perpendicular to normal_dir
+            # (dot ≈ sin(twist) ≈ 0), so the sign is numerical noise and can
+            # flip ±180°, corrupting delta_twist.  Using whichever of
+            # normal_dir / tangential_dir has the highest absolute projection
+            # guarantees a stable sign across all spanwise stations.
+            if abs(np.dot(chord_dir, self._tangential_dir)) >= abs(
+                np.dot(chord_dir, self._normal_dir)
+            ):
+                if np.dot(chord_dir, self._tangential_dir) < 0:
+                    chord_dir = -chord_dir
+            else:
+                if np.dot(chord_dir, self._normal_dir) < 0:
+                    chord_dir = -chord_dir
 
             norm = np.linalg.norm(chord_dir)
             if norm > 1e-12:
