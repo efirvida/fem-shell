@@ -3701,6 +3701,367 @@ fn run_stress_stiffened_fsi_solver(
     ))
 }
 
+// ── run_rotor_fsi_solver ──────────────────────────────────────────────────────
+/// Co-rotational FSI solver for rotating structures (rotor blades).
+///
+/// Wraps `RotorFsiSolver` with the full preCICE coupling loop including:
+/// - Rodrigues coordinate transforms (forces global→rotating, disps rotating→global)
+/// - Centrifugal, Coriolis, Euler, and gravity inertial body forces
+/// - Spin-softening K_SP diagonal update when |Δω| > `ksp_omega_threshold`
+/// - Geometric stiffness K_G rebuild every `kg_update_interval` converged steps
+/// - Four angular-velocity modes: "constant", "ramped", "computed", "ramped_computed"
+///
+/// # Returns
+/// `(displacement_history, velocity_history, acceleration_history, times)`
+/// where each history entry is a list of reduced-DOF arrays per converged step.
+#[pyfunction]
+#[cfg(feature = "fsi")]
+#[allow(clippy::too_many_arguments)]
+fn run_rotor_fsi_solver(
+    py: Python<'_>,
+    // ── Optional assembler (K_G) ──────────────────────────────────────────────
+    assembler: Option<&PyMeshAssembler>,
+    n_full_dofs: usize,
+    kg_update_interval: usize,
+    // ── Rotor geometry ────────────────────────────────────────────────────────
+    rotation_axis: Vec<f64>,
+    rotation_center: Vec<f64>,
+    // ── All-node data (full structural mesh, rotating frame) ──────────────────
+    all_node_coords: PyReadonlyArray1<f64>,
+    all_node_masses: PyReadonlyArray1<f64>,
+    // ── Angular-velocity provider ─────────────────────────────────────────────
+    omega_mode: &str,
+    omega: f64,
+    omega_target: Option<f64>,
+    t_ramp: Option<f64>,
+    moment_of_inertia: Option<f64>,
+    shaft_torque: Option<f64>,
+    // ── Inertial forces ───────────────────────────────────────────────────────
+    gravity: Vec<f64>,
+    include_centrifugal: bool,
+    include_coriolis: bool,
+    include_euler: bool,
+    // ── Stiffness updates ─────────────────────────────────────────────────────
+    include_kg: bool,
+    include_ksp: bool,
+    ksp_omega_threshold: f64,
+    // ── DOF layout ────────────────────────────────────────────────────────────
+    dofs_per_node: usize,
+    // ── Performance coefficients ──────────────────────────────────────────────
+    fluid_density: f64,
+    flow_velocity: f64,
+    rotor_radius: f64,
+    // ── Global stiffness K (COO) ──────────────────────────────────────────────
+    k_rows: PyReadonlyArray1<i32>,
+    k_cols: PyReadonlyArray1<i32>,
+    k_vals: PyReadonlyArray1<f64>,
+    // ── Global consistent mass M (COO) ────────────────────────────────────────
+    m_rows: PyReadonlyArray1<i32>,
+    m_cols: PyReadonlyArray1<i32>,
+    m_vals: PyReadonlyArray1<f64>,
+    // ── BC reduction ──────────────────────────────────────────────────────────
+    free_dofs: PyReadonlyArray1<i32>,
+    // ── Rayleigh damping ──────────────────────────────────────────────────────
+    eta_k: f64,
+    eta_m: f64,
+    // ── Newmark parameters ────────────────────────────────────────────────────
+    beta: f64,
+    gamma: f64,
+    dt: f64,
+    // ── Interface (global DOF numbering) ──────────────────────────────────────
+    interface_coords: PyReadonlyArray1<f64>,
+    interface_dofs_global: PyReadonlyArray1<usize>,
+    mesh_dims: usize,
+    // ── preCICE configuration ─────────────────────────────────────────────────
+    participant_name: &str,
+    config_file: &str,
+    coupling_mesh: &str,
+    write_data_name: &str,
+    read_data_name: &str,
+    ramp_time: f64,
+    force_max: Option<f64>,
+    // ── Optional GlobalSolidMesh for ω communication ──────────────────────────
+    omega_mesh_name: Option<String>,
+    omega_write_data: Option<String>,
+    omega_vertex_coord: Option<Vec<f64>>,
+    // ── Optional restart state (reduced DOF space) ────────────────────────────
+    u0: Option<PyReadonlyArray1<f64>>,
+    v0: Option<PyReadonlyArray1<f64>>,
+    a0: Option<PyReadonlyArray1<f64>>,
+    t0: f64,
+    theta0: f64,
+    // ── Optional per-step callback ────────────────────────────────────────────
+    step_callback: Option<Py<PyAny>>,
+) -> PyResult<(Vec<Vec<f64>>, Vec<Vec<f64>>, Vec<Vec<f64>>, Vec<f64>)> {
+    use aeroelast_solvers::petsc::elasticity::dynamic_newmark::NewmarkStepper;
+    use aeroelast_solvers::petsc::fsi::linear_elastic::{FsiConfig, FsiInitialState};
+    use aeroelast_solvers::petsc::fsi::rotor_fsi::{RotorFsiConfig, RotorFsiSolver};
+    use aeroelast_solvers::petsc::fsi::rotor_physics::OmegaProvider;
+    use aeroelast_solvers::petsc::fsi::setup;
+    use pyo3::exceptions::PyRuntimeError;
+    use pyo3::exceptions::PyValueError;
+
+    let kr = k_rows.as_slice().map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
+    let kc = k_cols.as_slice().map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
+    let kv = k_vals.as_slice().map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
+    let mr = m_rows.as_slice().map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
+    let mc = m_cols.as_slice().map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
+    let mv = m_vals.as_slice().map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
+    let fd = free_dofs.as_slice().map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
+    let icoords: Vec<f64> = interface_coords
+        .as_slice()
+        .map_err(|e| PyRuntimeError::new_err(e.to_string()))?
+        .to_vec();
+    let idofs_global: Vec<usize> = interface_dofs_global
+        .as_slice()
+        .map_err(|e| PyRuntimeError::new_err(e.to_string()))?
+        .to_vec();
+    let node_coords: Vec<f64> = all_node_coords
+        .as_slice()
+        .map_err(|e| PyRuntimeError::new_err(e.to_string()))?
+        .to_vec();
+    let node_masses: Vec<f64> = all_node_masses
+        .as_slice()
+        .map_err(|e| PyRuntimeError::new_err(e.to_string()))?
+        .to_vec();
+
+    // ── Validate geometry vectors ─────────────────────────────────────────────
+    if rotation_axis.len() != 3 || rotation_center.len() != 3 {
+        return Err(PyValueError::new_err(
+            "rotation_axis and rotation_center must have length 3",
+        ));
+    }
+    if gravity.len() != 3 {
+        return Err(PyValueError::new_err("gravity must have length 3"));
+    }
+
+    // ── BC reduction ──────────────────────────────────────────────────────────
+    let (kr_red, kc_red, kv_red) = setup::reduce_coo(kr, kc, kv, fd);
+    let (_, _, mv_red) = setup::reduce_coo(mr, mc, mv, fd);
+    let n_free = fd.len();
+
+    let mut m_diag = vec![0.0f64; n_free];
+    for (row, &v) in (0..).zip(mv_red.iter()) {
+        if row < n_free {
+            m_diag[row] += v.abs();
+        }
+    }
+    let mv_expanded = setup::expand_diag_to_sparsity(&m_diag, &kr_red, &kc_red);
+
+    let cv_red: Vec<f64> = kv_red
+        .iter()
+        .zip(mv_expanded.iter())
+        .map(|(&k, &m)| eta_k * k + eta_m * m)
+        .collect();
+
+    let idofs_red: Vec<usize> = setup::remap_interface_dofs(&idofs_global, fd);
+
+    // ── m_lumped_full: lump M COO over the full (unreduced) DOF space ─────────
+    let mut m_lumped_full = vec![0.0f64; n_full_dofs];
+    for (&row, &val) in mr.iter().zip(mv.iter()) {
+        if row >= 0 && (row as usize) < n_full_dofs {
+            m_lumped_full[row as usize] += val.abs();
+        }
+    }
+
+    // ── Build OmegaProvider ───────────────────────────────────────────────────
+    let omega_provider = match omega_mode {
+        "constant" => OmegaProvider::Constant { omega },
+        "ramped" => OmegaProvider::Ramped {
+            omega_target: omega_target.ok_or_else(|| {
+                PyValueError::new_err("omega_mode='ramped' requires omega_target")
+            })?,
+            t_ramp: t_ramp.ok_or_else(|| {
+                PyValueError::new_err("omega_mode='ramped' requires t_ramp")
+            })?,
+        },
+        "computed" => OmegaProvider::Computed {
+            moment_of_inertia: moment_of_inertia.ok_or_else(|| {
+                PyValueError::new_err("omega_mode='computed' requires moment_of_inertia")
+            })?,
+            shaft_torque: shaft_torque.unwrap_or(0.0),
+            omega,
+            alpha: 0.0,
+        },
+        "ramped_computed" => OmegaProvider::RampedComputed {
+            omega_target: omega_target.ok_or_else(|| {
+                PyValueError::new_err("omega_mode='ramped_computed' requires omega_target")
+            })?,
+            t_ramp: t_ramp.ok_or_else(|| {
+                PyValueError::new_err("omega_mode='ramped_computed' requires t_ramp")
+            })?,
+            moment_of_inertia: moment_of_inertia.ok_or_else(|| {
+                PyValueError::new_err("omega_mode='ramped_computed' requires moment_of_inertia")
+            })?,
+            shaft_torque: shaft_torque.unwrap_or(0.0),
+            omega,
+            alpha: 0.0,
+            ramp_completed: false,
+            current_time: t0,
+        },
+        other => {
+            return Err(PyValueError::new_err(format!(
+                "unknown omega_mode '{}'; expected 'constant', 'ramped', 'computed', or 'ramped_computed'",
+                other
+            )))
+        }
+    };
+
+    // ── Geometry arrays ───────────────────────────────────────────────────────
+    let axis: [f64; 3] = rotation_axis[..3]
+        .try_into()
+        .map_err(|_| PyValueError::new_err("rotation_axis must have exactly 3 elements"))?;
+    let center: [f64; 3] = rotation_center[..3]
+        .try_into()
+        .map_err(|_| PyValueError::new_err("rotation_center must have exactly 3 elements"))?;
+    let grav: [f64; 3] = gravity[..3]
+        .try_into()
+        .map_err(|_| PyValueError::new_err("gravity must have exactly 3 elements"))?;
+
+    let omega_vertex_coord_arr: Option<[f64; 3]> = omega_vertex_coord
+        .as_ref()
+        .map(|v| {
+            if v.len() != 3 {
+                return Err(PyValueError::new_err("omega_vertex_coord must have length 3"));
+            }
+            Ok([v[0], v[1], v[2]])
+        })
+        .transpose()?;
+
+    // ── preCICE strings ───────────────────────────────────────────────────────
+    let participant_name = participant_name.to_string();
+    let config_file = config_file.to_string();
+    let coupling_mesh = coupling_mesh.to_string();
+    let write_data_name = write_data_name.to_string();
+    let read_data_name = read_data_name.to_string();
+
+    // ── Newmark stepper ───────────────────────────────────────────────────────
+    let stepper = NewmarkStepper::new(
+        &kr_red, &kc_red, &kv_red,
+        &kr_red, &kc_red, &mv_expanded,
+        &kr_red, &kc_red, &cv_red,
+        n_free, beta, gamma, dt,
+    )
+    .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
+
+    // ── FSI base config ───────────────────────────────────────────────────────
+    let fsi_config = FsiConfig {
+        participant_name,
+        config_file,
+        coupling_mesh,
+        write_data: write_data_name,
+        read_data: read_data_name,
+        ramp_time,
+        force_max,
+    };
+
+    // ── Rotor FSI config ──────────────────────────────────────────────────────
+    let config = RotorFsiConfig {
+        fsi: fsi_config,
+        rotation_axis: axis,
+        rotation_center: center,
+        gravity: grav,
+        include_centrifugal,
+        include_coriolis,
+        include_euler,
+        include_kg,
+        kg_update_interval,
+        include_ksp,
+        ksp_omega_threshold,
+        dofs_per_node,
+        fluid_density,
+        flow_velocity,
+        rotor_radius,
+        omega_mesh_name,
+        omega_write_data,
+        omega_vertex_coord: omega_vertex_coord_arr,
+    };
+
+    // ── Initial state ─────────────────────────────────────────────────────────
+    let initial_state = if let (Some(u_arr), Some(v_arr), Some(a_arr)) = (u0, v0, a0) {
+        let u = u_arr.as_slice().map_err(|e| PyRuntimeError::new_err(e.to_string()))?.to_vec();
+        let v = v_arr.as_slice().map_err(|e| PyRuntimeError::new_err(e.to_string()))?.to_vec();
+        let a = a_arr.as_slice().map_err(|e| PyRuntimeError::new_err(e.to_string()))?.to_vec();
+        Some(FsiInitialState { u, v, a, t: t0 })
+    } else {
+        None
+    };
+
+    // ── Build and configure solver ────────────────────────────────────────────
+    let rust_assembler = assembler.map(|a| a.inner().clone());
+    let mut solver = {
+        let s = RotorFsiSolver::new(
+            stepper,
+            config,
+            icoords,
+            idofs_red,
+            mesh_dims,
+            omega_provider,
+            node_coords,
+            node_masses,
+            m_lumped_full,
+            kr_red,
+            kc_red,
+            fd.to_vec(),
+            n_full_dofs,
+            rust_assembler,
+        );
+        let s = if let Some(state) = initial_state {
+            s.with_initial_state(state, theta0)
+        } else {
+            s
+        };
+        if let Some(py_cb) = step_callback {
+            s.with_step_callback(move |t, step, dt, u, v, a, force_mag, forces_iface,
+                                        omega, alpha, theta, tau_aero, perf| {
+                Python::attach(|py| {
+                    let u_arr = Array1::from(u.to_vec()).into_pyarray(py);
+                    let v_arr = Array1::from(v.to_vec()).into_pyarray(py);
+                    let a_arr = Array1::from(a.to_vec()).into_pyarray(py);
+                    let fi_arr = Array1::from(forces_iface.to_vec()).into_pyarray(py);
+                    // PyO3 tuple conversion is limited to 12 elements.
+                    // Pack performance coefficients as a sub-tuple to stay within the limit.
+                    // Python callback receives:
+                    //   (t, step, dt, u, v, a, force_mag, fi,
+                    //    omega, alpha, theta, (tau_aero, ct, cp, cq, tsr))
+                    let perf_tuple = (perf.ct, perf.cp, perf.cq, perf.tsr);
+                    py_cb
+                        .call1(
+                            py,
+                            (
+                                t, step as u64, dt,
+                                u_arr, v_arr, a_arr,
+                                force_mag, fi_arr,
+                                omega, alpha, theta,
+                                (tau_aero, perf_tuple.0, perf_tuple.1, perf_tuple.2, perf_tuple.3),
+                            ),
+                        )
+                        .map(|_| ())
+                        .map_err(|e| {
+                            aeroelast_solvers::petsc::fsi::linear_elastic::FsiError::CallbackError(
+                                e.to_string(),
+                            )
+                        })
+                })
+            })
+        } else {
+            s
+        }
+    };
+
+    let _ = py;
+    let result = solver
+        .run()
+        .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
+
+    Ok((
+        result.displacement_history,
+        result.velocity_history,
+        result.acceleration_history,
+        result.times,
+    ))
+}
+
 // ── compute_rayleigh_auto ─────────────────────────────────────────────────────
 /// Compute Rayleigh damping coefficients (η_k, η_m) from the global stiffness
 /// and mass COO matrices using the two-point formula.
@@ -3870,6 +4231,8 @@ pub fn register_module(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(run_fsi_solver, m)?)?;
     #[cfg(feature = "fsi")]
     m.add_function(wrap_pyfunction!(run_stress_stiffened_fsi_solver, m)?)?;
+    #[cfg(feature = "fsi")]
+    m.add_function(wrap_pyfunction!(run_rotor_fsi_solver, m)?)?;
     #[cfg(feature = "fsi")]
     m.add_function(wrap_pyfunction!(compute_rayleigh_auto, m)?)?;
     m.add_class::<PyMeshModel>()?;
