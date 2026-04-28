@@ -396,6 +396,9 @@ pub struct NewmarkStepper {
     k_vals: Vec<f64>,
     m_vals: Vec<f64>,
     c_vals: Vec<f64>,
+    /// Geometric stiffness values at the same COO positions as `k_vals`.
+    /// All zeros until `update_geometric_stiffness` is called.
+    kg_vals: Vec<f64>,
 
     // ── Pre-factorized effective stiffness ───────────────────────────────────
     k_eff: PetscMat,
@@ -506,12 +509,15 @@ impl NewmarkStepper {
         // Initial acceleration a₀ = M⁻¹·F₀  (F₀ = 0 at rest → a₀ = 0)
         let a_init = vec![0.0f64; n_dofs];
 
+        let kg_vals = vec![0.0f64; k_vals.len()];
+
         Ok(Self {
             rows: k_rows.to_vec(),
             cols: k_cols.to_vec(),
             k_vals: k_vals.to_vec(),
             m_vals: m_vals.to_vec(),
             c_vals: c_vals.to_vec(),
+            kg_vals,
             k_eff,
             mat_m,
             mat_c,
@@ -534,13 +540,20 @@ impl NewmarkStepper {
         })
     }
 
-    /// Rebuild `K_eff`, `mat_m`, `mat_c` when `dt` has changed.
+    /// Rebuild `K_eff`, `mat_m`, `mat_c` when `dt` has changed (or after a K_G update).
     fn refactorize(&mut self, dt: f64) -> Result<(), PetscError> {
         let [a0, a1, a2, a3, a4, a5, a6, a7] = Self::compute_coeffs(self.beta, self.gamma, dt);
+        // K_eff = (K + K_G) + a0·M + a1·C
+        let k_plus_kg: Vec<f64> = self
+            .k_vals
+            .iter()
+            .zip(self.kg_vals.iter())
+            .map(|(k, kg)| k + kg)
+            .collect();
         let (k_eff, mat_m, mat_c) = Self::build_matrices(
             &self.rows,
             &self.cols,
-            &self.k_vals,
+            &k_plus_kg,
             &self.m_vals,
             &self.c_vals,
             a0,
@@ -562,6 +575,29 @@ impl NewmarkStepper {
         Ok(())
     }
 
+    /// Update the geometric stiffness contribution and refactorize `K_eff`.
+    ///
+    /// `kg_vals` must have the **same length and COO ordering** as the elastic
+    /// stiffness `k_vals` supplied to `new()`.  Both are assembled by
+    /// `MeshAssembler::assemble_k` and `assemble_geometric_k` via the same
+    /// element loop, so their triplet order is identical.
+    ///
+    /// After this call `K_eff = (K + K_G) + a₀·M + a₁·C` using the current dt.
+    ///
+    /// # Errors
+    /// Returns a `PetscError` if the PETSc assembly or factorization fails.
+    pub fn update_geometric_stiffness(&mut self, kg_vals: &[f64]) -> Result<(), PetscError> {
+        assert_eq!(
+            kg_vals.len(),
+            self.k_vals.len(),
+            "kg_vals must have the same COO length as k_vals ({} != {})",
+            kg_vals.len(),
+            self.k_vals.len(),
+        );
+        self.kg_vals.copy_from_slice(kg_vals);
+        self.refactorize(self.dt_last)
+    }
+
     /// Advance the state by one time step.
     ///
     /// If `dt != self.dt_last`, the effective stiffness matrix is rebuilt and
@@ -575,6 +611,10 @@ impl NewmarkStepper {
     /// `StepResult` with the updated `(u, v, a, t)`.
     pub fn step(&mut self, f_ext: &[f64], dt: f64) -> Result<StepResult, PetscError> {
         assert_eq!(f_ext.len(), self.n_dofs, "f_ext length must equal n_dofs");
+        assert!(
+            dt > 0.0 && dt.is_finite(),
+            "dt must be positive and finite, got {dt}"
+        );
 
         // Lazy re-factorization
         if (dt - self.dt_last).abs() > f64::EPSILON * dt {
@@ -678,6 +718,21 @@ impl NewmarkStepper {
         self.v = v0.to_vec();
         self.a = a0.to_vec();
         self.t = 0.0;
+    }
+
+    /// Restore a complete state snapshot `(u, v, a, t)`.
+    ///
+    /// Unlike [`set_initial_conditions_with_acceleration`], this also restores
+    /// the simulation time `t` — required when restarting from a checkpoint
+    /// mid-simulation (t > 0).
+    pub fn set_state(&mut self, u: &[f64], v: &[f64], a: &[f64], t: f64) {
+        assert_eq!(u.len(), self.n_dofs, "u length must equal n_dofs");
+        assert_eq!(v.len(), self.n_dofs, "v length must equal n_dofs");
+        assert_eq!(a.len(), self.n_dofs, "a length must equal n_dofs");
+        self.u = u.to_vec();
+        self.v = v.to_vec();
+        self.a = a.to_vec();
+        self.t = t;
     }
 }
 
