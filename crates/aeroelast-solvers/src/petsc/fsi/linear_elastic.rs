@@ -25,6 +25,8 @@ pub enum FsiError {
     StepperError(crate::petsc::infra::mat::PetscError),
     /// preCICE reported a fatal error.
     PreciceError(String),
+    /// A per-step callback returned an error.
+    CallbackError(String),
 }
 
 impl std::fmt::Display for FsiError {
@@ -32,6 +34,7 @@ impl std::fmt::Display for FsiError {
         match self {
             FsiError::StepperError(e) => write!(f, "Newmark stepper error: {e}"),
             FsiError::PreciceError(msg) => write!(f, "preCICE error: {msg}"),
+            FsiError::CallbackError(msg) => write!(f, "step callback error: {msg}"),
         }
     }
 }
@@ -117,6 +120,36 @@ pub struct FsiResult {
 /// 1. Build a `NewmarkStepper` from the structural matrices.
 /// 2. Construct `LinearElasticFsiSolver::new(stepper, config, coords, dofs, dims)`.
 /// 3. Call `run()` — this blocks until the coupled simulation finishes.
+/// Initial structural state for restarting an FSI simulation.
+///
+/// When restarting from a checkpoint, provide the displacement `u`, velocity
+/// `v`, and acceleration `a` vectors (in the **reduced** DOF space), plus the
+/// simulation time `t` at which the checkpoint was saved.
+///
+/// Pass this to [`LinearElasticFsiSolver::with_initial_state`] before calling
+/// `run()`.
+#[derive(Debug, Clone)]
+pub struct FsiInitialState {
+    /// Displacement vector in the reduced DOF space.
+    pub u: Vec<f64>,
+    /// Velocity vector in the reduced DOF space.
+    pub v: Vec<f64>,
+    /// Acceleration vector in the reduced DOF space.
+    pub a: Vec<f64>,
+    /// Simulation time at the restart point.
+    pub t: f64,
+}
+
+/// Type alias for the per-step callback.
+///
+/// Invoked after each **converged** time window with:
+/// `(t, time_step, dt, u_red, v_red, a_red, force_mag, forces_interface)`
+/// where `time_step` is 1-based, all state arrays are in the reduced DOF space,
+/// `force_mag` is the L2 norm of the interface force vector (post ramp/cap),
+/// and `forces_interface` is the flat interface force array `[fx0,fy0,fz0, ...]`.
+pub type StepCallback =
+    Box<dyn Fn(f64, usize, f64, &[f64], &[f64], &[f64], f64, &[f64]) -> Result<(), FsiError> + Send>;
+
 pub struct LinearElasticFsiSolver {
     /// Structural time integrator.
     stepper: NewmarkStepper,
@@ -130,6 +163,10 @@ pub struct LinearElasticFsiSolver {
     interface_dofs: Vec<usize>,
     /// Spatial dimension of the coupling mesh (2 or 3).
     mesh_dims: usize,
+    /// Optional initial state for restart (non-zero t or non-zero u/v/a).
+    initial_state: Option<FsiInitialState>,
+    /// Optional per-step callback invoked after each converged time window.
+    step_callback: Option<StepCallback>,
 }
 
 impl LinearElasticFsiSolver {
@@ -154,7 +191,41 @@ impl LinearElasticFsiSolver {
             interface_coords,
             interface_dofs,
             mesh_dims,
+            initial_state: None,
+            step_callback: None,
         }
+    }
+
+    /// Set the initial structural state for a restart.
+    ///
+    /// When called before `run()`, the Newmark stepper is initialised to
+    /// `(u, v, a, t)` instead of the zero state.  This enables restarting
+    /// the coupled simulation from a saved structural checkpoint.
+    ///
+    /// # Panics
+    /// Panics if the state vector lengths do not match the stepper's DOF count.
+    pub fn with_initial_state(mut self, state: FsiInitialState) -> Self {
+        self.initial_state = Some(state);
+        self
+    }
+
+    /// Register a per-step callback invoked after each **converged** time window.
+    ///
+    /// The callback receives `(t, time_step, dt, u_red, v_red, a_red)` where:
+    /// - `t`         — physical time at the end of the converged window
+    /// - `time_step` — 1-based converged step index
+    /// - `dt`        — time step size used for this window
+    /// - `u/v/a_red` — displacement, velocity, acceleration in reduced DOF space
+    /// - `force_mag` — L2 norm of the interface force vector (post ramp/cap)
+    /// - `forces_interface` — flat interface force array `[fx0,fy0,fz0, ...]`
+    ///
+    /// If the callback returns `Err`, `run()` aborts immediately with that error.
+    pub fn with_step_callback<F>(mut self, cb: F) -> Self
+    where
+        F: Fn(f64, usize, f64, &[f64], &[f64], &[f64], f64, &[f64]) -> Result<(), FsiError> + Send + 'static,
+    {
+        self.step_callback = Some(Box::new(cb));
+        self
     }
 
     /// Run the preCICE FSI coupling loop.
@@ -194,6 +265,11 @@ impl LinearElasticFsiSolver {
         participant.initialize()?;
         let mut dt = participant.get_max_time_step_size()?;
 
+        // Apply optional restart state BEFORE the coupling loop.
+        if let Some(ref state) = self.initial_state {
+            self.stepper.set_state(&state.u, &state.v, &state.a, state.t);
+        }
+
         let n_dofs = self.stepper.n_dofs();
         // n_data = n_vertices * data_dims (for displacements and forces)
         let n_data = n_vertices * self.mesh_dims;
@@ -221,14 +297,16 @@ impl LinearElasticFsiSolver {
             let t = self.stepper.current_time();
             apply_ramp(&mut forces, t, self.config.ramp_time);
             if let Some(max_f) = self.config.force_max {
-                apply_cap(&mut forces, max_f);
+                apply_cap(&mut forces, max_f, self.mesh_dims);
             }
 
             // ── Scatter interface forces into the global DOF vector ───────────
+            // Use += so that multiple interface components mapping to the same
+            // global DOF accumulate correctly (e.g. shared interface nodes).
             let mut f_global = vec![0.0f64; n_dofs];
             for (local_idx, &global_dof) in self.interface_dofs.iter().enumerate() {
                 if local_idx < forces.len() && global_dof < n_dofs {
-                    f_global[global_dof] = forces[local_idx];
+                    f_global[global_dof] += forces[local_idx];
                 }
             }
 
@@ -258,20 +336,38 @@ impl LinearElasticFsiSolver {
 
             // ── Advance the coupling ──────────────────────────────────────────
             participant.advance(dt)?;
-            dt = participant.get_max_time_step_size()?;
 
             // ── Implicit coupling: restore or commit ──────────────────────────
             if participant.requires_reading_checkpoint()? {
-                // Iteration not converged — restore state and retry
-                if let Some(ref cp) = checkpoint {
-                    self.stepper.restore(cp);
+                // Iteration not converged — restore state and retry.
+                // dt is NOT updated here: the next iteration of the same window
+                // must reuse the same dt to keep Newmark coefficients consistent.
+                match checkpoint {
+                    Some(ref cp) => self.stepper.restore(cp),
+                    None => {
+                        return Err(FsiError::PreciceError(
+                            "preCICE requires checkpoint restore but no checkpoint was saved"
+                                .to_string(),
+                        ))
+                    }
                 }
             } else {
-                // Converged time window — commit to history
+                // Converged time window — commit to history.
                 result.displacement_history.push(step_result.u.clone());
                 result.velocity_history.push(step_result.v.clone());
                 result.acceleration_history.push(step_result.a.clone());
                 result.times.push(step_result.t);
+
+                // Invoke per-step callback BEFORE advancing dt so the callback
+                // receives the dt that was actually used for this window.
+                if let Some(ref cb) = self.step_callback {
+                    let time_step = result.times.len(); // 1-based
+                    let force_mag = forces.iter().map(|x| x * x).sum::<f64>().sqrt();
+                    cb(step_result.t, time_step, dt, &step_result.u, &step_result.v, &step_result.a, force_mag, &forces)?;
+                }
+
+                // Only advance dt after convergence; never mid-window.
+                dt = participant.get_max_time_step_size()?;
             }
         }
 
