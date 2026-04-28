@@ -222,8 +222,6 @@ class TestElementMassVsTotalMass:
 
         except ImportError:
             pytest.skip("scipy not available")
-        except Exception as e:
-            pytest.skip(f"Test failed: {e}")
 
 
 # =============================================================================

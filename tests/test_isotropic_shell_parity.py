@@ -236,16 +236,17 @@ class TestIsotropicShellParity:
         n = asm.dofs_count
         K = coo_matrix((vals, (rows, cols)), shape=(n, n)).tocsr()
 
-        # Boundary conditions
+        # Boundary conditions — MITC4 has 6 DOFs per node
+        dofs_per_node = 6
         fixed_dofs = set()
         for node in mesh.get_node_set("clamped").nodes.values():
-            idx = mesh.node_id_to_index[node.id] * 3
-            fixed_dofs.update([idx, idx + 1, idx + 2])
+            base = mesh.node_id_to_index[node.id] * dofs_per_node
+            fixed_dofs.update(range(base, base + dofs_per_node))
 
         # Load vector
         f = np.zeros(n, dtype=float)
         center = next(iter(mesh.get_node_set("free_center").nodes.values()))
-        i_center = mesh.node_id_to_index[center.id] * 3
+        i_center = mesh.node_id_to_index[center.id] * dofs_per_node
         f[i_center + 1] = FORCE  # Fy
 
         # Apply BCs
@@ -258,7 +259,7 @@ class TestIsotropicShellParity:
         u_ae = np.zeros(n, dtype=float)
         u_ae[free] = spsolve(K[free][:, free], f[free])
 
-        disp_ae = u_ae[i_center + 1]
+        disp_ae = u_ae[i_center + 1]  # Fy DOF (Y-translation)
 
         # === CalculiX ===
         case_dir = tmp_path / "isotropic_shell"

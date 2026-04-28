@@ -220,9 +220,12 @@ class TestSimplySupportedBeam:
         E = material_steel.E
         nu = material_steel.nu
 
-        # Analytical deflection (center point load)
+        # Analytical deflection (center point load, clamped-clamped plate strip).
+        # The mesh is a flat plate (shell thickness h, width b) loaded transversely,
+        # so plate bending theory applies: D = Eh³/(12(1-ν²)), not the simple beam
+        # formula EI = Ebh³/12.  The (1-ν²) factor is ~9% for ν=0.3.
         I = b * h**3 / 12
-        delta_analytical = P * L**3 / (192 * E * I)
+        delta_analytical = P * L**3 * (1 - nu**2) / (192 * E * I)
 
         # Build mesh
         mesh = MeshModel()

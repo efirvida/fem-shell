@@ -22,6 +22,7 @@ from _aeroelast import PyMeshAssembler  # noqa: E402
 # Helper
 # =============================================================================
 
+
 def _build_dense(asm: PyMeshAssembler, which: str) -> np.ndarray:
     """Assemble K or M into a dense matrix from COO triplets."""
     if which == "K":
@@ -35,8 +36,9 @@ def _build_dense(asm: PyMeshAssembler, which: str) -> np.ndarray:
     return K
 
 
-def _make_assembler(nodes: np.ndarray, connectivity: list, elem_type_code: int,
-                    mat_dict: dict) -> PyMeshAssembler:
+def _make_assembler(
+    nodes: np.ndarray, connectivity: list, elem_type_code: int, mat_dict: dict
+) -> PyMeshAssembler:
     """Build a single-element PyMeshAssembler."""
     return PyMeshAssembler(
         node_coords=nodes,
@@ -50,74 +52,148 @@ def _make_assembler(nodes: np.ndarray, connectivity: list, elem_type_code: int,
 # Node coordinates for each element type
 # =============================================================================
 
+
 def _hexa8_nodes():
     """Unit cube [0,1]^3."""
-    return np.array([
-        [0, 0, 0], [1, 0, 0], [1, 1, 0], [0, 1, 0],
-        [0, 0, 1], [1, 0, 1], [1, 1, 1], [0, 1, 1],
-    ], dtype=float)
+    return np.array(
+        [
+            [0, 0, 0],
+            [1, 0, 0],
+            [1, 1, 0],
+            [0, 1, 0],
+            [0, 0, 1],
+            [1, 0, 1],
+            [1, 1, 1],
+            [0, 1, 1],
+        ],
+        dtype=float,
+    )
 
 
 def _hexa20_nodes():
     """20-node hexahedron based on 2x2x2 cube."""
-    corners = np.array([
-        [-1, -1, -1], [1, -1, -1], [1, 1, -1], [-1, 1, -1],
-        [-1, -1,  1], [1, -1,  1], [1, 1,  1], [-1, 1,  1],
-    ], dtype=float)
-    mid_edges = np.array([
-        [0, -1, -1], [-1, 0, -1], [-1, -1, 0],
-        [1,  0, -1], [ 1, -1, 0], [ 0,  1, -1],
-        [1,  1,  0], [-1,  1, 0], [ 0, -1,  1],
-        [-1, 0,  1], [ 1,  0, 1], [ 0,  1,  1],
-    ], dtype=float)
+    corners = np.array(
+        [
+            [-1, -1, -1],
+            [1, -1, -1],
+            [1, 1, -1],
+            [-1, 1, -1],
+            [-1, -1, 1],
+            [1, -1, 1],
+            [1, 1, 1],
+            [-1, 1, 1],
+        ],
+        dtype=float,
+    )
+    mid_edges = np.array(
+        [
+            [0, -1, -1],
+            [-1, 0, -1],
+            [-1, -1, 0],
+            [1, 0, -1],
+            [1, -1, 0],
+            [0, 1, -1],
+            [1, 1, 0],
+            [-1, 1, 0],
+            [0, -1, 1],
+            [-1, 0, 1],
+            [1, 0, 1],
+            [0, 1, 1],
+        ],
+        dtype=float,
+    )
     return np.vstack([corners, mid_edges])
 
 
 def _tetra4_nodes():
-    return np.array([
-        [0, 0, 0], [1, 0, 0], [0, 1, 0], [0, 0, 1],
-    ], dtype=float)
+    return np.array(
+        [
+            [0, 0, 0],
+            [1, 0, 0],
+            [0, 1, 0],
+            [0, 0, 1],
+        ],
+        dtype=float,
+    )
 
 
 def _tetra10_nodes():
     corners = _tetra4_nodes()
-    mid_edges = np.array([
-        [0.5, 0, 0], [0, 0.5, 0], [0, 0, 0.5],
-        [0.5, 0.5, 0], [0.5, 0, 0.5], [0, 0.5, 0.5],
-    ], dtype=float)
+    mid_edges = np.array(
+        [
+            [0.5, 0, 0],
+            [0, 0.5, 0],
+            [0, 0, 0.5],
+            [0.5, 0.5, 0],
+            [0.5, 0, 0.5],
+            [0, 0.5, 0.5],
+        ],
+        dtype=float,
+    )
     return np.vstack([corners, mid_edges])
 
 
 def _wedge6_nodes():
-    return np.array([
-        [0, 0, 0], [1, 0, 0], [0, 1, 0],
-        [0, 0, 1], [1, 0, 1], [0, 1, 1],
-    ], dtype=float)
+    return np.array(
+        [
+            [0, 0, 0],
+            [1, 0, 0],
+            [0, 1, 0],
+            [0, 0, 1],
+            [1, 0, 1],
+            [0, 1, 1],
+        ],
+        dtype=float,
+    )
 
 
 def _wedge15_nodes():
     corners = _wedge6_nodes()
-    mid_edges = np.array([
-        [0.5, 0, 0], [0, 0.5, 0], [0, 0, 0.5],
-        [0.5, 0.5, 0], [1, 0, 0.5], [0, 1, 0.5],
-        [0.5, 0, 1], [0, 0.5, 1], [0.5, 0.5, 1],
-    ], dtype=float)
+    mid_edges = np.array(
+        [
+            [0.5, 0, 0],
+            [0, 0.5, 0],
+            [0, 0, 0.5],
+            [0.5, 0.5, 0],
+            [1, 0, 0.5],
+            [0, 1, 0.5],
+            [0.5, 0, 1],
+            [0, 0.5, 1],
+            [0.5, 0.5, 1],
+        ],
+        dtype=float,
+    )
     return np.vstack([corners, mid_edges])
 
 
 def _pyramid5_nodes():
-    return np.array([
-        [-1, -1, 0], [1, -1, 0], [1, 1, 0], [-1, 1, 0], [0, 0, 1],
-    ], dtype=float)
+    return np.array(
+        [
+            [-1, -1, 0],
+            [1, -1, 0],
+            [1, 1, 0],
+            [-1, 1, 0],
+            [0, 0, 1],
+        ],
+        dtype=float,
+    )
 
 
 def _pyramid13_nodes():
     corners = _pyramid5_nodes()
-    mid_edges = np.array([
-        [0, -1, 0], [-1, 0, 0], [-0.5, -0.5, 0.5],
-        [1,  0, 0], [ 0.5, -0.5, 0.5], [0, 1, 0],
-        [0.5, 0.5, 0.5], [-0.5, 0.5, 0.5],
-    ], dtype=float)
+    mid_edges = np.array(
+        [
+            [0, -1, 0],
+            [-1, 0, 0],
+            [-0.5, -0.5, 0.5],
+            [1, 0, 0],
+            [0.5, -0.5, 0.5],
+            [0, 1, 0],
+            [0.5, 0.5, 0.5],
+            [-0.5, 0.5, 0.5],
+        ],
+        dtype=float,
+    )
     return np.vstack([corners, mid_edges])
 
 
@@ -213,14 +289,13 @@ class TestStiffnessMatrix:
 
     def test_symmetry(self, solid_setup):
         K = _build_dense(solid_setup["asm"], "K")
-        np.testing.assert_allclose(K, K.T, atol=1e-8,
-                                   err_msg=f"{solid_setup['name']}: K not symmetric")
+        np.testing.assert_allclose(
+            K, K.T, atol=1e-8, err_msg=f"{solid_setup['name']}: K not symmetric"
+        )
 
     def test_rigid_body_modes(self, solid_setup):
         """K should have exactly 6 zero eigenvalues."""
         name = solid_setup["name"]
-        if name == "Pyramid13":
-            pytest.skip("Pyramid13 numerical integration challenges")
 
         K = _build_dense(solid_setup["asm"], "K")
         eigvals = np.sort(np.abs(np.linalg.eigvalsh(K)))
@@ -248,8 +323,6 @@ class TestStiffnessMatrix:
 
     def test_positive_semi_definite(self, solid_setup):
         name = solid_setup["name"]
-        if name == "Pyramid13":
-            pytest.skip("Pyramid13 numerical integration challenges")
 
         K = _build_dense(solid_setup["asm"], "K")
         eigvals = np.linalg.eigvalsh(K)
@@ -268,30 +341,21 @@ class TestMassMatrix:
 
     def test_dimensions(self, solid_setup):
         name = solid_setup["name"]
-        if name == "Pyramid13":
-            pytest.skip("Pyramid13 numerical integration challenges")
         M = _build_dense(solid_setup["asm"], "M")
         n = solid_setup["cfg"]["n_dofs"]
         assert M.shape == (n, n)
 
     def test_symmetry(self, solid_setup):
         name = solid_setup["name"]
-        if name == "Pyramid13":
-            pytest.skip("Pyramid13 numerical integration challenges")
         M = _build_dense(solid_setup["asm"], "M")
-        np.testing.assert_allclose(M, M.T, atol=1e-10,
-                                   err_msg=f"{name}: M not symmetric")
+        np.testing.assert_allclose(M, M.T, atol=1e-10, err_msg=f"{name}: M not symmetric")
 
     def test_positive_definite(self, solid_setup):
         name = solid_setup["name"]
-        if name == "Pyramid13":
-            pytest.skip("Pyramid13 numerical integration challenges")
         M = _build_dense(solid_setup["asm"], "M")
         eigvals = np.linalg.eigvalsh(M)
         threshold = -np.max(eigvals) * 1e-10 if np.max(eigvals) > 0 else -1e-15
-        assert np.min(eigvals) > threshold, (
-            f"{name}: M has negative eigenvalue: {np.min(eigvals)}"
-        )
+        assert np.min(eigvals) > threshold, f"{name}: M has negative eigenvalue: {np.min(eigvals)}"
 
 
 # =============================================================================

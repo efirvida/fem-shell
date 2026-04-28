@@ -338,25 +338,28 @@ def test_orthotropic_axial(tmp_path: Path):
     assert rel_error < 0.05, f"Ortho transverse: {rel_error * 100:.1f}% > 5%"
 
 
-def test_orthotropic_bending(tmp_path: Path):
-    """Test orthotropic composite shell under in-plane lateral bending (Fx).
+def test_orthotropic_bending():
+    """[0/90/90/0] in-plane lateral bending (Fx) vs Euler-Bernoulli analytical.
 
-    Uses a symmetric [0/90/90/0] laminate (B=0, balanced extension) in both
-    AeroElast (MITC4Composite) and CCX (S8R + *SHELL SECTION, COMPOSITE).
+    For a symmetric balanced laminate (B=0), in-plane lateral bending is
+    governed by the membrane A-matrix: EI_in = A11 * B_width³ / 12.
+    Analytical tip deflection: δ = F·L³ / (3·EI_in).
 
-    Note: in-plane lateral bending (Fx) is membrane-dominated.  MITC4 bilinear
-    membrane elements are known to under-predict lateral flexibility by ~25-30%
-    compared to quadratic elements (parasitic shear in membrane bending mode).
-    The tolerance is set to 35% to document this as a known element limitation.
+    Load is distributed uniformly across all tip nodes (uniform shear flow),
+    consistent with the E-B beam assumption of pure bending.
     """
-    ccx_bin = _ccx_or_skip()
     mesh = _build_plate()
-    load = (100.0, 0.0, 0.0)  # 100 N in X (in-plane lateral bending)
 
     # [0/90/90/0] symmetric laminate: B=0, tests membrane A-matrix
     ply_t = thickness / 4
     laminate = create_laminate_from_angles(_ORTHO_MAT, ply_t, [0, 90, 90, 0])
     mat_dict = _laminate_to_mat_dict(laminate)
+
+    # Analytical reference: EI_in = A11 * B³/12,  δ = F·L³/(3·EI_in)
+    A11 = laminate.A[0, 0]
+    EI_in = A11 * B**3 / 12.0
+    F_total = 100.0  # N
+    ref = F_total * L**3 / (3.0 * EI_in)
 
     # AeroElast: MITC4Composite with real ABD
     node_coords = np.asarray([[n.x, n.y, n.z] for n in mesh.nodes], dtype=float)
@@ -367,51 +370,34 @@ def test_orthotropic_bending(tmp_path: Path):
     asm = PyMeshAssembler(node_coords, conn, elem_types, mats)
     n_dof = asm.dofs_count
 
+    # Distribute load uniformly across all tip nodes
+    tip_indices = [
+        mesh.node_id_to_index[n.id] for n in mesh.nodes if np.isclose(float(n.z), L, atol=1e-12)
+    ]
     f = np.zeros(n_dof, dtype=float)
-    center = next(iter(mesh.get_node_set("free_center").nodes.values()))
-    i0 = mesh.node_id_to_index[center.id] * DOFS_PER_NODE
-    f[i0] = load[0]  # X direction
+    for idx in tip_indices:
+        f[idx * DOFS_PER_NODE] = F_total / len(tip_indices)
 
     clamped = {
         mesh.node_id_to_index[nd.id] * DOFS_PER_NODE + i
         for nd in mesh.get_node_set("clamped").nodes.values()
         for i in range(DOFS_PER_NODE)
     }
-    free = np.array([i for i in range(n_dof) if i not in clamped])
+    free_dofs = np.array([i for i in range(n_dof) if i not in clamped])
 
-    aero_disp = _solve_linear_with_rust(asm, f, free)
-    print(f"AeroElast Ux: {aero_disp[i0] * 1e6:.2f} um")
+    aero_disp = _solve_linear_with_rust(asm, f, free_dofs)
 
-    # CCX: S8R + *SHELL SECTION, COMPOSITE (real laminate)
-    ccx_prop = CompositeShellProperty(laminate=laminate)
-    inp_path = tmp_path / "bending.inp"
-    _write_ccx_inp(inp_path, mesh, load, ccx_prop, quadratic=True)
+    # Average Ux over all tip nodes (consistent with E-B beam tip displacement)
+    ux_fem = float(np.mean([aero_disp[idx * DOFS_PER_NODE] for idx in tip_indices]))
 
-    result = subprocess.run([ccx_bin, inp_path.stem], capture_output=True, text=True, cwd=tmp_path)
-    if result.returncode != 0:
-        pytest.skip("CCX failed")
+    rel_error = abs(ux_fem - ref) / ref
+    print(
+        f"AeroElast Ux: {ux_fem * 1e6:.2f} um  |  "
+        f"Analytical: {ref * 1e6:.2f} um  |  "
+        f"Error: {rel_error * 100:.1f}%"
+    )
 
-    frd = inp_path.with_suffix(".frd")
-    if not frd.exists():
-        pytest.skip("No FRD")
-
-    ccx_disp = _frd_disp_at_point(frd, np.array([center.x, center.y, center.z], dtype=float))
-    ccx_ux = ccx_disp[0]
-    print(f"CCX Ux: {ccx_ux * 1e6:.2f} um")
-
-    rel_error = abs(aero_disp[i0] - ccx_ux) / max(abs(ccx_ux), 1e-12)
-    print(f"Error: {rel_error * 100:.2f}%")
-
-    # Tolerance note:
-    # The EAS Q4E4 formulation (mode 3: xi in eps_22) significantly improves
-    # in-plane lateral bending accuracy.  With EAS, MITC4 reaches ~11% above
-    # the Euler-Bernoulli analytical (1120 um), while CCX S8R itself is ~18%
-    # below analytical (913 um) for this 40-element composite mesh.  As a
-    # result MITC4+EAS may over-predict CCX S8R by up to ~37%.
-    # Analytical (E-B beam theory): F*L^3/(3*E_eff*I_y) ~ 1120 um.
-    # Tolerance set to 40% to accommodate both under- and over-prediction
-    # relative to the quadratic CCX S8R reference.
-    assert rel_error < 0.05, f"Ortho bending: {rel_error * 100:.1f}% > 5%"
+    assert rel_error < 0.05, f"Ortho bending vs analytical: {rel_error * 100:.1f}% > 5%"
 
 
 def test_multi_layer_iso_equivalence():
