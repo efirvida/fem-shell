@@ -145,7 +145,6 @@ class LinearDynamicFSISolver(LinearDynamicSolver):
     # Solver Setup
     # =========================================================================
 
-
     def lump_mass_matrix(self, M: PETSc.Mat) -> PETSc.Mat:
         """Convert mass matrix M to lumped (diagonal) form via row-sum technique.
 
@@ -411,7 +410,6 @@ class LinearDynamicFSISolver(LinearDynamicSolver):
         self.v = v_final_full
         self.a = a_final_full
         return self.u, self.v, self.a
-
 
     def _compute_rayleigh_auto(self) -> Tuple[float, float]:
         """Compute Rayleigh damping coefficients automatically from modal analysis.
