@@ -148,6 +148,22 @@ Examples:
 
     # Run simulation
     try:
+        # Peek at the YAML to detect BEM-FSI configs without importing the
+        # full runner (avoids the LinearDynamicFSI default path).
+        import yaml as _yaml
+        with open(config_path) as _f:
+            _raw = _yaml.safe_load(_f)
+        _is_bem_fsi = (
+            "bem" in _raw
+            and _raw.get("solver", {}).get("type", "BEMFSI") == "BEMFSI"
+        )
+        if _is_bem_fsi:
+            from aeroelast.cli.run_bem_fsi import main as _bem_main
+            _argv = [str(config_path)]
+            if args.workdir:
+                _argv += ["--workdir", args.workdir]
+            return _bem_main(_argv)
+
         from aeroelast.solvers.fsi.runner import FSIRunner
         runner = FSIRunner(str(config_path), args.workdir)
         runner.run()
