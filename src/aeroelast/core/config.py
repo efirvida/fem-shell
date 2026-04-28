@@ -413,6 +413,7 @@ class BEMConfig:
     default_re: float = 1e7
     viterna_ar: float = 17.0
     viterna_confidence_threshold: float = 0.5
+    span_direction: List[float] = field(default_factory=lambda: [0.0, 0.0, 1.0])
     normal_direction: List[float] = field(default_factory=lambda: [1.0, 0.0, 0.0])
     tangential_direction: List[float] = field(default_factory=lambda: [0.0, 1.0, 0.0])
 
@@ -1036,8 +1037,14 @@ class FSISimulationConfig:
         if rotor_data:
             rotor_config = RotorConfig(**rotor_data)
 
+        # Auto-infer BEMFSI when the YAML has a 'bem' section but no explicit
+        # solver type — avoids forcing BEM-FSI configs to declare solver: type.
+        _default_solver_type = "LinearDynamicFSI"
+        if "type" not in solver_data and "bem" in data:
+            _default_solver_type = SolverType.BEM_FSI.value
+
         solver_config = SolverConfig(
-            type=solver_data.get("type", "LinearDynamicFSI"),
+            type=solver_data.get("type", _default_solver_type),
             total_time=solver_data.get("total_time"),
             time_step=solver_data.get("time_step"),
             newmark=newmark_config,
