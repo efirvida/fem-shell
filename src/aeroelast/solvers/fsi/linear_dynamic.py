@@ -199,7 +199,9 @@ class LinearDynamicFSISolver(LinearDynamicSolver):
             self._configure_iterative_solver(pc, opts)
 
         self._solver.setFromOptions()
-        self._keff_last: Optional[PETSc.Mat] = None  # tracks last operator to skip redundant setOperators
+        self._keff_last: Optional[PETSc.Mat] = (
+            None  # tracks last operator to skip redundant setOperators
+        )
         self._setup_mass_solver()
 
     @staticmethod
@@ -307,12 +309,14 @@ class LinearDynamicFSISolver(LinearDynamicSolver):
         # --- Fallback 1: BCGS+GAMG threshold=0 ---
         # CG requires SPD preconditioner; GAMG aggregation can produce
         # indefinite actions (reason=-8).  BCGS has no such requirement.
-        _console.print(Panel(
-            f"[yellow]KSP diverged (reason={ksp_reason})[/yellow]\n"
-            f"CG+GAMG failed — switching to [bold]BCGS + GAMG(threshold=0)[/bold]",
-            title="⚠ Solver Fallback 1/2",
-            border_style="yellow",
-        ))
+        _console.print(
+            Panel(
+                f"[yellow]KSP diverged (reason={ksp_reason})[/yellow]\n"
+                f"CG+GAMG failed — switching to [bold]BCGS + GAMG(threshold=0)[/bold]",
+                title="⚠ Solver Fallback 1/2",
+                border_style="yellow",
+            )
+        )
         fb1 = PETSc.KSP().create(self.comm)
         fb1.setType("bcgs")
         fb1_pc = fb1.getPC()
@@ -344,20 +348,21 @@ class LinearDynamicFSISolver(LinearDynamicSolver):
 
         if ksp_reason >= 0:
             _console.print(
-                f"  [green]✓ BCGS+GAMG converged[/green] │ "
-                f"reason={ksp_reason}  its={ksp_its}"
+                f"  [green]✓ BCGS+GAMG converged[/green] │ reason={ksp_reason}  its={ksp_its}"
             )
             return u_new, ksp_its, ksp_reason
 
         # --- Fallback 2: Direct LU solver ---
         # Try without specifying MUMPS first (PETSc native LU always exists).
         # If the build has MUMPS, try that as a second attempt.
-        _console.print(Panel(
-            f"[red]BCGS+GAMG also diverged (reason={ksp_reason})[/red]\n"
-            f"Attempting [bold]direct LU factorization[/bold]",
-            title="⚠ Solver Fallback 2/2",
-            border_style="red",
-        ))
+        _console.print(
+            Panel(
+                f"[red]BCGS+GAMG also diverged (reason={ksp_reason})[/red]\n"
+                f"Attempting [bold]direct LU factorization[/bold]",
+                title="⚠ Solver Fallback 2/2",
+                border_style="red",
+            )
+        )
         for solver_pkg in (None, "mumps"):
             pkg_label = solver_pkg or "petsc-native"
             if solver_pkg == "mumps" and not self._has_mumps():
@@ -387,11 +392,13 @@ class LinearDynamicFSISolver(LinearDynamicSolver):
                 _console.print(f"  [yellow]✗ LU ({pkg_label}) unavailable: {exc}[/yellow]")
                 fb2.destroy()
 
-        _console.print(Panel(
-            "[bold red]ALL solver fallbacks exhausted — solution may be invalid[/bold red]",
-            title="✗ Solver Failure",
-            border_style="red bold",
-        ))
+        _console.print(
+            Panel(
+                "[bold red]ALL solver fallbacks exhausted — solution may be invalid[/bold red]",
+                title="✗ Solver Failure",
+                border_style="red bold",
+            )
+        )
         return u_new, 0, -1
 
     def _setup_mass_solver(self) -> None:
@@ -438,6 +445,229 @@ class LinearDynamicFSISolver(LinearDynamicSolver):
     # =========================================================================
     # Matrix Assembly Helpers
     # =========================================================================
+
+    @staticmethod
+    def _petsc_to_coo(mat: "PETSc.Mat"):
+        """Extract (rows, cols, vals) COO triplets from a PETSc matrix.
+
+        Returns numpy arrays with dtype int32 (rows, cols) and float64 (vals).
+        Works for both sparse and diagonal PETSc matrices.
+        """
+        ai, aj, av = mat.getValuesCSR()
+        counts = np.diff(ai.astype(np.int64))
+        rows = np.repeat(np.arange(len(counts), dtype=np.int32), counts)
+        cols = aj.astype(np.int32)
+        vals = av.astype(np.float64)
+        return rows, cols, vals
+
+    def _solve_via_rust(
+        self,
+        bc_manager,
+        interface_coords_flat: "np.ndarray",
+        interface_dofs_global_flat: "np.ndarray",
+    ):
+        """Run the FSI coupling loop via the Rust ``run_fsi_solver`` binding.
+
+        Delegates the entire coupling loop to Rust and fires a Python per-step
+        callback after each converged time window to handle structural reports,
+        probe logging, and checkpoint writing.
+
+        Returns ``(u, v, a)`` as full-DOF numpy arrays — consistent with the
+        Python coupling path.
+        """
+        import _aeroelast  # noqa: PLC0415
+
+        # Extract global COO from assembled PETSc matrices.
+        # self.M has already been row-sum lumped in Phase 1.
+        k_rows, k_cols, k_vals = self._petsc_to_coo(self.K)
+        m_rows, m_cols, m_vals = self._petsc_to_coo(self.M)
+
+        free_dofs = bc_manager.free_dofs.astype(np.int32)
+        self.free_dofs = bc_manager.free_dofs
+
+        # Optional restart state from checkpoint.
+        checkpoint_state = self._try_restore_checkpoint()
+        u0 = v0 = a0 = None
+        t0 = self.solver_params.get("start_time", 0.0)
+
+        if checkpoint_state is not None:
+            stored_dofs = len(checkpoint_state.get("u_red", []))
+            expected_dofs = int(free_dofs.shape[0])
+            if stored_dofs and stored_dofs != expected_dofs:
+                print(
+                    f"  ⚠️ Checkpoint DOF mismatch ({stored_dofs} vs {expected_dofs}). "
+                    "Checkpoint ignored.",
+                    flush=True,
+                )
+                checkpoint_state = None
+
+        if checkpoint_state is not None and "u_red" in checkpoint_state:
+            u0 = checkpoint_state["u_red"].astype(np.float64)
+            v0 = checkpoint_state["v_red"].astype(np.float64)
+            a0 = checkpoint_state["a_red"].astype(np.float64)
+            t0 = float(checkpoint_state["t"])
+            print(f"  ✓ Restored from checkpoint at t = {t0:.6f} s", flush=True)
+
+        cfg = self._coupling_cfg
+        mesh_name = cfg["coupling_mesh"]
+        write_data = (
+            cfg["write_data"] if isinstance(cfg["write_data"], str) else cfg["write_data"][0]
+        )
+        read_data = cfg["read_data"] if isinstance(cfg["read_data"], str) else cfg["read_data"][0]
+
+        beta = float(self.solver_params["beta"])
+        gamma = float(self.solver_params["gamma"])
+        # dt hint; preCICE will override via get_max_time_step_size at each window.
+        dt_hint = float(self.solver_params.get("dt", 0.01))
+
+        print(
+            f"  → Delegating FSI loop to Rust: "
+            f"η_k={self._eta_k:.3e}  η_m={self._eta_m:.3e}  "
+            f"β={beta}  γ={gamma}",
+            flush=True,
+        )
+
+        # ── Per-step callback ─────────────────────────────────────────────────
+        # Capture expansion info once (avoids PETSc calls inside the hot path).
+        n_total: int = self.K.getSize()[0]
+        _free_dofs_arr: np.ndarray = self.free_dofs  # int64 indices
+        _fixed_dof_vals: dict = dict(bc_manager.fixed_dofs)  # {dof: prescribed_value}
+
+        def _step_cb(
+            t: float,
+            time_step: int,
+            dt: float,
+            u_red: np.ndarray,
+            v_red: np.ndarray,
+            a_red: np.ndarray,
+            force_mag: float,
+            forces_iface: np.ndarray,
+        ) -> None:
+            # Expand reduced vectors to full DOF space (pure numpy — no PETSc).
+            u_full = np.zeros(n_total, dtype=np.float64)
+            u_full[_free_dofs_arr] = u_red
+            for dof, val in _fixed_dof_vals.items():
+                u_full[dof] = val
+
+            v_full = np.zeros(n_total, dtype=np.float64)
+            v_full[_free_dofs_arr] = v_red
+
+            a_full = np.zeros(n_total, dtype=np.float64)
+            a_full[_free_dofs_arr] = a_red
+
+            stress_fields = self._compute_stress_fields(u_full)
+
+            # Reconstruct aerodynamic force fields for VTU export.
+            # forces_iface is flat [fx0,fy0,fz0, ...] over interface nodes.
+            iface_dofs_flat = interface_dofs_global_flat  # captured from outer scope
+            mesh_dim = self.domain.spatial_dim
+            force_fields = {}
+            if forces_iface is not None and len(forces_iface) > 0:
+                f_raw_full = np.zeros(n_total, dtype=np.float64)
+                n_iface = len(iface_dofs_flat)
+                for local_idx in range(min(len(forces_iface), n_iface)):
+                    gdof = int(iface_dofs_flat[local_idx])
+                    if gdof < n_total:
+                        f_raw_full[gdof] += forces_iface[local_idx]
+                force_fields["F_AERO_RAW"] = f_raw_full
+                force_fields["F_AERO"] = f_raw_full
+                force_fields["F_TOTAL"] = f_raw_full.copy()
+            force_fields.update(stress_fields)
+
+            self._log_structural_report(
+                t=t,
+                time_step=time_step,
+                u_full=u_full,
+                v_full=v_full,
+                a_full=a_full,
+                stress_fields=force_fields,
+                applied_force_mag=force_mag,
+            )
+            self._log_probe_data(
+                t=t,
+                time_step=time_step,
+                u_full=u_full,
+                v_full=v_full,
+                stress_fields=force_fields,
+            )
+            self._handle_checkpoint(
+                t=t,
+                time_step=time_step,
+                dt=dt,
+                u_red=u_red,
+                v_red=v_red,
+                a_red=a_red,
+                u_full=u_full,
+                v_full=v_full,
+                a_full=a_full,
+                extra_fields=force_fields,
+            )
+
+        disp_hist, vel_hist, acc_hist, times = _aeroelast.run_fsi_solver(
+            k_rows,
+            k_cols,
+            k_vals,
+            m_rows,
+            m_cols,
+            m_vals,
+            free_dofs,
+            self._eta_k,
+            self._eta_m,
+            beta,
+            gamma,
+            dt_hint,
+            interface_coords_flat,
+            interface_dofs_global_flat,
+            self.domain.spatial_dim,
+            cfg["participant"],
+            cfg["config_file"],
+            mesh_name,
+            write_data,
+            read_data,
+            self._force_ramp_time,
+            getattr(self, "_force_max_magnitude", None),
+            u0,
+            v0,
+            a0,
+            t0,
+            step_callback=_step_cb,
+        )
+
+        n_steps = len(times)
+        if n_steps > 0:
+            print(
+                f"  ✓ FSI loop complete: {n_steps} converged steps, t_final={times[-1]:.4f} s",
+                flush=True,
+            )
+        else:
+            print("  ⚠️ FSI loop returned 0 converged steps.", flush=True)
+
+        # Flush async checkpoints and create PVD index — mirrors the Python path.
+        if self._checkpoint_manager is not None:
+            self._checkpoint_manager.finalize(timeout=60.0)
+
+        # Expand final state to full DOF space and store on self (consistent
+        # with the Python coupling path which returns PETSc vecs).
+        if n_steps > 0:
+            u_final_full = np.zeros(n_total, dtype=np.float64)
+            u_final_full[_free_dofs_arr] = np.asarray(disp_hist[-1], dtype=np.float64)
+            for dof, val in _fixed_dof_vals.items():
+                u_final_full[dof] = val
+
+            v_final_full = np.zeros(n_total, dtype=np.float64)
+            v_final_full[_free_dofs_arr] = np.asarray(vel_hist[-1], dtype=np.float64)
+
+            a_final_full = np.zeros(n_total, dtype=np.float64)
+            a_final_full[_free_dofs_arr] = np.asarray(acc_hist[-1], dtype=np.float64)
+        else:
+            u_final_full = np.zeros(n_total, dtype=np.float64)
+            v_final_full = np.zeros(n_total, dtype=np.float64)
+            a_final_full = np.zeros(n_total, dtype=np.float64)
+
+        self.u = u_final_full
+        self.v = v_final_full
+        self.a = a_final_full
+        return self.u, self.v, self.a
 
     def _create_damping_matrix(self, K: PETSc.Mat, M: PETSc.Mat) -> Optional[PETSc.Mat]:
         """Create Rayleigh damping matrix C = η_m·M + η_k·K.
@@ -613,6 +843,9 @@ class LinearDynamicFSISolver(LinearDynamicSolver):
             α (η_k) = 2·(ζ_i·ω_i − ζ_j·ω_j) / (ω_i² − ω_j²)
             β (η_m) = 2·ω_i·ω_j·(ζ_j·ω_i − ζ_i·ω_j) / (ω_i² − ω_j²)
 
+        Tries the Rust fast-path (``_aeroelast.compute_rayleigh_auto``) first.
+        Falls back to SLEPc if the Rust extension is unavailable.
+
         Returns
         -------
         Tuple[float, float]
@@ -630,6 +863,55 @@ class LinearDynamicFSISolver(LinearDynamicSolver):
 
         if mode_i == mode_j:
             raise ValueError("mode_i and mode_j must be different for Rayleigh auto-computation.")
+
+        # ── Rust fast-path ─────────────────────────────────────────────────
+        try:
+            import _aeroelast  # noqa: PLC0415
+            import numpy as _np  # noqa: PLC0415
+
+            if hasattr(_aeroelast, "compute_rayleigh_auto"):
+                k_rows, k_cols, k_vals = self._petsc_to_coo(self.K)
+                m_rows, m_cols, m_vals = self._petsc_to_coo(self.M)
+
+                # Temporary BC manager only to obtain free_dofs
+                K_dup_tmp = self.K.copy()
+                F_tmp2 = K_dup_tmp.createVecRight()
+                F_tmp2.set(0.0)
+                bc_tmp2 = BoundaryConditionManager(
+                    K_dup_tmp, F_tmp2, None, self.domain.dofs_per_node
+                )
+                bc_tmp2.apply_dirichlet(self.dirichlet_conditions)
+                free_dofs_i32 = bc_tmp2.free_dofs.astype(_np.int32)
+                K_dup_tmp.destroy()
+                F_tmp2.destroy()
+
+                eta_k, eta_m = _aeroelast.compute_rayleigh_auto(
+                    k_rows,
+                    k_cols,
+                    k_vals,
+                    m_rows,
+                    m_cols,
+                    m_vals,
+                    free_dofs_i32,
+                    num_modes,
+                    mode_i,
+                    mode_j,
+                    zeta_i,
+                    zeta_j,
+                )
+                if eta_k < 0.0 or eta_m < 0.0:
+                    _console.print(
+                        f"  [yellow bold]⚠ Rayleigh auto: negative coefficient "
+                        f"η_k={eta_k:.3e}  η_m={eta_m:.3e}[/yellow bold]"
+                    )
+                if self._is_primary_rank():
+                    print(f"  [Rayleigh auto/Rust] η_k (stiffness) = {eta_k:.4e} s", flush=True)
+                    print(f"  [Rayleigh auto/Rust] η_m (mass)      = {eta_m:.4e} 1/s", flush=True)
+                return eta_k, eta_m
+        except Exception as _rust_err:
+            _logger.warning(
+                "Rayleigh auto: Rust path failed (%s) — falling back to SLEPc.", _rust_err
+            )
 
         K_dup = self.K.copy()
         M_dup = self.M.copy()
@@ -843,7 +1125,8 @@ class LinearDynamicFSISolver(LinearDynamicSolver):
         # Get the proper node indices from the solver
         node_id_to_index = self.domain.node_id_to_index
         interface_node_indices = np.array(
-            [node_id_to_index[nid] for nid in self._interface_node_ids], dtype=np.int64,
+            [node_id_to_index[nid] for nid in self._interface_node_ids],
+            dtype=np.int64,
         )
 
         # Map interface forces to their corresponding mesh node indices
@@ -1036,7 +1319,9 @@ class LinearDynamicFSISolver(LinearDynamicSolver):
                         nd = nodes[nid]
                         tag = f"P{i}(n{nd.id})"
                         cols.extend([
-                            f"{tag} Ux [m]", f"{tag} Uy [m]", f"{tag} Uz [m]",
+                            f"{tag} Ux [m]",
+                            f"{tag} Uy [m]",
+                            f"{tag} Uz [m]",
                             f"{tag} |V| [m/s]",
                             f"{tag} VonMises TOP [Pa]",
                         ])
@@ -1048,8 +1333,11 @@ class LinearDynamicFSISolver(LinearDynamicSolver):
                     vmag = float(np.linalg.norm(v_mat[nid, :3]))
                     vm = float(vm_top[nid]) if vm_top is not None else 0.0
                     parts.extend([
-                        f"{ux:.6e}", f"{uy:.6e}", f"{uz:.6e}",
-                        f"{vmag:.6e}", f"{vm:.6e}",
+                        f"{ux:.6e}",
+                        f"{uy:.6e}",
+                        f"{uz:.6e}",
+                        f"{vmag:.6e}",
+                        f"{vm:.6e}",
                     ])
                 f.write(",".join(parts) + "\n")
         except Exception as e:
@@ -1081,7 +1369,9 @@ class LinearDynamicFSISolver(LinearDynamicSolver):
             + _diag_arr[1::_dofs_per_node].sum()
             + _diag_arr[2::_dofs_per_node].sum()
         ) / 3.0
-        print(f"        Total blade mass (M_lumped translational DOFs): {_m_total:.4e} kg", flush=True)
+        print(
+            f"        Total blade mass (M_lumped translational DOFs): {_m_total:.4e} kg", flush=True
+        )
         _m_diag.destroy()
 
         # =====================================================================
@@ -1137,11 +1427,7 @@ class LinearDynamicFSISolver(LinearDynamicSolver):
         coupling_boundaries = self.model_properties["solver"]["coupling_boundaries"]
         mesh = self.domain.mesh
         node_sets = [mesh.node_sets[name] for name in coupling_boundaries]
-        nodes = {
-            node.id: node.coords
-            for _set in node_sets
-            for node in _set.nodes.values()
-        }
+        nodes = {node.id: node.coords for _set in node_sets for node in _set.nodes.values()}
         sorted_node_ids = sorted(nodes.keys())
 
         self._interface_node_ids = np.array(sorted_node_ids, dtype=np.int64)
@@ -1150,9 +1436,7 @@ class LinearDynamicFSISolver(LinearDynamicSolver):
             interface_coords = interface_coords[:, :2]
         self._interface_coords = interface_coords
 
-        raw_dofs = np.array([
-            self.domain._node_dofs_map[nid] for nid in sorted_node_ids
-        ])
+        raw_dofs = np.array([self.domain._node_dofs_map[nid] for nid in sorted_node_ids])
         # For shell elements (6 DOFs/node), keep only translational DOFs
         if raw_dofs.ndim == 2 and raw_dofs.shape[1] > 3:
             self._interface_dofs = raw_dofs[:, :3].astype(PETSc.IntType)
@@ -1170,8 +1454,23 @@ class LinearDynamicFSISolver(LinearDynamicSolver):
         # Create and initialize the Adapter now that coordinates are known
         cfg = self._coupling_cfg
         self._coupling_mesh_name = cfg["coupling_mesh"]
-        self._write_data_name = cfg["write_data"] if isinstance(cfg["write_data"], str) else cfg["write_data"][0]
-        self._read_data_name = cfg["read_data"] if isinstance(cfg["read_data"], str) else cfg["read_data"][0]
+        self._write_data_name = (
+            cfg["write_data"] if isinstance(cfg["write_data"], str) else cfg["write_data"][0]
+        )
+        self._read_data_name = (
+            cfg["read_data"] if isinstance(cfg["read_data"], str) else cfg["read_data"][0]
+        )
+
+        # ── Rust fast-path ────────────────────────────────────────────────────
+        # When use_rust_fsi=True, delegate the entire coupling loop to the Rust
+        # `run_fsi_solver` binding.  This skips Python-side preCICE init and
+        # per-step output — per-step callbacks are deferred to a future release.
+        if self.solver_params.get("use_rust_fsi", False):
+            return self._solve_via_rust(
+                bc_manager=bc_manager,
+                interface_coords_flat=interface_coords.ravel().astype(np.float64),
+                interface_dofs_global_flat=self._interface_dofs.ravel().astype(np.intp),
+            )
 
         self.precice_participant = Adapter(
             participant=cfg["participant"],
@@ -1221,7 +1520,9 @@ class LinearDynamicFSISolver(LinearDynamicSolver):
             f"  ||K_eff_diag||={_diag_Keff.norm():.4e}",
             flush=True,
         )
-        _diag_K.destroy(); _diag_M.destroy(); _diag_Keff.destroy()
+        _diag_K.destroy()
+        _diag_M.destroy()
+        _diag_Keff.destroy()
 
         # IMPORTANT: For direct solvers (preonly+LU), PETSc factorizes the
         # preconditioner matrix (2nd argument).  Passing K_red as P would make
@@ -1231,7 +1532,9 @@ class LinearDynamicFSISolver(LinearDynamicSolver):
         # K_red as an approximate PC for GAMG is an optional optimization that
         # should be handled inside _solve_linear_system if needed.
         self._solver.setOperators(K_eff)
-        self._keff_last = K_eff  # mark as already configured; _solve_linear_system will skip setOperators
+        self._keff_last = (
+            K_eff  # mark as already configured; _solve_linear_system will skip setOperators
+        )
 
         # =====================================================================
         # Phase 6: Initial conditions
@@ -1380,7 +1683,8 @@ class LinearDynamicFSISolver(LinearDynamicSolver):
 
             # Read coupling data from preCICE
             data = self.precice_participant.read_data(
-                self._coupling_mesh_name, self._read_data_name,
+                self._coupling_mesh_name,
+                self._read_data_name,
             ).astype(PETSc.ScalarType)
             data_raw = data.copy() if data is not None else None
             interface_dofs = self._interface_dofs
@@ -1390,7 +1694,7 @@ class LinearDynamicFSISolver(LinearDynamicSolver):
                 _diag_sum = np.sum(data, axis=0)
                 _diag_mag = np.linalg.norm(_diag_sum)
                 print(
-                    f"---[preciceAdapter] READ \"Force\" (solid, {data.shape[0]} pts): "
+                    f'---[preciceAdapter] READ "Force" (solid, {data.shape[0]} pts): '
                     f"max|nodal|={np.max(np.linalg.norm(data, axis=1)):.4e}  "
                     f"|sum|={_diag_mag:.4e}  "
                     f"sum=({_diag_sum[0]:.4e}, {_diag_sum[1]:.4e}, {_diag_sum[2]:.4e})",
@@ -1551,8 +1855,7 @@ class LinearDynamicFSISolver(LinearDynamicSolver):
             iter_table.add_row("Raw |F|", f"{raw_force_mag:.4e} N  ({n_nodes} nodes)")
             iter_table.add_row(
                 "F components",
-                f"Fx={applied_force_x:.4e}  Fy={applied_force_y:.4e}  "
-                f"Fz={applied_force_z:.4e}",
+                f"Fx={applied_force_x:.4e}  Fy={applied_force_y:.4e}  Fz={applied_force_z:.4e}",
             )
             if force_max_cap is not None and clip_diags["n_clipped"] > 0:
                 iter_table.add_row(
@@ -1593,12 +1896,14 @@ class LinearDynamicFSISolver(LinearDynamicSolver):
                 f"its={ksp_its}  reason=[{reason_style}]{ksp_reason}[/{reason_style}]",
             )
             iter_table.add_row("max|u|", f"{max_disp_iter:.4e} m")
-            _console.print(Panel(
-                iter_table,
-                title=f"TW {time_step + 1} · Iteration {step}",
-                border_style="dim",
-                expand=False,
-            ))
+            _console.print(
+                Panel(
+                    iter_table,
+                    title=f"TW {time_step + 1} · Iteration {step}",
+                    border_style="dim",
+                    expand=False,
+                )
+            )
 
             self.precice_participant.write_data(
                 self._coupling_mesh_name,
@@ -1650,12 +1955,14 @@ class LinearDynamicFSISolver(LinearDynamicSolver):
                 conv_table.add_row("max |u|", f"{max_disp:.4e} m")
                 conv_table.add_row("max |v|", f"{max_vel:.4e} m/s")
                 conv_table.add_row("max |a|", f"{max_acc:.4e} m/s²")
-                _console.print(Panel(
-                    conv_table,
-                    title=f"✓ TW {time_step} Converged",
-                    border_style="green bold",
-                    expand=False,
-                ))
+                _console.print(
+                    Panel(
+                        conv_table,
+                        title=f"✓ TW {time_step} Converged",
+                        border_style="green bold",
+                        expand=False,
+                    )
+                )
 
                 # Prepare for checkpoint
                 u_expanded = bc_manager.expand_solution(u)
@@ -1731,9 +2038,7 @@ class LinearDynamicFSISolver(LinearDynamicSolver):
             summary_table.add_row(
                 "Clipping", f"{100 * clip_stats['clipped_fraction']:.2f}% nodes clipped"
             )
-        _console.print(
-            Panel(summary_table, title="FSI Simulation Completed", border_style="green")
-        )
+        _console.print(Panel(summary_table, title="FSI Simulation Completed", border_style="green"))
 
         # Flush async checkpoints and create PVD index
         if self._checkpoint_manager is not None:

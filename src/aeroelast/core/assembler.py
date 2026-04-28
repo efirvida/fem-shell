@@ -108,6 +108,7 @@ class MeshAssembler:
         dofs_count : int
             Total number of degrees of freedom in the system
         """
+        self.mesh = mesh
         self.model = model["elements"]
         self.comm = MPI.COMM_WORLD
         self.dofs_per_node: int = 0
