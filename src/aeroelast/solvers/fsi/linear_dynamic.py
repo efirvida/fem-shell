@@ -213,6 +213,13 @@ class LinearDynamicFSISolver(LinearDynamicSolver):
         """
         import _aeroelast  # noqa: PLC0415
 
+        if not hasattr(_aeroelast, "run_fsi_solver"):
+            raise RuntimeError(
+                "_aeroelast was built without FSI bindings (missing run_fsi_solver). "
+                "Rebuild aeroelast-py enabling the feature: "
+                "cd crates/aeroelast-py && maturin build --release --features fsi"
+            )
+
         # Extract global COO from assembled PETSc matrices.
         # self.M has already been row-sum lumped in Phase 1.
         k_rows, k_cols, k_vals = self._petsc_to_coo(self.K)
