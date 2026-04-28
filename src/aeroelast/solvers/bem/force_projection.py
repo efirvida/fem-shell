@@ -141,6 +141,68 @@ class ForceProjector:
                 )
             )
 
+        # ------------------------------------------------------------------
+        # Per-strip chord directions and AC-to-centroid offset vectors.
+        #
+        # BEM polars define Cm (and therefore Mp) about the aerodynamic
+        # centre (AC, typically at c/4).  ForceProjector._distribute()
+        # balances moments about the strip *centroid*, so the transfer is:
+        #
+        #   M_centroid = M_AC + r_{AC→centroid} × F_strip
+        #
+        # The second term — the moment arm contribution — is often larger
+        # than M_AC for typical wind-turbine blades and must not be omitted.
+        # ------------------------------------------------------------------
+        self._strip_chord_dirs: list[np.ndarray] = []
+        self._strip_ac_offsets: list[np.ndarray] = []
+
+        for k, strip in enumerate(self._strips):
+            idx = strip.node_indices
+            station = blade_aero.stations[k]
+
+            if len(idx) < 2:
+                # Not enough nodes for PCA — fall back, zero AC offset
+                self._strip_chord_dirs.append(self._tangential_dir.copy())
+                self._strip_ac_offsets.append(np.zeros(3))
+                continue
+
+            strip_pts = coords[idx]
+            off = strip_pts - strip_pts.mean(axis=0)
+            # Project offsets onto the plane ⊥ span_dir
+            off_plane = off - np.outer(off @ span_dir, span_dir)
+            if np.linalg.norm(off_plane) < 1e-12:
+                self._strip_chord_dirs.append(self._tangential_dir.copy())
+                self._strip_ac_offsets.append(np.zeros(3))
+                continue
+
+            _, _, Vt = np.linalg.svd(off_plane, full_matrices=False)
+            chord_dir = Vt[0]
+            # Orient using most-aligned reference direction (avoids ±π
+            # sign flips at tip sections where chord ⊥ normal_dir)
+            if abs(np.dot(chord_dir, self._tangential_dir)) >= abs(
+                np.dot(chord_dir, self._normal_dir)
+            ):
+                if np.dot(chord_dir, self._tangential_dir) < 0:
+                    chord_dir = -chord_dir
+            else:
+                if np.dot(chord_dir, self._normal_dir) < 0:
+                    chord_dir = -chord_dir
+            c_norm = np.linalg.norm(chord_dir)
+            if c_norm > 1e-12:
+                chord_dir /= c_norm
+            else:
+                chord_dir = self._tangential_dir.copy()
+            self._strip_chord_dirs.append(chord_dir)
+
+            # LE estimated as the node with minimum chordwise projection
+            chord_proj = strip_pts @ chord_dir
+            le_proj = float(np.min(chord_proj))
+            ac_proj = le_proj + station.airfoil.aerodynamic_center * station.chord
+            centroid_proj = float(strip.centroid @ chord_dir)
+            # Vector from AC to strip centroid (along chord direction only;
+            # the span-normal component is negligible for thin shells)
+            self._strip_ac_offsets.append((centroid_proj - ac_proj) * chord_dir)
+
     # ------------------------------------------------------------------
     #  Public API
     # ------------------------------------------------------------------
@@ -172,11 +234,18 @@ class ForceProjector:
             # Global force vector for the strip
             F_strip = F_n * self._normal_dir + F_t * self._tangential_dir
 
-            # Pitching moment about strip centroid from Cm
-            if bem_result.Mp is not None:
-                M_strip = float(bem_result.Mp[k]) * strip.dr * self._span_dir
-            else:
-                M_strip = np.zeros(3)
+            # Moment about strip centroid:
+            #   M_centroid = M_AC + r_{AC→centroid} × F_strip
+            # M_AC is the aerodynamic pitching moment from BEM polars (about
+            # the aerodynamic centre).  The geometric transfer term accounts
+            # for the moment arm between the AC and the centroid of the strip
+            # nodes and is always present regardless of Mp availability.
+            M_ac = (
+                float(bem_result.Mp[k]) * strip.dr * self._span_dir
+                if bem_result.Mp is not None
+                else np.zeros(3)
+            )
+            M_strip = M_ac + np.cross(self._strip_ac_offsets[k], F_strip)
 
             # Distribute to nodes (constrained minimum-norm)
             f_nodes = self._distribute(strip, F_strip, M_strip)
