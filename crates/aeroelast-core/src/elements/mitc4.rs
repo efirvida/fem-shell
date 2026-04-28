@@ -48,6 +48,7 @@ const GAUSS_W:   [f64; N_GAUSS] = [1.0, 1.0, 1.0, 1.0];
 // ============================================================================
 
 /// All data that is constant for a given element geometry.
+#[derive(Clone)]
 pub struct Mitc4Precomputed {
     /// Local coordinates of 4 nodes (4×2)
     pub local_coords: [[f64; 2]; 4],

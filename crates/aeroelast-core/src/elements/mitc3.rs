@@ -57,6 +57,7 @@ const TP_F: (f64, f64) = (1.0 / 3.0 + D_PARAM, 1.0 / 3.0 + D_PARAM);
 
 /// All data that is constant for a given element geometry.
 /// Computed once, reused for every assembly call.
+#[derive(Clone)]
 pub struct Mitc3Precomputed {
     /// Element area
     pub area: f64,

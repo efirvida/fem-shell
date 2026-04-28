@@ -84,6 +84,7 @@ pub enum MaterialSpec {
 // PrecomputedElem: per-element precomputed geometric/constitutive data
 // ============================================================================
 
+#[derive(Clone)]
 enum PrecomputedElem {
     Tri(Mitc3Precomputed),
     Quad(Mitc4Precomputed),
@@ -110,6 +111,7 @@ enum PrecomputedElem {
 ///
 /// Precomputes all element-level data on construction; assembly methods are
 /// pure read-only passes that accumulate COO triplets.
+#[derive(Clone)]
 pub struct MeshAssembler {
     /// Mesh topology (nodes, connectivity, element types)
     pub topology: MeshTopology,

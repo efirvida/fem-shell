@@ -61,6 +61,7 @@ impl ElemType {
 /// The `dofs_per_node` field controls the global DOF stride. All nodes use
 /// the same stride so that DOF indices never alias. For a pure solid mesh
 /// use 3; for a pure shell mesh use 6; for a pure plane mesh use 2.
+#[derive(Clone)]
 pub struct MeshTopology {
     /// Node coordinates (flat): length = n_nodes * 3
     pub node_coords: Vec<f64>,
