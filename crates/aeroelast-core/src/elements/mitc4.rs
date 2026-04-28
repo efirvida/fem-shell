@@ -1033,34 +1033,23 @@ pub fn compute_ke_local(pre: &Mitc4Precomputed) -> Mat24 {
 
     // --- Membrane stiffness: MITC4+ blending + Selective Reduced Integration ---
     //
-    // Bilinear Q4 with full 2×2 Gauss integration locks for in-plane bending
-    // ("parasitic shear locking"): the element generates spurious in-plane shear
-    // strains γ₁₂ ~ ξ when bending in the η-direction, and vice versa, which
-    // resist the deformation and produce excessive stiffness.
-    //
-    // Selective Reduced Integration (SRI) eliminates this locking by evaluating
-    // the IN-PLANE SHEAR stiffness contribution at a single centre point (ξ=η=0)
-    // where the parasitic shear vanishes for any symmetric bending mode, while
-    // the normal (axial) stiffness components are integrated with the full 2×2
-    // scheme for accuracy.
-    //
-    // The MITC4+ assumed covariant field is used for both integration rules so
-    // that the curved-shell membrane anti-locking (already in b_m_mitc4_plus) is
-    // preserved unchanged.
+    // Despite MITC4+ blending, residual in-plane shear locking persists for
+    // distorted or high-aspect-ratio elements.  SRI evaluates the in-plane shear
+    // stiffness at a single centre point (ξ=η=0) where parasitic shear vanishes
+    // for symmetric bending modes.  The same split is applied consistently in
+    // compute_fint_global (SRI-consistent virtual work) to maintain KT/fint
+    // NR tangent consistency.
     //
     // References:
     //   Hughes, Taylor & Kanoknukulchai (1977) — SRI for Q4 membrane element.
     //   Ko, Lee & Bathe (2017), C&S 182:404–418 — MITC4+ blending.
-    //   CalculiX S4 element — uses analogous SRI for in-plane membrane.
 
-    // Split constitutive: normal/coupling (rows/cols 0-1) vs in-plane shear (2,2).
     let mut cm_normal = *cm;
     cm_normal[(0, 2)] = 0.0; cm_normal[(1, 2)] = 0.0;
     cm_normal[(2, 0)] = 0.0; cm_normal[(2, 1)] = 0.0;
     cm_normal[(2, 2)] = 0.0;
-    let c_shear = cm[(2, 2)]; // G-effective (may include anisotropic coupling)
+    let c_shear = cm[(2, 2)];
 
-    // Full 2×2 integration for normal components.
     let mut k_m = Mat24::zeros();
     for g in 0..N_GAUSS {
         let xi  = GAUSS_XI[g];
@@ -1070,14 +1059,10 @@ pub fn compute_ke_local(pre: &Mitc4Precomputed) -> Mat24 {
         let bm = b_m_mitc4_plus(pre, xi, eta);
         k_m += (bm.transpose() * &cm_normal * &bm) * (w * sqrt_g);
     }
-
-    // 1-point integration at (0, 0) for in-plane shear component.
     {
         let (g_r_c, g_s_c) = compute_j3d(&pre.initial_coords_3d, 0.0, 0.0);
         let sqrt_g_c = g_r_c.cross(&g_s_c).norm();
         let bm_c = b_m_mitc4_plus(pre, 0.0, 0.0);
-        // Extract shear row (row 2: 2ε₁₂) and integrate with weight 4
-        // (single point quadrature exact for constant integrands over [-1,1]²).
         let b_shear: SMatrix<f64, 1, 24> = bm_c.fixed_rows::<1>(2).into();
         k_m += b_shear.transpose() * c_shear * b_shear * (4.0 * sqrt_g_c);
     }
@@ -1478,46 +1463,23 @@ pub fn compute_fint_global(pre: &Mitc4Precomputed, u_global: &Vec24, nonlinear: 
         let cb = &pre.constitutive.cb;            // D matrix: bending stiffness
         let cs = &pre.constitutive.cs;            // transverse shear stiffness
 
+        // SRI split: cm_normal suppresses in-plane shear (cm[2,2]) in the 4-GP loop.
+        // The in-plane shear is integrated at a single centre point (ξ=η=0), matching
+        // the compute_ke_local SRI scheme to preserve KT / fint NR consistency.
+        let mut cm_normal = *cm;
+        cm_normal[(0, 2)] = 0.0; cm_normal[(1, 2)] = 0.0;
+        cm_normal[(2, 0)] = 0.0; cm_normal[(2, 1)] = 0.0;
+        cm_normal[(2, 2)] = 0.0;
+        let c_shear = cm[(2, 2)];
+
         // =====================================================================
         // Nonlinear f_int: full MITC4+ ABD formulation with bubble condensation
         // =====================================================================
-        // Recover condensed membrane EAS internal DOFs (Q4E4) so the nonlinear
-        // residual is consistent with the membrane stiffness condensation path.
-        let (g_r0, g_s0) = compute_j3d(&pre.initial_coords_3d, 0.0, 0.0);
-        let sqrt_g0 = g_r0.cross(&g_s0).norm();
-        let (j_loc0, _) = compute_j_loc_at(&pre.initial_coords_3d, &pre.e1, &pre.e2, 0.0, 0.0);
-        let t0 = covariant_to_local_mapping(&j_loc0);
-
-        let mut k_ua: SMatrix<f64, 24, 4> = SMatrix::zeros();
-        let mut k_aa: SMatrix<f64, 4, 4> = SMatrix::zeros();
-        let mut g_eas_gp: [SMatrix<f64, 3, 4>; N_GAUSS] = [SMatrix::<f64, 3, 4>::zeros(); N_GAUSS];
-
-        for g in 0..N_GAUSS {
-            let xi = GAUSS_XI[g];
-            let eta = GAUSS_ETA[g];
-            let sqrt_g = pre.gp_jacobians[g].sqrt_g;
-            let w = GAUSS_W[g];
-
-            let scale = sqrt_g0 / sqrt_g.max(1e-14);
-            let mut m_eas: SMatrix<f64, 3, 4> = SMatrix::zeros();
-            m_eas[(0, 0)] = xi;
-            m_eas[(1, 1)] = eta;
-            m_eas[(2, 2)] = xi * eta;
-            m_eas[(1, 3)] = xi;
-            let g_eas = scale * t0 * m_eas;
-            g_eas_gp[g] = g_eas;
-
-            let bm = b_m_mitc4_plus(pre, xi, eta);
-            let factor = w * sqrt_g;
-            k_ua += (bm.transpose() * cm * &g_eas) * factor;
-            k_aa += (g_eas.transpose() * cm * &g_eas) * factor;
-        }
-
-        let alpha_eas: SVector<f64, 4> = if let Some(k_aa_inv) = k_aa.try_inverse() {
-            -k_aa_inv * k_ua.transpose() * u_local
-        } else {
-            SVector::<f64, 4>::zeros()
-        };
+        // NOTE: EAS (Enhanced Assumed Strains) is intentionally NOT used here.
+        // The linear stiffness (compute_ke_local) uses SRI but not EAS, so using
+        // EAS in fint would make KT inconsistent with fint (NR consistency broken).
+        // The MITC4+ assumed covariant B-matrix + SRI already prevents membrane
+        // locking without EAS.
 
         // Pre-loop: build bubble condensation operator (bending + shear combined)
         // u_b = bubble_op · u_local   where bubble_op = -kbb_inv · knb^T
@@ -1573,16 +1535,13 @@ pub fn compute_fint_global(pre: &Mitc4Precomputed, u_global: &Vec24, nonlinear: 
             let bm_l = b_m_mitc4_plus(pre, xi, eta);
             let eps_m_linear = bm_l * &u_local;
 
-            // Condensed membrane EAS enhancement: G(ξ,η) · ᾱ
-            let eps_m_eas = g_eas_gp[g] * alpha_eas;
-
             // Nonlinear Green-Lagrange correction: ε_NL = ½·(H^T·H)_Voigt
             let eps_m_nl = Vector3::new(
                 0.5 * (h_mat[(0, 0)].powi(2) + h_mat[(1, 0)].powi(2) + h_mat[(2, 0)].powi(2)),
                 0.5 * (h_mat[(0, 1)].powi(2) + h_mat[(1, 1)].powi(2) + h_mat[(2, 1)].powi(2)),
                 h_mat[(0, 0)] * h_mat[(0, 1)] + h_mat[(1, 0)] * h_mat[(1, 1)] + h_mat[(2, 0)] * h_mat[(2, 1)],
             );
-            let eps_m = eps_m_linear + eps_m_eas + eps_m_nl;
+            let eps_m = eps_m_linear + eps_m_nl;
 
             // B_NL for virtual work: B_total = B_mitc4+ + B_NL
             let bnl = compute_b_nl(&gj.dh, &h_mat);
@@ -1602,8 +1561,8 @@ pub fn compute_fint_global(pre: &Mitc4Precomputed, u_global: &Vec24, nonlinear: 
             }
             let kappa = bk * &u_rot + bkb * u_b;
 
-            // ── Resultants with ABD coupling ──────────────────────────────────
-            let n_resultant = cm * &eps_m + cb_coupling * &kappa;
+            // ── Resultants with ABD coupling (SRI: cm_normal only; shear handled at centre) ──
+            let n_resultant = &cm_normal * &eps_m + cb_coupling * &kappa;
             let m_resultant = cb_coupling * &eps_m + cb * &kappa;
 
             // ── D1: transverse shear ─────────────────────────────────────────
@@ -1620,6 +1579,45 @@ pub fn compute_fint_global(pre: &Mitc4Precomputed, u_global: &Vec24, nonlinear: 
         f += bs_nodal.transpose() * &q_resultant * factor;
 
     }
+
+        // =====================================================================
+        // SRI centre-point (ξ=η=0): add in-plane shear membrane contribution
+        // Matches the single-point shear term in compute_ke_local.
+        // =====================================================================
+        {
+            let (g_r_c, g_s_c) = compute_j3d(&pre.initial_coords_3d, 0.0, 0.0);
+            let sqrt_g_c = g_r_c.cross(&g_s_c).norm();
+
+            // Jacobian inverse at centre (needed for dh at (0,0))
+            let (_, j_inv_c) = compute_j_loc_at(
+                &pre.initial_coords_3d, &pre.e1, &pre.e2, 0.0, 0.0,
+            );
+            let (dn_dxi_c, dn_deta_c) = shape_function_derivatives(0.0, 0.0);
+            let mut dh_c = SMatrix::<f64, 2, 4>::zeros();
+            for i in 0..4 {
+                dh_c[(0, i)] = j_inv_c[(0, 0)] * dn_dxi_c[i] + j_inv_c[(1, 0)] * dn_deta_c[i];
+                dh_c[(1, i)] = j_inv_c[(0, 1)] * dn_dxi_c[i] + j_inv_c[(1, 1)] * dn_deta_c[i];
+            }
+
+            // Displacement gradient and NL shear strain at centre
+            let h_mat_c = displacement_gradient(&dh_c, &u_local);
+            let eps_m_nl_shear_c =
+                h_mat_c[(0, 0)] * h_mat_c[(0, 1)]
+                + h_mat_c[(1, 0)] * h_mat_c[(1, 1)]
+                + h_mat_c[(2, 0)] * h_mat_c[(2, 1)];
+
+            let bm_l_c = b_m_mitc4_plus(pre, 0.0, 0.0);
+            let bnl_c  = compute_b_nl(&dh_c, &h_mat_c);
+            let bm_nl_c = extract_membrane_rows(&bnl_c);
+            let bm_total_c = bm_l_c + bm_nl_c;
+
+            // Total in-plane shear strain at centre (linear + NL)
+            let eps_shear_c = (bm_l_c * &u_local)[2] + eps_m_nl_shear_c;
+            let n_shear_c   = c_shear * eps_shear_c;
+
+            let b_shear_c: SMatrix<f64, 1, 24> = bm_total_c.fixed_rows::<1>(2).into();
+            f += b_shear_c.transpose() * n_shear_c * (4.0 * sqrt_g_c);
+        }
 
         // =====================================================================
         // Drilling stiffness (penalty for out-of-plane rotation)

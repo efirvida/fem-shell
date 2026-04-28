@@ -144,6 +144,88 @@ fn enriched_shape_deriv(r: f64, s: f64) -> ([f64; 4], [f64; 4]) {
 }
 
 // ============================================================================
+// Material frame rotation
+// ============================================================================
+
+/// Rotate the shell constitutive matrices from the global material reference
+/// frame to the element local frame.
+///
+/// The global material reference direction is taken as global X = (1,0,0)
+/// projected onto the shell plane. When the element's local e1 differs from
+/// this reference (e.g. diagonal triangles formed by splitting quads), the
+/// ABD matrices must be rotated to avoid a frame mismatch.
+///
+/// Rotation by angle β (angle of e1 from global X in the shell plane):
+///   - cos_b = e1 · x_ref,  sin_b = e1 · y_ref  (y_ref = e3 × x_ref)
+///   - Reuter T matrix (angle = -β): c = cos_b, s = -sin_b
+///   - A/B/D_local = T(-β) · A/B/D_global · T(-β)^T
+///   - Cs_local = R · Cs_global · R^T  (R is 2×2 in-plane rotation)
+fn rotate_constitutive_to_local(
+    constitutive: ShellConstitutive,
+    e1: &Vector3<f64>,
+    e3: &Vector3<f64>,
+) -> ShellConstitutive {
+    // Project global X onto the shell plane
+    let x_global = Vector3::new(1.0, 0.0, 0.0);
+    let x_proj = x_global - x_global.dot(e3) * e3;
+    let x_ref_len = x_proj.norm();
+
+    // If global X is nearly normal to shell, use global Z as reference instead
+    let x_ref = if x_ref_len > 1e-10 {
+        x_proj / x_ref_len
+    } else {
+        let z_global = Vector3::new(0.0, 0.0, 1.0);
+        let z_proj = z_global - z_global.dot(e3) * e3;
+        let z_len = z_proj.norm();
+        if z_len > 1e-10 { z_proj / z_len } else { return constitutive; }
+    };
+
+    // cos and sin of angle β (angle of e1 from x_ref, measured in shell plane)
+    let cos_b = e1.dot(&x_ref).clamp(-1.0, 1.0);
+    let y_ref = e3.cross(&x_ref); // second in-plane reference direction
+    let sin_b = e1.dot(&y_ref).clamp(-1.0, 1.0);
+
+    // If already aligned (cos_b ≈ 1, sin_b ≈ 0), skip rotation
+    if (cos_b - 1.0).abs() < 1e-12 {
+        return constitutive;
+    }
+
+    // Reuter transformation T for rotation by (+β):
+    // C_local = T(β) · C_global · T^T(β)
+    // where β = angle of element e1 from global reference x_ref
+    let c = cos_b;
+    let s = sin_b;
+
+    // T = [[c²,    s²,    2cs  ],
+    //      [s²,    c²,   -2cs  ],
+    //      [-cs,   cs,  c²-s² ]]
+    let t = Matrix3::new(
+        c * c,           s * s,           2.0 * c * s,
+        s * s,           c * c,          -2.0 * c * s,
+        -c * s,          c * s,           c * c - s * s,
+    );
+
+    // Rotate in-plane constitutive matrices: M_local = T · M_global · T^T
+    let cm_rot           = t * constitutive.cm           * t.transpose();
+    let cb_rot           = t * constitutive.cb           * t.transpose();
+    let cb_coupling_rot  = t * constitutive.cb_coupling  * t.transpose();
+    let cm_raw_rot       = t * constitutive.cm_raw       * t.transpose();
+
+    // Rotate transverse shear (2×2): Cs_local = R · Cs_global · R^T
+    // where R = [[cos_b, sin_b], [-sin_b, cos_b]] rotates (x_ref,y_ref) → (e1,e2)
+    let r = Matrix2::new(cos_b, sin_b, -sin_b, cos_b);
+    let cs_rot = r * constitutive.cs * r.transpose();
+
+    ShellConstitutive {
+        cm:          cm_rot,
+        cb:          cb_rot,
+        cb_coupling: cb_coupling_rot,
+        cs:          cs_rot,
+        cm_raw:      cm_raw_rot,
+    }
+}
+
+// ============================================================================
 // Precomputation
 // ============================================================================
 
@@ -218,6 +300,17 @@ impl Mitc3Precomputed {
         // Covariant base vectors (2D, in local plane)
         let g_r = Vector2::new(x2 - x1, y2 - y1);
         let g_s = Vector2::new(x3 - x1, y3 - y1);
+
+        // Rotate constitutive matrices from the global material reference frame
+        // (direction 1 = global X projected onto shell plane) to the element
+        // local frame (direction 1 = e1).
+        //
+        // This is necessary because the laminate ABD matrices are computed with
+        // a fixed global reference direction (global X), but the MITC3 element
+        // computes strains in its own local frame (e1 = edge 0→1 direction).
+        // For elements where e1 ≠ global-X (e.g., diagonal triangles from quad
+        // splitting), the material must be rotated to avoid a frame mismatch.
+        let constitutive = rotate_constitutive_to_local(constitutive, &e1, &e3);
 
         // Drilling stiffness
         let k_drill = e_modulus * thickness * thickness * 0.15 * drilling_scale;
@@ -468,6 +561,7 @@ pub fn compute_ke_local(pre: &Mitc3Precomputed) -> Mat18 {
     let area = pre.area;
     let cm = &pre.constitutive.cm;
     let cb = &pre.constitutive.cb;
+    let cb_coupling = &pre.constitutive.cb_coupling;
     let cs = &pre.constitutive.cs;
     let dh = &pre.dh;
     let j_inv = &pre.j_inv;
@@ -484,8 +578,10 @@ pub fn compute_ke_local(pre: &Mitc3Precomputed) -> Mat18 {
         k_drill_total += (GAUSS_W[gp] * area * pre.k_drill) * (bd.transpose() * &bd);
     }
 
-    // --- Bending + shear with MITC3+ bubble (extended 20-DOF) ---
+    // --- Bending + shear + B-coupling with MITC3+ bubble (extended 20-DOF) ---
     let mut k_ext = Mat20::zeros();
+    // B-coupling: bm^T · B · bk_ext  (18×20) — full extended space
+    let mut k_mb_ext = SMatrix::<f64, 18, 20>::zeros();
     for gp in 0..N_GAUSS {
         let r = GAUSS_R[gp];
         let s = GAUSS_S[gp];
@@ -495,13 +591,20 @@ pub fn compute_ke_local(pre: &Mitc3Precomputed) -> Mat18 {
         let bg = b_gamma_ext(r, s, pre);
 
         k_ext += w * area * (bk.transpose() * cb * &bk + bg.transpose() * cs * &bg);
+
+        // Membrane-bending coupling
+        k_mb_ext += (w * area) * (bm.transpose() * cb_coupling * &bk);
     }
 
-    // Static condensation: K = K_uu - K_uq K_qq^{-1} K_qu
+    // Extract nodal and bubble blocks
     let k_uu = k_ext.fixed_view::<18, 18>(0, 0).into_owned();
     let k_uq = k_ext.fixed_view::<18, 2>(0, 18).into_owned();
     let k_qu = k_ext.fixed_view::<2, 18>(18, 0).into_owned();
     let k_qq = k_ext.fixed_view::<2, 2>(18, 18).into_owned();
+
+    // B-coupling blocks
+    let k_mb_uu: SMatrix<f64, 18, 18> = k_mb_ext.fixed_view::<18, 18>(0, 0).into_owned();
+    let k_mb_uq: SMatrix<f64, 18, 2>  = k_mb_ext.fixed_view::<18, 2>(0, 18).into_owned();
 
     // 2×2 inverse (explicit for performance)
     let det_qq = k_qq[(0, 0)] * k_qq[(1, 1)] - k_qq[(0, 1)] * k_qq[(1, 0)];
@@ -512,7 +615,13 @@ pub fn compute_ke_local(pre: &Mitc3Precomputed) -> Mat18 {
         k_qq[(0, 0)] / det_qq,
     );
 
-    let k_bs_cond = k_uu - &k_uq * &inv_qq * &k_qu;
+    // Modified [uq] block: include B-coupling to bubble DOFs
+    let k_uq_full = k_uq + &k_mb_uq;
+    let k_qu_full = k_qu + k_mb_uq.transpose();
+
+    // Condensed bending+shear+B-coupling stiffness
+    let k_mb_sym = &k_mb_uu + k_mb_uu.transpose();
+    let k_bs_cond = k_uu + k_mb_sym - &k_uq_full * &inv_qq * &k_qu_full;
 
     // Total local stiffness
     let k_local = km + k_drill_total + k_bs_cond;
