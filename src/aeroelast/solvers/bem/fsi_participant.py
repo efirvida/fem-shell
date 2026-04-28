@@ -787,13 +787,14 @@ class BEMFSIParticipant:
         deformed_coords = self._ref_coords + displacements
         projector = self._rebuild_projector(deformed_coords, deformed_aero)
 
-        # Keep strip-to-node membership in sync with the deformed projector.
-        # _compute_deformed_geometry above used the previous membership; update
-        # it now so the next iteration operates on the re-binned assignments
-        # instead of the ones frozen at initialisation.
-        self._strip_node_indices = [
-            strip.node_indices.copy() for strip in projector._strips
-        ]
+        # _strip_node_indices is intentionally kept as the *reference*
+        # assignment and is NOT updated from the deformed projector here.
+        # Updating it would make the next call to _compute_deformed_geometry
+        # compare deformed chord directions (computed on the migrated node
+        # set for strip k) against _ref_chord_dirs[k] (computed on the
+        # original node set), yielding inconsistent delta_twist estimates.
+        # ForceProjector manages its own independent node-to-strip assignment
+        # for force application on the deformed geometry.
 
         bem_result = bem_solver.compute(v_inf, omega, pitch, azimuth=azimuth)
         forces = projector.project(bem_result)
