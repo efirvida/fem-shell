@@ -3725,6 +3725,7 @@ fn run_stress_stiffened_fsi_solver(
 /// # Returns
 /// `(eta_k, eta_m)` — stiffness-proportional and mass-proportional Rayleigh coefficients.
 #[pyfunction]
+#[cfg(feature = "fsi")]
 fn compute_rayleigh_auto(
     k_rows: PyReadonlyArray1<i32>,
     k_cols: PyReadonlyArray1<i32>,
@@ -3869,6 +3870,7 @@ pub fn register_module(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(run_fsi_solver, m)?)?;
     #[cfg(feature = "fsi")]
     m.add_function(wrap_pyfunction!(run_stress_stiffened_fsi_solver, m)?)?;
+    #[cfg(feature = "fsi")]
     m.add_function(wrap_pyfunction!(compute_rayleigh_auto, m)?)?;
     m.add_class::<PyMeshModel>()?;
 
