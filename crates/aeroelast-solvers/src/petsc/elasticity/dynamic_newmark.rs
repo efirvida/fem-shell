@@ -399,6 +399,10 @@ pub struct NewmarkStepper {
     /// Geometric stiffness values at the same COO positions as `k_vals`.
     /// All zeros until `update_geometric_stiffness` is called.
     kg_vals: Vec<f64>,
+    /// Spin-softening diagonal contribution at the same COO positions as `k_vals`.
+    /// All zeros until `update_spin_softening` is called.
+    /// Expanded to the K sparsity via `setup::expand_diag_to_sparsity` before storage.
+    ksp_diag: Vec<f64>,
 
     // ── Pre-factorized effective stiffness ───────────────────────────────────
     k_eff: PetscMat,
@@ -510,6 +514,7 @@ impl NewmarkStepper {
         let a_init = vec![0.0f64; n_dofs];
 
         let kg_vals = vec![0.0f64; k_vals.len()];
+        let ksp_diag = vec![0.0f64; k_vals.len()];
 
         Ok(Self {
             rows: k_rows.to_vec(),
@@ -518,6 +523,7 @@ impl NewmarkStepper {
             m_vals: m_vals.to_vec(),
             c_vals: c_vals.to_vec(),
             kg_vals,
+            ksp_diag,
             k_eff,
             mat_m,
             mat_c,
@@ -543,12 +549,13 @@ impl NewmarkStepper {
     /// Rebuild `K_eff`, `mat_m`, `mat_c` when `dt` has changed (or after a K_G update).
     fn refactorize(&mut self, dt: f64) -> Result<(), PetscError> {
         let [a0, a1, a2, a3, a4, a5, a6, a7] = Self::compute_coeffs(self.beta, self.gamma, dt);
-        // K_eff = (K + K_G) + a0·M + a1·C
+        // K_eff = (K + K_G + K_SP) + a0·M + a1·C
         let k_plus_kg: Vec<f64> = self
             .k_vals
             .iter()
             .zip(self.kg_vals.iter())
-            .map(|(k, kg)| k + kg)
+            .zip(self.ksp_diag.iter())
+            .map(|((k, kg), ksp)| k + kg + ksp)
             .collect();
         let (k_eff, mat_m, mat_c) = Self::build_matrices(
             &self.rows,
@@ -595,6 +602,26 @@ impl NewmarkStepper {
             self.k_vals.len(),
         );
         self.kg_vals.copy_from_slice(kg_vals);
+        self.refactorize(self.dt_last)
+    }
+
+    /// Update the spin-softening stiffness contribution and refactorize `K_eff`.
+    ///
+    /// `ksp_vals` must have the **same length and COO ordering** as `k_vals`
+    /// (expanded from a diagonal via `setup::expand_diag_to_sparsity`).
+    /// For spin-softening: `K_SP[i] = -ω²·M_lump·(I - n̂⊗n̂)` expanded to the
+    /// K sparsity pattern.
+    ///
+    /// After this call `K_eff = (K + K_G + K_SP) + a₀·M + a₁·C`.
+    pub fn update_spin_softening(&mut self, ksp_vals: &[f64]) -> Result<(), PetscError> {
+        assert_eq!(
+            ksp_vals.len(),
+            self.k_vals.len(),
+            "ksp_vals must have the same COO length as k_vals ({} != {})",
+            ksp_vals.len(),
+            self.k_vals.len(),
+        );
+        self.ksp_diag.copy_from_slice(ksp_vals);
         self.refactorize(self.dt_last)
     }
 
@@ -683,6 +710,21 @@ impl NewmarkStepper {
     /// Current simulation time.
     pub fn current_time(&self) -> f64 {
         self.t
+    }
+
+    /// Borrow the current displacement vector (reduced DOF space).
+    pub fn current_u(&self) -> &[f64] {
+        &self.u
+    }
+
+    /// Borrow the current velocity vector (reduced DOF space).
+    pub fn current_v(&self) -> &[f64] {
+        &self.v
+    }
+
+    /// Borrow the current acceleration vector (reduced DOF space).
+    pub fn current_a(&self) -> &[f64] {
+        &self.a
     }
 
     /// Set initial displacement and velocity conditions.
