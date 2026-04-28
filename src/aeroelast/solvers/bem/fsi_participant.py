@@ -306,17 +306,20 @@ class BEMFSIParticipant:
 
         # -- Direction vectors (normalised once) ----------------------------
         self._span_dir = np.asarray(
-            bem_config.get("span_direction", [0.0, 0.0, 1.0]), dtype=float,
+            bem_config.get("span_direction", [0.0, 0.0, 1.0]),
+            dtype=float,
         )
         self._span_dir /= np.linalg.norm(self._span_dir)
 
         self._normal_dir = np.asarray(
-            bem_config.get("normal_direction", [1.0, 0.0, 0.0]), dtype=float,
+            bem_config.get("normal_direction", [1.0, 0.0, 0.0]),
+            dtype=float,
         )
         self._normal_dir /= np.linalg.norm(self._normal_dir)
 
         self._tangential_dir = np.asarray(
-            bem_config.get("tangential_direction", [0.0, 1.0, 0.0]), dtype=float,
+            bem_config.get("tangential_direction", [0.0, 1.0, 0.0]),
+            dtype=float,
         )
         self._tangential_dir /= np.linalg.norm(self._tangential_dir)
 
@@ -334,7 +337,8 @@ class BEMFSIParticipant:
         self._bem_solver = BEMSolver(blade_aero, **self._bem_solver_kwargs)
 
         ref_projector = ForceProjector(
-            mesh, blade_aero,
+            mesh,
+            blade_aero,
             span_direction=self._span_dir,
             normal_direction=self._normal_dir,
             tangential_direction=self._tangential_dir,
@@ -353,7 +357,7 @@ class BEMFSIParticipant:
         ]
 
         # -- Reference per-strip quantities ---------------------------------
-        self._ref_r: np.ndarray = blade_aero.r.copy()        # (n_strips,)
+        self._ref_r: np.ndarray = blade_aero.r.copy()  # (n_strips,)
         self._ref_twist: np.ndarray = blade_aero.twist.copy()  # (n_strips,) rad
 
         # Reference chord directions (unit vectors in the e_s-perp plane).
@@ -404,8 +408,7 @@ class BEMFSIParticipant:
         adapter.initialize()
 
         logger.info(
-            "[BEM-FSI] Initialized.  Participant=%s  mesh=%s  nodes=%d  "
-            "strips=%d",
+            "[BEM-FSI] Initialized.  Participant=%s  mesh=%s  nodes=%d  strips=%d",
             self._participant_name,
             self._coupling_mesh,
             self._n_nodes,
@@ -443,13 +446,18 @@ class BEMFSIParticipant:
                 current_time = self._window_count * dt
 
                 self._write_timestep_output(
-                    forces, displacements, bem_result,
-                    self._window_count, current_time,
+                    forces,
+                    displacements,
+                    bem_result,
+                    self._window_count,
+                    current_time,
                 )
 
                 if self._window_count % self._log_interval == 0:
                     self._log_window(
-                        bem_result, displacements, current_time,
+                        bem_result,
+                        displacements,
+                        current_time,
                     )
 
         adapter.finalize()
@@ -460,7 +468,8 @@ class BEMFSIParticipant:
     # -----------------------------------------------------------------------
 
     def _compute_deformed_geometry(
-        self, displacements: np.ndarray,
+        self,
+        displacements: np.ndarray,
     ) -> tuple[np.ndarray, np.ndarray]:
         r"""Extract deformed BEM strip radii and twist from nodal displacements.
 
@@ -539,7 +548,8 @@ class BEMFSIParticipant:
         return r_def, twist_def
 
     def _compute_strip_chord_dirs(
-        self, coords: np.ndarray,
+        self,
+        coords: np.ndarray,
     ) -> list[np.ndarray]:
         r"""Estimate a chord-direction unit vector for each BEM strip via
         SVD-based PCA of the cross-section node distribution.
@@ -629,7 +639,9 @@ class BEMFSIParticipant:
     # -----------------------------------------------------------------------
 
     def _rebuild_bem_solver(
-        self, r_def: np.ndarray, twist_def: np.ndarray,
+        self,
+        r_def: np.ndarray,
+        twist_def: np.ndarray,
     ) -> tuple[BEMSolver, BladeAero]:
         r"""Construct a new ``BEMSolver`` with deformed strip radii and twist.
 
@@ -692,7 +704,9 @@ class BEMFSIParticipant:
         return BEMSolver(deformed_aero, **self._bem_solver_kwargs), deformed_aero
 
     def _rebuild_projector(
-        self, deformed_coords: np.ndarray, deformed_aero: BladeAero,
+        self,
+        deformed_coords: np.ndarray,
+        deformed_aero: BladeAero,
     ) -> ForceProjector:
         r"""Construct a ``ForceProjector`` on the deformed mesh.
 
@@ -733,7 +747,8 @@ class BEMFSIParticipant:
     # -----------------------------------------------------------------------
 
     def _compute_forces(
-        self, displacements: np.ndarray,
+        self,
+        displacements: np.ndarray,
     ) -> tuple[np.ndarray, BEMResult]:
         r"""Evaluate BEM on the (possibly deformed) blade and project forces.
 
@@ -919,15 +934,15 @@ class BEMFSIParticipant:
             F_section[k] = F_n * self._normal_dir + F_t * self._tangential_dir
 
         point_data: dict[str, np.ndarray] = {
-            "r_m":      bem_result.r.astype(float),
-            "Np_N_m":   bem_result.Np.astype(float),
-            "Tp_N_m":   bem_result.Tp.astype(float),
+            "r_m": bem_result.r.astype(float),
+            "Np_N_m": bem_result.Np.astype(float),
+            "Tp_N_m": bem_result.Tp.astype(float),
             "alpha_deg": bem_result.alpha.astype(float),
-            "cl":       bem_result.cl.astype(float),
-            "cd":       bem_result.cd.astype(float),
-            "a":        bem_result.a.astype(float),
-            "ap":       bem_result.ap.astype(float),
-            "dr_m":     dr.astype(float),
+            "cl": bem_result.cl.astype(float),
+            "cd": bem_result.cd.astype(float),
+            "a": bem_result.a.astype(float),
+            "ap": bem_result.ap.astype(float),
+            "dr_m": dr.astype(float),
             "Force_section": F_section,
         }
         # Optional fields — present when CCBlade version supports them
@@ -957,27 +972,39 @@ class BEMFSIParticipant:
         strips = self._projector._strips
         dr = np.array([s.dr for s in strips])
 
-        names = ["r[m]", "dr[m]",
-                 "chord[m]", "twist[deg]",
-                 "Np[N/m]", "Tp[N/m]",
-                 "alpha[deg]", "cl", "cd"]
+        names = [
+            "r[m]",
+            "dr[m]",
+            "chord[m]",
+            "twist[deg]",
+            "Np[N/m]",
+            "Tp[N/m]",
+            "alpha[deg]",
+            "cl",
+            "cd",
+        ]
         cols = [
             bem_result.r,
             dr,
             bem_result.chord if bem_result.chord is not None else np.zeros_like(bem_result.r),
-            bem_result.twist_deg if bem_result.twist_deg is not None else np.zeros_like(bem_result.r),
-            bem_result.Np, bem_result.Tp,
-            bem_result.alpha, bem_result.cl, bem_result.cd,
+            bem_result.twist_deg
+            if bem_result.twist_deg is not None
+            else np.zeros_like(bem_result.r),
+            bem_result.Np,
+            bem_result.Tp,
+            bem_result.alpha,
+            bem_result.cl,
+            bem_result.cd,
         ]
         for attr, col_name in [
-            ("cn",  "cn"),
-            ("ct",  "ct"),
-            ("a",   "a"),
-            ("ap",  "ap"),
-            ("W",   "W[m/s]"),
-            ("Re",  "Re"),
-            ("cm",  "cm"),
-            ("Mp",  "Mp[N.m/m]"),
+            ("cn", "cn"),
+            ("ct", "ct"),
+            ("a", "a"),
+            ("ap", "ap"),
+            ("W", "W[m/s]"),
+            ("Re", "Re"),
+            ("cm", "cm"),
+            ("Mp", "Mp[N.m/m]"),
         ]:
             val = getattr(bem_result, attr, None)
             if val is not None:
@@ -986,7 +1013,10 @@ class BEMFSIParticipant:
         data = np.column_stack(cols)
         np.savetxt(
             ts_dir / "bem_sectional.csv",
-            data, delimiter=",", header=",".join(names), comments="",
+            data,
+            delimiter=",",
+            header=",".join(names),
+            comments="",
         )
 
     def _append_global_csv(
@@ -1058,8 +1088,7 @@ class BEMFSIParticipant:
             with open(pvd_path, "r") as f:
                 lines = f.readlines()
             valid_lines = [
-                line for line in lines
-                if "</Collection>" not in line and "</VTKFile>" not in line
+                line for line in lines if "</Collection>" not in line and "</VTKFile>" not in line
             ]
             with open(pvd_path, "w") as f:
                 f.writelines(valid_lines)
@@ -1092,7 +1121,9 @@ class BEMFSIParticipant:
             bem_result.thrust * 1e-3,
             bem_result.torque * 1e-3,
             bem_result.power * 1e-3,
-            tip_x, tip_y, tip_z,
+            tip_x,
+            tip_y,
+            tip_z,
             tip_mag,
             max_disp,
         )
