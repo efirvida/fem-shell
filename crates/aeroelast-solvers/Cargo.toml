@@ -10,6 +10,7 @@ name = "aeroelast_solvers"
 crate-type = ["rlib"]
 
 [features]
+default = ["fsi"]
 fsi = ["dep:precice"]
 
 [dependencies]
