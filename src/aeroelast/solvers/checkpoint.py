@@ -383,9 +383,21 @@ class AsyncCheckpointWriter:
             point_data["ACCMAG"] = np.linalg.norm(A[:, :3], axis=1)
         # Add extra fields if provided
         if extra_fields:
+            n_nodes_vtu = U.shape[0]
+            n_dofs_total = n_nodes_vtu * self.dofs_per_node
             for name, data in extra_fields.items():
+                if not isinstance(data, np.ndarray):
+                    continue
                 if data.ndim == 1:
-                    point_data[name] = data
+                    if len(data) == n_dofs_total:
+                        # DOF-space array — reshape to (n_nodes, dofs_per_node) and
+                        # keep first 3 translational components as a 3D vector field
+                        f_node = data.reshape(n_nodes_vtu, self.dofs_per_node)[:, :3]
+                        if f_node.shape[1] < 3:
+                            f_node = np.hstack([f_node, np.zeros((n_nodes_vtu, 3 - f_node.shape[1]))])
+                        point_data[name] = f_node
+                    else:
+                        point_data[name] = data
                 else:
                     # Assume vector data
                     vec_data = data
@@ -889,9 +901,21 @@ class CheckpointManager:
             point_data["ACCMAG"] = np.linalg.norm(A[:, :3], axis=1)
         # Add extra fields if provided
         if extra_fields:
+            n_nodes_vtu = U.shape[0]
+            n_dofs_total = n_nodes_vtu * self.dofs_per_node
             for name, data in extra_fields.items():
+                if not isinstance(data, np.ndarray):
+                    continue
                 if data.ndim == 1:
-                    point_data[name] = data
+                    if len(data) == n_dofs_total:
+                        # DOF-space array — reshape to (n_nodes, dofs_per_node) and
+                        # keep first 3 translational components as a 3D vector field
+                        f_node = data.reshape(n_nodes_vtu, self.dofs_per_node)[:, :3]
+                        if f_node.shape[1] < 3:
+                            f_node = np.hstack([f_node, np.zeros((n_nodes_vtu, 3 - f_node.shape[1]))])
+                        point_data[name] = f_node
+                    else:
+                        point_data[name] = data
                 else:
                     # Assume vector data
                     vec_data = data
