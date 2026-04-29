@@ -145,16 +145,22 @@ pub fn rayleigh_c_coo(
 /// DOF `g` in `interface_dofs_global` is mapped to its **reduced** index via
 /// binary search.
 ///
-/// # Panics
-/// Panics if any DOF in `interface_dofs_global` is not found in `free_dofs`
-/// (i.e., an interface node is on a Dirichlet boundary — physically invalid).
+/// # Constrained interface DOFs
+/// If a DOF is not found in `free_dofs` (i.e. the interface node shares a
+/// Dirichlet BC — e.g. root nodes on an aerodynamic coupling surface), the
+/// entry is mapped to `usize::MAX`.  All callers guard reads/writes with a
+/// bounds check, so:
+/// - Force scatter: `usize::MAX < n_dofs` → force silently dropped (goes to
+///   reaction at the support, which is physically correct).
+/// - Displacement gather: `usize::MAX < u.len()` → returns 0.0 (prescribed
+///   displacement, also correct).
 ///
 /// # Arguments
 /// * `interface_dofs_global` — DOF indices in the global (unreduced) system
 /// * `free_dofs`             — sorted array of free global DOF indices
 ///
 /// # Returns
-/// DOF indices in the reduced (0-based) system.
+/// DOF indices in the reduced (0-based) system, or `usize::MAX` for fixed DOFs.
 pub fn remap_interface_dofs(
     interface_dofs_global: &[usize],
     free_dofs: &[i32],
@@ -164,11 +170,11 @@ pub fn remap_interface_dofs(
         .map(|&d| {
             let d_i32 = d as i32;
             let pos = free_dofs.partition_point(|&f| f < d_i32);
-            assert!(
-                pos < free_dofs.len() && free_dofs[pos] == d_i32,
-                "Interface DOF {d} is not a free DOF — interface nodes cannot have Dirichlet BCs"
-            );
-            pos
+            if pos < free_dofs.len() && free_dofs[pos] == d_i32 {
+                pos
+            } else {
+                usize::MAX
+            }
         })
         .collect()
 }
@@ -293,6 +299,17 @@ mod tests {
         let interface = vec![5usize, 10];
         let remapped = remap_interface_dofs(&interface, &free_dofs);
         assert_eq!(remapped, vec![1, 3]);
+    }
+
+    #[test]
+    fn test_remap_interface_dofs_constrained() {
+        // DOF 3 is NOT in free_dofs → should map to usize::MAX (not panic)
+        let free_dofs = vec![2i32, 5, 7, 10];
+        let interface = vec![2usize, 3, 7];
+        let remapped = remap_interface_dofs(&interface, &free_dofs);
+        assert_eq!(remapped[0], 0);           // 2 → index 0
+        assert_eq!(remapped[1], usize::MAX);  // 3 → constrained
+        assert_eq!(remapped[2], 2);           // 7 → index 2
     }
 
     #[test]

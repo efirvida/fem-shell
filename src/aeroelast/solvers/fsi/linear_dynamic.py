@@ -5,6 +5,7 @@ This module provides the LinearDynamicFSISolver for fluid-structure interaction
 problems using preCICE coupling.
 """
 
+import logging
 from pathlib import Path
 from typing import Dict, Optional, Tuple
 
@@ -24,6 +25,7 @@ from aeroelast.solvers.linear import LinearDynamicSolver
 from .base import Adapter
 
 _console = Console(highlight=False)
+_logger = logging.getLogger(__name__)
 
 
 class LinearDynamicFSISolver(LinearDynamicSolver):
@@ -996,5 +998,5 @@ class LinearDynamicFSISolver(LinearDynamicSolver):
         return self._solve_via_rust(
             bc_manager=bc_manager,
             interface_coords_flat=interface_coords.ravel().astype(np.float64),
-            interface_dofs_global_flat=self._interface_dofs.ravel().astype(np.intp),
+            interface_dofs_global_flat=self._interface_dofs.ravel().astype(np.uint64),
         )

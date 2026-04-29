@@ -1233,7 +1233,7 @@ class LinearDynamicFSIRotorSolver(LinearDynamicFSISolver):
         return self._solve_via_rust(
             bc_manager=bc_manager,
             interface_coords_flat=self._interface_coords.ravel().astype(np.float64),
-            interface_dofs_global_flat=self._interface_dofs.ravel().astype(np.intp),
+            interface_dofs_global_flat=self._interface_dofs.ravel().astype(np.uint64),
         )
 
     # =========================================================================
