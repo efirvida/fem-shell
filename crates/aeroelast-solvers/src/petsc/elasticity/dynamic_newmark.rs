@@ -94,6 +94,39 @@ fn build_vec(values: &[f64]) -> Result<PetscVec, PetscError> {
     Ok(v)
 }
 
+/// Extract the diagonal of the lumped mass matrix from its COO representation.
+///
+/// M is always assembled as a lumped diagonal (row-sum method) and then
+/// expanded to K's sparsity by `expand_diag_to_sparsity`. That expansion fills
+/// all off-diagonal COO positions with 0.0.  We recover the diagonal here by
+/// summing COO entries where `row == col`.
+///
+/// This lets us replace `MatMult(mat_m, x, y)` with a plain element-wise
+/// multiply `y[i] = m_diag[i] * x[i]` — no PETSc involved, no allocation.
+fn extract_m_diag(rows: &[i32], cols: &[i32], m_vals: &[f64], n_dofs: usize) -> Vec<f64> {
+    let mut diag = vec![0.0f64; n_dofs];
+    for ((&r, &c), &v) in rows.iter().zip(cols.iter()).zip(m_vals.iter()) {
+        if r == c {
+            diag[r as usize] += v;
+        }
+    }
+    diag
+}
+
+/// Write a Rust slice directly into a pre-allocated PETSc Vec via `VecGetArray`.
+///
+/// This avoids `VecSetValues` + `VecAssemblyBegin/End` entirely — a plain
+/// memcpy into PETSc's internal buffer.  The Vec must be pre-sized to `data.len()`.
+///
+/// # Safety
+/// `vec` must be a valid, assembled PETSc Vec of the correct size.
+unsafe fn fill_petsc_vec(vec: ffi::Vec, data: &[f64]) -> Result<(), PetscError> {
+    let mut ptr: *mut f64 = std::ptr::null_mut();
+    check(ffi::VecGetArray(vec, &mut ptr), "VecGetArray(fill)")?;
+    std::ptr::copy_nonoverlapping(data.as_ptr(), ptr, data.len());
+    check(ffi::VecRestoreArray(vec, &mut ptr), "VecRestoreArray(fill)")
+}
+
 /// Solve K_eff · u = rhs using CG + LU (direct solver).
 ///
 /// One-shot version: creates a KSP, factorizes, solves, destroys.
@@ -391,15 +424,15 @@ pub struct NewmarkCheckpoint {
 }
 
 /// Returned by [`NewmarkStepper::step`] after each successful time step.
+///
+/// The structural state (u, v, a) is updated **in place** inside `NewmarkStepper`
+/// and accessible via [`NewmarkStepper::current_u`], [`current_v`](NewmarkStepper::current_v),
+/// and [`current_a`](NewmarkStepper::current_a).
+/// Returning them here would require 3 extra Vec clones (3 × n_dofs × f64) per step;
+/// callers that need the data for history should use the accessor methods.
 #[derive(Debug, Clone)]
 pub struct StepResult {
-    /// Updated displacement vector.
-    pub u: Vec<f64>,
-    /// Updated velocity vector.
-    pub v: Vec<f64>,
-    /// Updated acceleration vector.
-    pub a: Vec<f64>,
-    /// Updated time.
+    /// Updated simulation time (`t_prev + dt`).
     pub t: f64,
 }
 
@@ -453,9 +486,28 @@ pub struct NewmarkStepper {
     /// ONCE and reuses only O(n) back-substitution on every `step()` call.
     ksp: ffi::KSP,
 
-    // ── Assembled mass and damping for RHS ───────────────────────────────────
-    mat_m: PetscMat,
+    // ── Assembled damping matrix for RHS ─────────────────────────────────────
+    // NOTE: mat_m is intentionally absent. M is always lumped diagonal; its
+    // diagonal is stored in `m_diag` and the M·x product is done in pure Rust
+    // (element-wise multiply) without any PETSc involvement.
     mat_c: PetscMat,
+
+    // ── Diagonal of the lumped mass matrix ───────────────────────────────────
+    /// `m_diag[i]` = M[i,i].  Computed once in `new()` from the COO m_vals.
+    /// Allows `M·x` to be computed as `y[i] = m_diag[i]*x[i]` in pure Rust.
+    m_diag: Vec<f64>,
+
+    // ── Pre-allocated scratch buffers (zero allocations in the hot path) ─────
+    /// Scratch buffer for the assembled RHS before copying to `work_rhs`.
+    rhs_scratch: Vec<f64>,
+    /// Pre-allocated PETSc Vec for the `mat_c` MatMult input `(a1·u + a4·v + a5·a)`.
+    work_x: PetscVec,
+    /// Pre-allocated PETSc Vec for the `mat_c` MatMult output.
+    work_y: PetscVec,
+    /// Pre-allocated PETSc Vec for the KSP right-hand side.
+    work_rhs: PetscVec,
+    /// Pre-allocated PETSc Vec for the KSP solution.
+    work_sol: PetscVec,
 
     // ── Dynamic state ────────────────────────────────────────────────────────
     u: Vec<f64>,
@@ -504,7 +556,12 @@ impl NewmarkStepper {
         [a0, a1, a2, a3, a4, a5, a6, a7]
     }
 
-    /// Build `K_eff = K + a0·M + a1·C` and the separate M and C PETSc matrices.
+    /// Build `K_eff = K + a0·M + a1·C` and the C PETSc matrix.
+    ///
+    /// `mat_m` is **not** assembled here — the mass matrix is always lumped
+    /// diagonal and is stored as a plain `Vec<f64>` (`m_diag`).  This avoids
+    /// assembling and storing a sparse PETSc matrix whose only non-zeros are
+    /// on the diagonal.
     fn build_matrices(
         rows: &[i32],
         cols: &[i32],
@@ -514,11 +571,10 @@ impl NewmarkStepper {
         a0: f64,
         a1: f64,
         n_dofs: usize,
-    ) -> Result<(PetscMat, PetscMat, PetscMat), PetscError> {
+    ) -> Result<(PetscMat, PetscMat), PetscError> {
         let k_eff = assemble_keff(rows, cols, k_vals, m_vals, c_vals, a0, a1, n_dofs)?;
-        let mat_m = assemble_seq_aij(rows, cols, m_vals, n_dofs)?;
         let mat_c = assemble_seq_aij(rows, cols, c_vals, n_dofs)?;
-        Ok((k_eff, mat_m, mat_c))
+        Ok((k_eff, mat_c))
     }
 
     /// Create a new `NewmarkStepper`.
@@ -561,7 +617,7 @@ impl NewmarkStepper {
 
         let [a0, a1, a2, a3, a4, a5, a6, a7] = Self::compute_coeffs(beta, gamma, dt);
 
-        let (k_eff, mat_m, mat_c) = Self::build_matrices(
+        let (k_eff, mat_c) = Self::build_matrices(
             k_rows, k_cols, k_vals, m_vals, c_vals, a0, a1, n_dofs,
         )?;
 
@@ -574,6 +630,16 @@ impl NewmarkStepper {
         let kg_vals = vec![0.0f64; k_vals.len()];
         let ksp_diag = vec![0.0f64; k_vals.len()];
 
+        // M diagonal for zero-allocation M·x in step().
+        let m_diag = extract_m_diag(k_rows, k_cols, m_vals, n_dofs);
+
+        // Pre-allocated scratch buffers — reused every step.
+        let rhs_scratch = vec![0.0f64; n_dofs];
+        let work_x   = create_vec(n_dofs)?;
+        let work_y   = create_vec(n_dofs)?;
+        let work_rhs = create_vec(n_dofs)?;
+        let work_sol = create_vec(n_dofs)?;
+
         Ok(Self {
             rows: k_rows.to_vec(),
             cols: k_cols.to_vec(),
@@ -584,8 +650,13 @@ impl NewmarkStepper {
             ksp_diag,
             k_eff,
             ksp,
-            mat_m,
             mat_c,
+            m_diag,
+            rhs_scratch,
+            work_x,
+            work_y,
+            work_rhs,
+            work_sol,
             u: vec![0.0; n_dofs],
             v: vec![0.0; n_dofs],
             a: a_init,
@@ -605,7 +676,7 @@ impl NewmarkStepper {
         })
     }
 
-    /// Rebuild `K_eff`, `mat_m`, `mat_c` when `dt` has changed (or after a K_G update).
+    /// Rebuild `K_eff`, `mat_c` when `dt` has changed (or after a K_G update).
     fn refactorize(&mut self, dt: f64) -> Result<(), PetscError> {
         let [a0, a1, a2, a3, a4, a5, a6, a7] = Self::compute_coeffs(self.beta, self.gamma, dt);
         // K_eff = (K + K_G + K_SP) + a0·M + a1·C
@@ -616,7 +687,7 @@ impl NewmarkStepper {
             .zip(self.ksp_diag.iter())
             .map(|((k, kg), ksp)| k + kg + ksp)
             .collect();
-        let (k_eff, mat_m, mat_c) = Self::build_matrices(
+        let (k_eff, mat_c) = Self::build_matrices(
             &self.rows,
             &self.cols,
             &k_plus_kg,
@@ -627,7 +698,6 @@ impl NewmarkStepper {
             self.n_dofs,
         )?;
         self.k_eff = k_eff;
-        self.mat_m = mat_m;
         self.mat_c = mat_c;
 
         // Update the cached KSP operators — PETSc will re-factorize on the next KSPSolve.
@@ -704,6 +774,23 @@ impl NewmarkStepper {
     ///
     /// # Returns
     /// `StepResult` with the updated `(u, v, a, t)`.
+    /// Advance the state by one time step.
+    ///
+    /// # Zero-allocation hot path
+    ///
+    /// This method is designed to run 10,000–25,000 times per FSI simulation
+    /// without any heap allocation in the steady state.  The key savings:
+    ///
+    /// | Eliminated per step              | How                                  |
+    /// |----------------------------------|--------------------------------------|
+    /// | `MatMult(mat_m, x, y)`           | M is diagonal → pure Rust loop       |
+    /// | 4× `VecCreate` / `VecDestroy`    | pre-allocated work vecs in struct    |
+    /// | `VecSetValues` + assembly round  | `VecGetArray` direct memcpy          |
+    /// | `u_new`, `a_new`, `v_new` allocs | inline corrector via `VecGetArrayRead`|
+    /// | 3× `self.{u,v,a} = x.clone()`   | compute directly into `self.{u,v,a}` |
+    ///
+    /// Callers retrieve the updated state via [`current_u`](Self::current_u),
+    /// [`current_v`](Self::current_v), and [`current_a`](Self::current_a).
     pub fn step(&mut self, f_ext: &[f64], dt: f64) -> Result<StepResult, PetscError> {
         assert_eq!(f_ext.len(), self.n_dofs, "f_ext length must equal n_dofs");
         assert!(
@@ -711,7 +798,7 @@ impl NewmarkStepper {
             "dt must be positive and finite, got {dt}"
         );
 
-        // Lazy re-factorization
+        // Lazy re-factorization (only when dt changes or K_G/K_SP updated).
         if (dt - self.dt_last).abs() > f64::EPSILON * dt {
             self.refactorize(dt)?;
         }
@@ -720,36 +807,94 @@ impl NewmarkStepper {
         let (a0, a1, a2, a3, a4, a5, a6, a7) =
             (self.a0, self.a1, self.a2, self.a3, self.a4, self.a5, self.a6, self.a7);
 
+        // ── Step 1: Build RHS in rhs_scratch (no allocation) ─────────────────
+        //
         // RHS = F_ext + M·(a0·u + a2·v + a3·a) + C·(a1·u + a4·v + a5·a)
-        let mut rhs = f_ext.to_vec();
-        matvec_add(&self.mat_m, n, a0, a2, a3, &self.u, &self.v, &self.a, &mut rhs)?;
-        matvec_add(&self.mat_c, n, a1, a4, a5, &self.u, &self.v, &self.a, &mut rhs)?;
 
-        // Solve K_eff · u_new = rhs
-        let rhs_vec = build_vec(&rhs)?;
-        let u_new = solve_with_cached_ksp(self.ksp, &rhs_vec, n)?;
+        // Start with F_ext (plain copy into pre-allocated buffer).
+        self.rhs_scratch.copy_from_slice(f_ext);
 
-        // Corrector: a_new = a0*(u_new - u) - a2*v - a3*a
-        let a_new: Vec<f64> = (0..n)
-            .map(|i| a0 * (u_new[i] - self.u[i]) - a2 * self.v[i] - a3 * self.a[i])
-            .collect();
+        // M term: M is lumped diagonal → pure Rust, no PETSc, no allocation.
+        for i in 0..n {
+            self.rhs_scratch[i] +=
+                self.m_diag[i] * (a0 * self.u[i] + a2 * self.v[i] + a3 * self.a[i]);
+        }
 
-        // v_new = v + a6*a + a7*a_new
-        let v_new: Vec<f64> = (0..n)
-            .map(|i| self.v[i] + a6 * self.a[i] + a7 * a_new[i])
-            .collect();
+        // C term: fill work_x = a1·u + a4·v + a5·a via VecGetArray (no VecCreate).
+        unsafe {
+            let mut px: *mut f64 = std::ptr::null_mut();
+            check(ffi::VecGetArray(self.work_x.as_raw(), &mut px), "VecGetArray(work_x)")?;
+            let xslice = std::slice::from_raw_parts_mut(px, n);
+            for i in 0..n {
+                xslice[i] = a1 * self.u[i] + a4 * self.v[i] + a5 * self.a[i];
+            }
+            check(ffi::VecRestoreArray(self.work_x.as_raw(), &mut px), "VecRestoreArray(work_x)")?;
 
-        self.u = u_new.clone();
-        self.v = v_new.clone();
-        self.a = a_new.clone();
+            // y = C · work_x  (one MatMult — C is sparse but usually small η_k·K)
+            check(
+                ffi::MatMult(self.mat_c.as_raw(), self.work_x.as_raw(), self.work_y.as_raw()),
+                "MatMult(C)",
+            )?;
+
+            // rhs_scratch += work_y  (VecGetArrayRead: no copy, just pointer)
+            let mut py: *const f64 = std::ptr::null();
+            check(ffi::VecGetArrayRead(self.work_y.as_raw(), &mut py), "VecGetArrayRead(work_y)")?;
+            let yslice = std::slice::from_raw_parts(py, n);
+            for i in 0..n {
+                self.rhs_scratch[i] += yslice[i];
+            }
+            check(ffi::VecRestoreArrayRead(self.work_y.as_raw(), &mut py), "VecRestoreArrayRead(work_y)")?;
+        }
+
+        // ── Step 2: Copy rhs_scratch → work_rhs (pre-alloc PETSc Vec) ────────
+        unsafe {
+            fill_petsc_vec(self.work_rhs.as_raw(), &self.rhs_scratch)?;
+        }
+
+        // ── Step 3: Solve K_eff · work_sol = work_rhs (cached factorization) ─
+        unsafe {
+            check(
+                ffi::KSPSolve(self.ksp, self.work_rhs.as_raw(), self.work_sol.as_raw()),
+                "KSPSolve",
+            )?;
+            let mut reason: i32 = 0;
+            check(ffi::KSPGetConvergedReason(self.ksp, &mut reason), "KSPGetConvergedReason")?;
+            if reason <= 0 {
+                let mut its: i32 = 0;
+                let _ = ffi::KSPGetIterationNumber(self.ksp, &mut its);
+                let mut rnorm: f64 = 0.0;
+                let _ = ffi::KSPGetResidualNorm(self.ksp, &mut rnorm);
+                eprintln!(
+                    "[KSP] PREONLY+LU FAILED: reason={reason} its={its} rnorm={rnorm:.3e} n_dof={n}"
+                );
+                return Err(PetscError { code: -1, context: "KSP did not converge in dynamic solve" });
+            }
+        }
+
+        // ── Step 4: Inline corrector — read work_sol, update self.{u,v,a} ────
+        //
+        // a_{n+1} = a0·(u_{n+1} - u_n) - a2·v_n - a3·a_n
+        // v_{n+1} = v_n + a6·a_n + a7·a_{n+1}
+        //
+        // Single pass: read u_new[i], compute a_new[i] and v_new[i] from old
+        // values, then overwrite self.u/v/a[i].  No intermediate Vec allocation.
+        unsafe {
+            let mut ps: *const f64 = std::ptr::null();
+            check(ffi::VecGetArrayRead(self.work_sol.as_raw(), &mut ps), "VecGetArrayRead(work_sol)")?;
+            let u_new = std::slice::from_raw_parts(ps, n);
+            for i in 0..n {
+                let u_new_i = u_new[i];
+                let a_new_i = a0 * (u_new_i - self.u[i]) - a2 * self.v[i] - a3 * self.a[i];
+                let v_new_i = self.v[i] + a6 * self.a[i] + a7 * a_new_i;
+                self.u[i] = u_new_i;
+                self.v[i] = v_new_i;
+                self.a[i] = a_new_i;
+            }
+            check(ffi::VecRestoreArrayRead(self.work_sol.as_raw(), &mut ps), "VecRestoreArrayRead(work_sol)")?;
+        }
+
         self.t += dt;
-
-        Ok(StepResult {
-            u: u_new,
-            v: v_new,
-            a: a_new,
-            t: self.t,
-        })
+        Ok(StepResult { t: self.t })
     }
 
     /// Snapshot the current state for implicit coupling rollback.

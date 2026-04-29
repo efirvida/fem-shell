@@ -311,15 +311,15 @@ impl LinearElasticFsiSolver {
             }
 
             // ── Advance the structural state by one time step ─────────────────
-            let step_result = self.stepper.step(&f_global, dt)?;
+            let step_t = self.stepper.step(&f_global, dt)?.t;
 
             // ── Gather interface displacements (DOF → vertex component) ───────
             let disp_interface: Vec<f64> = self
                 .interface_dofs
                 .iter()
                 .map(|&dof| {
-                    if dof < step_result.u.len() {
-                        step_result.u[dof]
+                    if dof < self.stepper.n_dofs() {
+                        self.stepper.current_u()[dof]
                     } else {
                         0.0
                     }
@@ -353,17 +353,17 @@ impl LinearElasticFsiSolver {
                 }
             } else {
                 // Converged time window — commit to history.
-                result.displacement_history.push(step_result.u.clone());
-                result.velocity_history.push(step_result.v.clone());
-                result.acceleration_history.push(step_result.a.clone());
-                result.times.push(step_result.t);
+                result.displacement_history.push(self.stepper.current_u().to_vec());
+                result.velocity_history.push(self.stepper.current_v().to_vec());
+                result.acceleration_history.push(self.stepper.current_a().to_vec());
+                result.times.push(step_t);
 
                 // Invoke per-step callback BEFORE advancing dt so the callback
                 // receives the dt that was actually used for this window.
                 if let Some(ref cb) = self.step_callback {
                     let time_step = result.times.len(); // 1-based
                     let force_mag = forces.iter().map(|x| x * x).sum::<f64>().sqrt();
-                    cb(step_result.t, time_step, dt, &step_result.u, &step_result.v, &step_result.a, force_mag, &forces)?;
+                    cb(step_t, time_step, dt, self.stepper.current_u(), self.stepper.current_v(), self.stepper.current_a(), force_mag, &forces)?;
                 }
 
                 // Only advance dt after convergence; never mid-window.

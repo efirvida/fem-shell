@@ -574,15 +574,17 @@ impl RotorFsiSolver {
             }
 
             // ── Advance structural state ──────────────────────────────────────
-            let step_result = self.stepper.step(&f_red, dt)?;
+            // step() returns only the updated time; the structural state (u,v,a)
+            // is stored in self.stepper and accessed via current_u/v/a() below.
+            let step_t = self.stepper.step(&f_red, dt)?.t;
 
             // ── Gather interface displacements (rotating frame) ───────────────
             let disp_iface_local: Vec<f64> = self
                 .interface_dofs
                 .iter()
                 .map(|&rdof| {
-                    if rdof < step_result.u.len() {
-                        step_result.u[rdof]
+                    if rdof < self.stepper.n_dofs() {
+                        self.stepper.current_u()[rdof]
                     } else {
                         0.0
                     }
@@ -651,8 +653,8 @@ impl RotorFsiSolver {
                     let mut buf = vec![0.0f64; n_iface * 3];
                     for k in 0..n_iface * 3 {
                         let rdof = self.interface_dofs.get(k).copied().unwrap_or(0);
-                        buf[k] = if rdof < step_result.u.len() {
-                            step_result.u[rdof]
+                        buf[k] = if rdof < self.stepper.n_dofs() {
+                            self.stepper.current_u()[rdof]
                         } else {
                             0.0
                         };
@@ -679,13 +681,16 @@ impl RotorFsiSolver {
 
                 // 5. Rebuild K_G.
                 let time_step = result.times.len() + 1; // 1-based, before push
-                self.update_kg(&step_result.u, time_step)?;
+                // Clone u to release the immutable borrow before the mutable update_kg call.
+                let u_snapshot = self.stepper.current_u().to_vec();
+                self.update_kg(&u_snapshot, time_step)?;
 
-                // 6. Store history.
-                result.displacement_history.push(step_result.u.clone());
-                result.velocity_history.push(step_result.v.clone());
-                result.acceleration_history.push(step_result.a.clone());
-                result.times.push(step_result.t);
+                // 6. Store history — to_vec() is one unavoidable alloc per field,
+                //    but we avoid the extra clone that step_result previously required.
+                result.displacement_history.push(self.stepper.current_u().to_vec());
+                result.velocity_history.push(self.stepper.current_v().to_vec());
+                result.acceleration_history.push(self.stepper.current_a().to_vec());
+                result.times.push(step_t);
 
                 // 7. Performance coefficients.
                 let thrust = compute_thrust(&forces_global, &self.transforms.axis);
@@ -703,19 +708,19 @@ impl RotorFsiSolver {
                 log::info!(
                     "RotorFsi step {time_step}: t={:.4} θ={:.4}rad ω={omega:.4}rad/s \
                      τ_aero={tau_aero:.3e}N·m  Ct={:.4} Cp={:.4} TSR={:.3}",
-                    step_result.t, self.theta, perf.ct, perf.cp, perf.tsr
+                    step_t, self.theta, perf.ct, perf.cp, perf.tsr
                 );
 
                 // 8. Per-step callback.
                 if let Some(ref cb) = self.step_callback {
                     let force_mag = forces_global.iter().map(|x| x * x).sum::<f64>().sqrt();
                     cb(
-                        step_result.t,
+                        step_t,
                         time_step,
                         dt,
-                        &step_result.u,
-                        &step_result.v,
-                        &step_result.a,
+                        self.stepper.current_u(),
+                        self.stepper.current_v(),
+                        self.stepper.current_a(),
                         force_mag,
                         &forces_global,
                         omega,

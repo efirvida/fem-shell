@@ -260,15 +260,15 @@ impl StressStiffenedFsiSolver {
             }
 
             // ── Advance structural state ───────────────────────────────────────
-            let step_result = self.stepper.step(&f_global, dt)?;
+            let step_t = self.stepper.step(&f_global, dt)?.t;
 
             // ── Gather interface displacements ─────────────────────────────────
             let disp_interface: Vec<f64> = self
                 .interface_dofs
                 .iter()
                 .map(|&dof| {
-                    if dof < step_result.u.len() {
-                        step_result.u[dof]
+                    if dof < self.stepper.n_dofs() {
+                        self.stepper.current_u()[dof]
                     } else {
                         0.0
                     }
@@ -298,26 +298,28 @@ impl StressStiffenedFsiSolver {
                 }
             } else {
                 // Converged time window — commit to history.
-                result.displacement_history.push(step_result.u.clone());
-                result.velocity_history.push(step_result.v.clone());
-                result.acceleration_history.push(step_result.a.clone());
-                result.times.push(step_result.t);
+                result.displacement_history.push(self.stepper.current_u().to_vec());
+                result.velocity_history.push(self.stepper.current_v().to_vec());
+                result.acceleration_history.push(self.stepper.current_a().to_vec());
+                result.times.push(step_t);
 
                 let time_step = result.times.len(); // 1-based
 
                 // ── K_G update ────────────────────────────────────────────────
-                self.update_kg(&step_result.u, time_step)?;
+                // Clone u to release the immutable borrow before the mutable update_kg call.
+                let u_snapshot = self.stepper.current_u().to_vec();
+                self.update_kg(&u_snapshot, time_step)?;
 
                 // ── Per-step callback ─────────────────────────────────────────
                 if let Some(ref cb) = self.step_callback {
                     let force_mag = forces.iter().map(|x| x * x).sum::<f64>().sqrt();
                     cb(
-                        step_result.t,
+                        step_t,
                         time_step,
                         dt,
-                        &step_result.u,
-                        &step_result.v,
-                        &step_result.a,
+                        self.stepper.current_u(),
+                        self.stepper.current_v(),
+                        self.stepper.current_a(),
                         force_mag,
                         &forces,
                     )?;
