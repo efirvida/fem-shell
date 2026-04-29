@@ -27,10 +27,24 @@ use super::super::infra::vec::PetscVec;
 
 // ── C-string constants ────────────────────────────────────────────────────────
 
-const KSPCG: &std::ffi::CStr =
-    unsafe { std::ffi::CStr::from_bytes_with_nul_unchecked(b"cg\0") };
-const PCICC: &std::ffi::CStr =
-    unsafe { std::ffi::CStr::from_bytes_with_nul_unchecked(b"icc\0") };
+const KSPPREONLY: &std::ffi::CStr =
+    unsafe { std::ffi::CStr::from_bytes_with_nul_unchecked(b"preonly\0") };
+const KSPFGMRES: &std::ffi::CStr =
+    unsafe { std::ffi::CStr::from_bytes_with_nul_unchecked(b"fgmres\0") };
+const PCLU: &std::ffi::CStr =
+    unsafe { std::ffi::CStr::from_bytes_with_nul_unchecked(b"lu\0") };
+const PCILU: &std::ffi::CStr =
+    unsafe { std::ffi::CStr::from_bytes_with_nul_unchecked(b"ilu\0") };
+
+// Solver selection thresholds — mirror static_nonlinear.rs strategy:
+// n_dof < FGMRES_THRESHOLD → preonly + LU (direct, always converges)
+// n_dof ≥ FGMRES_THRESHOLD → FGMRES(200) + ILU(2) (memory-efficient, robust)
+//
+// At small Δt (e.g. 6.25e-4 s), a0 = 1/(β·Δt²) ≈ 1e7 dominates K_eff,
+// producing extreme condition numbers. CG+ICC(0) diverges; FGMRES+ILU(2) is robust.
+const FGMRES_THRESHOLD: usize = 100_000;
+const FGMRES_RESTART: i32 = 200;
+const ILU_FILL_LEVELS: i32 = 2;
 
 // ── Result type ───────────────────────────────────────────────────────────────
 
@@ -88,7 +102,14 @@ fn build_vec(values: &[f64]) -> Result<PetscVec, PetscError> {
     Ok(v)
 }
 
-/// Solve K_eff · u = rhs using KSP CG + ICC.
+/// Solve K_eff · u = rhs using KSP.
+///
+/// Solver strategy (mirrors `static_nonlinear.rs`):
+/// - n_dof < 100k → preonly + LU  (direct, always converges)
+/// - n_dof ≥ 100k → FGMRES(200) + ILU(2)  (memory-efficient, robust for ill-conditioned K_eff)
+///
+/// CG + ICC(0) is NOT used here: at small Δt, a0 = 1/(β·Δt²) ≈ 1e7 makes K_eff
+/// extremely ill-conditioned, causing ICC to fail with negative pivots.
 fn ksp_solve(
     k_eff: &PetscMat,
     rhs: &PetscVec,
@@ -99,17 +120,32 @@ fn ksp_solve(
         let comm = ffi::petsc_comm_self();
         let mut ksp: ffi::KSP = std::ptr::null_mut();
         check(ffi::KSPCreate(comm, &mut ksp), "KSPCreate")?;
-        check(ffi::KSPSetType(ksp, KSPCG.as_ptr()), "KSPSetType(cg)")?;
         let mut pc: ffi::PC = std::ptr::null_mut();
         check(ffi::KSPGetPC(ksp, &mut pc), "KSPGetPC")?;
-        check(ffi::PCSetType(pc, PCICC.as_ptr()), "PCSetType(icc)")?;
+
+        if n_dof >= FGMRES_THRESHOLD {
+            // FGMRES(200) + ILU(2): robust for large ill-conditioned K_eff
+            check(ffi::KSPSetType(ksp, KSPFGMRES.as_ptr()), "KSPSetType(fgmres)")?;
+            check(ffi::KSPGMRESSetRestart(ksp, FGMRES_RESTART), "KSPGMRESSetRestart")?;
+            check(ffi::PCSetType(pc, PCILU.as_ptr()), "PCSetType(ilu)")?;
+            check(ffi::PCFactorSetLevels(pc, ILU_FILL_LEVELS), "PCFactorSetLevels")?;
+            check(
+                ffi::KSPSetTolerances(ksp, 1e-6, 1e-10, PETSC_INFINITY, 5000),
+                "KSPSetTolerances",
+            )?;
+        } else {
+            // preonly + LU: direct solve, always converges for small systems
+            check(ffi::KSPSetType(ksp, KSPPREONLY.as_ptr()), "KSPSetType(preonly)")?;
+            check(ffi::PCSetType(pc, PCLU.as_ptr()), "PCSetType(lu)")?;
+            check(
+                ffi::KSPSetTolerances(ksp, 1e-8, 1e-12, PETSC_INFINITY, 1),
+                "KSPSetTolerances",
+            )?;
+        }
+
         check(
             ffi::KSPSetOperators(ksp, k_eff.as_raw(), k_eff.as_raw()),
             "KSPSetOperators",
-        )?;
-        check(
-            ffi::KSPSetTolerances(ksp, 1e-8, 1e-12, PETSC_INFINITY, 2000),
-            "KSPSetTolerances",
         )?;
         check(ffi::KSPSetFromOptions(ksp), "KSPSetFromOptions")?;
         let u = create_vec(n_dof)?;
@@ -118,10 +154,8 @@ fn ksp_solve(
         check(ffi::KSPGetConvergedReason(ksp, &mut reason), "KSPGetConvergedReason")?;
         check(ffi::KSPDestroy(&mut ksp), "KSPDestroy")?;
         if reason <= 0 {
-            // Encode as PETSc error code -1 with a static context string
             return Err(PetscError { code: -1, context: "KSP did not converge in dynamic solve" });
         }
-        check(ffi::KSPDestroy(&mut ksp), "KSPDestroy")?;
         u.to_vec()
     }
 }
