@@ -236,6 +236,9 @@ extern "C" {
     pub fn PCSetType(pc: PC, type_: *const i8) -> PetscErrorCode;
     pub fn PCFactorSetMatSolverType(pc: PC, stype: *const i8) -> PetscErrorCode;
     pub fn PCFactorSetLevels(pc: PC, levels: PetscInt) -> PetscErrorCode;
+    /// Shift type for incomplete factorization.
+    /// MatFactorShiftType: NONE=0, NONZERO=1, POSITIVE_DEFINITE=2, INBLOCKS=3.
+    pub fn PCFactorSetShiftType(pc: PC, ftype: i32) -> PetscErrorCode;
     pub fn MatGetSize(mat: Mat, m: *mut PetscInt, n: *mut PetscInt) -> PetscErrorCode;
     pub fn MatMult(mat: Mat, x: Vec, y: Vec) -> PetscErrorCode;
     pub fn VecDuplicate(v: Vec, newv: *mut Vec) -> PetscErrorCode;

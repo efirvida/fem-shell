@@ -93,11 +93,19 @@ fn build_vec(values: &[f64]) -> Result<PetscVec, PetscError> {
 /// CG + ICC works for all problem sizes when the mass floor is applied in
 /// `lump_mass_coo` — that floor keeps K_eff well-conditioned regardless of n_dof.
 /// This mirrors the original Python implementation, which never had a size threshold.
+///
+/// ICC uses `MAT_SHIFT_POSITIVE_DEFINITE` (type 2) so that if the incomplete
+/// Cholesky encounters a zero or negative pivot it applies an automatic shift
+/// rather than failing. This is required for shell FEM K_eff where very small
+/// rotational-DOF diagonal entries can occasionally cause ICC to break down.
 fn ksp_solve(
     k_eff: &PetscMat,
     rhs: &PetscVec,
     n_dof: usize,
 ) -> Result<Vec<f64>, PetscError> {
+    // PETSc MatFactorShiftType: POSITIVE_DEFINITE = 2
+    const MAT_SHIFT_POSITIVE_DEFINITE: i32 = 2;
+
     ensure_initialized()?;
     unsafe {
         let comm = ffi::petsc_comm_self();
@@ -106,11 +114,18 @@ fn ksp_solve(
         let mut pc: ffi::PC = std::ptr::null_mut();
         check(ffi::KSPGetPC(ksp, &mut pc), "KSPGetPC")?;
 
-        // CG + ICC: optimal for well-conditioned SPD K_eff (mass floor is required)
+        // CG + ICC with positive-definite shift.
+        // The shift ensures ICC never fails on a negative/zero pivot — it
+        // adds a minimal perturbation automatically, keeping the factorization
+        // numerically stable even when K_eff has near-zero diagonal entries.
         check(ffi::KSPSetType(ksp, KSPCG.as_ptr()), "KSPSetType(cg)")?;
         check(ffi::PCSetType(pc, PCICC.as_ptr()), "PCSetType(icc)")?;
         check(
-            ffi::KSPSetTolerances(ksp, 1e-8, 1e-12, PETSC_INFINITY, 2000),
+            ffi::PCFactorSetShiftType(pc, MAT_SHIFT_POSITIVE_DEFINITE),
+            "PCFactorSetShiftType(positive_definite)",
+        )?;
+        check(
+            ffi::KSPSetTolerances(ksp, 1e-8, 1e-12, PETSC_INFINITY, 5000),
             "KSPSetTolerances",
         )?;
 
@@ -121,11 +136,32 @@ fn ksp_solve(
         check(ffi::KSPSetFromOptions(ksp), "KSPSetFromOptions")?;
         let u = create_vec(n_dof)?;
         check(ffi::KSPSolve(ksp, rhs.as_raw(), u.as_raw()), "KSPSolve")?;
+
         let mut reason: i32 = 0;
         check(ffi::KSPGetConvergedReason(ksp, &mut reason), "KSPGetConvergedReason")?;
+        let mut its: i32 = 0;
+        check(ffi::KSPGetIterationNumber(ksp, &mut its), "KSPGetIterationNumber")?;
+        let mut rnorm: f64 = 0.0;
+        check(ffi::KSPGetResidualNorm(ksp, &mut rnorm), "KSPGetResidualNorm")?;
+
+        log::debug!(
+            "KSP CG+ICC: n_dof={n_dof} its={its} reason={reason} rnorm={rnorm:.3e}"
+        );
+
         check(ffi::KSPDestroy(&mut ksp), "KSPDestroy")?;
         if reason <= 0 {
-            return Err(PetscError { code: -1, context: "KSP did not converge in dynamic solve" });
+            // Log the exact PETSc reason code so the user can diagnose convergence failure:
+            //  -3 = KSP_DIVERGED_ITS  (exceeded max iterations)
+            //  -8 = KSP_DIVERGED_INDEFINITE_PC  (ICC negative pivot — shift should prevent this)
+            //  -9 = KSP_DIVERGED_NAN  (NaN in matrix or rhs)
+            // -10 = KSP_DIVERGED_INDEFINITE_MAT (matrix is indefinite)
+            log::error!(
+                "KSP CG+ICC FAILED: reason={reason} its={its} rnorm={rnorm:.3e} n_dof={n_dof}"
+            );
+            return Err(PetscError {
+                code: -1,
+                context: "KSP did not converge in dynamic solve",
+            });
         }
         u.to_vec()
     }
