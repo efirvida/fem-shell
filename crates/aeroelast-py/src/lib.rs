@@ -1658,6 +1658,54 @@ impl PyMeshAssembler {
         )
     }
 
+    /// Assemble the global **lumped** (diagonal) mass matrix directly in Rust.
+    ///
+    /// Combines assembly of the consistent mass matrix and row-sum lumping in a
+    /// single Rust call, avoiding the round-trip through Python/PETSc that the
+    /// ``assemble_m`` + ``lump_mass_matrix`` pair requires.
+    ///
+    /// The lumped diagonal is computed via the row-sum method:
+    ///
+    ///     M_lump[i] = Σ_j |M[i, j]|
+    ///
+    /// A mass floor of ``1e-4 × max(M_lump)`` is applied to every DOF, which
+    /// prevents zero-mass entries at tip-closure nodes whose element thickness
+    /// approaches zero.
+    ///
+    /// Returns
+    /// -------
+    /// np.ndarray of float64, shape (n_dofs,)
+    ///     Lumped diagonal mass values, one per global DOF.
+    pub fn assemble_m_lumped<'py>(
+        &self,
+        py: Python<'py>,
+    ) -> pyo3::Bound<'py, PyArray1<f64>> {
+        let (rows, _cols, vals) = self.inner.assemble_m();
+        let n_dofs = self.inner.dofs_count;
+
+        // Row-sum lumping: M_lump[i] = Σ_j |M[i,j]|
+        let mut diag = vec![0.0f64; n_dofs];
+        for (&r, &v) in rows.iter().zip(vals.iter()) {
+            let idx = r as usize;
+            if idx < n_dofs {
+                diag[idx] += v.abs();
+            }
+        }
+
+        // Apply floor: prevent zero-mass DOFs at tip-closure elements.
+        let m_max = diag.iter().cloned().fold(0.0f64, f64::max);
+        if m_max > 0.0 {
+            let floor = m_max * 1e-4;
+            for d in diag.iter_mut() {
+                if *d < floor {
+                    *d = floor;
+                }
+            }
+        }
+
+        Array1::from(diag).into_pyarray(py)
+    }
+
     /// Compute the total model mass from material properties and geometry.
     ///
     /// For shell elements (MITC3/MITC4) uses the precomputed element area.
@@ -4062,6 +4110,112 @@ fn run_rotor_fsi_solver(
     ))
 }
 
+// ── compute_rotor_radius ──────────────────────────────────────────────────────
+/// Compute rotor radius as the maximum perpendicular distance from the rotation
+/// axis among all provided interface node coordinates.
+///
+/// r_⊥ = |r − (r · n̂) · n̂|  where r = X − center, n̂ = normalised axis.
+///
+/// # Arguments
+/// * `interface_coords_flat` – flat (n_nodes × 3,) array of node coordinates
+/// * `center`                – 3-element rotation centre
+/// * `axis`                  – 3-element rotation axis (need not be unit)
+///
+/// # Returns
+/// Maximum perpendicular radius [m].
+#[pyfunction]
+fn compute_rotor_radius(
+    interface_coords_flat: PyReadonlyArray1<f64>,
+    center: [f64; 3],
+    axis: [f64; 3],
+) -> PyResult<f64> {
+    let coords = interface_coords_flat
+        .as_slice()
+        .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
+    let n = coords.len() / 3;
+
+    // Normalise axis
+    let len = (axis[0] * axis[0] + axis[1] * axis[1] + axis[2] * axis[2]).sqrt();
+    if len < 1e-16 {
+        return Err(pyo3::exceptions::PyValueError::new_err(
+            "compute_rotor_radius: axis vector has zero length",
+        ));
+    }
+    let ax = [axis[0] / len, axis[1] / len, axis[2] / len];
+
+    let mut max_r = 0.0f64;
+    for i in 0..n {
+        let rx = coords[i * 3]     - center[0];
+        let ry = coords[i * 3 + 1] - center[1];
+        let rz = coords[i * 3 + 2] - center[2];
+        let proj = rx * ax[0] + ry * ax[1] + rz * ax[2];
+        let perp_sq = (rx * rx + ry * ry + rz * rz) - proj * proj;
+        max_r = max_r.max(perp_sq.max(0.0).sqrt());
+    }
+    Ok(max_r)
+}
+
+// ── compute_estimated_inertia ─────────────────────────────────────────────────
+/// Estimate total moment of inertia about the rotation axis using the
+/// point-mass approximation:
+///
+///   I = Σᵢ  mᵢ · r_⊥,ᵢ²
+///
+/// where mᵢ is taken from the first translational DOF of node i in the lumped
+/// mass diagonal, and r_⊥,ᵢ is the perpendicular distance from the node to the
+/// rotation axis.
+///
+/// # Arguments
+/// * `node_coords_flat` – flat (n_nodes × 3,) array of node reference coords
+/// * `mass_diag`        – full diagonal of the lumped mass matrix (length = n_dofs)
+/// * `dofs_per_node`    – number of DOFs per node (typically 6)
+/// * `center`           – 3-element rotation centre
+/// * `axis`             – 3-element rotation axis (need not be unit)
+///
+/// # Returns
+/// Total moment of inertia [kg·m²].
+#[pyfunction]
+fn compute_estimated_inertia(
+    node_coords_flat: PyReadonlyArray1<f64>,
+    mass_diag: PyReadonlyArray1<f64>,
+    dofs_per_node: usize,
+    center: [f64; 3],
+    axis: [f64; 3],
+) -> PyResult<f64> {
+    let coords = node_coords_flat
+        .as_slice()
+        .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
+    let diag = mass_diag
+        .as_slice()
+        .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
+
+    let n_nodes = coords.len() / 3;
+
+    let len = (axis[0] * axis[0] + axis[1] * axis[1] + axis[2] * axis[2]).sqrt();
+    if len < 1e-16 {
+        return Err(pyo3::exceptions::PyValueError::new_err(
+            "compute_estimated_inertia: axis vector has zero length",
+        ));
+    }
+    let ax = [axis[0] / len, axis[1] / len, axis[2] / len];
+
+    let mut total = 0.0f64;
+    for i in 0..n_nodes {
+        let idx = i * dofs_per_node;
+        if idx >= diag.len() {
+            break;
+        }
+        let mass = diag[idx];
+        let rx = coords[i * 3]     - center[0];
+        let ry = coords[i * 3 + 1] - center[1];
+        let rz = coords[i * 3 + 2] - center[2];
+        let proj = rx * ax[0] + ry * ax[1] + rz * ax[2];
+        let r_perp_sq = (rx * rx + ry * ry + rz * rz) - proj * proj;
+        total += mass * r_perp_sq.max(0.0);
+    }
+    Ok(total)
+}
+
 // ── compute_rayleigh_auto ─────────────────────────────────────────────────────
 /// Compute Rayleigh damping coefficients (η_k, η_m) from the global stiffness
 /// and mass COO matrices using the two-point formula.
@@ -4235,6 +4389,8 @@ pub fn register_module(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(run_rotor_fsi_solver, m)?)?;
     #[cfg(feature = "fsi")]
     m.add_function(wrap_pyfunction!(compute_rayleigh_auto, m)?)?;
+    m.add_function(wrap_pyfunction!(compute_rotor_radius, m)?)?;
+    m.add_function(wrap_pyfunction!(compute_estimated_inertia, m)?)?;
     m.add_class::<PyMeshModel>()?;
 
     m.add_class::<PyMeshAssembler>()?;

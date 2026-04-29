@@ -35,8 +35,7 @@ from numpy.testing import assert_allclose
 # Import corotational module directly (avoids PETSc import at collection time)
 # ---------------------------------------------------------------------------
 _CORO_PATH = (
-    Path(__file__).parent.parent
-    / "src" / "aeroelast" / "solvers" / "fsi" / "corotational.py"
+    Path(__file__).parent.parent / "src" / "aeroelast" / "solvers" / "fsi" / "corotational.py"
 )
 _spec = importlib.util.spec_from_file_location("_coro_test", _CORO_PATH)
 _coro = importlib.util.module_from_spec(_spec)
@@ -56,6 +55,7 @@ TableOmega = _coro.TableOmega
 try:
     from petsc4py import PETSc  # noqa: F401
     from aeroelast.solvers.fsi.rotor import LinearDynamicFSIRotorSolver
+
     _HAS_ROTOR = True
 except (ImportError, OSError):
     _HAS_ROTOR = False
@@ -67,6 +67,7 @@ _skip_rotor = pytest.mark.skipif(
 
 try:
     import _aeroelast  # type: ignore[import]
+
     _HAS_RUST = hasattr(_aeroelast, "run_rotor_fsi_solver")
 except (ImportError, OSError):
     _HAS_RUST = False
@@ -79,6 +80,7 @@ _skip_rust = pytest.mark.skipif(
 # ---------------------------------------------------------------------------
 # Minimal stub for _map_omega_provider (no full aeroelast import needed)
 # ---------------------------------------------------------------------------
+
 
 class _RotorStub:
     """Minimal object that carries ``_omega_provider`` and a copy of
@@ -126,6 +128,7 @@ class _RotorStub:
 # Group 1 — _map_omega_provider unit tests (no PETSc, no preCICE)
 # ---------------------------------------------------------------------------
 
+
 class TestMapOmegaProvider:
     """Verify that every OmegaProvider subclass maps to the correct Rust params."""
 
@@ -156,7 +159,7 @@ class TestMapOmegaProvider:
         mode, omega, omega_target, t_ramp, moi, shaft_tau = self._map(p)
 
         assert mode == "ramped"
-        assert_allclose(omega, 0.0)          # starts from zero
+        assert_allclose(omega, 0.0)  # starts from zero
         assert_allclose(omega_target, 20.0)
         assert_allclose(t_ramp, 5.0)
         assert moi is None
@@ -167,11 +170,11 @@ class TestMapOmegaProvider:
         mode, omega, omega_target, t_ramp, moi, shaft_tau = self._map(p)
 
         assert mode == "computed"
-        assert_allclose(omega, 0.0)           # initial_omega default
+        assert_allclose(omega, 0.0)  # initial_omega default
         assert omega_target is None
         assert t_ramp is None
         assert_allclose(moi, 500.0)
-        assert_allclose(shaft_tau, 0.0)       # shaft_torque default
+        assert_allclose(shaft_tau, 0.0)  # shaft_torque default
 
     def test_computed_omega_with_initial_and_torque(self):
         p = ComputedOmega(moment_of_inertia=1000.0, initial_omega=5.0, shaft_torque=-200.0)
@@ -192,7 +195,7 @@ class TestMapOmegaProvider:
         mode, omega, omega_target, t_ramp, moi, shaft_tau = self._map(p)
 
         assert mode == "ramped_computed"
-        assert_allclose(omega, 0.0)           # starts from zero
+        assert_allclose(omega, 0.0)  # starts from zero
         assert_allclose(omega_target, 15.0)
         assert_allclose(t_ramp, 3.0)
         assert_allclose(moi, 800.0)
@@ -210,13 +213,14 @@ class TestMapOmegaProvider:
         mode, omega, *rest = self._map(p)
 
         assert mode == "constant"
-        assert_allclose(omega, 0.0)           # value at t=0
+        assert_allclose(omega, 0.0)  # value at t=0
         assert all(v is None for v in rest)
 
 
 # ---------------------------------------------------------------------------
 # Helpers shared by PETSc-dependent groups
 # ---------------------------------------------------------------------------
+
 
 def _make_solver_stub(rotor_cfg_overrides: Optional[dict] = None):
     """
@@ -261,6 +265,7 @@ def _make_solver_stub(rotor_cfg_overrides: Optional[dict] = None):
 # ---------------------------------------------------------------------------
 # Group 2 — use_rust flag parsing (requires PETSc for the class import)
 # ---------------------------------------------------------------------------
+
 
 @_skip_rotor
 class TestUseRustFlag:
@@ -341,6 +346,7 @@ class TestUseRustFlag:
 # Group 3 — Rust binding smoke test (requires _aeroelast --features fsi)
 # ---------------------------------------------------------------------------
 
+
 def _make_minimal_truss_system(n_nodes: int = 3, dofs_per_node: int = 3):
     """
     Build a trivially small diagonal stiffness / mass system in COO format.
@@ -402,11 +408,11 @@ class TestRotorRustBinding:
         )
 
         return _aeroelast.run_rotor_fsi_solver(  # type: ignore[name-defined]
-            None,           # rust_asm (optional)
-            n,              # n_full_dofs
-            0,              # kg_update_interval
-            [0.0, 0.0, 1.0],       # rotation_axis
-            [0.0, 0.0, 0.0],       # rotation_center
+            None,  # rust_asm (optional)
+            n,  # n_full_dofs
+            0,  # kg_update_interval
+            [0.0, 0.0, 1.0],  # rotation_axis
+            [0.0, 0.0, 0.0],  # rotation_center
             node_coords,
             node_masses,
             omega_mode,
@@ -415,34 +421,47 @@ class TestRotorRustBinding:
             t_ramp,
             moi,
             shaft_tau,
-            [0.0, 0.0, -9.81],    # gravity
-            True, True, True,      # centrifugal, coriolis, euler
-            False, False,          # include_kg, include_ksp
-            1e-4,                  # ksp_omega_threshold
+            [0.0, 0.0, -9.81],  # gravity
+            True,
+            True,
+            True,  # centrifugal, coriolis, euler
+            False,
+            False,  # include_kg, include_ksp
+            1e-4,  # ksp_omega_threshold
             dofs_per_node,
-            1.225,                 # fluid_density
-            10.0,                  # flow_velocity
-            1.0,                   # rotor_radius
-            k_r, k_c, k_v,
-            m_r, m_c, m_v,
+            1.225,  # fluid_density
+            10.0,  # flow_velocity
+            1.0,  # rotor_radius
+            k_r,
+            k_c,
+            k_v,
+            m_r,
+            m_c,
+            m_v,
             free_dofs,
-            0.01, 0.01,            # eta_k, eta_m
-            0.25, 0.5,             # beta, gamma
-            0.01,                  # dt
+            0.01,
+            0.01,  # eta_k, eta_m
+            0.25,
+            0.5,  # beta, gamma
+            0.01,  # dt
             iface_coords,
             iface_dofs,
-            3,                     # spatial_dim
-            "Solid",               # participant_name
+            3,  # spatial_dim
+            "Solid",  # participant_name
             "precice-config.xml",  # config_file
-            "SolidMesh",           # coupling_mesh
-            "Displacement",        # write_data_name
-            "Force",               # read_data_name
-            0.0,                   # ramp_time
-            None,                  # force_max
-            None, None, None,      # omega_mesh, omega_write, omega_vertex
-            None, None, None,      # u0, v0, a0
-            0.0,                   # t0
-            0.0,                   # theta0
+            "SolidMesh",  # coupling_mesh
+            "Displacement",  # write_data_name
+            "Force",  # read_data_name
+            0.0,  # ramp_time
+            None,  # force_max
+            None,
+            None,
+            None,  # omega_mesh, omega_write, omega_vertex
+            None,
+            None,
+            None,  # u0, v0, a0
+            0.0,  # t0
+            0.0,  # theta0
             step_callback=step_callback,
         )
 
@@ -512,21 +531,60 @@ class TestRotorRustBinding:
 
         with pytest.raises((self._PRECICE_ERRORS, ValueError, OverflowError)):
             _aeroelast.run_rotor_fsi_solver(  # type: ignore[name-defined]
-                None, n, 0,
-                [0.0, 0.0, 1.0], [0.0, 0.0, 0.0],
+                None,
+                n,
+                0,
+                [0.0, 0.0, 1.0],
+                [0.0, 0.0, 0.0],
                 np.tile([1.0, 0.0, 0.0], 4).astype(np.float64),
                 np.ones(4, dtype=np.float64),
-                "constant", 1.0, None, None, None, None,
+                "constant",
+                1.0,
+                None,
+                None,
+                None,
+                None,
                 [0.0, 0.0, -9.81],
-                True, True, True, False, False, 1e-4,
-                3, 1.225, 10.0, 1.0,
-                k_r, k_c, k_v, m_r, m_c, m_v, bad_free,
-                0.01, 0.01, 0.25, 0.5, 0.01,
-                iface_coords, iface_dofs, 3,
-                "Solid", "precice-config.xml", "SolidMesh",
-                "Displacement", "Force",
-                0.0, None, None, None, None,
-                None, None, None, 0.0, 0.0,
+                True,
+                True,
+                True,
+                False,
+                False,
+                1e-4,
+                3,
+                1.225,
+                10.0,
+                1.0,
+                k_r,
+                k_c,
+                k_v,
+                m_r,
+                m_c,
+                m_v,
+                bad_free,
+                0.01,
+                0.01,
+                0.25,
+                0.5,
+                0.01,
+                iface_coords,
+                iface_dofs,
+                3,
+                "Solid",
+                "precice-config.xml",
+                "SolidMesh",
+                "Displacement",
+                "Force",
+                0.0,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                0.0,
+                0.0,
             )
 
 

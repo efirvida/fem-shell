@@ -503,6 +503,38 @@ class MeshAssembler:
 
         raise RuntimeError("Rust assembler not available — cannot assemble M")
 
+    def assemble_mass_matrix_lumped(self) -> PETSc.Mat:
+        """Assemble and lump the mass matrix entirely in Rust.
+
+        Combines consistent-M assembly and row-sum lumping in a single Rust
+        call, avoiding the round-trip of assembling a full sparse PETSc matrix
+        in Python only to immediately reduce it to a diagonal.
+
+        The diagonal values are floored at ``1e-4 × max(M_lump)`` to prevent
+        zero-mass entries at tip-closure nodes.
+
+        Returns
+        -------
+        PETSc.Mat
+            Diagonal (lumped) mass matrix, stored as a sparse AIJ matrix with
+            exactly one non-zero per row.
+        """
+        if self._rust is not None:
+            diag = self._rust.assemble_m_lumped()  # 1-D float64 numpy array
+            n = len(diag)
+            diag_vec = PETSc.Vec().createMPI(n, comm=self.comm)
+            diag_vec.setValues(range(n), diag)
+            diag_vec.assemble()
+
+            M_lumped = PETSc.Mat().createAIJ(size=(n, n), comm=self.comm, nnz=1)
+            M_lumped.setUp()
+            M_lumped.setDiagonal(diag_vec)
+            M_lumped.assemble()
+            diag_vec.destroy()
+            return M_lumped
+
+        raise RuntimeError("Rust assembler not available — cannot assemble M_lumped")
+
     def assemble_load_vector(self, load_condition) -> PETSc.Vec:
         """
         Assemble the global load vector using PETSc.

@@ -682,9 +682,9 @@ dependencies = [
 
 [[package]]
 name = "precice"
-version = "3.3.1"
+version = "3.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f17331e51de41fabc45cf55d0de64a68362c18cb2cace92b178f8867fd110ce8"
+checksum = "f94b41c424c595db9e88c799ce2106602b785bb9277ea41a9e2b3d12759f848f"
 dependencies = [
  "cxx",
  "cxx-build",

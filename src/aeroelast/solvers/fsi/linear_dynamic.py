@@ -142,42 +142,6 @@ class LinearDynamicFSISolver(LinearDynamicSolver):
         self._probe_file: Optional[str] = None
 
     # =========================================================================
-    # Solver Setup
-    # =========================================================================
-
-    def lump_mass_matrix(self, M: PETSc.Mat) -> PETSc.Mat:
-        """Convert mass matrix M to lumped (diagonal) form via row-sum technique.
-
-        The critical implementation detail: ``Mat.createAIJ`` must be called
-        with ``nnz=1`` so PETSc preallocates one non-zero per row BEFORE
-        ``setDiagonal`` is called.  Without preallocation, ``setDiagonal``
-        fails silently and the returned matrix is all zeros, which makes the
-        Newmark effective stiffness K_eff ≈ K (no mass term) and the time
-        integration degenerates to quasi-static.
-
-        A mass floor of 1e-4 × global_max is also applied via PETSc-native
-        ``pointwiseMax`` to handle tip-closure elements whose thickness → 0.
-        """
-        diag = PETSc.Vec().createMPI(M.getSize()[0], comm=M.getComm())
-        M.getRowSum(diag)  # row sum = lumped mass per DOF
-
-        # Apply floor using PETSc operations (avoids numpy-view mutability issues).
-        _, m_max = diag.max()  # returns (global_index, global_max_value)
-        if m_max > 0.0:
-            floor_vec = diag.duplicate()
-            floor_vec.set(m_max * 1e-4)
-            diag.pointwiseMax(diag, floor_vec)
-            floor_vec.destroy()
-
-        # nnz=1 preallocates exactly one non-zero per row (the diagonal).
-        # Without this, setDiagonal silently discards all insertions.
-        M_lumped = PETSc.Mat().createAIJ(size=M.getSize(), comm=M.getComm(), nnz=1)
-        M_lumped.setUp()
-        M_lumped.setDiagonal(diag)
-        M_lumped.assemble()
-        return M_lumped
-
-    # =========================================================================
     # Matrix Assembly Helpers
     # =========================================================================
 
@@ -932,9 +896,8 @@ class LinearDynamicFSISolver(LinearDynamicSolver):
         print("  [1/5] Assembling stiffness matrix...", flush=True)
         self.K = self.domain.assemble_stiffness_matrix()
 
-        print("  [2/5] Assembling mass matrix...", flush=True)
-        self.M = self.domain.assemble_mass_matrix()
-        self.M = self.lump_mass_matrix(self.M)
+        print("  [2/5] Assembling mass matrix (lumped in Rust)...", flush=True)
+        self.M = self.domain.assemble_mass_matrix_lumped()
 
         # --- mass diagnostic: sum translational DOFs of M_lumped ---
         _m_diag = self.M.createVecRight()
