@@ -30,6 +30,10 @@ use super::super::infra::vec::PetscVec;
 const KSPCG: &std::ffi::CStr =
     unsafe { std::ffi::CStr::from_bytes_with_nul_unchecked(b"cg\0") };
 
+// PREONLY: apply preconditioner once and return — correct wrapper for direct solvers.
+const KSPPREONLY: &std::ffi::CStr =
+    unsafe { std::ffi::CStr::from_bytes_with_nul_unchecked(b"preonly\0") };
+
 // LU direct solver — robust for SPD K_eff, mirrors static_linear.rs
 const PCLU: &std::ffi::CStr =
     unsafe { std::ffi::CStr::from_bytes_with_nul_unchecked(b"lu\0") };
@@ -92,68 +96,70 @@ fn build_vec(values: &[f64]) -> Result<PetscVec, PetscError> {
 
 /// Solve K_eff · u = rhs using CG + LU (direct solver).
 ///
-/// Mirrors `static_linear.rs` exactly. CG+LU is a direct solve — PETSc uses
-/// KSP as a thin wrapper around a single LU factorization + triangular solve.
-/// This converges in 1 "iteration" regardless of condition number or problem
-/// size, making it robust for the potentially ill-conditioned K_eff that arises
-/// in shell FSI problems (large a0 = 1/(β·Δt²) ≈ 1e7, mixed rotational/translational DOFs).
-///
-/// K_eff = K*(1 + a1·η_k) + a0·M  is constant for fixed Δt, so LU is factored
-/// once per solve call. Future optimization: cache the factorization across steps.
+/// One-shot version: creates a KSP, factorizes, solves, destroys.
+/// Used by `newmark_beta_solve` (non-FSI path) and the initial a₀ computation.
+/// For repeated solves with the same K_eff, use `setup_ksp` + `solve_with_cached_ksp`.
 fn ksp_solve(
     k_eff: &PetscMat,
     rhs: &PetscVec,
     n_dof: usize,
 ) -> Result<Vec<f64>, PetscError> {
+    let ksp = setup_ksp(k_eff)?;
+    let result = solve_with_cached_ksp(ksp, rhs, n_dof);
+    unsafe { let _ = ffi::KSPDestroy(&mut { ksp }); }
+    result
+}
+
+/// Create and configure a PREONLY + LU KSP bound to `k_eff`.
+///
+/// PETSc will factorize `k_eff` on the first `KSPSolve` call.  Subsequent
+/// calls with the same operators skip the factorization — only forward/back
+/// substitution is performed.  This makes `NewmarkStepper` efficient for
+/// time-stepping: K_eff is constant for fixed Δt, so the O(n^α) factorization
+/// cost is paid once and the O(n) substitution cost is paid every step.
+///
+/// Call `KSPSetOperators(ksp, new_k, new_k)` to trigger a re-factorization
+/// when K_eff changes (e.g., after a Δt change or geometric stiffness update).
+fn setup_ksp(k_eff: &PetscMat) -> Result<ffi::KSP, PetscError> {
     ensure_initialized()?;
     unsafe {
         let comm = ffi::petsc_comm_self();
         let mut ksp: ffi::KSP = std::ptr::null_mut();
         check(ffi::KSPCreate(comm, &mut ksp), "KSPCreate")?;
+        // PREONLY: apply PC once and return — correct wrapper for direct solvers.
+        check(ffi::KSPSetType(ksp, KSPPREONLY.as_ptr()), "KSPSetType(preonly)")?;
         let mut pc: ffi::PC = std::ptr::null_mut();
         check(ffi::KSPGetPC(ksp, &mut pc), "KSPGetPC")?;
-
-        // CG + LU: direct solve, always converges for SPD K_eff.
-        // Same strategy as static_linear.rs.
-        check(ffi::KSPSetType(ksp, KSPCG.as_ptr()), "KSPSetType(cg)")?;
         check(ffi::PCSetType(pc, PCLU.as_ptr()), "PCSetType(lu)")?;
-
-        check(
-            ffi::KSPSetTolerances(ksp, 1e-8, 1e-12, PETSC_INFINITY, 1000),
-            "KSPSetTolerances",
-        )?;
-
         check(
             ffi::KSPSetOperators(ksp, k_eff.as_raw(), k_eff.as_raw()),
             "KSPSetOperators",
         )?;
         check(ffi::KSPSetFromOptions(ksp), "KSPSetFromOptions")?;
+        Ok(ksp)
+    }
+}
+
+/// Solve using a pre-created, pre-configured KSP.
+///
+/// Does NOT create or destroy the KSP — caller owns the lifetime.
+/// Factorization is performed by PETSc on first call (or after operators change);
+/// subsequent calls with the same operators only do back-substitution.
+fn solve_with_cached_ksp(ksp: ffi::KSP, rhs: &PetscVec, n_dof: usize) -> Result<Vec<f64>, PetscError> {
+    unsafe {
         let u = create_vec(n_dof)?;
         check(ffi::KSPSolve(ksp, rhs.as_raw(), u.as_raw()), "KSPSolve")?;
-
         let mut reason: i32 = 0;
         check(ffi::KSPGetConvergedReason(ksp, &mut reason), "KSPGetConvergedReason")?;
-        let mut its: i32 = 0;
-        check(ffi::KSPGetIterationNumber(ksp, &mut its), "KSPGetIterationNumber")?;
-        let mut rnorm: f64 = 0.0;
-        check(ffi::KSPGetResidualNorm(ksp, &mut rnorm), "KSPGetResidualNorm")?;
-
-        check(ffi::KSPDestroy(&mut ksp), "KSPDestroy")?;
-
         if reason <= 0 {
-            // eprintln! always goes to stderr regardless of logging backend — ensures
-            // the reason code is always visible even without an initialized logger.
-            //  -3 = KSP_DIVERGED_ITS          (exceeded max iterations)
-            //  -8 = KSP_DIVERGED_INDEFINITE_PC (preconditioner broke down)
-            //  -9 = KSP_DIVERGED_NAN           (NaN in matrix or rhs)
-            // -10 = KSP_DIVERGED_INDEFINITE_MAT (matrix is indefinite)
+            let mut its: i32 = 0;
+            let _ = ffi::KSPGetIterationNumber(ksp, &mut its);
+            let mut rnorm: f64 = 0.0;
+            let _ = ffi::KSPGetResidualNorm(ksp, &mut rnorm);
             eprintln!(
-                "[KSP] CG+LU FAILED: reason={reason} its={its} rnorm={rnorm:.3e} n_dof={n_dof}"
+                "[KSP] PREONLY+LU FAILED: reason={reason} its={its} rnorm={rnorm:.3e} n_dof={n_dof}"
             );
-            return Err(PetscError {
-                code: -1,
-                context: "KSP did not converge in dynamic solve",
-            });
+            return Err(PetscError { code: -1, context: "KSP did not converge in dynamic solve" });
         }
         u.to_vec()
     }
@@ -440,6 +446,13 @@ pub struct NewmarkStepper {
     // ── Pre-factorized effective stiffness ───────────────────────────────────
     k_eff: PetscMat,
 
+    // ── Cached KSP — factorization reused across all time steps ─────────────
+    /// Holds the PREONLY+LU factorization of `k_eff`.
+    /// Created in `new()`, updated (re-factorized) in `refactorize()`, destroyed in `Drop`.
+    /// K_eff is constant for fixed Δt, so this pays the O(n^α) factorization cost
+    /// ONCE and reuses only O(n) back-substitution on every `step()` call.
+    ksp: ffi::KSP,
+
     // ── Assembled mass and damping for RHS ───────────────────────────────────
     mat_m: PetscMat,
     mat_c: PetscMat,
@@ -466,6 +479,15 @@ pub struct NewmarkStepper {
     a7: f64,
 
     n_dofs: usize,
+}
+
+impl Drop for NewmarkStepper {
+    fn drop(&mut self) {
+        unsafe {
+            // Ignore errors in Drop — destructor must not panic.
+            let _ = ffi::KSPDestroy(&mut self.ksp);
+        }
+    }
 }
 
 impl NewmarkStepper {
@@ -543,6 +565,9 @@ impl NewmarkStepper {
             k_rows, k_cols, k_vals, m_vals, c_vals, a0, a1, n_dofs,
         )?;
 
+        // Create cached KSP — factorization will happen on first KSPSolve call.
+        let ksp = setup_ksp(&k_eff)?;
+
         // Initial acceleration a₀ = M⁻¹·F₀  (F₀ = 0 at rest → a₀ = 0)
         let a_init = vec![0.0f64; n_dofs];
 
@@ -558,6 +583,7 @@ impl NewmarkStepper {
             kg_vals,
             ksp_diag,
             k_eff,
+            ksp,
             mat_m,
             mat_c,
             u: vec![0.0; n_dofs],
@@ -603,6 +629,15 @@ impl NewmarkStepper {
         self.k_eff = k_eff;
         self.mat_m = mat_m;
         self.mat_c = mat_c;
+
+        // Update the cached KSP operators — PETSc will re-factorize on the next KSPSolve.
+        unsafe {
+            check(
+                ffi::KSPSetOperators(self.ksp, self.k_eff.as_raw(), self.k_eff.as_raw()),
+                "KSPSetOperators(refactorize)",
+            )?;
+        }
+
         self.a0 = a0;
         self.a1 = a1;
         self.a2 = a2;
@@ -692,7 +727,7 @@ impl NewmarkStepper {
 
         // Solve K_eff · u_new = rhs
         let rhs_vec = build_vec(&rhs)?;
-        let u_new = ksp_solve(&self.k_eff, &rhs_vec, n)?;
+        let u_new = solve_with_cached_ksp(self.ksp, &rhs_vec, n)?;
 
         // Corrector: a_new = a0*(u_new - u) - a2*v - a3*a
         let a_new: Vec<f64> = (0..n)
