@@ -15,8 +15,8 @@
 ///
 /// # Solver configuration
 /// - Effective stiffness: `K_eff = K + a0·M + a1·C`  where `a0 = 1/(β·dt²)`, `a1 = γ/(β·dt)`
-/// - KSP type: CG + ICC (same as linear static)
-///   For non-symmetric K_eff (when γ ≠ 0.5) GMRES can be used at runtime via -ksp_type gmres.
+/// - KSP type: CG + LU (direct, identical to static_linear.rs — always converges for SPD K_eff)
+///   K_eff is constant for fixed Δt, so the LU factorization cost amortizes across time steps.
 ///
 /// # Boundary conditions
 /// The caller must pass a pre-reduced system (free DOFs only). No BC handling here.
@@ -29,8 +29,10 @@ use super::super::infra::vec::PetscVec;
 
 const KSPCG: &std::ffi::CStr =
     unsafe { std::ffi::CStr::from_bytes_with_nul_unchecked(b"cg\0") };
-const PCICC: &std::ffi::CStr =
-    unsafe { std::ffi::CStr::from_bytes_with_nul_unchecked(b"icc\0") };
+
+// LU direct solver — robust for SPD K_eff, mirrors static_linear.rs
+const PCLU: &std::ffi::CStr =
+    unsafe { std::ffi::CStr::from_bytes_with_nul_unchecked(b"lu\0") };
 
 // ── Result type ───────────────────────────────────────────────────────────────
 
@@ -88,24 +90,21 @@ fn build_vec(values: &[f64]) -> Result<PetscVec, PetscError> {
     Ok(v)
 }
 
-/// Solve K_eff · u = rhs using CG + ICC.
+/// Solve K_eff · u = rhs using CG + LU (direct solver).
 ///
-/// CG + ICC works for all problem sizes when the mass floor is applied in
-/// `lump_mass_coo` — that floor keeps K_eff well-conditioned regardless of n_dof.
-/// This mirrors the original Python implementation, which never had a size threshold.
+/// Mirrors `static_linear.rs` exactly. CG+LU is a direct solve — PETSc uses
+/// KSP as a thin wrapper around a single LU factorization + triangular solve.
+/// This converges in 1 "iteration" regardless of condition number or problem
+/// size, making it robust for the potentially ill-conditioned K_eff that arises
+/// in shell FSI problems (large a0 = 1/(β·Δt²) ≈ 1e7, mixed rotational/translational DOFs).
 ///
-/// ICC uses `MAT_SHIFT_POSITIVE_DEFINITE` (type 2) so that if the incomplete
-/// Cholesky encounters a zero or negative pivot it applies an automatic shift
-/// rather than failing. This is required for shell FEM K_eff where very small
-/// rotational-DOF diagonal entries can occasionally cause ICC to break down.
+/// K_eff = K*(1 + a1·η_k) + a0·M  is constant for fixed Δt, so LU is factored
+/// once per solve call. Future optimization: cache the factorization across steps.
 fn ksp_solve(
     k_eff: &PetscMat,
     rhs: &PetscVec,
     n_dof: usize,
 ) -> Result<Vec<f64>, PetscError> {
-    // PETSc MatFactorShiftType: POSITIVE_DEFINITE = 2
-    const MAT_SHIFT_POSITIVE_DEFINITE: i32 = 2;
-
     ensure_initialized()?;
     unsafe {
         let comm = ffi::petsc_comm_self();
@@ -114,18 +113,13 @@ fn ksp_solve(
         let mut pc: ffi::PC = std::ptr::null_mut();
         check(ffi::KSPGetPC(ksp, &mut pc), "KSPGetPC")?;
 
-        // CG + ICC with positive-definite shift.
-        // The shift ensures ICC never fails on a negative/zero pivot — it
-        // adds a minimal perturbation automatically, keeping the factorization
-        // numerically stable even when K_eff has near-zero diagonal entries.
+        // CG + LU: direct solve, always converges for SPD K_eff.
+        // Same strategy as static_linear.rs.
         check(ffi::KSPSetType(ksp, KSPCG.as_ptr()), "KSPSetType(cg)")?;
-        check(ffi::PCSetType(pc, PCICC.as_ptr()), "PCSetType(icc)")?;
+        check(ffi::PCSetType(pc, PCLU.as_ptr()), "PCSetType(lu)")?;
+
         check(
-            ffi::PCFactorSetShiftType(pc, MAT_SHIFT_POSITIVE_DEFINITE),
-            "PCFactorSetShiftType(positive_definite)",
-        )?;
-        check(
-            ffi::KSPSetTolerances(ksp, 1e-8, 1e-12, PETSC_INFINITY, 5000),
+            ffi::KSPSetTolerances(ksp, 1e-8, 1e-12, PETSC_INFINITY, 1000),
             "KSPSetTolerances",
         )?;
 
@@ -144,19 +138,17 @@ fn ksp_solve(
         let mut rnorm: f64 = 0.0;
         check(ffi::KSPGetResidualNorm(ksp, &mut rnorm), "KSPGetResidualNorm")?;
 
-        log::debug!(
-            "KSP CG+ICC: n_dof={n_dof} its={its} reason={reason} rnorm={rnorm:.3e}"
-        );
-
         check(ffi::KSPDestroy(&mut ksp), "KSPDestroy")?;
+
         if reason <= 0 {
-            // Log the exact PETSc reason code so the user can diagnose convergence failure:
-            //  -3 = KSP_DIVERGED_ITS  (exceeded max iterations)
-            //  -8 = KSP_DIVERGED_INDEFINITE_PC  (ICC negative pivot — shift should prevent this)
-            //  -9 = KSP_DIVERGED_NAN  (NaN in matrix or rhs)
+            // eprintln! always goes to stderr regardless of logging backend — ensures
+            // the reason code is always visible even without an initialized logger.
+            //  -3 = KSP_DIVERGED_ITS          (exceeded max iterations)
+            //  -8 = KSP_DIVERGED_INDEFINITE_PC (preconditioner broke down)
+            //  -9 = KSP_DIVERGED_NAN           (NaN in matrix or rhs)
             // -10 = KSP_DIVERGED_INDEFINITE_MAT (matrix is indefinite)
-            log::error!(
-                "KSP CG+ICC FAILED: reason={reason} its={its} rnorm={rnorm:.3e} n_dof={n_dof}"
+            eprintln!(
+                "[KSP] CG+LU FAILED: reason={reason} its={its} rnorm={rnorm:.3e} n_dof={n_dof}"
             );
             return Err(PetscError {
                 code: -1,
