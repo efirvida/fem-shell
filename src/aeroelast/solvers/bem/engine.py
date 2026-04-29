@@ -120,6 +120,9 @@ class BEMSolver:
         Hub precone angle (deg).
     tilt : float
         Nacelle tilt angle (deg).
+    yaw : float
+        Nacelle yaw misalignment angle (deg).  Positive rotates the rotor
+        clockwise when viewed from above (i.e. wind comes from the left).
     hub_height : float
         Hub height (m), used for wind shear calculation.
     shear_exp : float
@@ -133,6 +136,7 @@ class BEMSolver:
         mu: float = 1.81206e-5,
         precone: float = 0.0,
         tilt: float = 0.0,
+        yaw: float = 0.0,
         hub_height: float = 150.0,
         shear_exp: float = 0.2,
     ):
@@ -166,6 +170,7 @@ class BEMSolver:
             mu=mu,
             precone=precone,
             tilt=tilt,
+            yaw=yaw,
             hubHt=hub_height,
             shearExp=shear_exp,
         )

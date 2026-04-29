@@ -256,6 +256,7 @@ class BEMFSIParticipant:
         * ``shear_exp``            – wind shear exponent (default 0.2)
         * ``precone``              – precone angle [deg] (default 0)
         * ``tilt``                 – shaft tilt angle [deg] (default 0)
+        * ``yaw``                  – nacelle yaw misalignment angle [deg] (default 0)
         * ``span_direction``       – unit vector along blade span (default Z)
         * ``normal_direction``     – global direction for BEM Np (default X)
         * ``tangential_direction`` – global direction for BEM Tp (default Y)
@@ -329,6 +330,7 @@ class BEMFSIParticipant:
             mu=bem_config.get("dynamic_viscosity", 1.81206e-5),
             precone=bem_config.get("precone", 0.0),
             tilt=bem_config.get("tilt", 0.0),
+            yaw=bem_config.get("yaw", 0.0),
             hub_height=bem_config.get("hub_height", 150.0),
             shear_exp=bem_config.get("shear_exp", 0.2),
         )

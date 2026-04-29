@@ -408,6 +408,7 @@ class BEMConfig:
     shear_exp: float = 0.2
     precone: float = 0.0
     tilt: float = 0.0
+    yaw: float = 0.0
     polar_source: str = "yaml"
     neuralfoil_model: str = "large"
     default_re: float = 1e7

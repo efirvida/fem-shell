@@ -68,6 +68,7 @@ class BEMStandaloneSolver:
             mu=self._bem_cfg.get("dynamic_viscosity", 1.81206e-5),
             precone=self._bem_cfg.get("precone", 0.0),
             tilt=self._bem_cfg.get("tilt", 0.0),
+            yaw=self._bem_cfg.get("yaw", 0.0),
             hub_height=self._bem_cfg.get("hub_height", 150.0),
             shear_exp=self._bem_cfg.get("shear_exp", 0.2),
         )
