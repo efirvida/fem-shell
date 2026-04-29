@@ -66,6 +66,14 @@ pub fn reduce_coo(
 /// Uses the **row-sum** lumping method: the lumped diagonal coefficient for
 /// DOF `i` is the sum of the absolute values of all entries in row `i`.
 ///
+/// A mass floor of `1e-4 × global_max` is applied after lumping. This is
+/// required to handle rotational DOFs and tip-closure elements whose thickness
+/// → 0: without it those DOFs get M ≈ 0, which makes K_eff = K + a0·0 = K
+/// for those rows and creates extreme ill-conditioning in the Newmark effective
+/// stiffness (ratio of K_eff diagonal entries between translational and
+/// rotational DOFs can reach 1e7+). The Python implementation (`lump_mass_matrix`)
+/// applied the same floor before this logic was migrated to Rust.
+///
 /// Returns diagonal COO triplets: `rows = cols = [0, 1, …, n_dofs-1]`.
 ///
 /// # Arguments
@@ -89,6 +97,19 @@ pub fn lump_mass_coo(
         let idx = r as usize;
         if idx < n_dofs {
             diag[idx] += v.abs();
+        }
+    }
+
+    // Apply the same mass floor that the original Python lump_mass_matrix used.
+    // Prevents zero-mass DOFs (rotational DOFs of shell elements, tip-closure
+    // elements) from making K_eff singular/ill-conditioned in the Newmark solve.
+    let m_max = diag.iter().cloned().fold(0.0f64, f64::max);
+    if m_max > 0.0 {
+        let floor = m_max * 1e-4;
+        for v in &mut diag {
+            if *v < floor {
+                *v = floor;
+            }
         }
     }
 

@@ -27,6 +27,10 @@ use super::super::infra::vec::PetscVec;
 
 // ── C-string constants ────────────────────────────────────────────────────────
 
+const KSPCG: &std::ffi::CStr =
+    unsafe { std::ffi::CStr::from_bytes_with_nul_unchecked(b"cg\0") };
+const PCICC: &std::ffi::CStr =
+    unsafe { std::ffi::CStr::from_bytes_with_nul_unchecked(b"icc\0") };
 const KSPPREONLY: &std::ffi::CStr =
     unsafe { std::ffi::CStr::from_bytes_with_nul_unchecked(b"preonly\0") };
 const KSPFGMRES: &std::ffi::CStr =
@@ -36,12 +40,13 @@ const PCLU: &std::ffi::CStr =
 const PCILU: &std::ffi::CStr =
     unsafe { std::ffi::CStr::from_bytes_with_nul_unchecked(b"ilu\0") };
 
-// Solver selection thresholds — mirror static_nonlinear.rs strategy:
-// n_dof < FGMRES_THRESHOLD → preonly + LU (direct, always converges)
-// n_dof ≥ FGMRES_THRESHOLD → FGMRES(200) + ILU(2) (memory-efficient, robust)
+// Solver selection thresholds:
+// n_dof < FGMRES_THRESHOLD → CG + ICC  (fast iterative for SPD)
+// n_dof ≥ FGMRES_THRESHOLD → FGMRES(200) + ILU(2)  (fallback for ill-conditioned K_eff)
 //
-// At small Δt (e.g. 6.25e-4 s), a0 = 1/(β·Δt²) ≈ 1e7 dominates K_eff,
-// producing extreme condition numbers. CG+ICC(0) diverges; FGMRES+ILU(2) is robust.
+// CG + ICC is used as the primary solver because the mass floor applied by
+// lump_mass_coo ensures K_eff is well-conditioned (all diagonal entries bounded
+// away from zero). FGMRES + ILU is kept as the large-system fallback.
 const FGMRES_THRESHOLD: usize = 100_000;
 const FGMRES_RESTART: i32 = 200;
 const ILU_FILL_LEVELS: i32 = 2;
@@ -104,12 +109,12 @@ fn build_vec(values: &[f64]) -> Result<PetscVec, PetscError> {
 
 /// Solve K_eff · u = rhs using KSP.
 ///
-/// Solver strategy (mirrors `static_nonlinear.rs`):
-/// - n_dof < 100k → preonly + LU  (direct, always converges)
-/// - n_dof ≥ 100k → FGMRES(200) + ILU(2)  (memory-efficient, robust for ill-conditioned K_eff)
+/// Solver strategy:
+/// - n_dof < 100k → CG + ICC  (fast for well-conditioned SPD; works when mass floor is applied)
+/// - n_dof ≥ 100k → FGMRES(200) + ILU(2)  (fallback for larger ill-conditioned systems)
 ///
-/// CG + ICC(0) is NOT used here: at small Δt, a0 = 1/(β·Δt²) ≈ 1e7 makes K_eff
-/// extremely ill-conditioned, causing ICC to fail with negative pivots.
+/// The mass floor in `lump_mass_coo` is what keeps K_eff well-conditioned.
+/// Without it, rotational DOFs get M≈0 and K_eff becomes extremely ill-conditioned.
 fn ksp_solve(
     k_eff: &PetscMat,
     rhs: &PetscVec,
@@ -124,7 +129,7 @@ fn ksp_solve(
         check(ffi::KSPGetPC(ksp, &mut pc), "KSPGetPC")?;
 
         if n_dof >= FGMRES_THRESHOLD {
-            // FGMRES(200) + ILU(2): robust for large ill-conditioned K_eff
+            // FGMRES(200) + ILU(2): fallback for large systems
             check(ffi::KSPSetType(ksp, KSPFGMRES.as_ptr()), "KSPSetType(fgmres)")?;
             check(ffi::KSPGMRESSetRestart(ksp, FGMRES_RESTART), "KSPGMRESSetRestart")?;
             check(ffi::PCSetType(pc, PCILU.as_ptr()), "PCSetType(ilu)")?;
@@ -134,11 +139,11 @@ fn ksp_solve(
                 "KSPSetTolerances",
             )?;
         } else {
-            // preonly + LU: direct solve, always converges for small systems
-            check(ffi::KSPSetType(ksp, KSPPREONLY.as_ptr()), "KSPSetType(preonly)")?;
-            check(ffi::PCSetType(pc, PCLU.as_ptr()), "PCSetType(lu)")?;
+            // CG + ICC: optimal for well-conditioned SPD K_eff
+            check(ffi::KSPSetType(ksp, KSPCG.as_ptr()), "KSPSetType(cg)")?;
+            check(ffi::PCSetType(pc, PCICC.as_ptr()), "PCSetType(icc)")?;
             check(
-                ffi::KSPSetTolerances(ksp, 1e-8, 1e-12, PETSC_INFINITY, 1),
+                ffi::KSPSetTolerances(ksp, 1e-8, 1e-12, PETSC_INFINITY, 2000),
                 "KSPSetTolerances",
             )?;
         }
