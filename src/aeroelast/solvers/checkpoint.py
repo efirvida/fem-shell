@@ -243,7 +243,7 @@ class AsyncCheckpointWriter:
             "t": float(t),
             "time_step": int(time_step),
             "dt": float(dt),
-            "extra_fields": {k: v.copy() for k, v in extra_fields.items()}
+            "extra_fields": {k: v.copy() if isinstance(v, np.ndarray) else v for k, v in extra_fields.items()}
             if extra_fields
             else None,
             "state": {k: v.copy() if isinstance(v, np.ndarray) else v for k, v in state.items()},
