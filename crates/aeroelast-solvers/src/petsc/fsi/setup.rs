@@ -59,6 +59,79 @@ pub fn reduce_coo(
     (r_out, c_out, v_out)
 }
 
+/// Precompute a per-entry mapping from the **full** (element-assembled) K_G COO to
+/// output indices in the reduced reference sparsity pattern.
+///
+/// Call this ONCE in the solver constructor (e.g. with a zero-stress dummy assembly)
+/// to build a `Vec<i32>` of the same length as the full COO.  Each element is either:
+/// * `>= 0`  — the index into the reduced output vector where this value must be summed, or
+/// * `-1`    — the entry is outside the free-DOF set and must be skipped.
+///
+/// At runtime use [`apply_kg_coo_map`] to accumulate values with no heap allocation.
+///
+/// # Arguments
+/// * `full_rows`, `full_cols` — raw element-assembled COO row/col indices (i64).
+/// * `free_dofs` — sorted list of free global DOF indices (i32).
+/// * `ref_rows`, `ref_cols` — the REDUCED K sparsity (unique, sorted, 0-based).
+///
+/// # Assumptions
+/// `ref_rows` is non-decreasing and, within each row, `ref_cols` is sorted.
+/// This is always the case when the reference COO comes from PETSc CSR → COO.
+pub fn build_kg_coo_map(
+    full_rows: &[i64],
+    full_cols: &[i64],
+    free_dofs: &[i32],
+    ref_rows: &[i32],
+    ref_cols: &[i32],
+) -> Vec<i32> {
+    // global_dof (i64) → reduced index (i32)
+    let dof_map: HashMap<i64, i32> = free_dofs
+        .iter()
+        .enumerate()
+        .map(|(i, &d)| (d as i64, i as i32))
+        .collect();
+
+    full_rows
+        .iter()
+        .zip(full_cols.iter())
+        .map(|(&r, &c)| {
+            let (Some(&ri), Some(&ci)) = (dof_map.get(&r), dof_map.get(&c)) else {
+                return -1i32;
+            };
+            // ref_rows is sorted non-decreasing; find the row block for ri.
+            let lo = ref_rows.partition_point(|&x| x < ri);
+            let hi = ref_rows.partition_point(|&x| x <= ri);
+            // Within the row block ref_cols is sorted; binary search for ci.
+            match ref_cols[lo..hi].binary_search(&ci) {
+                Ok(pos) => (lo + pos) as i32,
+                Err(_) => -1,
+            }
+        })
+        .collect()
+}
+
+/// Apply a precomputed K_G COO map (from [`build_kg_coo_map`]) to a value slice.
+///
+/// Accumulates `full_vals[i]` into `out[map[i]]` for every entry where `map[i] >= 0`.
+/// This is an O(N) scan with no heap allocation — suitable for hot per-timestep paths.
+///
+/// # Arguments
+/// * `kg_coo_map` — precomputed index map, same length as `full_vals`.
+/// * `full_vals`  — raw element-assembled K_G values.
+/// * `n_ref`      — length of the reduced output vector (= `ref_rows.len()`).
+///
+/// # Returns
+/// A `Vec<f64>` of length `n_ref` with accumulated values in reduced sparsity order.
+pub fn apply_kg_coo_map(kg_coo_map: &[i32], full_vals: &[f64], n_ref: usize) -> Vec<f64> {
+    let mut out = vec![0.0f64; n_ref];
+    for (&idx, &val) in kg_coo_map.iter().zip(full_vals.iter()) {
+        if idx >= 0 {
+            out[idx as usize] += val;
+        }
+    }
+    out
+}
+
 // ── Mass lumping ──────────────────────────────────────────────────────────────
 
 /// Convert a consistent mass matrix (COO) to a diagonal (lumped) form.

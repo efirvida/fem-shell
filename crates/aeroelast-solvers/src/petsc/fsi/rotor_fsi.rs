@@ -161,12 +161,14 @@ pub struct RotorFsiSolver {
     full_to_red: Vec<i32>,
     /// Total DOF count in the full (unreduced) system.
     n_full_dofs: usize,
-    /// COO row indices of the REDUCED stiffness matrix (for K_SP expansion).
+    /// COO row indices of the REDUCED stiffness matrix (for K_SP and K_G expansion).
     k_rows: Vec<i32>,
     /// COO column indices of the REDUCED stiffness matrix.
     k_cols: Vec<i32>,
-    /// Pre-computed mask: positions in full K_G COO that survive BC reduction.
-    kg_mask: Vec<usize>,
+    /// Precomputed mapping: full K_G COO index → output index in reduced K sparsity
+    /// (or -1 for entries outside the free-DOF set). Computed once in `new()`,
+    /// eliminates all per-timestep HashMap allocations in `update_geometric_stiffness`.
+    kg_coo_map: Vec<i32>,
     /// ω at the last K_SP rebuild (to detect Δω > threshold).
     omega_at_last_ksp: f64,
 
@@ -220,22 +222,17 @@ impl RotorFsiSolver {
             full_to_red[dof as usize] = i as i32;
         }
 
-        // Precompute K_G BC mask (if assembler provided).
-        let kg_mask = if let Some(ref asm) = assembler {
-            let free_set: std::collections::HashSet<i32> = free_dofs_i32.iter().copied().collect();
+        // Precompute K_G COO → output index map (once, avoids per-timestep HashMap).
+        let kg_coo_map = if let Some(ref asm) = assembler {
             let dummy = vec![[0.0f64; 3]; asm.topology.n_elems];
             let (rows, cols, _) = asm.assemble_geometric_k(&dummy);
-            rows.iter()
-                .zip(cols.iter())
-                .enumerate()
-                .filter_map(|(i, (&r, &c))| {
-                    if free_set.contains(&(r as i32)) && free_set.contains(&(c as i32)) {
-                        Some(i)
-                    } else {
-                        None
-                    }
-                })
-                .collect()
+            crate::petsc::fsi::setup::build_kg_coo_map(
+                &rows,
+                &cols,
+                &free_dofs_i32,
+                &k_rows,
+                &k_cols,
+            )
         } else {
             Vec::new()
         };
@@ -263,7 +260,7 @@ impl RotorFsiSolver {
             n_full_dofs,
             k_rows,
             k_cols,
-            kg_mask,
+            kg_coo_map,
             omega_at_last_ksp: initial_omega,
             initial_state: None,
             initial_theta: 0.0,
@@ -400,8 +397,12 @@ impl RotorFsiSolver {
         }
 
         let sigma_m: Vec<[f64; 3]> = sigma.iter().map(|s| [s[0], s[1], s[3]]).collect();
-        let (_, _, kg_full) = asm.assemble_geometric_k(&sigma_m);
-        let kg_red: Vec<f64> = self.kg_mask.iter().map(|&idx| kg_full[idx]).collect();
+        let (_, _, kg_vals_full) = asm.assemble_geometric_k(&sigma_m);
+        let kg_red = crate::petsc::fsi::setup::apply_kg_coo_map(
+            &self.kg_coo_map,
+            &kg_vals_full,
+            self.k_rows.len(),
+        );
 
         self.stepper
             .update_geometric_stiffness(&kg_red)
@@ -450,6 +451,19 @@ impl RotorFsiSolver {
             } else {
                 None
             };
+
+        // Write initial omega before initialize() when preCICE requires it.
+        // This satisfies the initialize="true" exchange for AngularVelocity.
+        if participant.requires_initial_data()? {
+            if let (Some(mesh), Some(wdata), Some(ids)) = (
+                &self.config.omega_mesh_name,
+                &self.config.omega_write_data,
+                &omega_vertex_ids,
+            ) {
+                let omega_init = self.omega_provider.initial_omega();
+                participant.write_data(mesh, wdata, ids, &[omega_init])?;
+            }
+        }
 
         participant.initialize()?;
         let mut dt = participant.get_max_time_step_size()?;

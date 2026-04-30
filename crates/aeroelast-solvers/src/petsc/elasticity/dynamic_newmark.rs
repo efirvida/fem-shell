@@ -920,6 +920,16 @@ impl NewmarkStepper {
         self.n_dofs
     }
 
+    /// Row indices of the reduced COO sparsity pattern (same as passed to `new()`).
+    pub fn k_rows(&self) -> &[i32] {
+        &self.rows
+    }
+
+    /// Column indices of the reduced COO sparsity pattern (same as passed to `new()`).
+    pub fn k_cols(&self) -> &[i32] {
+        &self.cols
+    }
+
     /// Current simulation time.
     pub fn current_time(&self) -> f64 {
         self.t

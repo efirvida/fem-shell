@@ -53,9 +53,9 @@ pub struct StressStiffenedFsiSolver {
     n_full_dofs: usize,
     /// Rebuild K_G every N converged steps (1 = every step).
     kg_update_interval: usize,
-    /// Mask: indices into the **full** K_G COO that survive the BC reduction.
-    /// Precomputed once so that runtime filtering is O(n_red_nnz).
-    kg_mask: Vec<usize>,
+    /// Precomputed mapping: full K_G COO index → output index in reduced K sparsity
+    /// (or -1 for entries outside the free-DOF set).  Eliminates per-timestep HashMap.
+    kg_coo_map: Vec<i32>,
 }
 
 impl StressStiffenedFsiSolver {
@@ -80,27 +80,16 @@ impl StressStiffenedFsiSolver {
         n_full_dofs: usize,
         kg_update_interval: usize,
     ) -> Self {
-        // Precompute the mask: positions in the full K_G COO that survive BC reduction.
-        // We assemble K_G with zero stress (giving zero values but correct (row,col) pairs)
-        // and filter the full COO to keep only entries where both row and col are free DOFs.
-        let free_set: std::collections::HashSet<i32> =
-            free_dofs_i32.iter().copied().collect();
-
+        // Precompute K_G COO → output index map (once, avoids per-timestep HashMap).
         let dummy_sigma: Vec<[f64; 3]> = vec![[0.0; 3]; assembler.topology.n_elems];
         let (kg_rows_full, kg_cols_full, _) = assembler.assemble_geometric_k(&dummy_sigma);
-
-        let kg_mask: Vec<usize> = kg_rows_full
-            .iter()
-            .zip(kg_cols_full.iter())
-            .enumerate()
-            .filter_map(|(i, (&r, &c))| {
-                if free_set.contains(&(r as i32)) && free_set.contains(&(c as i32)) {
-                    Some(i)
-                } else {
-                    None
-                }
-            })
-            .collect();
+        let kg_coo_map = crate::petsc::fsi::setup::build_kg_coo_map(
+            &kg_rows_full,
+            &kg_cols_full,
+            &free_dofs_i32,
+            stepper.k_rows(),
+            stepper.k_cols(),
+        );
 
         Self {
             stepper,
@@ -114,7 +103,7 @@ impl StressStiffenedFsiSolver {
             free_dofs_i32,
             n_full_dofs,
             kg_update_interval: kg_update_interval.max(1),
-            kg_mask,
+            kg_coo_map,
         }
     }
 
@@ -177,9 +166,14 @@ impl StressStiffenedFsiSolver {
         // for shell membrane: σzz=τyz=τzx=0, so index 3 = τxy = σxy.
         let sigma_m: Vec<[f64; 3]> = sigma.iter().map(|s| [s[0], s[1], s[3]]).collect();
 
-        // Assemble full K_G COO, then extract only the free-DOF entries.
-        let (_, _, kg_full) = self.assembler.assemble_geometric_k(&sigma_m);
-        let kg_red: Vec<f64> = self.kg_mask.iter().map(|&idx| kg_full[idx]).collect();
+        // Assemble full K_G COO values and accumulate via precomputed map.
+        let (_, _, kg_vals_full) =
+            self.assembler.assemble_geometric_k(&sigma_m);
+        let kg_red = crate::petsc::fsi::setup::apply_kg_coo_map(
+            &self.kg_coo_map,
+            &kg_vals_full,
+            self.stepper.k_rows().len(),
+        );
 
         self.stepper
             .update_geometric_stiffness(&kg_red)
