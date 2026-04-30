@@ -411,6 +411,8 @@ class LinearDynamicFSIRotorSolver(LinearDynamicFSISolver):
         self._kg_update_interval = rotor_cfg.get("kg_update_interval", 0)  # Reserved
         self._force_ramp_time = float(rotor_cfg.get("force_ramp_time", 0.0))
         self._send_omega_to_precice = rotor_cfg.get("send_omega_to_precice", True)
+        self._omega_mesh_name: str = rotor_cfg.get("omega_mesh_name", "GlobalSolidMesh")
+        self._omega_write_data_name: str = rotor_cfg.get("omega_write_data", "AngularVelocity")
 
         # Force sanity checks: detect diverged forces from CFD before they
         # contaminate the structural solve.
@@ -466,6 +468,8 @@ class LinearDynamicFSIRotorSolver(LinearDynamicFSISolver):
 
     def _init_solver_config(self) -> None:
         """Initialize solver configuration parameters."""
+        super()._init_solver_config()
+
         damping_cfg = self.solver_params.get("damping") or {}
 
         self._damping_enabled: bool = damping_cfg.get("enabled", True)
@@ -1585,6 +1589,23 @@ class LinearDynamicFSIRotorSolver(LinearDynamicFSISolver):
                 omega=omega,
             )
 
+        # ── omega preCICE coupling params (optional) ────────────────────────
+        if self._send_omega_to_precice:
+            _omega_mesh = self._omega_mesh_name
+            _omega_data = self._omega_write_data_name
+            _omega_coord = list(self._coord_transforms.center)
+            _logger.info(
+                "[RotorFSI] omega→preCICE ENABLED: mesh=%s  data=%s  vertex=%s",
+                _omega_mesh,
+                _omega_data,
+                _omega_coord,
+            )
+        else:
+            _omega_mesh = None
+            _omega_data = None
+            _omega_coord = None
+            _logger.info("[RotorFSI] omega→preCICE DISABLED (send_omega_to_precice=False)")
+
         disp_hist, vel_hist, acc_hist, times = _aeroelast.run_rotor_fsi_solver(
             rust_asm,
             n_full_dofs,
@@ -1633,9 +1654,9 @@ class LinearDynamicFSIRotorSolver(LinearDynamicFSISolver):
             float(self._force_ramp_time),
             getattr(self, "_force_max_magnitude", None),
             # omega preCICE coupling (optional — None disables it)
-            None,
-            None,
-            None,
+            _omega_mesh,
+            _omega_data,
+            _omega_coord,
             u0,
             v0,
             a0,

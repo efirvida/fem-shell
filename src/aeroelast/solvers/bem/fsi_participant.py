@@ -289,6 +289,9 @@ class BEMFSIParticipant:
         output_folder: str | Path = "bem_fsi_results",
         log_interval: int = 10,
         viz_mesh: MeshModel | None = None,
+        omega_mesh: str | None = None,
+        omega_data: str = "AngularVelocity",
+        omega_vertex: list[float] | None = None,
     ) -> None:
         self._mesh = mesh
         self._blade_aero = blade_aero
@@ -300,6 +303,15 @@ class BEMFSIParticipant:
         self._force_data = force_data
         self._output_folder = Path(output_folder)
         self._log_interval = log_interval
+
+        # omega preCICE read config (optional)
+        self._omega_mesh: str | None = omega_mesh
+        self._omega_data: str = omega_data
+        self._omega_vertex: np.ndarray = (
+            np.asarray(omega_vertex, dtype=float) if omega_vertex is not None else np.zeros(3)
+        )
+        # Live omega updated each time window; initialised from static yaml
+        self._current_omega: float = float(bem_config.get("omega", 0.0))
 
         # Reference node coordinates (n_nodes, 3) — immutable after init
         self._ref_coords: np.ndarray = mesh.coords_array.copy()
@@ -402,10 +414,26 @@ class BEMFSIParticipant:
 
         self._output_folder.mkdir(parents=True, exist_ok=True)
 
+        _coupling_meshes = {self._coupling_mesh: self._ref_coords}
+        if self._omega_mesh is not None:
+            _coupling_meshes[self._omega_mesh] = self._omega_vertex.reshape(1, 3)
+            logger.info(
+                "[BEM-FSI] omega preCICE read ENABLED: mesh=%s  data=%s  vertex=%s",
+                self._omega_mesh,
+                self._omega_data,
+                self._omega_vertex.tolist(),
+            )
+        else:
+            logger.info(
+                "[BEM-FSI] omega preCICE read DISABLED "
+                "(no omega_mesh configured — using static yaml omega=%.6f rad/s)",
+                self._current_omega,
+            )
+
         adapter = Adapter(
             participant=self._participant_name,
             config_file=self._config_file,
-            coupling_meshes={self._coupling_mesh: self._ref_coords},
+            coupling_meshes=_coupling_meshes,
         )
         adapter.initialize()
 
@@ -433,6 +461,20 @@ class BEMFSIParticipant:
 
             # Read displacements from the structural solver
             displacements = adapter.read_data(self._coupling_mesh, self._displacement_data)
+
+            # Update omega from preCICE if configured (live rotor speed from Solid)
+            if self._omega_mesh is not None:
+                omega_arr = adapter.read_data(self._omega_mesh, self._omega_data)
+                if omega_arr is not None and np.asarray(omega_arr).size > 0:
+                    new_omega = float(np.asarray(omega_arr).ravel()[0])
+                    if abs(new_omega - self._current_omega) > 1e-6:
+                        logger.info(
+                            "[BEM-FSI] ω updated %.6f → %.6f rad/s (window %d)",
+                            self._current_omega,
+                            new_omega,
+                            self._window_count,
+                        )
+                    self._current_omega = new_omega
 
             # BEM on (possibly deformed) geometry
             forces, bem_result = self._compute_forces(displacements)
@@ -785,7 +827,7 @@ class BEMFSIParticipant:
             Full BEM output (Np, Tp, alpha, Cl, Cd, integrated loads).
         """
         v_inf = float(self._bem_cfg.get("wind_speed", 45.0))
-        omega = float(self._bem_cfg.get("omega", 0.0))
+        omega = self._current_omega  # updated each window from preCICE (or static yaml fallback)
         pitch = float(self._bem_cfg.get("pitch", 0.0))
         azimuth = float(self._bem_cfg.get("azimuth", 0.0))
 
@@ -1164,6 +1206,27 @@ def build_from_config(
     if blade_file is None:
         raise ValueError("'blade_file' is required in the BEM-FSI configuration.")
 
+    # omega can be a scalar (constant) or a dict with initial + preCICE config:
+    #   omega: 0.7917                        # constant
+    #   omega:
+    #     initial: 0.7917                    # used until first preCICE window
+    #     mesh:   "GlobalFluidMesh"
+    #     data:   "AngularVelocity"
+    #     vertex: [0.0, 0.0, 0.0]
+    omega_cfg = bem_cfg.get("omega", 0.0)
+    if isinstance(omega_cfg, dict):
+        omega_initial = float(omega_cfg.get("initial", 0.0))
+        omega_mesh: str | None = omega_cfg.get("mesh")
+        omega_data: str = omega_cfg.get("data", "AngularVelocity")
+        omega_vertex: list[float] = omega_cfg.get("vertex", [0.0, 0.0, 0.0])
+        # Normalise bem_cfg so the constructor can read omega as a float
+        bem_cfg = {**bem_cfg, "omega": omega_initial}
+    else:
+        omega_initial = float(omega_cfg)
+        omega_mesh = None
+        omega_data = "AngularVelocity"
+        omega_vertex = [0.0, 0.0, 0.0]
+
     blade_aero = load_blade_aero(
         blade_file,
         default_re=float(bem_cfg.get("default_re", 1e7)),
@@ -1186,4 +1249,7 @@ def build_from_config(
         output_folder=output_cfg.get("folder", "bem_fsi_results"),
         log_interval=int(output_cfg.get("log_interval", 10)),
         viz_mesh=viz_mesh,
+        omega_mesh=omega_mesh,
+        omega_data=omega_data,
+        omega_vertex=omega_vertex,
     )
