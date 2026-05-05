@@ -1238,6 +1238,7 @@ class LinearDynamicFSIRotorSolver(LinearDynamicFSISolver):
             bc_manager=bc_manager,
             interface_coords_flat=self._interface_coords.ravel().astype(np.float64),
             interface_dofs_global_flat=self._interface_dofs.ravel().astype(np.uint64),
+            K_G=K_G,
         )
 
     # =========================================================================
@@ -1408,6 +1409,7 @@ class LinearDynamicFSIRotorSolver(LinearDynamicFSISolver):
         bc_manager,
         interface_coords_flat,
         interface_dofs_global_flat,
+        K_G=None,
     ):
         """Run the co-rotational rotor FSI loop via the Rust binding.
 
@@ -1430,6 +1432,16 @@ class LinearDynamicFSIRotorSolver(LinearDynamicFSISolver):
 
         k_rows, k_cols, k_vals = self._petsc_to_coo(self.K)
         m_rows, m_cols, m_vals = self._petsc_to_coo(self.M)
+
+        # Extract K_G COO (full DOF space) so Rust can apply it to the
+        # reduced free-DOF system at startup.
+        if K_G is not None and self._include_geometric_stiffness:
+            kg0_rows, kg0_cols, kg0_vals = self._petsc_to_coo(K_G)
+            kg0_rows = kg0_rows.astype(np.int64)
+            kg0_cols = kg0_cols.astype(np.int64)
+            kg0_vals = kg0_vals.astype(np.float64)
+        else:
+            kg0_rows = kg0_cols = kg0_vals = None
 
         free_dofs = bc_manager.free_dofs.astype(np.int32)
         self.free_dofs = bc_manager.free_dofs
@@ -1662,6 +1674,9 @@ class LinearDynamicFSIRotorSolver(LinearDynamicFSISolver):
             a0,
             t0,
             theta0,
+            kg0_rows,
+            kg0_cols,
+            kg0_vals,
             step_callback=_step_cb,
         )
 

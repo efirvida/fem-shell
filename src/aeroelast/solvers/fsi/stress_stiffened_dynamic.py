@@ -96,7 +96,6 @@ class StressStiffenedFSISolver(LinearDynamicFSISolver):
             self._kg_update_interval,
         )
 
-
     # ------------------------------------------------------------------
     # Rust fast-path
     # ------------------------------------------------------------------

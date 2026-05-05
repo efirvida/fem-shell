@@ -171,6 +171,8 @@ pub struct RotorFsiSolver {
     kg_coo_map: Vec<i32>,
     /// ω at the last K_SP rebuild (to detect Δω > threshold).
     omega_at_last_ksp: f64,
+    /// ω at the last K_G rebuild (to detect Δω > threshold).
+    omega_at_last_kg: f64,
 
     // ── Optional restart state ────────────────────────────────────────────────
     initial_state: Option<FsiInitialState>,
@@ -262,6 +264,7 @@ impl RotorFsiSolver {
             k_cols,
             kg_coo_map,
             omega_at_last_ksp: initial_omega,
+            omega_at_last_kg: initial_omega,
             initial_state: None,
             initial_theta: 0.0,
             step_callback: None,
@@ -371,13 +374,18 @@ impl RotorFsiSolver {
         Ok(())
     }
 
-    /// Rebuild K_G from the current deformation and apply to stepper (if enabled).
-    fn update_kg(&mut self, u_red: &[f64], time_step: usize) -> Result<(), FsiError> {
+    /// Rebuild K_G from centrifugal prestress and apply to stepper (if enabled and |Δω| > threshold).
+    ///
+    /// Uses the same omega-threshold policy as K_SP: only rebuilds when the angular velocity
+    /// has changed enough to make K_G(ω) materially different from the current K_G.
+    ///
+    /// Calls `stepper.set_initial_geometric_stiffness` (writes to `kg_base_vals`) so the
+    /// centrifugal prestress is always included in K_eff regardless of runtime deformation.
+    fn update_kg_if_needed(&mut self, omega: f64) -> Result<(), FsiError> {
         if !self.config.include_kg {
             return Ok(());
         }
-        let interval = self.config.kg_update_interval.max(1);
-        if time_step % interval != 0 {
+        if (omega - self.omega_at_last_kg).abs() <= self.config.ksp_omega_threshold {
             return Ok(());
         }
         let asm = match &self.assembler {
@@ -385,19 +393,22 @@ impl RotorFsiSolver {
             None => return Ok(()),
         };
 
-        let u_full = self.expand_to_full(u_red);
-        let (sigma, _) = asm.compute_stress_field(&u_full, 0.0, 0);
-
-        let max_s = sigma
+        // Build rho_per_elem from assembler materials.
+        use aeroelast_core::assembly::assembler::MaterialSpec;
+        let rho_per_elem: Vec<f64> = asm
+            .materials
             .iter()
-            .flat_map(|s| s.iter().copied())
-            .fold(0.0_f64, f64::max);
-        if max_s <= 1e-20 {
-            return Ok(());
-        }
+            .map(|m| match m {
+                MaterialSpec::Isotropic { rho, .. } => *rho,
+                MaterialSpec::Composite { mass_per_area, .. } => *mass_per_area,
+                MaterialSpec::PlaneStress { rho, .. } => *rho,
+                MaterialSpec::Solid3D { rho, .. } => *rho,
+            })
+            .collect();
 
-        let sigma_m: Vec<[f64; 3]> = sigma.iter().map(|s| [s[0], s[1], s[3]]).collect();
-        let (_, _, kg_vals_full) = asm.assemble_geometric_k(&sigma_m);
+        let axis = self.config.rotation_axis;
+        let center = self.config.rotation_center;
+        let (_, _, kg_vals_full) = asm.assemble_centrifugal_k(omega, axis, center, &rho_per_elem);
         let kg_red = crate::petsc::fsi::setup::apply_kg_coo_map(
             &self.kg_coo_map,
             &kg_vals_full,
@@ -405,12 +416,13 @@ impl RotorFsiSolver {
         );
 
         self.stepper
-            .update_geometric_stiffness(&kg_red)
+            .set_initial_geometric_stiffness(&kg_red)
             .map_err(FsiError::StepperError)?;
+        self.omega_at_last_kg = omega;
 
         let kg_norm: f64 = kg_red.iter().map(|x| x * x).sum::<f64>().sqrt();
         log::info!(
-            "RotorFsi step {time_step}: ||K_G||_F (reduced) = {kg_norm:.3e}"
+            "RotorFsi: K_G rebuilt at ω={omega:.4} rad/s, ||K_G||_F = {kg_norm:.3e}"
         );
         Ok(())
     }
@@ -683,30 +695,50 @@ impl RotorFsiSolver {
                     &self.transforms.center,
                 );
 
-                // 3. Update ω from aerodynamic torque (Computed / RampedComputed modes).
-                self.omega_provider.update_from_torque(tau_aero, dt, t + dt);
+                // 3. Gravity torque in the rotating frame.
+                //    τ_gravity = torque from gravity body forces about the rotation axis.
+                //    Needed so that ω dynamics use τ_driving = τ_aero + τ_gravity
+                //    (gravitational sag changes the driving torque; centrifugal/Coriolis/Euler
+                //    are fictitious forces and must NOT be included).
+                let tau_gravity = if self.config.gravity_active() {
+                    let g_rot = self.transforms.gravity_to_rotating(self.config.gravity, self.theta);
+                    let f_grav = compute_gravity_force(&self.all_node_masses, &g_rot);
+                    // Torque about axis at reference (undeformed) nodal positions.
+                    let (_, tau_g) = compute_torque(
+                        &self.all_node_coords,
+                        &vec![0.0f64; self.all_node_coords.len()],
+                        &f_grav,
+                        &self.transforms.axis,
+                        &self.transforms.center,
+                    );
+                    tau_g
+                } else {
+                    0.0
+                };
+
+                // 4. Update ω from driving torque = τ_aero + τ_gravity.
+                //    (excludes centrifugal, Coriolis, Euler — those are fictitious forces)
+                self.omega_provider.update_from_torque(tau_aero + tau_gravity, dt, t + dt);
 
                 let (omega_new, _) = self.omega_provider.get(t + dt);
 
-                // 4. Rebuild K_SP if |Δω| > threshold.
+                // 5. Rebuild K_SP if |Δω| > threshold.
                 if (omega_new - self.omega_at_last_ksp).abs() > self.config.ksp_omega_threshold {
                     self.apply_ksp(omega_new)?;
                 }
 
-                // 5. Rebuild K_G.
-                let time_step = result.times.len() + 1; // 1-based, before push
-                // Clone u to release the immutable borrow before the mutable update_kg call.
-                let u_snapshot = self.stepper.current_u().to_vec();
-                self.update_kg(&u_snapshot, time_step)?;
+                // 6. Rebuild K_G from centrifugal prestress if |Δω| > threshold.
+                self.update_kg_if_needed(omega_new)?;
 
-                // 6. Store history — to_vec() is one unavoidable alloc per field,
+                // 7. Store history — to_vec() is one unavoidable alloc per field,
                 //    but we avoid the extra clone that step_result previously required.
+                let time_step = result.times.len() + 1; // 1-based, before push
                 result.displacement_history.push(self.stepper.current_u().to_vec());
                 result.velocity_history.push(self.stepper.current_v().to_vec());
                 result.acceleration_history.push(self.stepper.current_a().to_vec());
                 result.times.push(step_t);
 
-                // 7. Performance coefficients.
+                // 8. Performance coefficients.
                 let thrust = compute_thrust(&forces_global, &self.transforms.axis);
                 let power_aero = tau_aero * omega;
                 let perf = compute_performance_coefficients(
@@ -721,11 +753,11 @@ impl RotorFsiSolver {
 
                 log::info!(
                     "RotorFsi step {time_step}: t={:.4} θ={:.4}rad ω={omega:.4}rad/s \
-                     τ_aero={tau_aero:.3e}N·m  Ct={:.4} Cp={:.4} TSR={:.3}",
+                     τ_aero={tau_aero:.3e}N·m τ_grav={tau_gravity:.3e}N·m  Ct={:.4} Cp={:.4} TSR={:.3}",
                     step_t, self.theta, perf.ct, perf.cp, perf.tsr
                 );
 
-                // 8. Per-step callback.
+                // 9. Per-step callback.
                 if let Some(ref cb) = self.step_callback {
                     let force_mag = forces_global.iter().map(|x| x * x).sum::<f64>().sqrt();
                     cb(

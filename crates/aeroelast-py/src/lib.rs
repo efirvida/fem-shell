@@ -3790,6 +3790,10 @@ fn run_rotor_fsi_solver(
     a0: Option<PyReadonlyArray1<f64>>,
     t0: f64,
     theta0: f64,
+    // ── Initial geometric stiffness K_G (centrifugal prestress, full DOF space) ─
+    kg0_rows: Option<PyReadonlyArray1<i64>>,
+    kg0_cols: Option<PyReadonlyArray1<i64>>,
+    kg0_vals: Option<PyReadonlyArray1<f64>>,
     // ── Optional per-step callback ────────────────────────────────────────────
     step_callback: Option<Py<PyAny>>,
 ) -> PyResult<(Vec<Vec<f64>>, Vec<Vec<f64>>, Vec<Vec<f64>>, Vec<f64>)> {
@@ -3936,13 +3940,25 @@ fn run_rotor_fsi_solver(
     let read_data_name = read_data_name.to_string();
 
     // ── Newmark stepper ───────────────────────────────────────────────────────
-    let stepper = NewmarkStepper::new(
+    let mut stepper = NewmarkStepper::new(
         &kr_red, &kc_red, &kv_red,
         &kr_red, &kc_red, &mv_expanded,
         &kr_red, &kc_red, &cv_red,
         n_free, beta, gamma, dt,
     )
     .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
+
+    // ── Initial geometric stiffness (centrifugal prestress) ───────────────────
+    if let (Some(kg0r), Some(kg0c), Some(kg0v)) = (kg0_rows, kg0_cols, kg0_vals) {
+        let kg0r_s = kg0r.as_slice().map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
+        let kg0c_s = kg0c.as_slice().map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
+        let kg0v_s = kg0v.as_slice().map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
+        let kg_coo_map = setup::build_kg_coo_map(kg0r_s, kg0c_s, fd, &kr_red, &kc_red);
+        let kg0_red = setup::apply_kg_coo_map(&kg_coo_map, kg0v_s, kr_red.len());
+        stepper
+            .set_initial_geometric_stiffness(&kg0_red)
+            .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
+    }
 
     // ── FSI base config ───────────────────────────────────────────────────────
     let fsi_config = FsiConfig {

@@ -407,8 +407,8 @@ class TestLinearStaticCantilever:
         # Analytical (in-plane)
         ana = AnalyticalReferences.cantilever_plate_in_plane(L, b, h, E, nu, P, "y")
 
-        # FEM
-        mesh = build_cantilever_mesh(L=L, b=b)
+        # FEM — ny=8 provides sufficient resolution (4 elem/width → 7% error; 8 elem/width → <5%)
+        mesh = build_cantilever_mesh(L=L, b=b, ny=8)
         prop = ShellProperty(material=STEEL, thickness=h)
 
         cfg = {

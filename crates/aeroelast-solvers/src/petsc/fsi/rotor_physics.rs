@@ -578,6 +578,12 @@ impl OmegaProvider {
     ///
     /// `I · dω/dt = τ_driving + τ_shaft`  →  Euler step: `ω += α · dt`
     ///
+    /// **`tau_driving` must equal τ_aero + τ_gravity.**
+    /// Gravitational sag creates a non-zero torque about the rotation axis that
+    /// contributes to the angular acceleration and must be included here.
+    /// Fictitious forces (centrifugal, Coriolis, Euler) appear on the RHS of the
+    /// structural equation but are NOT physical driving torques and must be excluded.
+    ///
     /// For `Constant` and `Ramped` this is a no-op.
     /// For `RampedComputed`, ignored while still in the ramp phase.
     pub fn update_from_torque(&mut self, tau_driving: f64, dt: f64, t: f64) {

@@ -310,7 +310,8 @@ class BEMFSIParticipant:
         self._omega_vertex: np.ndarray = (
             np.asarray(omega_vertex, dtype=float) if omega_vertex is not None else np.zeros(3)
         )
-        # Live omega updated each time window; initialised from static yaml
+        # Live omega [rad/s] — updated each time window from preCICE read or YAML fallback.
+        # Converted to RPM inside _compute_forces before passing to CCBlade.
         self._current_omega: float = float(bem_config.get("omega", 0.0))
 
         # Reference node coordinates (n_nodes, 3) — immutable after init
@@ -397,10 +398,13 @@ class BEMFSIParticipant:
         span_coords = self._ref_coords @ self._span_dir  # (n_nodes,)
         self._tip_node_idx: int = int(np.argmax(span_coords))
 
-        # -- Counters -------------------------------------------------------
+        # -- Counters and live azimuth --------------------------------------
         self._last_forces = np.zeros((self._n_nodes, 3), dtype=float)
         self._window_count = 0
         self._iteration_count = 0
+        # Accumulated blade azimuth [deg], integrated from live omega.
+        # Starts from the static YAML value so a non-zero initial azimuth is respected.
+        self._azimuth: float = float(bem_config.get("azimuth", 0.0))
 
     # -----------------------------------------------------------------------
     # Public API
@@ -488,6 +492,11 @@ class BEMFSIParticipant:
                 self._window_count += 1
                 self._iteration_count = 0
                 current_time = self._window_count * dt
+
+                # Integrate azimuth: Δθ [deg] = ω [rad/s] × Δt [s] × (180/π)
+                import math as _math  # noqa: PLC0415
+                self._azimuth += _math.degrees(self._current_omega * dt)
+                self._azimuth %= 360.0  # keep in [0, 360)
 
                 self._write_timestep_output(
                     forces,
@@ -827,9 +836,13 @@ class BEMFSIParticipant:
             Full BEM output (Np, Tp, alpha, Cl, Cd, integrated loads).
         """
         v_inf = float(self._bem_cfg.get("wind_speed", 45.0))
-        omega = self._current_omega  # updated each window from preCICE (or static yaml fallback)
+        # _current_omega is in rad/s (received from Solid via preCICE or YAML).
+        # CCBlade expects RPM.
+        import math as _math  # noqa: PLC0415
+        omega = self._current_omega * 60.0 / (2.0 * _math.pi)
         pitch = float(self._bem_cfg.get("pitch", 0.0))
-        azimuth = float(self._bem_cfg.get("azimuth", 0.0))
+        # Use live accumulated azimuth (integrated from omega each window).
+        azimuth = self._azimuth
 
         disp_max = float(np.max(np.linalg.norm(displacements, axis=1)))
 

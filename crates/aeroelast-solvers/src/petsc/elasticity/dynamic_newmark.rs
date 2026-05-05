@@ -468,6 +468,10 @@ pub struct NewmarkStepper {
     k_vals: Vec<f64>,
     m_vals: Vec<f64>,
     c_vals: Vec<f64>,
+    /// Geometric stiffness base values (centrifugal prestress) at the same COO positions
+    /// as `k_vals`.  Set once via `set_initial_geometric_stiffness` and never overwritten
+    /// by runtime K_G updates (those go to `kg_vals`).  Zero until explicitly set.
+    kg_base_vals: Vec<f64>,
     /// Geometric stiffness values at the same COO positions as `k_vals`.
     /// All zeros until `update_geometric_stiffness` is called.
     kg_vals: Vec<f64>,
@@ -627,6 +631,7 @@ impl NewmarkStepper {
         // Initial acceleration a₀ = M⁻¹·F₀  (F₀ = 0 at rest → a₀ = 0)
         let a_init = vec![0.0f64; n_dofs];
 
+        let kg_base_vals = vec![0.0f64; k_vals.len()];
         let kg_vals = vec![0.0f64; k_vals.len()];
         let ksp_diag = vec![0.0f64; k_vals.len()];
 
@@ -646,6 +651,7 @@ impl NewmarkStepper {
             k_vals: k_vals.to_vec(),
             m_vals: m_vals.to_vec(),
             c_vals: c_vals.to_vec(),
+            kg_base_vals,
             kg_vals,
             ksp_diag,
             k_eff,
@@ -679,13 +685,16 @@ impl NewmarkStepper {
     /// Rebuild `K_eff`, `mat_c` when `dt` has changed (or after a K_G update).
     fn refactorize(&mut self, dt: f64) -> Result<(), PetscError> {
         let [a0, a1, a2, a3, a4, a5, a6, a7] = Self::compute_coeffs(self.beta, self.gamma, dt);
-        // K_eff = (K + K_G + K_SP) + a0·M + a1·C
+        // K_eff = (K + K_G_base + K_G_dyn + K_SP) + a0·M + a1·C
+        // kg_base_vals: centrifugal prestress (set once at startup)
+        // kg_vals:      runtime updates (omega-threshold policy)
         let k_plus_kg: Vec<f64> = self
             .k_vals
             .iter()
+            .zip(self.kg_base_vals.iter())
             .zip(self.kg_vals.iter())
             .zip(self.ksp_diag.iter())
-            .map(|((k, kg), ksp)| k + kg + ksp)
+            .map(|(((k, kg_base), kg), ksp)| k + kg_base + kg + ksp)
             .collect();
         let (k_eff, mat_c) = Self::build_matrices(
             &self.rows,
@@ -743,6 +752,32 @@ impl NewmarkStepper {
         self.refactorize(self.dt_last)
     }
 
+    /// Set the **initial** (centrifugal prestress) geometric stiffness and refactorize `K_eff`.
+    ///
+    /// This must be called **once** right after `new()`, before the coupling loop starts.
+    /// It stores the centrifugal K_G in `kg_base_vals`, which persists for the entire
+    /// simulation and is never overwritten by runtime K_G updates (those go to `kg_vals`).
+    ///
+    /// `kg_vals` must have the **same length and COO ordering** as the elastic stiffness
+    /// `k_vals` supplied to `new()`.
+    ///
+    /// After this call `K_eff = (K + K_G_base + K_G_dyn + K_SP) + a₀·M + a₁·C`
+    /// where `K_G_dyn = 0` until `update_geometric_stiffness` is called.
+    ///
+    /// # Errors
+    /// Returns a `PetscError` if the PETSc assembly or factorization fails.
+    pub fn set_initial_geometric_stiffness(&mut self, kg_vals: &[f64]) -> Result<(), PetscError> {
+        assert_eq!(
+            kg_vals.len(),
+            self.k_vals.len(),
+            "kg_vals must have the same COO length as k_vals ({} != {})",
+            kg_vals.len(),
+            self.k_vals.len(),
+        );
+        self.kg_base_vals.copy_from_slice(kg_vals);
+        self.refactorize(self.dt_last)
+    }
+
     /// Update the spin-softening stiffness contribution and refactorize `K_eff`.
     ///
     /// `ksp_vals` must have the **same length and COO ordering** as `k_vals`
@@ -750,7 +785,7 @@ impl NewmarkStepper {
     /// For spin-softening: `K_SP[i] = -ω²·M_lump·(I - n̂⊗n̂)` expanded to the
     /// K sparsity pattern.
     ///
-    /// After this call `K_eff = (K + K_G + K_SP) + a₀·M + a₁·C`.
+    /// After this call `K_eff = (K + K_G_base + K_G_dyn + K_SP) + a₀·M + a₁·C`.
     pub fn update_spin_softening(&mut self, ksp_vals: &[f64]) -> Result<(), PetscError> {
         assert_eq!(
             ksp_vals.len(),
