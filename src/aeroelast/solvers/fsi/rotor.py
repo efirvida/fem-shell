@@ -1618,7 +1618,7 @@ class LinearDynamicFSIRotorSolver(LinearDynamicFSISolver):
             _omega_coord = None
             _logger.info("[RotorFSI] omega→preCICE DISABLED (send_omega_to_precice=False)")
 
-        disp_hist, vel_hist, acc_hist, times = _aeroelast.run_rotor_fsi_solver(
+        u_final_red, v_final_red, a_final_red, times = _aeroelast.run_rotor_fsi_solver(
             rust_asm,
             n_full_dofs,
             self._kg_update_interval,
@@ -1695,15 +1695,15 @@ class LinearDynamicFSIRotorSolver(LinearDynamicFSISolver):
 
         if n_steps > 0:
             u_final_full = np.zeros(n_total, dtype=np.float64)
-            u_final_full[_free_dofs_arr] = np.asarray(disp_hist[-1], dtype=np.float64)
+            u_final_full[_free_dofs_arr] = np.asarray(u_final_red, dtype=np.float64)
             for dof, val in _fixed_dof_vals.items():
                 u_final_full[dof] = val
 
             v_final_full = np.zeros(n_total, dtype=np.float64)
-            v_final_full[_free_dofs_arr] = np.asarray(vel_hist[-1], dtype=np.float64)
+            v_final_full[_free_dofs_arr] = np.asarray(v_final_red, dtype=np.float64)
 
             a_final_full = np.zeros(n_total, dtype=np.float64)
-            a_final_full[_free_dofs_arr] = np.asarray(acc_hist[-1], dtype=np.float64)
+            a_final_full[_free_dofs_arr] = np.asarray(a_final_red, dtype=np.float64)
         else:
             u_final_full = np.zeros(n_total, dtype=np.float64)
             v_final_full = np.zeros(n_total, dtype=np.float64)

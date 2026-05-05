@@ -60,6 +60,8 @@ import logging
 
 import numpy as np
 
+from aeroelast.postprocess.stress_recovery import StressLocation, StressRecovery, StressType
+
 from .linear_dynamic import LinearDynamicFSISolver
 
 _logger = logging.getLogger(__name__)
@@ -249,7 +251,7 @@ class StressStiffenedFSISolver(LinearDynamicFSISolver):
                 extra_fields=force_fields,
             )
 
-        disp_hist, vel_hist, acc_hist, times = _aeroelast.run_stress_stiffened_fsi_solver(
+        u_final_red, v_final_red, a_final_red, times = _aeroelast.run_stress_stiffened_fsi_solver(
             rust_asm,
             n_full_dofs,
             self._kg_update_interval,
@@ -297,15 +299,15 @@ class StressStiffenedFSISolver(LinearDynamicFSISolver):
 
         if n_steps > 0:
             u_final_full = np.zeros(n_total, dtype=np.float64)
-            u_final_full[_free_dofs_arr] = np.asarray(disp_hist[-1], dtype=np.float64)
+            u_final_full[_free_dofs_arr] = np.asarray(u_final_red, dtype=np.float64)
             for dof, val in _fixed_dof_vals.items():
                 u_final_full[dof] = val
 
             v_final_full = np.zeros(n_total, dtype=np.float64)
-            v_final_full[_free_dofs_arr] = np.asarray(vel_hist[-1], dtype=np.float64)
+            v_final_full[_free_dofs_arr] = np.asarray(v_final_red, dtype=np.float64)
 
             a_final_full = np.zeros(n_total, dtype=np.float64)
-            a_final_full[_free_dofs_arr] = np.asarray(acc_hist[-1], dtype=np.float64)
+            a_final_full[_free_dofs_arr] = np.asarray(a_final_red, dtype=np.float64)
         else:
             u_final_full = np.zeros(n_total, dtype=np.float64)
             v_final_full = np.zeros(n_total, dtype=np.float64)
@@ -315,3 +317,90 @@ class StressStiffenedFSISolver(LinearDynamicFSISolver):
         self.v = v_final_full
         self.a = a_final_full
         return self.u, self.v, self.a
+
+    # ------------------------------------------------------------------
+    # Python fallback hook (also used for unit-testing without preCICE)
+    # ------------------------------------------------------------------
+
+    def _post_convergence_hook(
+        self,
+        u,
+        time_step: int,
+        K_eff,
+        K_red,
+        M_red,
+        C_red,
+        coeffs,
+        bc_manager,
+    ):
+        """Rebuild K_eff with geometric stiffness after a converged time window.
+
+        Called from the Python FSI loop (or directly in tests) once per
+        converged time step.  Returns a new ``PETSc.Mat`` when K_G is rebuilt,
+        or ``None`` when the step is skipped (interval not reached or
+        negligible stress).
+
+        Parameters
+        ----------
+        u : PETSc.Vec
+            Displacement vector in the *reduced* (free-DOF) space.
+        time_step : int
+            1-based converged step counter.
+        K_eff : PETSc.Mat
+            Current effective stiffness (may be updated in-place).
+        K_red, M_red : PETSc.Mat
+            Reduced elastic stiffness and mass matrices.
+        C_red : PETSc.Mat or None
+            Reduced damping matrix (``None`` → ignore).
+        coeffs : NewmarkCoefficients
+            Newmark integration coefficients (uses ``a0``).
+        bc_manager : BCManager
+            Provides ``free_dofs`` and ``reduce_matrix``.
+
+        Returns
+        -------
+        PETSc.Mat or None
+            New K_eff including K_G, or ``None`` if no update was performed.
+        """
+        if time_step % self._kg_update_interval != 0:
+            return None
+
+        # Expand reduced u → full displacement vector
+        u_arr = u.getArray()
+        u_full = np.zeros(self.domain.dofs_count, dtype=np.float64)
+        u_full[bc_manager.free_dofs] = u_arr
+
+        # Skip if displacement is effectively zero
+        if np.max(np.abs(u_full)) < 1e-20:
+            return None
+
+        # Recover membrane stresses per element
+        sr = StressRecovery(self.domain, u_full)
+        elem_result = sr.compute_element_stresses(
+            location=StressLocation.MIDDLE,
+            stress_type=StressType.MEMBRANE,
+        )
+
+        stress_field: dict = {}
+        for i, elem in enumerate(self.domain.elements):
+            sigma = np.array([
+                elem_result.sigma_xx[i],
+                elem_result.sigma_yy[i],
+                elem_result.sigma_xy[i],
+            ])
+            if np.max(np.abs(sigma)) > 1e-20:
+                stress_field[elem.id] = sigma
+
+        if not stress_field:
+            return None
+
+        K_G = self.domain.assemble_geometric_stiffness(stress_field=stress_field)
+        K_G_red = bc_manager.reduce_matrix(K_G)
+
+        K_eff_new = K_red.copy()
+        K_eff_new.axpy(1.0, K_G_red)
+        K_eff_new.axpy(coeffs.a0, M_red)
+        if C_red is not None:
+            K_eff_new.axpy(coeffs.a1, C_red)
+
+        return K_eff_new

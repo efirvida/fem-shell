@@ -291,10 +291,10 @@ impl StressStiffenedFsiSolver {
                     }
                 }
             } else {
-                // Converged time window — commit to history.
-                result.displacement_history.push(self.stepper.current_u().to_vec());
-                result.velocity_history.push(self.stepper.current_v().to_vec());
-                result.acceleration_history.push(self.stepper.current_a().to_vec());
+                // Converged time window — overwrite final state (no history accumulation).
+                result.u_final = self.stepper.current_u().to_vec();
+                result.v_final = self.stepper.current_v().to_vec();
+                result.a_final = self.stepper.current_a().to_vec();
                 result.times.push(step_t);
 
                 let time_step = result.times.len(); // 1-based

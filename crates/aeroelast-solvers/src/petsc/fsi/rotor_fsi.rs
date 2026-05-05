@@ -730,12 +730,11 @@ impl RotorFsiSolver {
                 // 6. Rebuild K_G from centrifugal prestress if |Δω| > threshold.
                 self.update_kg_if_needed(omega_new)?;
 
-                // 7. Store history — to_vec() is one unavoidable alloc per field,
-                //    but we avoid the extra clone that step_result previously required.
+                // 7. Overwrite final state (no history accumulation — O(n_dofs) RAM).
                 let time_step = result.times.len() + 1; // 1-based, before push
-                result.displacement_history.push(self.stepper.current_u().to_vec());
-                result.velocity_history.push(self.stepper.current_v().to_vec());
-                result.acceleration_history.push(self.stepper.current_a().to_vec());
+                result.u_final = self.stepper.current_u().to_vec();
+                result.v_final = self.stepper.current_v().to_vec();
+                result.a_final = self.stepper.current_a().to_vec();
                 result.times.push(step_t);
 
                 // 8. Performance coefficients.

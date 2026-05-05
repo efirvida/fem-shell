@@ -3202,8 +3202,8 @@ fn nonlinear_static_solve_coo<'py>(
 ///   force_max                – optional per-component force cap (None = no cap)
 ///
 /// Returns:
-///   (displacement_history, velocity_history, acceleration_history, times)
-///   Each history is a list of lists; times is a flat list.
+///   (u_final, v_final, a_final, times)
+///   u_final/v_final/a_final are flat arrays of the last converged step; times is a flat list.
 #[pyfunction]
 #[cfg(feature = "fsi")]
 #[allow(clippy::too_many_arguments)]
@@ -3239,7 +3239,7 @@ fn run_linear_elastic_fsi(
     read_data_name: &str,
     ramp_time: f64,
     force_max: Option<f64>,
-) -> PyResult<(Vec<Vec<f64>>, Vec<Vec<f64>>, Vec<Vec<f64>>, Vec<f64>)> {
+) -> PyResult<(Vec<f64>, Vec<f64>, Vec<f64>, Vec<f64>)> {
     use aeroelast_solvers::petsc::elasticity::dynamic_newmark::NewmarkStepper;
     use aeroelast_solvers::petsc::fsi::linear_elastic::{FsiConfig, LinearElasticFsiSolver};
     use pyo3::exceptions::PyRuntimeError;
@@ -3292,9 +3292,9 @@ fn run_linear_elastic_fsi(
         .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
 
     Ok((
-        result.displacement_history,
-        result.velocity_history,
-        result.acceleration_history,
+        result.u_final,
+        result.v_final,
+        result.a_final,
         result.times,
     ))
 }
@@ -3331,7 +3331,8 @@ fn run_linear_elastic_fsi(
 ///   t0                        – simulation start time (0.0 for cold start)
 ///
 /// # Returns
-///   (displacement_history, velocity_history, acceleration_history, times)
+///   (u_final, v_final, a_final, times)
+///   Flat reduced-DOF arrays for the last converged step; times accumulates all step times.
 #[pyfunction]
 #[cfg(feature = "fsi")]
 #[allow(clippy::too_many_arguments)]
@@ -3373,7 +3374,7 @@ fn run_fsi_solver(
     t0: f64,
     // Optional per-step callback: callable(t, time_step, dt, u_red, v_red, a_red)
     step_callback: Option<Py<PyAny>>,
-) -> PyResult<(Vec<Vec<f64>>, Vec<Vec<f64>>, Vec<Vec<f64>>, Vec<f64>)> {
+) -> PyResult<(Vec<f64>, Vec<f64>, Vec<f64>, Vec<f64>)> {
     use aeroelast_solvers::petsc::elasticity::dynamic_newmark::NewmarkStepper;
     use aeroelast_solvers::petsc::fsi::linear_elastic::{
         FsiConfig, FsiInitialState, LinearElasticFsiSolver,
@@ -3513,9 +3514,9 @@ fn run_fsi_solver(
         .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
 
     Ok((
-        result.displacement_history,
-        result.velocity_history,
-        result.acceleration_history,
+        result.u_final,
+        result.v_final,
+        result.a_final,
         result.times,
     ))
 }
@@ -3573,7 +3574,7 @@ fn run_stress_stiffened_fsi_solver(
     t0: f64,
     // Optional per-step callback
     step_callback: Option<Py<PyAny>>,
-) -> PyResult<(Vec<Vec<f64>>, Vec<Vec<f64>>, Vec<Vec<f64>>, Vec<f64>)> {
+) -> PyResult<(Vec<f64>, Vec<f64>, Vec<f64>, Vec<f64>)> {
     use aeroelast_solvers::petsc::elasticity::dynamic_newmark::NewmarkStepper;
     use aeroelast_solvers::petsc::fsi::linear_elastic::{FsiConfig, FsiInitialState};
     use aeroelast_solvers::petsc::fsi::stress_stiffened::StressStiffenedFsiSolver;
@@ -3694,9 +3695,9 @@ fn run_stress_stiffened_fsi_solver(
         .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
 
     Ok((
-        result.displacement_history,
-        result.velocity_history,
-        result.acceleration_history,
+        result.u_final,
+        result.v_final,
+        result.a_final,
         result.times,
     ))
 }
@@ -3712,8 +3713,8 @@ fn run_stress_stiffened_fsi_solver(
 /// - Four angular-velocity modes: "constant", "ramped", "computed", "ramped_computed"
 ///
 /// # Returns
-/// `(displacement_history, velocity_history, acceleration_history, times)`
-/// where each history entry is a list of reduced-DOF arrays per converged step.
+/// `(u_final, v_final, a_final, times)`
+/// Flat reduced-DOF arrays for the last converged step; times accumulates all step times.
 #[pyfunction]
 #[cfg(feature = "fsi")]
 #[allow(clippy::too_many_arguments)]
@@ -3796,7 +3797,7 @@ fn run_rotor_fsi_solver(
     kg0_vals: Option<PyReadonlyArray1<f64>>,
     // ── Optional per-step callback ────────────────────────────────────────────
     step_callback: Option<Py<PyAny>>,
-) -> PyResult<(Vec<Vec<f64>>, Vec<Vec<f64>>, Vec<Vec<f64>>, Vec<f64>)> {
+) -> PyResult<(Vec<f64>, Vec<f64>, Vec<f64>, Vec<f64>)> {
     use aeroelast_solvers::petsc::elasticity::dynamic_newmark::NewmarkStepper;
     use aeroelast_solvers::petsc::fsi::linear_elastic::{FsiConfig, FsiInitialState};
     use aeroelast_solvers::petsc::fsi::rotor_fsi::{RotorFsiConfig, RotorFsiSolver};
@@ -4071,9 +4072,9 @@ fn run_rotor_fsi_solver(
         .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
 
     Ok((
-        result.displacement_history,
-        result.velocity_history,
-        result.acceleration_history,
+        result.u_final,
+        result.v_final,
+        result.a_final,
         result.times,
     ))
 }

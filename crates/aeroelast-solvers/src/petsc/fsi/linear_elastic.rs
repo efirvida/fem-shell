@@ -92,19 +92,24 @@ pub struct FsiConfig {
 
 // ── Result type ───────────────────────────────────────────────────────────────
 
-/// Time history of the structural response from the FSI coupling loop.
+/// Final structural state returned by the FSI coupling loop.
 ///
-/// Only converged windows are stored — iterations that are rolled back via
-/// checkpoint/restore are discarded.
+/// Only the **last converged** displacement, velocity, and acceleration are
+/// retained in memory.  Per-step output (VTK, probes, checkpoints) is handled
+/// entirely by the step callback — accumulating a full history here would cost
+/// O(n_steps × n_dofs) RAM, which is prohibitive for long HPC runs.
+///
+/// Rolled-back iterations (preCICE implicit coupling) are discarded; only the
+/// final committed state is kept.
 #[derive(Debug, Default)]
 pub struct FsiResult {
-    /// Displacement vector at each converged time step: `displacement_history[step][dof]`
-    pub displacement_history: Vec<Vec<f64>>,
-    /// Velocity vector at each converged time step: `velocity_history[step][dof]`
-    pub velocity_history: Vec<Vec<f64>>,
-    /// Acceleration vector at each converged time step: `acceleration_history[step][dof]`
-    pub acceleration_history: Vec<Vec<f64>>,
-    /// Simulation time at each converged step.
+    /// Displacement vector at the last converged time step.
+    pub u_final: Vec<f64>,
+    /// Velocity vector at the last converged time step.
+    pub v_final: Vec<f64>,
+    /// Acceleration vector at the last converged time step.
+    pub a_final: Vec<f64>,
+    /// Simulation time at each converged step (lightweight: one f64 per step).
     pub times: Vec<f64>,
 }
 
@@ -352,10 +357,10 @@ impl LinearElasticFsiSolver {
                     }
                 }
             } else {
-                // Converged time window — commit to history.
-                result.displacement_history.push(self.stepper.current_u().to_vec());
-                result.velocity_history.push(self.stepper.current_v().to_vec());
-                result.acceleration_history.push(self.stepper.current_a().to_vec());
+                // Converged time window — overwrite final state (no history accumulation).
+                result.u_final = self.stepper.current_u().to_vec();
+                result.v_final = self.stepper.current_v().to_vec();
+                result.a_final = self.stepper.current_a().to_vec();
                 result.times.push(step_t);
 
                 // Invoke per-step callback BEFORE advancing dt so the callback
