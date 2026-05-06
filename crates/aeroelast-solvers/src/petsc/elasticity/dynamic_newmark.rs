@@ -1089,8 +1089,8 @@ mod tests {
         u_hist.push(1.0); // u₀ = 1
 
         for _ in 0..n_steps {
-            let res = stepper.step(&[0.0], dt).expect("step failed");
-            u_hist.push(res.u[0]);
+            stepper.step(&[0.0], dt).expect("step failed");
+            u_hist.push(stepper.current_u()[0]);
         }
 
         // Verify solution is bounded (no numerical instability)
@@ -1141,8 +1141,8 @@ mod tests {
         // Advance 5 more steps and record trajectory
         let mut traj_first: Vec<f64> = Vec::new();
         for _ in 0..5 {
-            let res = stepper.step(&[0.0], dt).expect("step failed");
-            traj_first.push(res.u[0]);
+            stepper.step(&[0.0], dt).expect("step failed");
+            traj_first.push(stepper.current_u()[0]);
         }
 
         // Restore to checkpoint
@@ -1156,8 +1156,8 @@ mod tests {
         // Re-advance 5 steps — trajectory must be identical
         let mut traj_second: Vec<f64> = Vec::new();
         for _ in 0..5 {
-            let res = stepper.step(&[0.0], dt).expect("step after restore failed");
-            traj_second.push(res.u[0]);
+            stepper.step(&[0.0], dt).expect("step after restore failed");
+            traj_second.push(stepper.current_u()[0]);
         }
 
         for (i, (a, b)) in traj_first.iter().zip(traj_second.iter()).enumerate() {
@@ -1189,13 +1189,14 @@ mod tests {
 
         let mut t = 0.0f64;
         for _ in 0..100 {
-            let res = stepper.step(&[0.0], dt).expect("step failed");
+            stepper.step(&[0.0], dt).expect("step failed");
             t += dt;
             let analytic = t.cos();
+            let u_num = stepper.current_u()[0];
             assert!(
-                (res.u[0] - analytic).abs() < 5e-4,
+                (u_num - analytic).abs() < 5e-4,
                 "t={t:.3}: u_numeric={:.6}, u_analytic={analytic:.6}",
-                res.u[0]
+                u_num
             );
         }
     }
@@ -1234,12 +1235,13 @@ mod tests {
 
         let mut prev_u = 0.0f64;
         for i in 1..=20 {
-            let res = stepper.step(&[1.0], dt).expect("step failed");
+            stepper.step(&[1.0], dt).expect("step failed");
+            let u_cur = stepper.current_u()[0];
             if i > 2 {
-                assert!(res.u[0] > prev_u || res.u[0] > 0.0,
-                    "step {i}: u={} should be positive", res.u[0]);
+                assert!(u_cur > prev_u || u_cur > 0.0,
+                    "step {i}: u={u_cur} should be positive");
             }
-            prev_u = res.u[0];
+            prev_u = u_cur;
         }
     }
 
