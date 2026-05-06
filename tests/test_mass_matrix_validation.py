@@ -235,6 +235,59 @@ class TestLumpedMassMatrix:
     Lumped mass should equal total analytical mass.
     """
 
+    def test_rust_lumped_binding_matches_domain_matrix(self, material_steel, fem_properties):
+        """High-level lumped mass assembly should use the Rust binding consistently."""
+        mesh = MeshModel()
+        nx, ny = 2, 1
+        xs = np.linspace(0.0, 1.0, nx + 1)
+        ys = np.linspace(0.0, 0.1, ny + 1)
+
+        nodes_map = {}
+        for j, y in enumerate(ys):
+            for i, x in enumerate(xs):
+                n = Node([float(x), float(y), 0.0])
+                mesh.add_node(n)
+                nodes_map[(i, j)] = n
+
+        for j in range(ny):
+            for i in range(nx):
+                mesh.add_element(
+                    MeshElement(
+                        nodes=[
+                            nodes_map[(i, j)],
+                            nodes_map[(i + 1, j)],
+                            nodes_map[(i + 1, j + 1)],
+                            nodes_map[(i, j + 1)],
+                        ],
+                        element_type=ElementType.quad,
+                    )
+                )
+
+        fem_properties["elements"]["material"] = material_steel
+        fem_properties["elements"]["thickness"] = 0.01
+
+        solver = StaticLinearSolver(mesh, fem_properties)
+        fixed = [n for n in mesh.nodes if np.isclose(n.x, 0.0, atol=1e-12)]
+        mesh.add_node_set(NodeSet("fixed", set(fixed)))
+        fixed_dofs = solver.get_dofs_by_nodeset_name("fixed")
+        solver.add_dirichlet_conditions([DirichletCondition(fixed_dofs, 0.0)])
+
+        domain = solver.domain
+        if domain._rust is None:
+            pytest.skip("Rust assembler not available")
+
+        diag_rust = np.asarray(domain._rust.assemble_m_lumped(), dtype=float)
+
+        m_lumped = domain.assemble_mass_matrix_lumped()
+        diag_vec = m_lumped.getDiagonal()
+        try:
+            diag_domain = np.array(diag_vec.getArray(readonly=True), copy=True)
+        finally:
+            diag_vec.destroy()
+            m_lumped.destroy()
+
+        np.testing.assert_allclose(diag_domain, diag_rust)
+
     def test_lumped_vs_analytical(self, material_steel, fem_properties):
         """Lumped mass should match analytical."""
         L, b, h = 1.0, 0.1, 0.01

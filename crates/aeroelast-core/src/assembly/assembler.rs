@@ -508,6 +508,35 @@ impl MeshAssembler {
         (rows, cols, vals)
     }
 
+    /// Assemble the row-sum lumped mass diagonal.
+    ///
+    /// The diagonal entry for DOF `i` is the sum of the absolute values of the
+    /// consistent mass row `i`. A floor of `1e-4 × max(diag)` is then applied
+    /// to avoid zero-mass DOFs at rotational or tip-closure rows.
+    pub fn assemble_m_lumped(&self) -> Vec<f64> {
+        let (rows, _cols, vals) = self.assemble_m();
+        let mut diag = vec![0.0f64; self.dofs_count];
+
+        for (&row, &val) in rows.iter().zip(vals.iter()) {
+            let idx = row as usize;
+            if idx < diag.len() {
+                diag[idx] += val.abs();
+            }
+        }
+
+        let m_max = diag.iter().copied().fold(0.0f64, f64::max);
+        if m_max > 0.0 {
+            let floor = m_max * 1e-4;
+            for entry in &mut diag {
+                if *entry < floor {
+                    *entry = floor;
+                }
+            }
+        }
+
+        diag
+    }
+
     // -----------------------------------------------------------------------
     // total_elemental_mass: sum of per-element masses from material properties
     // -----------------------------------------------------------------------
@@ -1493,6 +1522,31 @@ mod tests {
             .map(|(_, &v)| v)
             .sum();
         assert!(diag_sum > 0.0, "diagonal mass entries should be positive; got {diag_sum}");
+    }
+
+    #[test]
+    fn test_assemble_m_lumped_matches_row_sum_with_floor() {
+        let asm = two_tri_assembler();
+        let (rows, _cols, vals) = asm.assemble_m();
+
+        let mut expected = vec![0.0f64; asm.dofs_count];
+        for (&row, &val) in rows.iter().zip(vals.iter()) {
+            expected[row as usize] += val.abs();
+        }
+
+        let max_expected = expected.iter().copied().fold(0.0f64, f64::max);
+        if max_expected > 0.0 {
+            let floor = max_expected * 1e-4;
+            for entry in &mut expected {
+                if *entry < floor {
+                    *entry = floor;
+                }
+            }
+        }
+
+        let lumped = asm.assemble_m_lumped();
+        assert_eq!(lumped.len(), asm.dofs_count);
+        assert_eq!(lumped, expected);
     }
 
     #[test]
