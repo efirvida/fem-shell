@@ -400,6 +400,7 @@ class BEMFSIParticipant:
 
         # -- Counters and live azimuth --------------------------------------
         self._last_forces = np.zeros((self._n_nodes, 3), dtype=float)
+        self._previous_iteration_forces: Optional[np.ndarray] = None
         self._window_count = 0
         self._iteration_count = 0
         # Accumulated blade azimuth [deg], integrated from live omega.
@@ -465,23 +466,54 @@ class BEMFSIParticipant:
 
             # Read displacements from the structural solver
             displacements = adapter.read_data(self._coupling_mesh, self._displacement_data)
+            if len(displacements) == 0:
+                disp_max = 0.0
+            else:
+                disp_max = float(np.max(np.linalg.norm(displacements, axis=1)))
 
             # Update omega from preCICE if configured (live rotor speed from Solid)
             if self._omega_mesh is not None:
                 omega_arr = adapter.read_data(self._omega_mesh, self._omega_data)
                 if omega_arr is not None and np.asarray(omega_arr).size > 0:
+                    previous_omega = self._current_omega
                     new_omega = float(np.asarray(omega_arr).ravel()[0])
-                    if abs(new_omega - self._current_omega) > 1e-6:
+                    if abs(new_omega - previous_omega) > 1e-6:
                         logger.info(
-                            "[BEM-FSI] ω updated %.6f → %.6f rad/s (window %d)",
-                            self._current_omega,
+                            "[BEM-FSI] ω received from preCICE: %.6f → %.6f rad/s "
+                            "(window %d, iteration %d)",
+                            previous_omega,
                             new_omega,
                             self._window_count,
+                            self._iteration_count,
+                        )
+                    else:
+                        logger.info(
+                            "[BEM-FSI] ω received from preCICE: %.6f rad/s unchanged "
+                            "(window %d, iteration %d)",
+                            new_omega,
+                            self._window_count,
+                            self._iteration_count,
                         )
                     self._current_omega = new_omega
 
             # BEM on (possibly deformed) geometry
             forces, bem_result = self._compute_forces(displacements)
+            force_norm = float(np.linalg.norm(forces))
+            if self._previous_iteration_forces is None:
+                force_delta = 0.0
+            else:
+                force_delta = float(np.linalg.norm(forces - self._previous_iteration_forces))
+            logger.info(
+                "[BEM-FSI] coupling iter: window=%d iteration=%d | geometry=%s "
+                "| max_disp=%.6e m | ||F||=%.6e N | ΔF_iter=%.6e N",
+                self._window_count,
+                self._iteration_count,
+                "reference" if disp_max < 1e-12 else "deformed",
+                disp_max,
+                force_norm,
+                force_delta,
+            )
+            self._previous_iteration_forces = forces.copy()
 
             adapter.write_data(self._coupling_mesh, self._force_data, forces)
 
@@ -489,6 +521,7 @@ class BEMFSIParticipant:
 
             if adapter.is_time_window_complete:
                 self._last_forces = forces
+                self._previous_iteration_forces = None
                 self._window_count += 1
                 self._iteration_count = 0
                 current_time = self._window_count * dt
