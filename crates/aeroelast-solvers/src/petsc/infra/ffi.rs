@@ -137,7 +137,15 @@ extern "C" {
         cols: *const PetscInt,
     ) -> PetscErrorCode;
     pub fn MatSetValuesCOO(mat: Mat, vals: *const PetscScalar, mode: i32) -> PetscErrorCode;
-    pub fn MatSetValues(mat: Mat, ir: PetscInt, is: PetscInt, ic: PetscInt, ie: PetscInt, v: *const PetscScalar, addv: i32) -> PetscErrorCode;
+    pub fn MatSetValues(
+        mat: Mat,
+        m: PetscInt,
+        idxm: *const PetscInt,
+        n: PetscInt,
+        idxn: *const PetscInt,
+        v: *const PetscScalar,
+        addv: i32,
+    ) -> PetscErrorCode;
 
     // Assembly
     pub fn MatAssemblyBegin(mat: Mat, type_: i32) -> PetscErrorCode;

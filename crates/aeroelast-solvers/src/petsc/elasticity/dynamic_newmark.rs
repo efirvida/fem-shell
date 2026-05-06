@@ -479,6 +479,12 @@ pub struct NewmarkStepper {
     /// All zeros until `update_spin_softening` is called.
     /// Expanded to the K sparsity via `setup::expand_diag_to_sparsity` before storage.
     ksp_diag: Vec<f64>,
+    /// Coriolis gyroscopic matrix G_cor (antisymmetric, COO format).
+    /// Used for implicit treatment of Coriolis forces in rotating frames.
+    /// Zero until `update_spin_softening_and_gyroscopic` is called.
+    g_cor_rows: Vec<i32>,
+    g_cor_cols: Vec<i32>,
+    g_cor_vals: Vec<f64>,
 
     // ── Pre-factorized effective stiffness ───────────────────────────────────
     k_eff: PetscMat,
@@ -634,6 +640,9 @@ impl NewmarkStepper {
         let kg_base_vals = vec![0.0f64; k_vals.len()];
         let kg_vals = vec![0.0f64; k_vals.len()];
         let ksp_diag = vec![0.0f64; k_vals.len()];
+        let g_cor_rows = Vec::new();
+        let g_cor_cols = Vec::new();
+        let g_cor_vals = Vec::new();
 
         // M diagonal for zero-allocation M·x in step().
         let m_diag = extract_m_diag(k_rows, k_cols, m_vals, n_dofs);
@@ -654,6 +663,9 @@ impl NewmarkStepper {
             kg_base_vals,
             kg_vals,
             ksp_diag,
+            g_cor_rows,
+            g_cor_cols,
+            g_cor_vals,
             k_eff,
             ksp,
             mat_c,
@@ -706,6 +718,35 @@ impl NewmarkStepper {
             a1,
             self.n_dofs,
         )?;
+        
+        // Add Coriolis gyroscopic matrix G_cor scaled by a1 = γ/(β·dt).
+        // G_cor is antisymmetric, providing implicit Coriolis damping.
+        if !self.g_cor_vals.is_empty() {
+            let g_scale = a1;  // γ/(β·dt) — same coefficient as C in K_eff
+            unsafe {
+                for i in 0..self.g_cor_vals.len() {
+                    let row = self.g_cor_rows[i];
+                    let col = self.g_cor_cols[i];
+                    let val = g_scale * self.g_cor_vals[i];
+                    // MatSetValues with single entry (1x1 block)
+                    check(
+                        ffi::MatSetValues(
+                            k_eff.as_raw(),
+                            1,  // one row
+                            &row as *const i32,
+                            1,  // one col
+                            &col as *const i32,
+                            &val as *const f64,
+                            ffi::ADD_VALUES,
+                        ),
+                        "MatSetValues(G_cor)",
+                    )?;
+                }
+                check(ffi::MatAssemblyBegin(k_eff.as_raw(), 0), "MatAssemblyBegin(G_cor)")?;
+                check(ffi::MatAssemblyEnd(k_eff.as_raw(), 0), "MatAssemblyEnd(G_cor)")?;
+            }
+        }
+        
         self.k_eff = k_eff;
         self.mat_c = mat_c;
 
@@ -795,6 +836,50 @@ impl NewmarkStepper {
             self.k_vals.len(),
         );
         self.ksp_diag.copy_from_slice(ksp_vals);
+        self.refactorize(self.dt_last)
+    }
+
+    /// Update spin-softening K_SP and Coriolis gyroscopic matrix G_cor, then refactorize.
+    ///
+    /// K_SP is a diagonal matrix (spin-softening from centrifugal prestress).
+    /// G_cor is antisymmetric (Coriolis coupling, for implicit treatment).
+    ///
+    /// # Arguments
+    /// * `ksp_vals` — K_SP expanded to K sparsity pattern (same length as k_vals)
+    /// * `g_rows`, `g_cols`, `g_vals` — G_cor in COO format (reduced system)
+    ///
+    /// After this call `K_eff = (K + K_G + K_SP) + a₀·M + (a₁·C + γ/(β·dt)·G_cor)`.
+    pub fn update_spin_softening_and_gyroscopic(
+        &mut self,
+        ksp_vals: &[f64],
+        g_rows: &[i32],
+        g_cols: &[i32],
+        g_vals: &[f64],
+    ) -> Result<(), PetscError> {
+        assert_eq!(
+            ksp_vals.len(),
+            self.k_vals.len(),
+            "ksp_vals must have the same COO length as k_vals"
+        );
+        assert_eq!(
+            g_rows.len(),
+            g_vals.len(),
+            "g_rows and g_vals must have the same length"
+        );
+        assert_eq!(
+            g_cols.len(),
+            g_vals.len(),
+            "g_cols and g_vals must have the same length"
+        );
+
+        self.ksp_diag.copy_from_slice(ksp_vals);
+        self.g_cor_rows.clear();
+        self.g_cor_cols.clear();
+        self.g_cor_vals.clear();
+        self.g_cor_rows.extend_from_slice(g_rows);
+        self.g_cor_cols.extend_from_slice(g_cols);
+        self.g_cor_vals.extend_from_slice(g_vals);
+
         self.refactorize(self.dt_last)
     }
 

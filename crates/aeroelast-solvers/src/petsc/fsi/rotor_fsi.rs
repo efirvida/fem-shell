@@ -18,8 +18,9 @@ use crate::petsc::elasticity::dynamic_newmark::{NewmarkCheckpoint, NewmarkSteppe
 use crate::petsc::fsi::force_utils::{apply_cap, apply_ramp};
 use crate::petsc::fsi::linear_elastic::{FsiConfig, FsiError, FsiInitialState, FsiResult};
 use crate::petsc::fsi::rotor_physics::{
-    OmegaCheckpoint, OmegaProvider, PerformanceCoefficients, RotorTransforms, build_ksp_vals,
-    compute_centrifugal_force, compute_coriolis_force, compute_euler_force, compute_gravity_force,
+    OmegaCheckpoint, OmegaProvider, PerformanceCoefficients, RotorTransforms,
+    build_coriolis_matrix, build_ksp_vals,
+    compute_centrifugal_force, compute_euler_force, compute_gravity_force,
     compute_performance_coefficients, compute_thrust, compute_torque,
 };
 
@@ -183,6 +184,11 @@ pub struct RotorFsiSolver {
     kg_coo_map: Vec<i32>,
     /// ω at the last K_SP rebuild (to detect Δω > threshold).
     omega_at_last_ksp: f64,
+    /// ω² at the last K_G rebuild. Used to skip rebuilds when ω is stable.
+    /// Initialized to `NEG_INFINITY` to guarantee the first rebuild always fires.
+    omega_sq_at_last_kg: f64,
+    /// Step number of last K_G rebuild (for hysteresis logic).
+    last_kg_rebuild_step: usize,
 
     // ── Optional restart state ────────────────────────────────────────────────
     initial_state: Option<FsiInitialState>,
@@ -275,6 +281,8 @@ impl RotorFsiSolver {
             k_cols,
             kg_coo_map,
             omega_at_last_ksp: initial_omega,
+            omega_sq_at_last_kg: f64::NEG_INFINITY,
+            last_kg_rebuild_step: 0,
             initial_state: None,
             initial_theta: 0.0,
             step_callback: None,
@@ -362,7 +370,10 @@ impl RotorFsiSolver {
         }
     }
 
-    /// Build spin-softening K_SP values (K sparsity pattern length) and apply to stepper.
+    /// Build spin-softening K_SP and Coriolis gyroscopic matrix, apply to stepper.
+    /// 
+    /// K_SP: spin-softening diagonal (centrifugal stiffness reduction).
+    /// G_cor: antisymmetric Coriolis matrix (implicit treatment for stability).
     fn apply_ksp(&mut self, omega: f64) -> Result<(), FsiError> {
         if !self.config.include_ksp {
             return Ok(());
@@ -377,10 +388,33 @@ impl RotorFsiSolver {
             &self.free_dofs_i32,
             self.n_full_dofs,
         );
+        
+        // Build Coriolis gyroscopic matrix for implicit treatment.
+        // This provides unconditional stability at high rotation rates.
+        let (g_rows, g_cols, g_vals) = if self.config.include_coriolis {
+            build_coriolis_matrix(
+                &self.all_node_masses,
+                &self.transforms.axis,
+                omega,
+                &self.free_dofs_i32,
+                self.config.dofs_per_node,
+            )
+        } else {
+            (Vec::new(), Vec::new(), Vec::new())
+        };
+        
         self.stepper
-            .update_spin_softening(&ksp)
+            .update_spin_softening_and_gyroscopic(&ksp, &g_rows, &g_cols, &g_vals)
             .map_err(FsiError::StepperError)?;
+        
         self.omega_at_last_ksp = omega;
+        
+        if !g_vals.is_empty() {
+            log::info!(
+                "RotorFsi: K_SP + G_cor updated, ω={:.4} rad/s, |G_cor| entries={}",
+                omega, g_vals.len()
+            );
+        }
         Ok(())
     }
 
@@ -395,6 +429,34 @@ impl RotorFsiSolver {
         if !self.config.should_update_kg_on_step(time_step) {
             return Ok(());
         }
+
+        // Adaptive threshold with hysteresis to prevent chattering.
+        // Uses a higher threshold for rebuild if we just rebuilt recently.
+        const THRESHOLD_REBUILD: f64 = 0.005;  // 0.5% - high threshold for rebuild
+        const THRESHOLD_SKIP: f64 = 0.003;     // 0.3% - low threshold for skip (hysteresis)
+        
+        let current_omega_sq = omega * omega;
+        if self.omega_sq_at_last_kg > 0.0 {
+            let rel_change = (current_omega_sq - self.omega_sq_at_last_kg).abs() 
+                / self.omega_sq_at_last_kg;
+            
+            // Use higher threshold if we just rebuilt recently (within 10 steps)
+            let steps_since_rebuild = time_step.saturating_sub(self.last_kg_rebuild_step);
+            let threshold = if steps_since_rebuild < 10 {
+                THRESHOLD_REBUILD  // Higher bar to rebuild again soon
+            } else {
+                THRESHOLD_SKIP     // Lower bar if it's been a while
+            };
+            
+            if rel_change < threshold {
+                log::trace!(
+                    "RotorFsi: K_G rebuild skipped at step {}, Δ(ω²)/ω² = {:.3}% < {:.3}%",
+                    time_step, rel_change * 100.0, threshold * 100.0
+                );
+                return Ok(()); // ω stable, skip expensive K_G reassembly
+            }
+        }
+
         let asm = match &self.assembler {
             Some(a) => a,
             None => return Ok(()),
@@ -425,6 +487,9 @@ impl RotorFsiSolver {
         self.stepper
             .set_initial_geometric_stiffness(&kg_red)
             .map_err(FsiError::StepperError)?;
+
+        self.omega_sq_at_last_kg = current_omega_sq;
+        self.last_kg_rebuild_step = time_step;
 
         let kg_norm: f64 = kg_red.iter().map(|x| x * x).sum::<f64>().sqrt();
         log::info!(
@@ -555,27 +620,32 @@ impl RotorFsiSolver {
             }
 
             // Inertial forces (all nodes, rotating frame).
+            // Centrifugal force computed at DEFORMED geometry (X₀ + u) for physical accuracy.
             if self.config.include_centrifugal {
+                let u_full = self.expand_to_full(self.stepper.current_u());
+                let deformed_coords: Vec<f64> = self
+                    .all_node_coords
+                    .iter()
+                    .enumerate()
+                    .map(|(k, &x0)| {
+                        let node = k / 3;
+                        let comp = k % 3;
+                        let gdof = node * self.config.dofs_per_node + comp;
+                        if gdof < u_full.len() {
+                            x0 + u_full[gdof]
+                        } else {
+                            x0
+                        }
+                    })
+                    .collect();
                 let f_cf = compute_centrifugal_force(
-                    &self.all_node_coords,
+                    &deformed_coords,
                     &self.all_node_masses,
                     &self.transforms.axis,
                     &self.transforms.center,
                     omega_step,
                 );
                 self.scatter_node_forces(&f_cf, &mut f_red);
-            }
-
-            if self.config.include_coriolis {
-                let v_full = self.expand_to_full(self.stepper.current_v());
-                let v_nodes = self.extract_node_translations(&v_full);
-                let f_cor = compute_coriolis_force(
-                    &v_nodes,
-                    &self.all_node_masses,
-                    &self.transforms.axis,
-                    omega_step,
-                );
-                self.scatter_node_forces(&f_cor, &mut f_red);
             }
 
             if self.config.include_euler && alpha_step.abs() > 1e-14 {

@@ -315,6 +315,114 @@ pub fn compute_gravity_force(masses: &[f64], g_rot: &[f64; 3]) -> Vec<f64> {
     out
 }
 
+// ── Coriolis gyroscopic matrix ─────────────────────────────────────────────────
+
+/// Build the Coriolis gyroscopic matrix G_cor (antisymmetric, 3×3 blocks).
+///
+/// For a rotating frame with angular velocity ω, Coriolis acceleration is:
+///   a_cor = -2·ω × v
+///
+/// In matrix form: F_cor = G_cor · v, where G_cor is antisymmetric.
+///
+/// For each node with mass m_i, the 3×3 block is:
+///   G_i = -2·m_i·Ω, where Ω is the skew-symmetric cross-product matrix:
+///
+///   Ω = [  0   -ωz   ωy ]
+///       [  ωz   0   -ωx ]
+///       [ -ωy   ωx   0  ]
+///
+/// This function returns the REDUCED matrix in COO format, ready to add to
+/// the Newmark effective damping matrix for implicit treatment.
+///
+/// # Arguments
+/// * `masses` — per-node scalar masses (length n_nodes)
+/// * `axis` — rotation axis unit vector
+/// * `omega` — angular velocity (rad/s)
+/// * `free_dofs_i32` — global DOF indices of free DOFs (reduced system)
+/// * `dofs_per_node` — typically 6 for shells (u,v,w,rx,ry,rz)
+///
+/// # Returns
+/// * `(rows, cols, vals)` — COO format for the REDUCED Coriolis matrix.
+///   Only includes entries where both row and col are in free_dofs.
+pub fn build_coriolis_matrix(
+    masses: &[f64],
+    axis: &[f64; 3],
+    omega: f64,
+    free_dofs_i32: &[i32],
+    dofs_per_node: usize,
+) -> (Vec<i32>, Vec<i32>, Vec<f64>) {
+    if omega.abs() < 1e-14 {
+        return (Vec::new(), Vec::new(), Vec::new());
+    }
+
+    // Build free DOF lookup: full_dof -> reduced_index
+    let max_dof = free_dofs_i32.iter().max().copied().unwrap_or(0) as usize;
+    let mut full_to_red = vec![-1i32; max_dof + 1];
+    for (red_idx, &gdof) in free_dofs_i32.iter().enumerate() {
+        if (gdof as usize) < full_to_red.len() {
+            full_to_red[gdof as usize] = red_idx as i32;
+        }
+    }
+
+    // Coriolis only couples translational DOFs (u,v,w), not rotational
+    let n_nodes = masses.len();
+    let mut rows = Vec::new();
+    let mut cols = Vec::new();
+    let mut vals = Vec::new();
+
+    // Skew-symmetric matrix Ω for ω × v
+    let wx = omega * axis[0];
+    let wy = omega * axis[1];
+    let wz = omega * axis[2];
+
+    // 3×3 block pattern (antisymmetric):
+    // [ 0    -wz   wy ]
+    // [ wz    0   -wx ]
+    // [-wy   wx    0  ]
+    
+    for node in 0..n_nodes {
+        let m = masses[node];
+        let coeff = -2.0 * m;
+
+        // Global DOF base for this node's translations
+        let base = node * dofs_per_node;
+
+        // 6 off-diagonal entries per node (diagonal is zero in antisymmetric matrix)
+        let entries = [
+            // Row 0 (u): couples with v, w
+            (0, 1, -wz * coeff),  // G[u, v] = +2m·ωz
+            (0, 2,  wy * coeff),  // G[u, w] = -2m·ωy
+            // Row 1 (v): couples with u, w
+            (1, 0,  wz * coeff),  // G[v, u] = -2m·ωz
+            (1, 2, -wx * coeff),  // G[v, w] = +2m·ωx
+            // Row 2 (w): couples with u, v
+            (2, 0, -wy * coeff),  // G[w, u] = +2m·ωy
+            (2, 1,  wx * coeff),  // G[w, v] = -2m·ωx
+        ];
+
+        for (local_row, local_col, value) in &entries {
+            if value.abs() < 1e-20 {
+                continue;
+            }
+            let gdof_row = base + local_row;
+            let gdof_col = base + local_col;
+
+            // Check if both are free DOFs
+            if gdof_row < full_to_red.len() && gdof_col < full_to_red.len() {
+                let red_row = full_to_red[gdof_row];
+                let red_col = full_to_red[gdof_col];
+                if red_row >= 0 && red_col >= 0 {
+                    rows.push(red_row);
+                    cols.push(red_col);
+                    vals.push(*value);
+                }
+            }
+        }
+    }
+
+    (rows, cols, vals)
+}
+
 // ── Spin-softening K_SP ────────────────────────────────────────────────────────
 
 /// Build the spin-softening K_SP diagonal in the **full** (unreduced) DOF space,

@@ -513,6 +513,8 @@ class LinearDynamicFSIRotorSolver(LinearDynamicFSISolver):
                 if damping_cfg.get("eta_k") is not None
                 else self.solver_params.get("eta_k", 0.0)
             )
+        self._stress_output_interval = int(self.solver_params.get("stress_output_interval", 1))
+        self._stress_output_interval = int(self.solver_params.get("stress_output_interval", 1))
 
     def _init_state_tracking(self) -> None:
         """Initialize state tracking variables."""
@@ -1568,14 +1570,14 @@ class LinearDynamicFSIRotorSolver(LinearDynamicFSISolver):
         axis = self._coord_transforms.axis
         limit_idx = len(mass_array)
 
-        for i, node in enumerate(nodes):
-            idx = i * dofs_per_node
-            if idx < limit_idx:
-                mass = mass_array[idx]
-                r_vec = node.coords - center
-                proj = np.dot(r_vec, axis)
-                r_perp_sq = np.dot(r_vec, r_vec) - proj * proj
-                total_inertia += mass * r_perp_sq
+        node_idx = np.arange(len(nodes)) * dofs_per_node
+        valid = node_idx < limit_idx
+        masses = np.where(valid, mass_array[np.minimum(node_idx, limit_idx - 1)], 0.0)
+        coords = np.array([node.coords for node in nodes], dtype=np.float64)
+        r_vec = coords - center
+        proj = r_vec @ axis
+        r_perp_sq = np.einsum("ij,ij->i", r_vec, r_vec) - proj**2
+        total_inertia = float(np.dot(masses, r_perp_sq))
 
         diag_vec.destroy()
         return total_inertia
@@ -1871,7 +1873,16 @@ class LinearDynamicFSIRotorSolver(LinearDynamicFSISolver):
                 if gdof < n_total:
                     iface_u_local.flat[local_idx] = u_full[gdof]
 
-            stress_fields = self._compute_stress_fields(u_full)
+            _needs_stress = (
+                self._stress_output_interval <= 1
+                or (time_step % self._stress_output_interval == 0)
+                or (
+                    self._checkpoint_manager is not None
+                    and self._checkpoint_manager.should_write(t)
+                )
+                or bool(getattr(self, "_probe_node_ids", []))
+            )
+            stress_fields = self._compute_stress_fields(u_full) if _needs_stress else {}
 
             force_fields = {}
             f_aero_full_global = np.zeros(n_total, dtype=np.float64)
