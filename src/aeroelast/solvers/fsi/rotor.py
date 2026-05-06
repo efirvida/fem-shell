@@ -1092,7 +1092,9 @@ class LinearDynamicFSIRotorSolver(LinearDynamicFSISolver):
         if not self._is_primary_rank():
             return
 
-        log_path = os.path.join(self.solver_params["output_folder"], "rotor_performance.csv")
+        output_folder = self.solver_params.get("output_folder", "results")
+        os.makedirs(output_folder, exist_ok=True)
+        log_path = os.path.join(output_folder, "rotor_performance.csv")
         file_exists = os.path.exists(log_path)
 
         try:
@@ -1464,8 +1466,7 @@ class LinearDynamicFSIRotorSolver(LinearDynamicFSISolver):
                 resolved["ramp_completed"] = bool(checkpoint_state["omega_ramp_completed"])
             elif isinstance(self._omega_provider, RampedComputedOmega):
                 resolved["ramp_completed"] = (
-                    resolved["current_time"]
-                    >= float(self._omega_provider._ramp_time) - 1e-12
+                    resolved["current_time"] >= float(self._omega_provider._ramp_time) - 1e-12
                 )
             return resolved
 
@@ -1483,7 +1484,9 @@ class LinearDynamicFSIRotorSolver(LinearDynamicFSISolver):
             if current_time >= float(provider._ramp_time):
                 omega_val = float(provider._target_omega)
             else:
-                omega_val = float(provider._target_omega) * current_time / float(provider._ramp_time)
+                omega_val = (
+                    float(provider._target_omega) * current_time / float(provider._ramp_time)
+                )
             resolved["assembly_omega"] = omega_val
             return resolved
 
@@ -1503,7 +1506,9 @@ class LinearDynamicFSIRotorSolver(LinearDynamicFSISolver):
                 alpha_val = float(provider._alpha)
                 ramp_completed = True
             else:
-                omega_val = float(provider._target_omega) * current_time / float(provider._ramp_time)
+                omega_val = (
+                    float(provider._target_omega) * current_time / float(provider._ramp_time)
+                )
                 alpha_val = float(provider._target_omega) / float(provider._ramp_time)
                 ramp_completed = False
 
