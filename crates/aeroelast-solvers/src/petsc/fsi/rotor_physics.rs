@@ -435,6 +435,60 @@ pub struct PerformanceCoefficients {
     pub tsr: f64,
 }
 
+/// Kinematic quantities used to keep the rotor angle update consistent over one time window.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct WindowKinematics {
+    /// Representative angular velocity held constant during the converged window.
+    pub omega_step: f64,
+    /// Angular acceleration used in the Euler body-force term during the window.
+    pub alpha_step: f64,
+    /// Exact or approximated angular increment over the full window.
+    pub theta_increment: f64,
+}
+
+fn ramp_window_kinematics(omega_target: f64, t_ramp: f64, t: f64, dt: f64) -> WindowKinematics {
+    if dt <= 0.0 {
+        let omega = if t >= t_ramp {
+            omega_target
+        } else {
+            omega_target * (t / t_ramp)
+        };
+        let alpha = if t < t_ramp { omega_target / t_ramp } else { 0.0 };
+        return WindowKinematics {
+            omega_step: omega,
+            alpha_step: alpha,
+            theta_increment: 0.0,
+        };
+    }
+
+    if t_ramp <= 0.0 || t >= t_ramp {
+        return WindowKinematics {
+            omega_step: omega_target,
+            alpha_step: 0.0,
+            theta_increment: omega_target * dt,
+        };
+    }
+
+    let alpha = omega_target / t_ramp;
+    let omega_start = omega_target * (t / t_ramp);
+    let t_end = t + dt;
+
+    let theta_increment = if t_end <= t_ramp {
+        omega_start * dt + 0.5 * alpha * dt * dt
+    } else {
+        let dt_ramp = t_ramp - t;
+        let dtheta_ramp = omega_start * dt_ramp + 0.5 * alpha * dt_ramp * dt_ramp;
+        let dtheta_const = omega_target * (dt - dt_ramp);
+        dtheta_ramp + dtheta_const
+    };
+
+    WindowKinematics {
+        omega_step: theta_increment / dt,
+        alpha_step: alpha,
+        theta_increment,
+    }
+}
+
 /// Compute rotor performance coefficients.
 ///
 /// Standard aerodynamic definitions:
@@ -569,6 +623,51 @@ impl OmegaProvider {
                     }
                 } else {
                     (*omega, *alpha)
+                }
+            }
+        }
+    }
+
+    /// Return the kinematics used during a single converged time window.
+    ///
+    /// The rotor solver holds a representative angular velocity constant during
+    /// the window, while the cumulative angle is advanced with a second-order
+    /// accurate increment whenever the provider supplies a meaningful `α`.
+    pub fn kinematics_over_step(&self, t: f64, dt: f64) -> WindowKinematics {
+        match self {
+            OmegaProvider::Constant { omega } => WindowKinematics {
+                omega_step: *omega,
+                alpha_step: 0.0,
+                theta_increment: *omega * dt,
+            },
+            OmegaProvider::Ramped { omega_target, t_ramp } => {
+                ramp_window_kinematics(*omega_target, *t_ramp, t, dt)
+            }
+            OmegaProvider::Computed { omega, alpha, .. } => {
+                let theta_increment = *omega * dt + 0.5 * *alpha * dt * dt;
+                WindowKinematics {
+                    omega_step: if dt > 0.0 { theta_increment / dt } else { *omega },
+                    alpha_step: *alpha,
+                    theta_increment,
+                }
+            }
+            OmegaProvider::RampedComputed {
+                omega_target,
+                t_ramp,
+                omega,
+                alpha,
+                ramp_completed,
+                ..
+            } => {
+                if !ramp_completed {
+                    ramp_window_kinematics(*omega_target, *t_ramp, t, dt)
+                } else {
+                    let theta_increment = *omega * dt + 0.5 * *alpha * dt * dt;
+                    WindowKinematics {
+                        omega_step: if dt > 0.0 { theta_increment / dt } else { *omega },
+                        alpha_step: *alpha,
+                        theta_increment,
+                    }
                 }
             }
         }
@@ -830,6 +929,26 @@ mod tests {
     }
 
     #[test]
+    fn torque_uses_deformed_coords_and_rotation_center() {
+        // center = [1,0,0], X0 = [2,0,0], u = [0,1,0], F = [10,0,0]
+        // r = (X0 + u - center) = [1,1,0]
+        // r × F = [1,1,0] × [10,0,0] = [0,0,-10]
+        // τ_scalar about +Z = -10
+        let coords = vec![2.0, 0.0, 0.0];
+        let disps = vec![0.0, 1.0, 0.0];
+        let forces = vec![10.0, 0.0, 0.0];
+        let axis = [0.0, 0.0, 1.0];
+        let center = [1.0, 0.0, 0.0];
+
+        let (tau, scalar) = compute_torque(&coords, &disps, &forces, &axis, &center);
+
+        assert!(tau[0].abs() < 1e-14, "tau_x={}", tau[0]);
+        assert!(tau[1].abs() < 1e-14, "tau_y={}", tau[1]);
+        assert!((tau[2] + 10.0).abs() < 1e-14, "tau_z={}", tau[2]);
+        assert!((scalar + 10.0).abs() < 1e-14, "scalar={scalar}");
+    }
+
+    #[test]
     fn omega_provider_constant() {
         let p = OmegaProvider::Constant { omega: 5.0 };
         assert_eq!(p.get(0.0), (5.0, 0.0));
@@ -847,6 +966,24 @@ mod tests {
     }
 
     #[test]
+    fn omega_provider_ramped_window_kinematics_inside_ramp() {
+        let p = OmegaProvider::Ramped { omega_target: 10.0, t_ramp: 5.0 };
+        let kin = p.kinematics_over_step(2.0, 1.0);
+        assert!((kin.omega_step - 5.0).abs() < 1e-12, "omega_step={}", kin.omega_step);
+        assert!((kin.alpha_step - 2.0).abs() < 1e-12, "alpha_step={}", kin.alpha_step);
+        assert!((kin.theta_increment - 5.0).abs() < 1e-12, "dtheta={}", kin.theta_increment);
+    }
+
+    #[test]
+    fn omega_provider_ramped_window_kinematics_crossing_ramp_end() {
+        let p = OmegaProvider::Ramped { omega_target: 10.0, t_ramp: 5.0 };
+        let kin = p.kinematics_over_step(4.5, 1.0);
+        assert!((kin.omega_step - 9.75).abs() < 1e-12, "omega_step={}", kin.omega_step);
+        assert!((kin.alpha_step - 2.0).abs() < 1e-12, "alpha_step={}", kin.alpha_step);
+        assert!((kin.theta_increment - 9.75).abs() < 1e-12, "dtheta={}", kin.theta_increment);
+    }
+
+    #[test]
     fn omega_provider_computed_update() {
         let mut p = OmegaProvider::Computed {
             moment_of_inertia: 100.0,
@@ -859,6 +996,20 @@ mod tests {
         let (w, a) = p.get(0.0);
         assert!((w - 1.0).abs() < 1e-12, "w={w}");
         assert!((a - 1.0).abs() < 1e-12, "a={a}");
+    }
+
+    #[test]
+    fn omega_provider_computed_window_kinematics_is_second_order() {
+        let p = OmegaProvider::Computed {
+            moment_of_inertia: 100.0,
+            shaft_torque: 0.0,
+            omega: 5.0,
+            alpha: 2.0,
+        };
+        let kin = p.kinematics_over_step(0.0, 0.5);
+        assert!((kin.omega_step - 5.5).abs() < 1e-12, "omega_step={}", kin.omega_step);
+        assert!((kin.alpha_step - 2.0).abs() < 1e-12, "alpha_step={}", kin.alpha_step);
+        assert!((kin.theta_increment - 2.75).abs() < 1e-12, "dtheta={}", kin.theta_increment);
     }
 
     #[test]

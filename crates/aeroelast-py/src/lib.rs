@@ -1658,6 +1658,14 @@ impl PyMeshAssembler {
         )
     }
 
+    /// Assemble the row-sum lumped mass diagonal.
+    ///
+    /// Returns a 1-D float64 array of length `dofs_count` containing the
+    /// diagonal entries after row-sum lumping and the standard mass floor.
+    pub fn assemble_m_lumped<'py>(&self, py: Python<'py>) -> pyo3::Bound<'py, PyArray1<f64>> {
+        Array1::from(self.inner.assemble_m_lumped()).into_pyarray(py)
+    }
+
     /// Compute the total model mass from material properties and geometry.
     ///
     /// For shell elements (MITC3/MITC4) uses the precomputed element area.
@@ -3710,6 +3718,7 @@ fn run_stress_stiffened_fsi_solver(
 /// - Centrifugal, Coriolis, Euler, and gravity inertial body forces
 /// - Spin-softening K_SP diagonal update when |Δω| > `ksp_omega_threshold`
 /// - Geometric stiffness K_G rebuild every `kg_update_interval` converged steps
+///   (`0` and `1` both mean every converged step for backward compatibility)
 /// - Four angular-velocity modes: "constant", "ramped", "computed", "ramped_computed"
 ///
 /// # Returns
@@ -3791,6 +3800,10 @@ fn run_rotor_fsi_solver(
     a0: Option<PyReadonlyArray1<f64>>,
     t0: f64,
     theta0: f64,
+    restart_omega: Option<f64>,
+    restart_alpha: Option<f64>,
+    restart_ramp_completed: Option<bool>,
+    restart_current_time: Option<f64>,
     // ── Initial geometric stiffness K_G (centrifugal prestress, full DOF space) ─
     kg0_rows: Option<PyReadonlyArray1<i64>>,
     kg0_cols: Option<PyReadonlyArray1<i64>>,
@@ -3885,25 +3898,49 @@ fn run_rotor_fsi_solver(
                 PyValueError::new_err("omega_mode='computed' requires moment_of_inertia")
             })?,
             shaft_torque: shaft_torque.unwrap_or(0.0),
-            omega,
-            alpha: 0.0,
+            omega: restart_omega.unwrap_or(omega),
+            alpha: restart_alpha.unwrap_or(0.0),
         },
-        "ramped_computed" => OmegaProvider::RampedComputed {
-            omega_target: omega_target.ok_or_else(|| {
+        "ramped_computed" => {
+            let omega_target = omega_target.ok_or_else(|| {
                 PyValueError::new_err("omega_mode='ramped_computed' requires omega_target")
-            })?,
-            t_ramp: t_ramp.ok_or_else(|| {
+            })?;
+            let t_ramp = t_ramp.ok_or_else(|| {
                 PyValueError::new_err("omega_mode='ramped_computed' requires t_ramp")
-            })?,
-            moment_of_inertia: moment_of_inertia.ok_or_else(|| {
+            })?;
+            let current_time = restart_current_time.unwrap_or(t0);
+            let ramp_completed =
+                restart_ramp_completed.unwrap_or(current_time >= t_ramp - 1.0e-12);
+            let omega_state = if ramp_completed {
+                restart_omega.unwrap_or_else(|| if omega.abs() > 0.0 { omega } else { omega_target })
+            } else if let Some(omega_restart) = restart_omega {
+                omega_restart
+            } else if current_time < t_ramp {
+                omega_target * current_time / t_ramp
+            } else {
+                omega_target
+            };
+            let alpha_state = if ramp_completed {
+                restart_alpha.unwrap_or(0.0)
+            } else if current_time < t_ramp {
+                omega_target / t_ramp
+            } else {
+                restart_alpha.unwrap_or(0.0)
+            };
+
+            OmegaProvider::RampedComputed {
+                omega_target,
+                t_ramp,
+                moment_of_inertia: moment_of_inertia.ok_or_else(|| {
                 PyValueError::new_err("omega_mode='ramped_computed' requires moment_of_inertia")
-            })?,
-            shaft_torque: shaft_torque.unwrap_or(0.0),
-            omega,
-            alpha: 0.0,
-            ramp_completed: false,
-            current_time: t0,
-        },
+                })?,
+                shaft_torque: shaft_torque.unwrap_or(0.0),
+                omega: omega_state,
+                alpha: alpha_state,
+                ramp_completed,
+                current_time,
+            }
+        }
         other => {
             return Err(PyValueError::new_err(format!(
                 "unknown omega_mode '{}'; expected 'constant', 'ramped', 'computed', or 'ramped_computed'",

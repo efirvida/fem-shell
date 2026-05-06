@@ -57,9 +57,12 @@ FSI Coupling Architecture
 The solver uses preCICE with implicit coupling (IQN-ILS acceleration):
     1. At each time window, preCICE orchestrates sub-iterations between the
        fluid (OpenFOAM) and solid (this solver) participants.
-    2. Within a time window, ω is held constant — omega is computed once at
-       the window start and not re-evaluated during sub-iterations.
-    3. K_G and K_SP are rebuilt only when |Δω| > threshold between windows.
+     2. Within a time window, a representative constant angular velocity
+         ω̄ is held fixed during the sub-iterations. The cumulative angle uses
+         Δθ = ω̄·Δt, with ω̄ chosen so linear ramps and constant-α windows are
+         integrated consistently.
+     3. K_SP is rebuilt when |Δω_state| exceeds the configured threshold,
+         while K_G is rebuilt on the configured converged-step cadence.
     4. Convergence of the FSI fixed-point iteration is handled by preCICE's
        IQN-ILS quasi-Newton acceleration, not by internal structural iterations.
 
@@ -105,6 +108,15 @@ The integration uses explicit Euler:
 
     α = (τ_driving + τ_shaft) / I
     ω^{n+1} = ω^n + α · Δt
+
+For the co-rotational kinematics, the solver advances the cumulative angle with
+the window-averaged angular velocity:
+
+    θ^{n+1} = θ^n + ω̄^n · Δt
+
+where, for constant-α windows,
+
+    ω̄^n = ω^n + 0.5 · α^n · Δt
 
 CRITICAL: Only EXTERNAL forces (aerodynamic + gravity) contribute to τ_driving.
 Inertial forces (centrifugal, Coriolis, Euler) are fictitious forces in the
@@ -408,7 +420,7 @@ class LinearDynamicFSIRotorSolver(LinearDynamicFSISolver):
         self._include_centrifugal = rotor_cfg.get("include_centrifugal", True)
         self._include_coriolis = rotor_cfg.get("include_coriolis", True)
         self._include_euler = rotor_cfg.get("include_euler", True)
-        self._kg_update_interval = rotor_cfg.get("kg_update_interval", 0)  # Reserved
+        self._kg_update_interval = int(rotor_cfg.get("kg_update_interval", 0))
         self._force_ramp_time = float(rotor_cfg.get("force_ramp_time", 0.0))
         self._send_omega_to_precice = rotor_cfg.get("send_omega_to_precice", True)
         self._omega_mesh_name: str = rotor_cfg.get("omega_mesh_name", "GlobalSolidMesh")
@@ -1151,28 +1163,48 @@ class LinearDynamicFSIRotorSolver(LinearDynamicFSISolver):
         Tuple[PETSc.Vec, PETSc.Vec, PETSc.Vec]
             Final (displacement, velocity, acceleration) vectors.
         """
-        omega_initial, _ = self._omega_provider.get_omega(0.0)
+        checkpoint_state = self._try_restore_checkpoint()
+        t_restart = (
+            float(checkpoint_state.get("t", self.solver_params.get("start_time", 0.0)))
+            if checkpoint_state is not None
+            else float(self.solver_params.get("start_time", 0.0))
+        )
+        restart_omega_state = self._resolve_restart_omega_state(checkpoint_state, t_restart)
+        omega_initial = float(restart_omega_state["assembly_omega"])
 
         self._print_header("FSI DYNAMIC ANALYSIS - CO-ROTATIONAL ROTOR SOLVER")
 
         # Phase 1: Matrix Assembly
         matrices, bc_manager, K_G = self._assemble_system_matrices(omega_initial)
 
+        if checkpoint_state is not None:
+            stored_dofs = len(checkpoint_state.get("u_red", []))
+            expected_dofs = int(len(bc_manager.free_dofs))
+            if stored_dofs and stored_dofs != expected_dofs:
+                if self._is_primary_rank():
+                    print(
+                        f"  ⚠️ Checkpoint DOF mismatch ({stored_dofs} vs {expected_dofs}). "
+                        "Checkpoint ignored.",
+                        flush=True,
+                    )
+                checkpoint_state = None
+                t_restart = float(self.solver_params.get("start_time", 0.0))
+                restart_omega_state = self._resolve_restart_omega_state(None, t_restart)
+                omega_initial = float(restart_omega_state["assembly_omega"])
+                if self._include_geometric_stiffness:
+                    try:
+                        K_G = self.domain.assemble_geometric_stiffness(
+                            omega=omega_initial,
+                            rotation_axis=self._coord_transforms.axis,
+                            rotation_center=self._coord_transforms.center,
+                        )
+                    except Exception as e:
+                        _logger.warning("Could not reassemble K_G after checkpoint mismatch: %s", e)
+                        K_G = None
+
         # Auto-compute inertia if requested
         if getattr(self, "_auto_inertia", False):
-            import _aeroelast  # noqa: PLC0415
-
-            diag_vec = self.M.getDiagonal()
-            mass_diag = diag_vec.getArray(readonly=True).copy()
-            diag_vec.destroy()
-            node_coords = np.array([n.coords for n in self.domain.nodes], dtype=np.float64).ravel()
-            estimated_inertia = _aeroelast.compute_estimated_inertia(
-                node_coords,
-                mass_diag,
-                self.domain.dofs_per_node,
-                list(self._coord_transforms.center),
-                list(self._coord_transforms.axis),
-            )
+            estimated_inertia = self._compute_estimated_inertia()
             if self._is_primary_rank():
                 print(
                     f"  ↳ Auto-computed Moment of Inertia: {estimated_inertia:.4e} kg·m²",
@@ -1207,6 +1239,8 @@ class LinearDynamicFSIRotorSolver(LinearDynamicFSISolver):
                 if self._is_primary_rank():
                     print(f"  ↳ Omega mode: Dynamic (I={estimated_inertia:.4e} kg·m²)", flush=True)
 
+            restart_omega_state = self._resolve_restart_omega_state(checkpoint_state, t_restart)
+
         # Phase 2: Interface extraction
         coupling_boundaries = self.model_properties["solver"]["coupling_boundaries"]
         mesh = self.domain.mesh
@@ -1225,13 +1259,7 @@ class LinearDynamicFSIRotorSolver(LinearDynamicFSISolver):
             self._interface_dofs = raw_dofs.astype(int)
 
         if self._rotor_radius is None:
-            import _aeroelast  # noqa: PLC0415
-
-            self._rotor_radius = _aeroelast.compute_rotor_radius(
-                self._interface_coords.ravel().astype(np.float64),
-                list(self._coord_transforms.center),
-                list(self._coord_transforms.axis),
-            )
+            self._rotor_radius = self._compute_rotor_radius(self._interface_coords)
             self._print_info(f"Auto-detected rotor radius: {self._rotor_radius:.4f} m")
 
         return self._solve_via_rust(
@@ -1239,6 +1267,8 @@ class LinearDynamicFSIRotorSolver(LinearDynamicFSISolver):
             interface_coords_flat=self._interface_coords.ravel().astype(np.float64),
             interface_dofs_global_flat=self._interface_dofs.ravel().astype(np.uint64),
             K_G=K_G,
+            checkpoint_state=checkpoint_state,
+            restart_omega_state=restart_omega_state,
         )
 
     # =========================================================================
@@ -1404,12 +1434,251 @@ class LinearDynamicFSIRotorSolver(LinearDynamicFSISolver):
         omega_val, _ = p.get_omega(0.0)
         return "constant", float(omega_val), None, None, None, None
 
+    def _resolve_restart_omega_state(
+        self,
+        checkpoint_state: Optional[Dict[str, Any]],
+        t0: float,
+    ) -> Dict[str, Any]:
+        """Resolve the omega-provider state to use at restart time ``t0``.
+
+        Returns a dict with:
+        - ``assembly_omega``: omega used for startup K_G/K_SP and initial preCICE data.
+        - ``omega`` / ``alpha``: dynamic state to seed Rust providers when applicable.
+        - ``ramp_completed`` / ``current_time``: extra phase state for ``RampedComputedOmega``.
+        """
+        resolved: Dict[str, Any] = {
+            "assembly_omega": 0.0,
+            "omega": None,
+            "alpha": None,
+            "ramp_completed": None,
+            "current_time": float(t0),
+        }
+
+        if checkpoint_state is not None and "omega" in checkpoint_state:
+            omega_val = float(checkpoint_state["omega"])
+            resolved["assembly_omega"] = omega_val
+            resolved["omega"] = omega_val
+            resolved["alpha"] = float(checkpoint_state.get("alpha", 0.0))
+            resolved["current_time"] = float(checkpoint_state.get("omega_current_time", t0))
+            if "omega_ramp_completed" in checkpoint_state:
+                resolved["ramp_completed"] = bool(checkpoint_state["omega_ramp_completed"])
+            elif isinstance(self._omega_provider, RampedComputedOmega):
+                resolved["ramp_completed"] = (
+                    resolved["current_time"]
+                    >= float(self._omega_provider._ramp_time) - 1e-12
+                )
+            return resolved
+
+        current_time = float(t0)
+        provider = self._omega_provider
+
+        if isinstance(provider, ConstantOmega):
+            omega_val = float(provider._omega)
+            resolved["assembly_omega"] = omega_val
+            resolved["omega"] = omega_val
+            resolved["alpha"] = 0.0
+            return resolved
+
+        if isinstance(provider, RampedOmega):
+            if current_time >= float(provider._ramp_time):
+                omega_val = float(provider._target_omega)
+            else:
+                omega_val = float(provider._target_omega) * current_time / float(provider._ramp_time)
+            resolved["assembly_omega"] = omega_val
+            return resolved
+
+        if isinstance(provider, ComputedOmega):
+            resolved["assembly_omega"] = float(provider._omega)
+            resolved["omega"] = float(provider._omega)
+            resolved["alpha"] = float(provider._alpha)
+            return resolved
+
+        if isinstance(provider, RampedComputedOmega):
+            if current_time >= float(provider._ramp_time):
+                omega_val = (
+                    float(provider._omega)
+                    if abs(float(provider._omega)) > _MIN_DENOMINATOR
+                    else float(provider._target_omega)
+                )
+                alpha_val = float(provider._alpha)
+                ramp_completed = True
+            else:
+                omega_val = float(provider._target_omega) * current_time / float(provider._ramp_time)
+                alpha_val = float(provider._target_omega) / float(provider._ramp_time)
+                ramp_completed = False
+
+            resolved["assembly_omega"] = omega_val
+            resolved["omega"] = omega_val
+            resolved["alpha"] = alpha_val
+            resolved["ramp_completed"] = ramp_completed
+            return resolved
+
+        omega_val, alpha_val = provider.get_omega(current_time)
+        resolved["assembly_omega"] = float(omega_val)
+        resolved["omega"] = float(omega_val)
+        resolved["alpha"] = float(alpha_val)
+        return resolved
+
+    def _build_omega_checkpoint_state(self, t: float, omega: float, alpha: float) -> Dict[str, Any]:
+        """Build the omega-provider fields persisted into checkpoint NPZ files."""
+        state: Dict[str, Any] = {
+            "omega": float(omega),
+            "alpha": float(alpha),
+            "omega_current_time": float(t),
+        }
+        if isinstance(self._omega_provider, RampedComputedOmega):
+            state["omega_ramp_completed"] = bool(
+                float(t) >= float(self._omega_provider._ramp_time) - 1e-12
+            )
+        return state
+
+    def _compute_estimated_inertia(self) -> float:
+        """Estimate total moment of inertia about the rotation axis.
+
+        Computes the parallel-axis contribution of all mesh nodes:
+
+            I = Σᵢ mᵢ · r_⊥,ᵢ²
+
+        where mᵢ is the lumped mass from the first translational DOF diagonal
+        entry and r_⊥,ᵢ is the perpendicular distance from the node to the
+        rotation axis.
+
+        Returns
+        -------
+        float
+            Total moment of inertia [kg·m²] about the rotation axis.
+        """
+        if self.M is None:
+            _logger.warning("Mass matrix not available for inertia estimation.")
+            return 1.0
+
+        diag_vec = self.M.getDiagonal()
+        mass_array = diag_vec.getArray(readonly=True)
+
+        nodes = self.domain.nodes
+        dofs_per_node = self.domain.dofs_per_node
+        total_inertia = 0.0
+
+        center = self._coord_transforms.center
+        axis = self._coord_transforms.axis
+        limit_idx = len(mass_array)
+
+        for i, node in enumerate(nodes):
+            idx = i * dofs_per_node
+            if idx < limit_idx:
+                mass = mass_array[idx]
+                r_vec = node.coords - center
+                proj = np.dot(r_vec, axis)
+                r_perp_sq = np.dot(r_vec, r_vec) - proj * proj
+                total_inertia += mass * r_perp_sq
+
+        diag_vec.destroy()
+        return total_inertia
+
+    def _compute_rotor_radius(
+        self,
+        interface_coords: np.ndarray,
+        interface_disps: Optional[np.ndarray] = None,
+    ) -> float:
+        """Compute rotor radius as max perpendicular distance from rotation axis.
+
+        Uses the deformed configuration (X0 + u) when displacements are
+        provided. Otherwise it uses the reference interface coordinates.
+        """
+        if interface_disps is not None:
+            coords = interface_coords + interface_disps
+        else:
+            coords = interface_coords
+
+        rel_pos = coords - self._coord_transforms.center
+        axis = self._coord_transforms.axis
+        parallel = np.outer(np.dot(rel_pos, axis), axis)
+        perp = rel_pos - parallel
+        return np.max(np.linalg.norm(perp, axis=1)) if len(perp) > 0 else 0.0
+
+    @staticmethod
+    def _ensure_3d_vectors(vectors: np.ndarray) -> np.ndarray:
+        """Return an ``(n, 3)`` float64 array, padding 2D inputs with zeros."""
+        arr = np.asarray(vectors, dtype=np.float64)
+        if arr.ndim != 2:
+            raise ValueError(f"Expected a 2D array of vectors, got shape {arr.shape}")
+        if arr.shape[1] == 3:
+            return arr
+        if arr.shape[1] == 2:
+            return np.column_stack((arr, np.zeros(arr.shape[0], dtype=np.float64)))
+        raise ValueError(f"Expected vectors with 2 or 3 components, got shape {arr.shape}")
+
+    def _extract_nodal_translation_field(self, full_vec: np.ndarray) -> np.ndarray:
+        """Extract the translational nodal field from a full DOF vector."""
+        nodal = np.asarray(full_vec, dtype=np.float64).reshape(
+            len(self.domain.nodes), self.domain.dofs_per_node
+        )
+        return self._ensure_3d_vectors(nodal[:, : min(3, nodal.shape[1])])
+
+    def _scatter_nodal_translation_field(
+        self,
+        nodal_field: np.ndarray,
+        n_total: int,
+    ) -> np.ndarray:
+        """Scatter an ``(n_nodes, 3)`` translational field into full DOF layout."""
+        full = np.zeros(n_total, dtype=np.float64)
+        reshaped = full.reshape(len(self.domain.nodes), self.domain.dofs_per_node)
+        width = min(3, reshaped.shape[1], nodal_field.shape[1])
+        reshaped[:, :width] = nodal_field[:, :width]
+        return full
+
+    def _compute_axis_torque(
+        self,
+        nodal_coords: np.ndarray,
+        nodal_disps: np.ndarray,
+        nodal_forces: np.ndarray,
+        theta: float,
+    ) -> Tuple[np.ndarray, float]:
+        """Compute torque vector in global frame and scalar projection on the axis."""
+        coords_3d = self._ensure_3d_vectors(nodal_coords)
+        disps_3d = self._ensure_3d_vectors(nodal_disps)
+        forces_3d = self._ensure_3d_vectors(nodal_forces)
+
+        rel_pos = coords_3d + disps_3d - self._coord_transforms.center
+        torque_local = np.sum(np.cross(rel_pos, forces_3d), axis=0)
+        torque_global = self._coord_transforms.to_inertial(torque_local, theta)
+        torque_scalar = float(np.dot(torque_local, self._coord_transforms.axis))
+        return torque_global, torque_scalar
+
+    def _compute_performance_coefficients(
+        self,
+        thrust: float,
+        torque_aero: float,
+        omega: float,
+        radius: float,
+    ) -> Tuple[float, float, float, float]:
+        """Compute ``Ct``, ``Cp``, ``Cq`` and ``TSR`` using the given rotor radius."""
+        area = np.pi * radius * radius
+        q_dyn = 0.5 * self._fluid_density * self._flow_velocity * self._flow_velocity
+        power_aero = torque_aero * omega
+
+        denom_force = q_dyn * area
+        denom_power = q_dyn * area * self._flow_velocity
+        denom_torque = q_dyn * area * radius
+
+        ct = thrust / denom_force if abs(denom_force) > _MIN_DENOMINATOR else 0.0
+        cp = power_aero / denom_power if abs(denom_power) > _MIN_DENOMINATOR else 0.0
+        cq = torque_aero / denom_torque if abs(denom_torque) > _MIN_DENOMINATOR else 0.0
+        tsr = (
+            abs(omega) * radius / self._flow_velocity
+            if abs(self._flow_velocity) > _MIN_DENOMINATOR
+            else 0.0
+        )
+        return ct, cp, cq, tsr
+
     def _solve_via_rust(
         self,
         bc_manager,
         interface_coords_flat,
         interface_dofs_global_flat,
         K_G=None,
+        checkpoint_state: Optional[Dict[str, Any]] = None,
+        restart_omega_state: Optional[Dict[str, Any]] = None,
     ):
         """Run the co-rotational rotor FSI loop via the Rust binding.
 
@@ -1448,7 +1717,10 @@ class LinearDynamicFSIRotorSolver(LinearDynamicFSISolver):
         n_full_dofs: int = int(self.K.getSize()[0])
 
         # ── All-node coordinates (flat, co-rotating frame) ─────────────────
-        all_node_coords = np.array([n.coords for n in self.domain.nodes], dtype=np.float64).ravel()
+        all_node_coords_nodes = self._ensure_3d_vectors(
+            np.array([n.coords for n in self.domain.nodes], dtype=np.float64)
+        )
+        all_node_coords = all_node_coords_nodes.ravel()
 
         # ── Per-node scalar lumped mass (first translational DOF per node) ──
         diag_vec = self.M.getDiagonal()
@@ -1468,7 +1740,8 @@ class LinearDynamicFSIRotorSolver(LinearDynamicFSISolver):
         omega_mode, omega_val, omega_target, t_ramp, moi, shaft_tau = self._map_omega_provider()
 
         # ── Checkpoint restore ──────────────────────────────────────────────
-        checkpoint_state = self._try_restore_checkpoint()
+        if checkpoint_state is None:
+            checkpoint_state = self._try_restore_checkpoint()
         u0 = v0 = a0 = None
         t0 = float(self.solver_params.get("start_time", 0.0))
         theta0 = float(getattr(self, "_theta", 0.0))
@@ -1493,6 +1766,22 @@ class LinearDynamicFSIRotorSolver(LinearDynamicFSISolver):
             theta0 = float(checkpoint_state.get("theta", 0.0))
             if self._is_primary_rank():
                 print(f"  ✓ Restored from checkpoint at t = {t0:.6f} s", flush=True)
+
+        if restart_omega_state is None:
+            restart_omega_state = self._resolve_restart_omega_state(checkpoint_state, t0)
+        restart_omega = restart_omega_state.get("omega")
+        restart_alpha = restart_omega_state.get("alpha")
+        restart_ramp_completed = restart_omega_state.get("ramp_completed")
+        restart_current_time = restart_omega_state.get("current_time", t0)
+
+        if restart_omega is not None:
+            restart_omega = float(restart_omega)
+        if restart_alpha is not None:
+            restart_alpha = float(restart_alpha)
+        if restart_ramp_completed is not None:
+            restart_ramp_completed = bool(restart_ramp_completed)
+        if restart_current_time is not None:
+            restart_current_time = float(restart_current_time)
 
         # ── coupling config ─────────────────────────────────────────────────
         cfg = self._coupling_cfg
@@ -1519,6 +1808,14 @@ class LinearDynamicFSIRotorSolver(LinearDynamicFSISolver):
         n_total: int = n_full_dofs
         _free_dofs_arr: np.ndarray = self.free_dofs
         _fixed_dof_vals: dict = dict(bc_manager.fixed_dofs)
+        interface_coords_nodes = self._ensure_3d_vectors(self._interface_coords)
+        prev_theta = float(theta0)
+        omega_state_start = restart_omega
+        if omega_state_start is None:
+            omega_state_start = self._peek_checkpoint_omega()
+        if omega_state_start is None:
+            omega_state_start = float(omega_val) if omega_val is not None else 0.0
+        prev_omega_state = float(omega_state_start)
 
         def _step_cb(
             t,
@@ -1534,7 +1831,19 @@ class LinearDynamicFSIRotorSolver(LinearDynamicFSISolver):
             theta,
             rotor_perf_tuple,
         ):
-            tau_aero, ct, cp, cq, tsr = rotor_perf_tuple
+            nonlocal prev_theta, prev_omega_state
+
+            tau_aero_rust, _ct_rust, _cp_rust, _cq_rust, _tsr_rust = rotor_perf_tuple
+
+            if abs(dt) > _MIN_DENOMINATOR:
+                omega_window = float((theta - prev_theta) / dt)
+                alpha_window = float((omega - prev_omega_state) / dt)
+            else:
+                omega_window = float(omega)
+                alpha_window = float(alpha)
+
+            prev_theta = float(theta)
+            prev_omega_state = float(omega)
 
             u_full = np.zeros(n_total, dtype=np.float64)
             u_full[_free_dofs_arr] = u_red
@@ -1547,28 +1856,186 @@ class LinearDynamicFSIRotorSolver(LinearDynamicFSISolver):
             a_full = np.zeros(n_total, dtype=np.float64)
             a_full[_free_dofs_arr] = a_red
 
-            stress_fields = self._compute_stress_fields(u_full)
+            u_nodes_local = self._extract_nodal_translation_field(u_full)
+            v_nodes_local = self._extract_nodal_translation_field(v_full)
 
             iface_dofs_flat = interface_dofs_global_flat
+            iface_u_local = np.zeros_like(interface_coords_nodes)
+            for local_idx in range(min(len(iface_dofs_flat), iface_u_local.size)):
+                gdof = int(iface_dofs_flat[local_idx])
+                if gdof < n_total:
+                    iface_u_local.flat[local_idx] = u_full[gdof]
+
+            stress_fields = self._compute_stress_fields(u_full)
+
             force_fields = {}
+            f_aero_full_global = np.zeros(n_total, dtype=np.float64)
             if forces_iface is not None and len(forces_iface) > 0:
-                f_raw_full = np.zeros(n_total, dtype=np.float64)
                 for local_idx in range(min(len(forces_iface), len(iface_dofs_flat))):
                     gdof = int(iface_dofs_flat[local_idx])
                     if gdof < n_total:
-                        f_raw_full[gdof] += forces_iface[local_idx]
-                force_fields["F_AERO_RAW"] = f_raw_full
-                force_fields["F_AERO"] = f_raw_full
-                force_fields["F_TOTAL"] = f_raw_full.copy()
+                        f_aero_full_global[gdof] += forces_iface[local_idx]
+
+            f_aero_nodes_global = self._extract_nodal_translation_field(f_aero_full_global)
+            f_aero_nodes_local = self._coord_transforms.to_rotating(f_aero_nodes_global, theta)
+
+            if forces_iface is not None and len(forces_iface) > 0:
+                iface_force_global = self._ensure_3d_vectors(
+                    np.asarray(forces_iface, dtype=np.float64).reshape(-1, self.domain.spatial_dim)
+                )
+                iface_force_local = self._coord_transforms.to_rotating(iface_force_global, theta)
+            else:
+                iface_force_local = np.zeros_like(interface_coords_nodes)
+
+            f_inertial_nodes_local = np.zeros_like(all_node_coords_nodes)
+            if self._include_centrifugal:
+                f_inertial_nodes_local += self._inertial_calculator.compute_centrifugal_force(
+                    all_node_coords_nodes,
+                    all_node_masses,
+                    omega_window,
+                )
+            if self._include_coriolis:
+                f_inertial_nodes_local += self._inertial_calculator.compute_coriolis_force(
+                    v_nodes_local,
+                    all_node_masses,
+                    omega_window,
+                )
+            if self._include_euler and abs(alpha_window) > 1e-14:
+                f_inertial_nodes_local += self._inertial_calculator.compute_euler_force(
+                    all_node_coords_nodes + u_nodes_local,
+                    all_node_masses,
+                    alpha_window,
+                )
+
+            f_gravity_nodes_local = np.zeros_like(all_node_coords_nodes)
+            if self._include_gravity:
+                gravity_local = self._coord_transforms.to_rotating(self._gravity, theta)
+                f_gravity_nodes_local = all_node_masses[:, np.newaxis] * gravity_local
+
+            f_total_nodes_local = (
+                f_aero_nodes_local + f_inertial_nodes_local + f_gravity_nodes_local
+            )
+
+            tau_aero_global, tau_aero = self._compute_axis_torque(
+                interface_coords_nodes,
+                iface_u_local,
+                iface_force_local,
+                theta,
+            )
+            if abs(tau_aero) <= _MIN_DENOMINATOR and abs(tau_aero_rust) > _MIN_DENOMINATOR:
+                tau_aero = float(tau_aero_rust)
+
+            _, tau_inertial = self._compute_axis_torque(
+                all_node_coords_nodes,
+                u_nodes_local,
+                f_inertial_nodes_local,
+                theta,
+            )
+            _, tau_gravity = self._compute_axis_torque(
+                all_node_coords_nodes,
+                u_nodes_local,
+                f_gravity_nodes_local,
+                theta,
+            )
+            tau_total_global, tau_total = self._compute_axis_torque(
+                all_node_coords_nodes,
+                u_nodes_local,
+                f_total_nodes_local,
+                theta,
+            )
+
+            thrust = float(np.dot(np.sum(iface_force_local, axis=0), self._coord_transforms.axis))
+            deformed_radius = self._compute_rotor_radius(interface_coords_nodes, iface_u_local)
+            ct, cp, cq, tsr = self._compute_performance_coefficients(
+                thrust,
+                tau_aero,
+                omega_window,
+                deformed_radius,
+            )
+
+            torque_non_aero = tau_total - tau_aero
+            power_aero = tau_aero * omega_window
+            power_total = tau_total * omega_window
+            structural_efficiency = (
+                float(np.clip(-torque_non_aero / tau_aero, 0.0, 1.0))
+                if abs(tau_aero) > _MIN_DENOMINATOR
+                else 0.0
+            )
+            max_displacement = (
+                float(np.max(np.linalg.norm(u_nodes_local, axis=1)))
+                if len(u_nodes_local) > 0
+                else 0.0
+            )
+
+            f_inertial_nodes_global = self._coord_transforms.to_inertial(
+                f_inertial_nodes_local, theta
+            )
+            f_gravity_nodes_global = self._coord_transforms.to_inertial(
+                f_gravity_nodes_local, theta
+            )
+            f_total_nodes_global = self._coord_transforms.to_inertial(f_total_nodes_local, theta)
+
+            force_fields["F_AERO_RAW"] = f_aero_full_global
+            force_fields["F_AERO"] = f_aero_full_global
+            force_fields["F_INERTIAL"] = self._scatter_nodal_translation_field(
+                f_inertial_nodes_global,
+                n_total,
+            )
+            force_fields["F_GRAVITY"] = self._scatter_nodal_translation_field(
+                f_gravity_nodes_global,
+                n_total,
+            )
+            force_fields["F_TOTAL"] = self._scatter_nodal_translation_field(
+                f_total_nodes_global,
+                n_total,
+            )
             force_fields.update(stress_fields)
-            force_fields["OMEGA"] = omega
-            force_fields["ALPHA"] = alpha
+            force_fields["OMEGA"] = omega_window
+            force_fields["ALPHA"] = alpha_window
+            force_fields["OMEGA_STATE"] = omega
+            force_fields["ALPHA_STATE"] = alpha
             force_fields["THETA"] = theta
             force_fields["TAU_AERO"] = tau_aero
+            force_fields["TAU_INERTIAL"] = tau_inertial
+            force_fields["TAU_GRAVITY"] = tau_gravity
+            force_fields["TAU_TOTAL"] = tau_total
+            force_fields["THRUST"] = thrust
+            force_fields["DEFORMED_RADIUS"] = deformed_radius
             force_fields["CT"] = ct
             force_fields["CP"] = cp
             force_fields["CQ"] = cq
             force_fields["TSR"] = tsr
+
+            self._log_rotor_performance(
+                t=t,
+                omega_rpm=omega_window * 60.0 / (2.0 * np.pi),
+                omega_rad=omega_window,
+                alpha=alpha_window,
+                angle_deg=np.degrees(theta),
+                thrust=thrust,
+                torque_aero=tau_aero,
+                torque_non_aero=torque_non_aero,
+                torque_inertial=tau_inertial,
+                torque_gravity=tau_gravity,
+                torque_total=tau_total,
+                power_aero=power_aero,
+                power_total=power_total,
+                structural_efficiency=structural_efficiency,
+                cp=cp,
+                cq=cq,
+                ct=ct,
+                tsr=tsr,
+                torque_aero_global=tau_aero_global,
+                torque_total_global=tau_total_global,
+                max_displacement=max_displacement,
+                deformed_radius=deformed_radius,
+            )
+            self._write_restart_state(
+                t=t,
+                theta=theta,
+                omega=omega,
+                alpha=alpha,
+            )
 
             self._log_structural_report(
                 t=t,
@@ -1586,6 +2053,11 @@ class LinearDynamicFSIRotorSolver(LinearDynamicFSISolver):
                 v_full=v_full,
                 stress_fields=force_fields,
             )
+            checkpoint_kwargs = {
+                "theta": theta,
+                **self._build_omega_checkpoint_state(t=t, omega=omega, alpha=alpha),
+            }
+
             self._handle_checkpoint(
                 t=t,
                 time_step=time_step,
@@ -1597,8 +2069,7 @@ class LinearDynamicFSIRotorSolver(LinearDynamicFSISolver):
                 v_full=v_full,
                 a_full=a_full,
                 extra_fields=force_fields,
-                theta=theta,
-                omega=omega,
+                **checkpoint_kwargs,
             )
 
         # ── omega preCICE coupling params (optional) ────────────────────────
@@ -1635,48 +2106,51 @@ class LinearDynamicFSIRotorSolver(LinearDynamicFSISolver):
             list(self._gravity),
             self._include_centrifugal,
             self._include_coriolis,
-            self._include_euler,
-            self._include_geometric_stiffness,
-            self._include_spin_softening,
-            float(self.solver_params.get("ksp_omega_threshold", 1e-4)),
-            self.domain.dofs_per_node,
-            self._fluid_density,
-            self._flow_velocity,
-            float(self._rotor_radius),
-            k_rows,
-            k_cols,
-            k_vals,
-            m_rows,
-            m_cols,
-            m_vals,
-            free_dofs,
-            self._eta_k,
-            self._eta_m,
-            beta,
-            gamma,
-            dt_hint,
-            interface_coords_flat,
-            interface_dofs_global_flat,
-            self.domain.spatial_dim,
-            cfg["participant"],
-            cfg["config_file"],
-            mesh_name,
-            write_data,
-            read_data,
-            float(self._force_ramp_time),
-            getattr(self, "_force_max_magnitude", None),
-            # omega preCICE coupling (optional — None disables it)
-            _omega_mesh,
-            _omega_data,
-            _omega_coord,
-            u0,
-            v0,
-            a0,
-            t0,
-            theta0,
-            kg0_rows,
-            kg0_cols,
-            kg0_vals,
+            include_euler=self._include_euler,
+            include_kg=self._include_geometric_stiffness,
+            include_ksp=self._include_spin_softening,
+            ksp_omega_threshold=float(self.solver_params.get("ksp_omega_threshold", 1e-4)),
+            dofs_per_node=self.domain.dofs_per_node,
+            fluid_density=self._fluid_density,
+            flow_velocity=self._flow_velocity,
+            rotor_radius=float(self._rotor_radius),
+            k_rows=k_rows,
+            k_cols=k_cols,
+            k_vals=k_vals,
+            m_rows=m_rows,
+            m_cols=m_cols,
+            m_vals=m_vals,
+            free_dofs=free_dofs,
+            eta_k=self._eta_k,
+            eta_m=self._eta_m,
+            beta=beta,
+            gamma=gamma,
+            dt=dt_hint,
+            interface_coords=interface_coords_flat,
+            interface_dofs_global=interface_dofs_global_flat,
+            mesh_dims=self.domain.spatial_dim,
+            participant_name=cfg["participant"],
+            config_file=cfg["config_file"],
+            coupling_mesh=mesh_name,
+            write_data_name=write_data,
+            read_data_name=read_data,
+            ramp_time=float(self._force_ramp_time),
+            force_max=getattr(self, "_force_max_magnitude", None),
+            omega_mesh_name=_omega_mesh,
+            omega_write_data=_omega_data,
+            omega_vertex_coord=_omega_coord,
+            u0=u0,
+            v0=v0,
+            a0=a0,
+            t0=t0,
+            theta0=theta0,
+            restart_omega=restart_omega,
+            restart_alpha=restart_alpha,
+            restart_ramp_completed=restart_ramp_completed,
+            restart_current_time=restart_current_time,
+            kg0_rows=kg0_rows,
+            kg0_cols=kg0_cols,
+            kg0_vals=kg0_vals,
             step_callback=_step_cb,
         )
 

@@ -31,7 +31,7 @@ use crate::petsc::fsi::rotor_physics::{
 ///
 /// Arguments:
 /// `(t, time_step, dt, u_red, v_red, a_red, force_mag,
-///   forces_iface_global, omega, alpha, theta, tau_aero, perf)`
+///   forces_iface_global, omega_state, alpha_state, theta, tau_aero, perf)`
 pub type RotorStepCallback = Box<
     dyn Fn(
             f64,                     // t: converged time
@@ -42,8 +42,8 @@ pub type RotorStepCallback = Box<
             &[f64],                  // a_red: acceleration (reduced DOFs)
             f64,                     // force_mag: ||F_aero|| Frobenius
             &[f64],                  // forces_iface_global: aero forces, global frame
-            f64,                     // omega: angular velocity at convergence
-            f64,                     // alpha: angular acceleration at convergence
+            f64,                     // omega_state: dynamic state after convergence
+            f64,                     // alpha_state: dynamic state after convergence
             f64,                     // theta: cumulative rotation angle
             f64,                     // tau_aero: aerodynamic torque (scalar, about axis)
             PerformanceCoefficients, // ct, cp, cq, tsr
@@ -78,7 +78,7 @@ pub struct RotorFsiConfig {
     // ── Stiffness updates ─────────────────────────────────────────────────────
     /// Enable geometric stiffness K_G updates (requires `assembler` to be `Some`).
     pub include_kg: bool,
-    /// Rebuild K_G every N converged steps (1 = every step, ≥ 1).
+    /// Rebuild K_G every N converged steps. `0` and `1` both mean every step.
     pub kg_update_interval: usize,
     /// Enable spin-softening K_SP diagonal update.
     pub include_ksp: bool,
@@ -112,13 +112,22 @@ impl RotorFsiConfig {
     fn gravity_active(&self) -> bool {
         self.gravity.iter().map(|x| x * x).sum::<f64>() > 1e-24
     }
+
+    /// Normalize the K_G cadence so legacy `0` means "every converged step".
+    fn normalized_kg_update_interval(&self) -> usize {
+        self.kg_update_interval.max(1)
+    }
+
+    /// Whether K_G should be rebuilt on this 1-based converged step index.
+    fn should_update_kg_on_step(&self, time_step: usize) -> bool {
+        time_step % self.normalized_kg_update_interval() == 0
+    }
 }
 
 // ── Solver struct ──────────────────────────────────────────────────────────────
 
 /// Co-rotational FSI solver for rotating blades.
 ///
-/// Constructs via `RotorFsiSolver::new()`, then call `run()` to start the coupling loop.
 pub struct RotorFsiSolver {
     // ── Newmark structural integrator ─────────────────────────────────────────
     stepper: NewmarkStepper,
@@ -127,14 +136,17 @@ pub struct RotorFsiSolver {
     config: RotorFsiConfig,
 
     // ── preCICE interface ─────────────────────────────────────────────────────
-    /// Flat interface node coordinates in the GLOBAL frame, length `n_iface * 3`.
+    /// Flat interface node reference coordinates in the rotating frame, length `n_iface * 3`.
+    ///
+    /// Numerically these match the initial global coordinates at `t = 0`, but the
+    /// values are treated as the co-rotational reference geometry `X0` when
+    /// evaluating torques and deformed positions.
     interface_coords_global: Vec<f64>,
     /// Indices into the REDUCED DOF vector for each interface component
     /// (length `n_iface * dofs_dim`, typically 3 per node).
     interface_dofs: Vec<usize>,
     /// Number of spatial dimensions on the coupling mesh (3 for 3D).
     mesh_dims: usize,
-
     // ── Coordinate transforms ─────────────────────────────────────────────────
     transforms: RotorTransforms,
 
@@ -171,8 +183,6 @@ pub struct RotorFsiSolver {
     kg_coo_map: Vec<i32>,
     /// ω at the last K_SP rebuild (to detect Δω > threshold).
     omega_at_last_ksp: f64,
-    /// ω at the last K_G rebuild (to detect Δω > threshold).
-    omega_at_last_kg: f64,
 
     // ── Optional restart state ────────────────────────────────────────────────
     initial_state: Option<FsiInitialState>,
@@ -190,7 +200,8 @@ impl RotorFsiSolver {
     ///
     /// * `stepper`                 — pre-assembled Newmark integrator (assembled with K, M, C)
     /// * `config`                  — rotor FSI configuration
-    /// * `interface_coords_global` — flat interface node coords in global frame, `n_iface * 3`
+    /// * `interface_coords_global` — flat interface node reference coords (`X0`) in the
+    ///   rotating frame, `n_iface * 3`
     /// * `interface_dofs`          — reduced DOF indices for each interface component
     /// * `mesh_dims`               — coupling mesh spatial dimension (3)
     /// * `omega_provider`          — angular-velocity provider (Constant/Ramped/Computed/…)
@@ -264,7 +275,6 @@ impl RotorFsiSolver {
             k_cols,
             kg_coo_map,
             omega_at_last_ksp: initial_omega,
-            omega_at_last_kg: initial_omega,
             initial_state: None,
             initial_theta: 0.0,
             step_callback: None,
@@ -282,20 +292,20 @@ impl RotorFsiSolver {
     pub fn with_step_callback<F>(mut self, cb: F) -> Self
     where
         F: Fn(
-                f64,
-                usize,
-                f64,
-                &[f64],
-                &[f64],
-                &[f64],
-                f64,
-                &[f64],
-                f64,
-                f64,
-                f64,
-                f64,
-                PerformanceCoefficients,
-            ) -> Result<(), FsiError>
+            f64,
+            usize,
+            f64,
+            &[f64],
+            &[f64],
+            &[f64],
+            f64,
+            &[f64],
+            f64,
+            f64,
+            f64,
+            f64,
+            PerformanceCoefficients,
+        ) -> Result<(), FsiError>
             + Send
             + 'static,
     {
@@ -374,18 +384,15 @@ impl RotorFsiSolver {
         Ok(())
     }
 
-    /// Rebuild K_G from centrifugal prestress and apply to stepper (if enabled and |Δω| > threshold).
-    ///
-    /// Uses the same omega-threshold policy as K_SP: only rebuilds when the angular velocity
-    /// has changed enough to make K_G(ω) materially different from the current K_G.
+    /// Rebuild K_G from centrifugal prestress when the configured cadence says it is due.
     ///
     /// Calls `stepper.set_initial_geometric_stiffness` (writes to `kg_base_vals`) so the
     /// centrifugal prestress is always included in K_eff regardless of runtime deformation.
-    fn update_kg_if_needed(&mut self, omega: f64) -> Result<(), FsiError> {
+    fn update_kg_if_needed(&mut self, omega: f64, time_step: usize) -> Result<(), FsiError> {
         if !self.config.include_kg {
             return Ok(());
         }
-        if (omega - self.omega_at_last_kg).abs() <= self.config.ksp_omega_threshold {
+        if !self.config.should_update_kg_on_step(time_step) {
             return Ok(());
         }
         let asm = match &self.assembler {
@@ -418,11 +425,10 @@ impl RotorFsiSolver {
         self.stepper
             .set_initial_geometric_stiffness(&kg_red)
             .map_err(FsiError::StepperError)?;
-        self.omega_at_last_kg = omega;
 
         let kg_norm: f64 = kg_red.iter().map(|x| x * x).sum::<f64>().sqrt();
         log::info!(
-            "RotorFsi: K_G rebuilt at ω={omega:.4} rad/s, ||K_G||_F = {kg_norm:.3e}"
+            "RotorFsi: K_G rebuilt at step {time_step}, ω={omega:.4} rad/s, ||K_G||_F = {kg_norm:.3e}"
         );
         Ok(())
     }
@@ -464,6 +470,8 @@ impl RotorFsiSolver {
                 None
             };
 
+        let restart_time = self.initial_state.as_ref().map(|state| state.t).unwrap_or(0.0);
+
         // Write initial omega before initialize() when preCICE requires it.
         // This satisfies the initialize="true" exchange for AngularVelocity.
         if participant.requires_initial_data()? {
@@ -472,7 +480,7 @@ impl RotorFsiSolver {
                 &self.config.omega_write_data,
                 &omega_vertex_ids,
             ) {
-                let omega_init = self.omega_provider.initial_omega();
+                let omega_init = self.omega_provider.get(restart_time).0;
                 participant.write_data(mesh, wdata, ids, &[omega_init])?;
             }
         }
@@ -487,7 +495,7 @@ impl RotorFsiSolver {
         }
 
         // ── Initial K_SP build ────────────────────────────────────────────────
-        let omega_init = self.omega_provider.initial_omega();
+        let omega_init = self.omega_provider.get(restart_time).0;
         self.apply_ksp(omega_init)?;
 
         let n_dofs = self.stepper.n_dofs();
@@ -510,7 +518,10 @@ impl RotorFsiSolver {
             }
 
             let t = self.stepper.current_time();
-            let (omega, alpha) = self.omega_provider.get(t);
+            let window_kin = self.omega_provider.kinematics_over_step(t, dt);
+            let omega_step = window_kin.omega_step;
+            let alpha_step = window_kin.alpha_step;
+            let theta_target = self.theta + window_kin.theta_increment;
 
             // ── Read forces from preCICE (global frame) ───────────────────────
             let mut forces_global = vec![0.0f64; n_data];
@@ -523,7 +534,9 @@ impl RotorFsiSolver {
             )?;
 
             // ── Transform aero forces to rotating frame ───────────────────────
-            let mut forces_local = self.transforms.forces_to_rotating(&forces_global, self.theta);
+            let mut forces_local = self
+                .transforms
+                .forces_to_rotating(&forces_global, theta_target);
 
             // ── Force pre-processing (ramp + cap in rotating frame) ───────────
             apply_ramp(&mut forces_local, t, self.config.fsi.ramp_time);
@@ -548,7 +561,7 @@ impl RotorFsiSolver {
                     &self.all_node_masses,
                     &self.transforms.axis,
                     &self.transforms.center,
-                    omega,
+                    omega_step,
                 );
                 self.scatter_node_forces(&f_cf, &mut f_red);
             }
@@ -560,12 +573,12 @@ impl RotorFsiSolver {
                     &v_nodes,
                     &self.all_node_masses,
                     &self.transforms.axis,
-                    omega,
+                    omega_step,
                 );
                 self.scatter_node_forces(&f_cor, &mut f_red);
             }
 
-            if self.config.include_euler && alpha.abs() > 1e-14 {
+            if self.config.include_euler && alpha_step.abs() > 1e-14 {
                 // Euler evaluated at deformed coords X₀ + u.
                 let u_full = self.expand_to_full(self.stepper.current_u());
                 let deformed: Vec<f64> = self
@@ -588,13 +601,14 @@ impl RotorFsiSolver {
                     &self.all_node_masses,
                     &self.transforms.axis,
                     &self.transforms.center,
-                    alpha,
+                    alpha_step,
                 );
                 self.scatter_node_forces(&f_euler, &mut f_red);
             }
 
             if self.config.gravity_active() {
-                let g_rot = self.transforms.gravity_to_rotating(self.config.gravity, self.theta);
+                let g_rot =
+                    self.transforms.gravity_to_rotating(self.config.gravity, theta_target);
                 let f_g = compute_gravity_force(&self.all_node_masses, &g_rot);
                 self.scatter_node_forces(&f_g, &mut f_red);
             }
@@ -618,8 +632,9 @@ impl RotorFsiSolver {
                 .collect();
 
             // ── Transform displacements to global frame ───────────────────────
-            let disp_iface_global =
-                self.transforms.disps_to_inertial(&disp_iface_local, self.theta);
+            let disp_iface_global = self
+                .transforms
+                .disps_to_inertial(&disp_iface_local, theta_target);
 
             // ── Write displacements to preCICE ────────────────────────────────
             participant.write_data(
@@ -635,7 +650,7 @@ impl RotorFsiSolver {
                 &self.config.omega_mesh_name,
                 &self.config.omega_write_data,
             ) {
-                participant.write_data(mesh, wdata, ids, &[omega])?;
+                participant.write_data(mesh, wdata, ids, &[omega_step])?;
             }
 
             participant.advance(dt)?;
@@ -657,24 +672,18 @@ impl RotorFsiSolver {
                 }
             } else {
                 // ── Converged time window ─────────────────────────────────────
-                // 1. Advance rotation angle.
-                self.theta += omega * dt;
+                // 1. Commit the converged target angle for this time window.
+                self.theta = theta_target;
 
                 // 2. Compute aerodynamic torque (for ω dynamics and logging).
-                //    Use interface coords + displacements in the ROTATING frame.
-                let iface_coords_rot: Vec<f64> = {
-                    let n_iface = self.interface_dofs.len() / self.mesh_dims.max(1);
-                    // Extract the first n_iface*3 entries from interface_coords_global
-                    // transformed to rotating frame at θ BEFORE this step's advance
-                    // (i.e. at theta_cp, the angle at the start of the window).
-                    self.transforms
-                        .forces_to_rotating(&self.interface_coords_global, theta_cp)
-                        .iter()
-                        .take(n_iface * 3)
-                        .copied()
-                        .collect()
-                };
+                //    Use interface reference coords + displacements in the ROTATING frame.
                 let n_iface = self.interface_dofs.len() / self.mesh_dims.max(1);
+                let iface_coords_rot: Vec<f64> = self
+                    .interface_coords_global
+                    .iter()
+                    .take(n_iface * 3)
+                    .copied()
+                    .collect();
                 let iface_disps_rot: Vec<f64> = {
                     let mut buf = vec![0.0f64; n_iface * 3];
                     for k in 0..n_iface * 3 {
@@ -703,10 +712,12 @@ impl RotorFsiSolver {
                 let tau_gravity = if self.config.gravity_active() {
                     let g_rot = self.transforms.gravity_to_rotating(self.config.gravity, self.theta);
                     let f_grav = compute_gravity_force(&self.all_node_masses, &g_rot);
-                    // Torque about axis at reference (undeformed) nodal positions.
+                    let u_full = self.expand_to_full(self.stepper.current_u());
+                    let u_nodes = self.extract_node_translations(&u_full);
+                    // Torque about axis at the deformed nodal positions X0 + u.
                     let (_, tau_g) = compute_torque(
                         &self.all_node_coords,
-                        &vec![0.0f64; self.all_node_coords.len()],
+                        &u_nodes,
                         &f_grav,
                         &self.transforms.axis,
                         &self.transforms.center,
@@ -721,17 +732,17 @@ impl RotorFsiSolver {
                 self.omega_provider.update_from_torque(tau_aero + tau_gravity, dt, t + dt);
 
                 let (omega_new, _) = self.omega_provider.get(t + dt);
+                let time_step = result.times.len() + 1; // 1-based, before push
 
                 // 5. Rebuild K_SP if |Δω| > threshold.
                 if (omega_new - self.omega_at_last_ksp).abs() > self.config.ksp_omega_threshold {
                     self.apply_ksp(omega_new)?;
                 }
 
-                // 6. Rebuild K_G from centrifugal prestress if |Δω| > threshold.
-                self.update_kg_if_needed(omega_new)?;
+                // 6. Rebuild K_G from centrifugal prestress on the configured cadence.
+                self.update_kg_if_needed(omega_new, time_step)?;
 
                 // 7. Overwrite final state (no history accumulation — O(n_dofs) RAM).
-                let time_step = result.times.len() + 1; // 1-based, before push
                 result.u_final = self.stepper.current_u().to_vec();
                 result.v_final = self.stepper.current_v().to_vec();
                 result.a_final = self.stepper.current_a().to_vec();
@@ -739,19 +750,21 @@ impl RotorFsiSolver {
 
                 // 8. Performance coefficients.
                 let thrust = compute_thrust(&forces_global, &self.transforms.axis);
-                let power_aero = tau_aero * omega;
+                let power_aero = tau_aero * omega_step;
                 let perf = compute_performance_coefficients(
                     thrust,
                     power_aero,
                     tau_aero,
-                    omega,
+                    omega_step,
                     self.config.rotor_radius,
                     self.config.fluid_density,
                     self.config.flow_velocity,
                 );
 
+                let (omega_state, alpha_state) = self.omega_provider.get(t + dt);
+
                 log::info!(
-                    "RotorFsi step {time_step}: t={:.4} θ={:.4}rad ω={omega:.4}rad/s \
+                    "RotorFsi step {time_step}: t={:.4} θ={:.4}rad ω_window={omega_step:.4}rad/s ω_state={omega_state:.4}rad/s \
                      τ_aero={tau_aero:.3e}N·m τ_grav={tau_gravity:.3e}N·m  Ct={:.4} Cp={:.4} TSR={:.3}",
                     step_t, self.theta, perf.ct, perf.cp, perf.tsr
                 );
@@ -768,8 +781,8 @@ impl RotorFsiSolver {
                         self.stepper.current_a(),
                         force_mag,
                         &forces_global,
-                        omega,
-                        alpha,
+                        omega_state,
+                        alpha_state,
                         self.theta,
                         tau_aero,
                         perf,
@@ -802,5 +815,62 @@ impl RotorFsiSolver {
     /// Current angular velocity ω [rad/s] from the provider.
     pub fn omega(&self) -> f64 {
         self.omega_provider.get(self.stepper.current_time()).0
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn dummy_config(kg_update_interval: usize) -> RotorFsiConfig {
+        RotorFsiConfig {
+            fsi: FsiConfig {
+                participant_name: "Solid".to_string(),
+                config_file: "precice-config.xml".to_string(),
+                coupling_mesh: "Solid-Mesh".to_string(),
+                write_data: "Displacement".to_string(),
+                read_data: "Force".to_string(),
+                ramp_time: 0.0,
+                force_max: None,
+            },
+            rotation_axis: [0.0, 0.0, 1.0],
+            rotation_center: [0.0, 0.0, 0.0],
+            gravity: [0.0, 0.0, 0.0],
+            include_centrifugal: true,
+            include_coriolis: false,
+            include_euler: false,
+            include_kg: true,
+            kg_update_interval,
+            include_ksp: true,
+            ksp_omega_threshold: 1e-4,
+            dofs_per_node: 6,
+            fluid_density: 1.225,
+            flow_velocity: 10.0,
+            rotor_radius: 1.0,
+            omega_mesh_name: None,
+            omega_write_data: None,
+            omega_vertex_coord: None,
+        }
+    }
+
+    #[test]
+    fn kg_update_interval_zero_means_every_step() {
+        let cfg = dummy_config(0);
+        assert_eq!(cfg.normalized_kg_update_interval(), 1);
+        assert!(cfg.should_update_kg_on_step(1));
+        assert!(cfg.should_update_kg_on_step(2));
+        assert!(cfg.should_update_kg_on_step(3));
+    }
+
+    #[test]
+    fn kg_update_interval_updates_on_multiples_only() {
+        let cfg = dummy_config(3);
+        assert_eq!(cfg.normalized_kg_update_interval(), 3);
+        assert!(!cfg.should_update_kg_on_step(1));
+        assert!(!cfg.should_update_kg_on_step(2));
+        assert!(cfg.should_update_kg_on_step(3));
+        assert!(!cfg.should_update_kg_on_step(4));
+        assert!(!cfg.should_update_kg_on_step(5));
+        assert!(cfg.should_update_kg_on_step(6));
     }
 }
