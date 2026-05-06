@@ -754,7 +754,7 @@ class LinearDynamicFSISolver(LinearDynamicSolver):
 
         Columns
         -------
-        Time, TimeStep, Max Displacement, Max Displacement Node,
+        Time, TimeStep, Max Displacement + components, Max Displacement Node,
         Max Velocity, Max Acceleration,
         Max VonMises TOP/MID/BOT + node, Max Sigma1 TOP,
         Applied Force Magnitude.
@@ -770,16 +770,24 @@ class LinearDynamicFSISolver(LinearDynamicSolver):
         n_nodes = len(nodes)
         dofs_per_node = u_full.size // n_nodes
 
+        def _translational_components(field: np.ndarray) -> np.ndarray:
+            field_mat = field.reshape(n_nodes, dofs_per_node)
+            xyz = np.zeros((n_nodes, 3), dtype=np.float64)
+            n_comp = min(3, dofs_per_node)
+            xyz[:, :n_comp] = field_mat[:, :n_comp]
+            return xyz
+
         # Displacement magnitude per node
-        u_mat = u_full.reshape(n_nodes, dofs_per_node)[:, :3]
+        u_mat = _translational_components(u_full)
         u_mag = np.linalg.norm(u_mat, axis=1)
         max_disp_idx = int(np.argmax(u_mag))
         max_disp = float(u_mag[max_disp_idx])
+        max_disp_components = u_mat[max_disp_idx]
         max_disp_node = nodes[max_disp_idx].id
 
         # Velocity / acceleration magnitudes
-        v_mat = v_full.reshape(n_nodes, dofs_per_node)[:, :3]
-        a_mat = a_full.reshape(n_nodes, dofs_per_node)[:, :3]
+        v_mat = _translational_components(v_full)
+        a_mat = _translational_components(a_full)
         max_vel = float(np.max(np.linalg.norm(v_mat, axis=1)))
         max_acc = float(np.max(np.linalg.norm(a_mat, axis=1)))
 
@@ -806,7 +814,8 @@ class LinearDynamicFSISolver(LinearDynamicSolver):
                 if write_header:
                     f.write(
                         "Time [s],TimeStep,"
-                        "Max Disp [m],Max Disp Node,Max Disp Pos (x;y;z),"
+                        "Max Disp [m],Max Disp X [m],Max Disp Y [m],Max Disp Z [m],"
+                        "Max Disp Node,Max Disp Pos (x;y;z),"
                         "Max Vel [m/s],Max Acc [m/s2],"
                         "VonMises TOP [Pa],VonMises TOP Node,"
                         "VonMises MID [Pa],VonMises MID Node,"
@@ -816,7 +825,9 @@ class LinearDynamicFSISolver(LinearDynamicSolver):
                     )
                 f.write(
                     f"{t:.6f},{time_step},"
-                    f"{max_disp:.6e},{max_disp_node},{max_pos},"
+                    f"{max_disp:.6e},"
+                    f"{max_disp_components[0]:.6e},{max_disp_components[1]:.6e},"
+                    f"{max_disp_components[2]:.6e},{max_disp_node},{max_pos},"
                     f"{max_vel:.6e},{max_acc:.6e},"
                     f"{vm_top:.6e},{vm_top_nd},"
                     f"{vm_mid:.6e},{vm_mid_nd},"
